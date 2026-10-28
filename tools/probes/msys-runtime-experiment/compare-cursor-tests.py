@@ -22,6 +22,8 @@ class CursorTests(unittest.TestCase):
 
     def summary(self, **updates):
         values = dict(code=0, phase=50, expected_cols=100, expected_rows=30, observed_cols=100, observed_rows=30)
+        values.update(substage=0, protocol_step=0, reason=0, write_result=0, expected_prompt_sequence=0,
+                      prompt_status_known=0, prompt_status=0, child_exit_known=0, child_exit_code=0, resize_accepted=1)
         values.update(updates)
         return ('RESIZE_CASE_SUMMARY ' + ' '.join(f'{k}={v}' for k,v in values.items()) + '\n').encode()
 
@@ -47,6 +49,42 @@ class CursorTests(unittest.TestCase):
                      self.summary(code=4, phase=2, observed_rows=0)):
             with self.subTest(data=data), self.assertRaises(ValueError):
                 compare.parse_summary(data, 1, 'repeated')
+
+    def test_protocol_fields_are_required_unique_and_bounded(self):
+        for field, value in [('substage', 5), ('protocol_step', 5), ('reason', 5), ('write_result', 5),
+                             ('expected_prompt_sequence', 4294967296), ('prompt_status_known', 2),
+                             ('prompt_status', 256), ('child_exit_known', 2), ('child_exit_code', 4294967296),
+                             ('resize_accepted', 2)]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                compare.parse_summary(self.summary(code=3, **{field: value}), 1, 'repeated')
+        for data in (self.summary().replace(b' substage=0', b''), self.summary().replace(b' substage=0', b' substage=0 substage=0'),
+                     self.summary().replace(b' child_exit_code=0', b' child_exit_code=-1'),
+                     self.summary() + b'RESIZE_CASE_SUMMARYmalformed\n'):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                compare.parse_summary(data, 0, 'repeated')
+
+    def test_known_unknown_status_and_exit(self):
+        for data in (self.summary(code=3, prompt_status=1), self.summary(code=3, child_exit_code=1),
+                     self.summary(child_exit_known=1), self.summary(resize_accepted=0)):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                compare.parse_summary(data, 1 if b'code=3 ' in data else 0, 'repeated')
+        data = self.summary(code=3, child_exit_known=1, child_exit_code=4294967295)
+        self.assertEqual(compare.parse_summary(data, 1, 'repeated')['child_exit_code'], 4294967295)
+
+    def test_protocol_step_reason_coherence(self):
+        for updates in (dict(protocol_step=1, reason=1, expected_prompt_sequence=1),
+                        dict(protocol_step=4, reason=3, expected_prompt_sequence=9, prompt_status_known=1),
+                        dict(protocol_step=2, reason=2, expected_prompt_sequence=9, write_result=3),
+                        dict(protocol_step=3, reason=4, expected_prompt_sequence=9, write_result=1)):
+            self.assertEqual(compare.parse_summary(self.summary(code=3, **updates), 1, 'repeated')['code'], 3)
+        for updates in (dict(reason=1), dict(expected_prompt_sequence=1), dict(protocol_step=1, reason=1),
+                        dict(protocol_step=1, reason=2, expected_prompt_sequence=1),
+                        dict(protocol_step=1, reason=3, expected_prompt_sequence=1, prompt_status_known=1, prompt_status=19),
+                        dict(protocol_step=4, reason=3, expected_prompt_sequence=9),
+                        dict(protocol_step=2, reason=2, expected_prompt_sequence=9, write_result=1),
+                        dict(protocol_step=3, reason=4, expected_prompt_sequence=9, prompt_status_known=1)):
+            with self.subTest(updates=updates), self.assertRaises(ValueError):
+                compare.parse_summary(self.summary(code=3, **updates), 1, 'repeated')
 
     def test_workloads_do_not_mix(self):
         args = types.SimpleNamespace(probe=self.root/'probe', fixture=self.root/'fixture',

@@ -50,6 +50,30 @@ std::string screen(const std::shared_ptr<Session>& session) {
 struct ResizeSummary {
     bool enabled{}, emitted{};
     unsigned code{1}, phase{}, expected_cols{}, expected_rows{}, observed_cols{}, observed_rows{};
+    // substage: other/reset/size/native-size/flush = 0/1/2/3/4.
+    // protocol_step: none/prior-ready/text/Enter/next-ready = 0/1/2/3/4.
+    // reason: none/timeout/write-rejected/status-mismatch/exception = 0/1/2/3/4.
+    // reason3: unchanged deadline expired; final frame has the exact expected
+    // sequence with a different numeric status. It is never an early failure.
+    unsigned substage{}, protocol_step{}, reason{}, write_result{}, expected_prompt_sequence{};
+    unsigned prompt_status_known{}, prompt_status{}, child_exit_known{}, resize_accepted{};
+    std::uint32_t child_exit_code{};
+    void clear_protocol() {
+        protocol_step=reason=write_result=expected_prompt_sequence=prompt_status_known=prompt_status=0;
+    }
+    void prompt_status_from(const std::string& frame) {
+        prompt_status_known=prompt_status=0;
+        const auto marker="__STORMTTY_PROMPT:"+std::to_string(expected_prompt_sequence)+":";
+        const auto start=frame.rfind(marker);
+        if (start==std::string::npos) return;
+        const char* begin=frame.data()+start+marker.size();
+        const char* end=frame.data()+frame.size();
+        unsigned status{};
+        const auto parsed=std::from_chars(begin,end,status);
+        if (parsed.ec!=std::errc{} || status>255 || end-parsed.ptr<2 ||
+            parsed.ptr[0]!='_' || parsed.ptr[1]!='_') return;
+        prompt_status_known=1; prompt_status=status;
+    }
     void observe(const std::string& frame, std::uint64_t sequence) {
         observed_cols=observed_rows=0;
         const auto marker="__STORMTTY_SIZE_ACK:"+std::to_string(sequence)+":";
@@ -65,12 +89,25 @@ struct ResizeSummary {
             cols<1 || rows<1 || cols>32767 || rows>32767) return;
         observed_cols=cols; observed_rows=rows;
     }
-    void emit() {
+    void emit(const std::shared_ptr<Session>& session) {
         if (!enabled || emitted) return;
         emitted=true;
+        if (code==0) { substage=0; clear_protocol(); }
+        else if (session) {
+            // Host-owned exit knowledge, sampled once before cleanup/diagnostics.
+            // No terminal command, wait, or process query is introduced.
+            const auto info=session->info();
+            if (info.exit_code) { child_exit_known=1; child_exit_code=*info.exit_code; }
+        }
         std::cout << "RESIZE_CASE_SUMMARY code=" << code << " phase=" << phase
             << " expected_cols=" << expected_cols << " expected_rows=" << expected_rows
-            << " observed_cols=" << observed_cols << " observed_rows=" << observed_rows << '\n';
+            << " observed_cols=" << observed_cols << " observed_rows=" << observed_rows
+            << " substage=" << substage << " protocol_step=" << protocol_step
+            << " reason=" << reason << " write_result=" << write_result
+            << " expected_prompt_sequence=" << expected_prompt_sequence
+            << " prompt_status_known=" << prompt_status_known << " prompt_status=" << prompt_status
+            << " child_exit_known=" << child_exit_known << " child_exit_code=" << child_exit_code
+            << " resize_accepted=" << resize_accepted << '\n';
     }
 };
 template<class F> bool until(F predicate, std::chrono::milliseconds timeout = 10s) {
@@ -101,16 +138,63 @@ void command(const std::shared_ptr<Session>& s, std::string text) {
 struct PromptProtocol {
     std::shared_ptr<Session> session;
     unsigned sequence{1};
-    void ready(int status = -1) {
+    ResizeSummary* summary{}; // Null keeps the default path's existing work unchanged.
+    void ready(int status = -1, unsigned step = 4) {
         const auto prefix = "__STORMTTY_PROMPT:" + std::to_string(sequence) + ":";
-        expect(session, status < 0 ? prefix : prefix + std::to_string(status) + "__");
+        const auto token=status < 0 ? prefix : prefix + std::to_string(status) + "__";
+        if (!summary) { expect(session,token); return; }
+        summary->clear_protocol();
+        summary->protocol_step=step; summary->expected_prompt_sequence=sequence;
+        try {
+            std::string last_frame;
+            const bool found=until([&] {
+                last_frame=screen(session);
+                return last_frame.find(token)!=std::string::npos;
+            });
+            if (!found) {
+                // Classify only after the unchanged wait deadline, using the
+                // final predicate's existing frame. Never retry or early-fail.
+                summary->prompt_status_from(last_frame);
+                summary->reason=(status>=0 && summary->prompt_status_known &&
+                    summary->prompt_status!=static_cast<unsigned>(status)) ? 3 : 1;
+                std::cerr << "Expected " << token << "\n" << screen(session)
+                          << "\nSession error: " << session->info().error << '\n';
+                throw std::runtime_error("shell marker not observed in real terminal frame");
+            }
+            std::cout << "[pass] " << token << '\n';
+            summary->clear_protocol();
+        } catch (...) {
+            if (!summary->reason) summary->reason=4;
+            throw;
+        }
     }
     void send(std::string text) {
-        ready();
-        command(session, std::move(text));
-        ++sequence;
+        if (!summary) {
+            ready(); command(session,std::move(text)); ++sequence; return;
+        }
+        ready(-1,1); // Preserve any-status prior-ready semantics.
+        try {
+            summary->protocol_step=2; summary->expected_prompt_sequence=sequence;
+            std::cout << "[submit] bytes=" << text.size() << " text=" << text << '\n';
+            const auto written=session->text(std::move(text));
+            summary->write_result=static_cast<unsigned>(written)+1;
+            if (written!=SessionSendResult::accepted) summary->reason=2;
+            require(written==SessionSendResult::accepted,"command rejected");
+            summary->protocol_step=3; summary->write_result=0;
+            KeyInput input; input.key=Key::enter;
+            const auto entered=session->key(input);
+            summary->write_result=static_cast<unsigned>(entered)+1;
+            if (entered!=SessionSendResult::accepted) summary->reason=2;
+            require(entered==SessionSendResult::accepted,"key rejected");
+            ++sequence;
+            summary->clear_protocol();
+        } catch (...) {
+            if (!summary->reason) summary->reason=4;
+            throw;
+        }
     }
 };
+
 void dump_journal(const fs::path& path) {
     if (path.empty()) return;
     std::ifstream input(path, std::ios::binary);
@@ -377,6 +461,7 @@ int main(int argc, char** argv) {
         session = Session::start(std::move(p), terminal);
         expect(session, "__STORMTTY_READY__");
         PromptProtocol prompt{session};
+        if (summary.enabled) prompt.summary=&summary;
         prompt.ready(0);
         std::cout << "provider=" << session->diagnostics().provider << '\n';
         std::cout << "startup_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -399,6 +484,7 @@ int main(int argc, char** argv) {
             summary.phase=phase+1; summary.expected_cols=enlarged?111:100;
             summary.expected_rows=enlarged?35:30; summary.observed_cols=summary.observed_rows=0;
             summary.code=3;
+            if (summary.enabled) { summary.substage=1; summary.resize_accepted=0; summary.clear_protocol(); }
             std::cout << "[resize phase " << phase+1 << '/' << resize_repeats << "] target=" << dimensions << '\n';
             if (!trace_idle && !resize_one_shot) { prompt.send("stormtty_probe_journal_reset"); prompt.ready(0); }
             else if (trace_idle) std::cout << "RESIZE_TRACE_IDLE prompt_sequence=" << prompt.sequence << " zle_initialized=1\n";
@@ -410,13 +496,16 @@ int main(int argc, char** argv) {
                 trace_collected=true;
             };
             auto flush = [&] {
+                if (summary.enabled) summary.substage=4;
                 prompt.send("stormtty_probe_journal_flush");
                 prompt.ready(0);
             };
             try {
                 summary.code=2;
+                if (summary.enabled) { summary.substage=0; summary.clear_protocol(); }
                 require(session->request_resize(enlarged?TerminalSize{111,35,8,16}:TerminalSize{100,30,8,16})
                         == SessionSendResult::accepted, "resize request rejected");
+                if (summary.enabled) { summary.resize_accepted=1; summary.substage=2; }
                 auto observe_size = [&] {
                     summary.code=3;
                     summary.observed_cols=summary.observed_rows=0;
@@ -441,9 +530,10 @@ int main(int argc, char** argv) {
                     dump_input("trace-idle-complete");
 #endif
                     summary.code=7;
+                    if (summary.enabled) { summary.substage=0; summary.clear_protocol(); }
                     session->request_close();
                     require(session->wait_closed(10s), "trace experiment cleanup did not close Session");
-                    summary.code=0; summary.emit();
+                    summary.code=0; summary.emit(session);
                     std::cout << "PASS isolated idle-resize observation; NOT full bundled-shell qualification\n";
                     return 0;
                 }
@@ -452,6 +542,7 @@ int main(int argc, char** argv) {
                     continue; // No native jobs, journal commands or size-query polling.
                 }
                 // Independent native dimensions never substitute for shell evidence.
+                if (summary.enabled) summary.substage=3;
                 const auto native_sequence=prompt.sequence;
                 prompt.send("stormtty_probe_native_size"); prompt.ready(0);
                 expect(session, "__STORMTTY_NATIVE_SIZE:"+dimensions+"__");
@@ -463,7 +554,7 @@ int main(int argc, char** argv) {
 #endif
                 std::cout << "[resize phase " << phase+1 << "] PASS\n";
             } catch (...) {
-                summary.emit(); // Before diagnostics can refresh shell state.
+                summary.emit(session); // Before diagnostics can refresh shell state.
                 // Preserve evidence before flushing or running any child, which
                 // may redraw the terminal or incidentally refresh shell state.
                 std::cerr << "Original resize failure frame (before diagnostics):\n" << screen(session);
@@ -506,16 +597,18 @@ int main(int argc, char** argv) {
         }
         if (resize_one_shot) {
             summary.code=7;
+            if (summary.enabled) { summary.substage=0; summary.clear_protocol(); }
             session->request_close();
             require(session->wait_closed(10s), "one-shot experiment cleanup did not close Session");
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
             dump_input("one-shot-complete");
 #endif
-            summary.code=0; summary.emit();
+            summary.code=0; summary.emit(session);
             std::cout << "PASS isolated builtin-only repeated one-shot resize; NOT full bundled-shell qualification\n";
             return 0;
         }
         summary.code=8;
+        if (summary.enabled) { summary.substage=0; summary.clear_protocol(); }
         prompt.send("stormtty_probe_wait first"); expect(session, "__STORMTTY_WAITING:first__");
         key(session, Key::c, Modifier::control);
         prompt.ready(130);
@@ -548,10 +641,10 @@ int main(int argc, char** argv) {
 #else
         std::cout << "PASS POSIX probe mechanics only; NOT Windows bundled-shell qualification\n";
 #endif
-        summary.code=0; summary.emit();
+        summary.code=0; summary.emit(session);
         return 0;
     } catch (const std::exception& e) {
-        summary.emit();
+        summary.emit(session);
         if (session) { std::cerr << "Failure frame:\n" << screen(session); session->request_close(); (void)session->wait_closed(10s); }
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
         dump_input("final-result");

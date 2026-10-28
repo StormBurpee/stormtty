@@ -88,15 +88,38 @@ def identities(roots):
 def parse_summary(data, exit_code, workload):
     """Retain only one exact numeric whitelist; never expose output text."""
     prefix = b'RESIZE_CASE_SUMMARY '
-    lines = [line for line in data.splitlines() if line.startswith(prefix)]
+    lines = [line for line in data.splitlines() if line.startswith(b'RESIZE_CASE_SUMMARY')]
     check(len(lines) == 1, 'summary_missing_or_duplicate')
-    keys = ('code', 'phase', 'expected_cols', 'expected_rows', 'observed_cols', 'observed_rows')
-    pattern = prefix + b' '.join(k.encode() + rb'=([0-9]{1,5})' for k in keys)
+    keys = ('code', 'phase', 'expected_cols', 'expected_rows', 'observed_cols', 'observed_rows',
+            'substage', 'protocol_step', 'reason', 'write_result', 'expected_prompt_sequence',
+            'prompt_status_known', 'prompt_status', 'child_exit_known', 'child_exit_code', 'resize_accepted')
+    pattern = prefix + b' '.join(k.encode() + rb'=([0-9]{1,10})' for k in keys)
     match = re.fullmatch(pattern, lines[0])
     check(match is not None, 'summary_invalid_schema')
     values = dict(zip(keys, map(int, match.groups())))
     check(0 <= values['code'] <= 8 and 0 <= values['phase'] <= 50, 'summary_invalid_bounds')
-    check(all(0 <= values[k] <= 32767 for k in keys[2:]), 'summary_invalid_bounds')
+    check(all(0 <= values[k] <= 32767 for k in keys[2:6]), 'summary_invalid_bounds')
+    bounds = {'substage': 4, 'protocol_step': 4, 'reason': 4, 'write_result': 4,
+              'expected_prompt_sequence': 0xffffffff, 'prompt_status_known': 1, 'prompt_status': 255,
+              'child_exit_known': 1, 'child_exit_code': 0xffffffff, 'resize_accepted': 1}
+    check(all(0 <= values[k] <= bound for k, bound in bounds.items()), 'summary_invalid_protocol_bounds')
+    check(values['prompt_status_known'] or values['prompt_status'] == 0, 'summary_unknown_prompt_status')
+    check(values['child_exit_known'] or values['child_exit_code'] == 0, 'summary_unknown_child_exit')
+    step, reason = values['protocol_step'], values['reason']
+    if step == 0:
+        check(all(values[k] == 0 for k in ('reason', 'write_result', 'expected_prompt_sequence',
+                                          'prompt_status_known', 'prompt_status')), 'summary_nonprotocol_detail')
+    else:
+        check(values['expected_prompt_sequence'] >= 1, 'summary_missing_prompt_sequence')
+        if step in (1, 4):
+            check(reason in (1, 3, 4) and values['write_result'] == 0, 'summary_ready_detail')
+            check(reason != 3 or values['prompt_status_known'] == 1, 'summary_status_mismatch_unknown')
+            check(step != 1 or reason != 3, 'summary_prior_ready_status_mismatch')
+        else:
+            check(reason in (2, 4) and values['prompt_status_known'] == 0 and values['prompt_status'] == 0,
+                  'summary_write_detail')
+            check(reason != 2 or values['write_result'] in (2, 3, 4), 'summary_rejected_write_result')
+
     check((exit_code == 0) == (values['code'] == 0), 'summary_exit_mismatch')
     check(values['phase'] != 0 or values['code'] == 1, 'summary_invalid_setup_phase')
     check(values['phase'] <= (1 if workload == 'idle' else 50), 'summary_invalid_phase')
@@ -104,6 +127,8 @@ def parse_summary(data, exit_code, workload):
     check((values['expected_cols'], values['expected_rows']) == expected, 'summary_expected_grid_mismatch')
     check((values['observed_cols'] == 0) == (values['observed_rows'] == 0), 'summary_partial_unknown_grid')
     if exit_code == 0:
+        check(all(values[k] == 0 for k in keys[6:-1]) and values['resize_accepted'] == 1,
+              'summary_success_protocol_state')
         check(values['phase'] == (1 if workload == 'idle' else 50), 'summary_incomplete_success')
         check((values['expected_cols'], values['expected_rows']) ==
               ((111, 35) if workload == 'idle' else (100, 30)), 'summary_expected_grid_mismatch')
