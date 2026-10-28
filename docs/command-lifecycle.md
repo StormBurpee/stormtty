@@ -39,8 +39,9 @@ UI/footer rendering, or notification delivery verification.
 The host keeps one `ParkedAttention` value per parked SessionId, outside project
 placement persistence. Successful parking baselines existing completions; a newer
 completion sets a subtle persistent footer dot and emits one “Command finished”
-notice (with an explicit status when supplied). Repeated wakes cannot replay it,
-and C-D-C bursts remain observable even when the latest phase is running. The
+notice (appending ` · exit N` only for an explicit nonzero status). Repeated wakes
+cannot replay it, and C-D-C bursts remain observable even when the latest phase
+is running. The
 footer tooltip/menu includes “command finished” while ordinary process state
 remains visible. Restoring successfully acknowledges it; failed restore and
 canceled close preserve it. Retirement removes the entry, and reparking starts a

@@ -1,8 +1,17 @@
 #pragma once
 #include "stormtty/session.hpp"
+#include <string_view>
 
 namespace stormtty {
 enum class ParkedNotice { none, command_finished, process_exited, process_failed };
+
+inline std::string parked_command_finished_notice(std::string_view workspace,
+                                                  std::optional<std::int32_t> exit_code) {
+    std::string text(workspace);
+    text += " · Command finished";
+    if (exit_code && *exit_code != 0) text += " · exit " + std::to_string(*exit_code);
+    return text;
+}
 
 // A host may have only one notice slot. Pick the strongest event in the entire
 // update before publishing it, so session iteration order cannot hide a failure.

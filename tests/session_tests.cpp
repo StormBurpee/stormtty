@@ -107,6 +107,10 @@ struct CloseSession {
     ~CloseSession() { session->request_close(); (void)session->wait_closed(5s); }
 };
 void parked_attention_policy() {
+    check(parked_command_finished_notice("build",0)=="build · Command finished","successful command notice contains filler");
+    check(parked_command_finished_notice("build",std::nullopt)=="build · Command finished","unknown command status was invented");
+    check(parked_command_finished_notice("build",7)=="build · Command finished · exit 7","nonzero command status missing");
+    check(parked_command_finished_notice("build",-1)=="build · Command finished · exit -1","signed explicit command status changed");
     for (const bool reversed : {false,true}) {
         ParkedNoticeBatch batch;
         const auto first=reversed?ParkedNotice::command_finished:ParkedNotice::process_failed;

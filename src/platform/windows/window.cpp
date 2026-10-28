@@ -1102,7 +1102,7 @@ void NativeWindow::update_sessions() {
             const std::string destination=project.id==projects_.active_id()?" Restore it from the footer to inspect output.":" Switch to this workspace and restore it from its footer to inspect output.";
             if (event==ParkedNotice::process_failed) batch_notice=project.metadata.name+" · Background terminal failed."+destination;
             else if (event==ParkedNotice::process_exited) batch_notice=project.metadata.name+" · Background terminal exited"+(info.exit_code?" ("+std::to_string(*info.exit_code)+")":"")+"."+destination;
-            else batch_notice=project.metadata.name+" · Command finished"+(info.command.last_exit_code?" ("+std::to_string(*info.command.last_exit_code)+")":"")+"."+destination;
+            else batch_notice=parked_command_finished_notice(project.metadata.name,info.command.last_exit_code);
             state_changed=true; ++chrome_generation_;
         }
     }
