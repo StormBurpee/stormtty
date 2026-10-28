@@ -141,7 +141,8 @@ struct NativeRunOptions {
     bool smoke_layout{}; // Three visible real shells + two background tabs.
     std::filesystem::path config_path; // Exact absolute startup path; writes only on explicit Save.
     std::filesystem::path capture_path; // Smoke-only actual framebuffer PNG.
-    // Explicit per-launch experimental opt-in; never persisted or selected by default.
+    // Explicit diagnostic CLI override; takes precedence over the saved backend.
+    // Empty honors Config::windows_console_backend, whose default is System.
     // Windows transport verifies the pinned runtime and actual console host.
     std::filesystem::path console_runtime_directory;
     // App-owned bundled upstream Zsh or an explicit CLI override; no global environment mutation.

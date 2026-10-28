@@ -1,11 +1,14 @@
 # ConPTY provider recommendation and qualification
 
-Research only, 2026-10-28; no binaries downloaded, installed or run. **Recommendation: bundle the official stable ConPTY package, pin it, and qualify it. Do not assume an arbitrary Windows 11 inbox ConPTY preserves Kitty/Ink behavior.**
+Updated 2026-10-28: the official stable package is now an **optional bundled preview**.
+**System remains the fresh-install and existing-config default.** Build-time
+availability is not default promotion or a full compatibility claim. See
+[the implementation and acceptance contract](../bundled-console.md).
 
 ## Candidate baseline
 
 * Official NuGet: `Microsoft.Windows.Console.ConPTY` **`1.25.260930003`**, published 2026-10-02, owner `Microsoft.Terminal`, reserved prefix, MIT license. The page lists no package dependencies and a provider OS floor of `10.0.17763.0`. This is not StormTTY's promised product floor or evidence of runtime success. Newer `1.26.260930004-preview` exists; no need to default to preview based on the inspected fixes. [Exact package](https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/1.25.260930003)
-* Matching Windows Terminal release is `v1.25.2733.0`, source commit `dc8ae365847d41f62d1ebca93815bb00959bc12f`; its notes identify unpackaged binaries as `1.25.260930003` and already include Kitty repeat/dead-key/AltGr fixes and ConPTY CPR/DA1 startup fixes. These release notes guide qualification; they are not a proof that the NuGet payload has been inspected. [Release](https://github.com/microsoft/terminal/releases/tag/v1.25.2733.0)
+* Matching Windows Terminal release is `v1.25.2733.0`, source commit `dc8ae365847d41f62d1ebca93815bb00959bc12f`; its notes identify unpackaged binaries as `1.25.260930003` and already include Kitty repeat/dead-key/AltGr fixes and ConPTY CPR/DA1 startup fixes. These release notes guide qualification; exact archive/payload hashes and notices are now recorded separately in `tools/conpty-bootstrap.lock.json`. [Release](https://github.com/microsoft/terminal/releases/tag/v1.25.2733.0)
 * Product minimum proposal: **Windows 11 25H2, build 26200, x64**, plus a separately tested current 26H2 lane. ARM64 is a distinct runtime/input/rendering lane before support is advertised. 24H2 Enterprise/LTSC could be added deliberately; do not make 24H2 Home/Pro the default new-product baseline after its October 2026 servicing end. Provider API support back to Windows 10 does not oblige a broad product matrix. [Microsoft servicing table](https://learn.microsoft.com/en-us/windows/release-health/supported-versions-windows-client)
 
 ## Packaging and licensing gate
@@ -14,7 +17,7 @@ Microsoft's intent is application developers bundle a tested pair of `conpty.dll
 
 The official packaging source declares DLL/import-library files for x86/x64/ARM64 and architecture-specific host executables, plus `inc/conpty.h`. Use the package's native targets or replicate their **verified** placement contract, not a random DLL copied from another terminal. Preserve the MIT copyright/license and audit the selected archive's included notices. [Package manifest](https://github.com/microsoft/terminal/blob/main/src/winconpty/package/winconpty.nuspec) · [Native targets](https://github.com/microsoft/terminal/blob/main/src/winconpty/package/native/Microsoft.Windows.Console.ConPTY.targets) · [License](https://github.com/microsoft/terminal/blob/main/LICENSE)
 
-Before implementation is called reproducible: fetch only the official exact-version package through the authorized dependency workflow; record NuGet content hash/signature result, archive SHA-256, each shipped binary SHA-256, architecture, file version, exports and notices. **Those binary hashes are pending, not invented here.** Lock package/source identity; verify signature/hash before extraction; reject traversal entries. Install side-by-side in the application's controlled directory, never system folders, CWD, PATH or a shared unverified cache. Resolve an absolute library path with safe DLL search flags. Update it only with an intentional application dependency update and a rerun of W/P gates.
+Before implementation is called reproducible: fetch only the official exact-version package through the authorized dependency workflow; record NuGet content hash/signature result, archive SHA-256, each shipped binary SHA-256, architecture, file version, exports and notices. The inspected archive and payload hashes are recorded in `tools/conpty-bootstrap.lock.json`; normal builds validate the pinned archive and Microsoft Authenticode on the executable pair without requiring the .NET CLI. Lock package/source identity; verify signature/hash before extraction; reject traversal entries. Install side-by-side in the application's controlled directory, never system folders, CWD, PATH or a shared unverified cache. Resolve an absolute library path with safe DLL search flags. Update it only with an intentional application dependency update and a rerun of W/P gates.
 
 ## Traps confirmed in pinned source
 
@@ -33,4 +36,11 @@ Run bounded private probe sessions during qualification (and a cached first-run 
 
 If the bundled package is missing/corrupt/wrong-architecture, **do not silently advertise full support on inbox ConPTY**. Prefer a clear repair/startup error for the full-feature path. An explicitly labeled basic compatibility mode may use inbox ConPTY only after its minimal lifecycle/text/input gates pass; disable unverified feature advertising and report limitations. A failure to transport Kitty means the graphics-by-default release criterion is unmet, not waived. Kitty-input failure may fall back to legacy keys only with a disclosed reduced capability. Never respawn a session after an uncertain creation failure until the first process/host state is checked and cleaned up.
 
-**Open evidence:** selected NuGet archive/payload inspection and hashes; Windows 25H2/26H2 runtime probes; actual Ink and graphics runs; physical IME/input/performance QA. Main-source package manifest was inspected, but pinned-release manifest fetch returned a web cache miss; do not conflate it with inspecting the archive. No security denial or permission escalation occurred.
+**Evidence boundary:** archive/payload inventory, hashes, exact source LICENSE and
+NOTICE have been inspected. Native experiment40716243943 separately isolated a
+static Ink Unicode-border defect to inbox ConPTY; this pinned pair preserved the
+border. It did **not** resolve the compact-alt resize race. New preference,
+packaging, recovery and lifecycle tests require their own exact-commit native run;
+portable tests/cross-compilation cannot establish those results. Graphics,
+physical IME/input/performance and broader OS/architecture qualification remain
+separate gates.

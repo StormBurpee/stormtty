@@ -14,7 +14,7 @@ enum class SettingsActionKind { preview, save, cancel };
 struct SettingsAction {
     SettingsActionKind kind{};
     // Owned. Preview only reversible theme/font/appearance; commit profiles/bindings
-    // after persistence. Cancel carries the original for preview rollback.
+    // and console backend after persistence. Cancel carries the original for preview rollback.
     Config config;
 };
 struct SettingsControl {
@@ -66,6 +66,9 @@ public:
                            Color disabled_text = {128,128,128,255});
     // Host-observed material status; presentation only, never a saved setting.
     void set_material_status(std::string status);
+    // Host-observed availability/override information only; never changes a draft.
+    // An unavailable saved choice remains visible, with System always selectable.
+    void set_console_backend_status(bool bundled_available, std::string status);
     void append_scene(WindowScene&, float dpi_scale = 1.0f) const;
     // Return true for every event while open, including unmatched/key-up events.
     bool key(const KeyEvent&);
@@ -97,8 +100,9 @@ private:
     Size viewport_{1024,768};
     SettingsPanelLayout layout_;
     SettingsSection section_{SettingsSection::appearance};
-    std::string focus_{"nav.appearance"}, hover_, pressed_, error_, capture_command_, material_status_;
+    std::string focus_{"nav.appearance"}, hover_, pressed_, error_, capture_command_, material_status_, console_backend_status_;
     double scroll_{}, document_height_{};
+    bool bundled_console_available_{};
     bool open_{}, saving_{}, dragging_opacity_{}, high_contrast_{}, loaded_changes_{};
     Color high_background_{0,0,0,255}, high_foreground_{255,255,255,255};
     Color high_highlight_{0,120,215,255}, high_highlight_text_{255,255,255,255};

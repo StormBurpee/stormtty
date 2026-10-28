@@ -46,6 +46,49 @@ void validate_scene(const WindowScene& scene,double width,double height,double s
 }
 int main() {return run_core_tests("settings panel",[] {
     const auto defaults=default_config(Platform::windows);
+    // Backend is a stable draft preference, not a process launch or live preview.
+    SettingsPanel backend;
+    backend.set_console_backend_status(true,"Diagnostic CLI override active; saved choice applies without the override.");
+    backend.open(defaults);
+    activate(backend,"nav.shell");
+    CHECK(item(backend,"console.system").enabled && item(backend,"console.bundled").enabled);
+    activate(backend,"console.bundled");
+    CHECK(backend.draft().windows_console_backend==WindowsConsoleBackend::bundled_preview);
+    CHECK(backend.original().windows_console_backend==WindowsConsoleBackend::system);
+    const auto draft_before_status=backend.draft();
+    backend.set_console_backend_status(true,"Diagnostic CLI override active; saved choice applies without the override.");
+    CHECK(backend.draft()==draft_before_status);
+    const auto backend_preview=backend.take_action();
+    CHECK(backend_preview && backend_preview->kind==SettingsActionKind::preview);
+    WindowScene backend_scene;backend.append_scene(backend_scene);
+    CHECK(std::any_of(backend_scene.texts.begin(),backend_scene.texts.end(),[](const auto& t){return t.text.starts_with("Diagnostic CLI override active");}));
+    backend.cancel();const auto backend_cancel=backend.take_action();
+    CHECK(backend_cancel && backend_cancel->kind==SettingsActionKind::cancel && backend_cancel->config==defaults);
+    backend.open(defaults);activate(backend,"nav.shell");activate(backend,"console.bundled");activate(backend,"save");
+    const auto backend_save=backend.take_action();CHECK(backend_save && backend_save->kind==SettingsActionKind::save);
+    CHECK(backend_save->config.windows_console_backend==WindowsConsoleBackend::bundled_preview);
+    backend.persistence_result(false,"Disk is read-only");CHECK(backend.is_open() && backend.dirty());
+    CHECK(backend.original()==defaults);activate(backend,"save");backend.take_action();backend.persistence_result(true);
+    CHECK(!backend.is_open());
+    // Unavailable saved choices are retained; System remains keyboard-reachable recovery.
+    backend.set_console_backend_status(false,"Bundled runtime missing; rebuild or select System.");
+    backend.open(backend_save->config);activate(backend,"nav.shell");
+    CHECK(backend.draft().windows_console_backend==WindowsConsoleBackend::bundled_preview);
+    CHECK(!item(backend,"console.bundled").enabled && item(backend,"console.system").enabled);
+    activate(backend,"console.system");CHECK(backend.draft().windows_console_backend==WindowsConsoleBackend::system);
+    backend.cancel();backend.take_action();
+    SettingsPanel mac_backend(Platform::macos);auto mac_config=default_config(Platform::macos);
+    mac_config.windows_console_backend=WindowsConsoleBackend::bundled_preview;
+    mac_backend.open(mac_config);activate(mac_backend,"nav.shell");
+    CHECK(std::none_of(mac_backend.layout().controls.begin(),mac_backend.layout().controls.end(),[](const auto& c){return c.id.starts_with("console.");}));
+    CHECK(mac_backend.draft().windows_console_backend==WindowsConsoleBackend::bundled_preview);
+    for (const auto size:std::vector<Size>{{1024,768},{480,480},{320,260}}) {
+        SettingsPanel compact;compact.set_console_backend_status(true,"Available");compact.resize(size);compact.open(defaults);
+        activate(compact,"nav.shell");focus(compact,"console.system");CHECK(compact.key({{"RIGHT"}}));
+        CHECK(compact.focused_control()=="console.bundled" && compact.draft().windows_console_backend==WindowsConsoleBackend::bundled_preview);
+        CHECK(compact.key({{"LEFT"}}));CHECK(compact.draft().windows_console_backend==WindowsConsoleBackend::system);
+        WindowScene scene;compact.append_scene(scene);validate_scene(scene,size.width,size.height,1.0);
+    }
     SettingsPanel panel;
     CHECK(!panel.is_open());CHECK(!panel.key({{"TAB"}}));CHECK(!panel.pointer_down({0,0}));
     panel.set_material_status("Opaque: Windows Transparency effects are off.");

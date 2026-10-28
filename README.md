@@ -65,6 +65,16 @@ frame capture is not a test of physical input, desktop composition or
 accessibility. Windows ARM64 and universal macOS packaging are not implied by an
 x64 or single-architecture build.
 
+### Windows console backend preview
+
+Windows AMD64 app builds privately bundle pinned Microsoft ConPTY
+`1.25.260930003`; **System is still the default**. In Settings → Shell, choose
+**Bundled (preview)** and Save to use it for new tabs and panes. Existing sessions
+are never restarted. Switch back to System the same way. No launch flags,
+system installation, global PATH changes or launch-time downloads are required.
+The compact-alt resize regression remains unresolved; this is not a full Ink or
+graphics compatibility claim. See [bundling, recovery and verification](docs/bundled-console.md).
+
 ## Build from source
 
 Run these commands from the repository root. You need **Python 3.10+**, **Git**,

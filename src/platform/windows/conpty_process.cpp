@@ -162,7 +162,7 @@ void verify_pinned_file(const std::wstring& path, const char* expected, Handle& 
     // Deny modification/deletion until the module and its host have closed.
     lock.reset(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (lock.value == INVALID_HANDLE_VALUE) throw win_error("Open pinned ConPTY file");
+    if (lock.value == INVALID_HANDLE_VALUE) throw std::runtime_error("Bundled console runtime is missing or inaccessible. Restore runtimes/conpty beside StormTTY, or select System in Settings. No fallback was launched.");
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(lock.value, &info)) throw win_error("Inspect pinned ConPTY file");
     if (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
@@ -189,7 +189,7 @@ void verify_pinned_file(const std::wstring& path, const char* expected, Handle& 
     constexpr char hex[] = "0123456789abcdef";
     std::string actual;
     for (auto c : digest) { actual += hex[c >> 4]; actual += hex[c & 15]; }
-    if (actual != expected) throw std::runtime_error("Pinned ConPTY SHA256 mismatch");
+    if (actual != expected) throw std::runtime_error("Bundled console runtime SHA256 mismatch. Restore the pinned bundle, or select System in Settings. No fallback was launched.");
 }
 struct Provider {
     using Create = HRESULT (WINAPI*)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
@@ -210,6 +210,10 @@ struct Provider {
 #if !defined(_M_X64) && !defined(__x86_64__)
             throw std::runtime_error("Experimental pinned ConPTY package is x64-only");
 #endif
+            SYSTEM_INFO native{};
+            GetNativeSystemInfo(&native);
+            if (native.wProcessorArchitecture != PROCESSOR_ARCHITECTURE_AMD64)
+                throw std::runtime_error("Bundled ConPTY preview requires native AMD64 Windows; ARM64/emulation is not qualified. Select System in Settings.");
             auto directory = widen(options.provider_directory);
             if (!absolute_path(directory) || directory.starts_with(L"\\\\"))
                 throw std::invalid_argument("Packaged ConPTY requires an absolute local drive directory");

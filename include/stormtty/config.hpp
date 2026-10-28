@@ -17,6 +17,8 @@ struct Theme {
     std::string accent{"#8C9EFF"};
     auto operator<=>(const Theme&) const = default;
 };
+// Windows-only transport choice. Stable identity, never an absolute runtime path.
+enum class WindowsConsoleBackend { system, bundled_preview };
 enum class BackdropPreference { automatic, none, mica, acrylic };
 enum class ReducedMotionPreference { system, enabled, disabled };
 struct AppearanceConfig {
@@ -50,6 +52,7 @@ struct Config {
     AppearanceConfig appearance;
     FontConfig font;
     std::size_t scrollback_lines{10000};
+    WindowsConsoleBackend windows_console_backend{WindowsConsoleBackend::system};
     std::string default_profile{"default"};
     bool allow_terminal_shortcut_override{};
     std::vector<Profile> profiles;

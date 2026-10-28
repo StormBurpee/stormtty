@@ -77,6 +77,27 @@ jobs:
       - name: Run real native tests
         id: native_tests
         run: ctest --test-dir build --output-on-failure --output-junit test-results.xml --parallel 1
+      - name: Verify bundled console cached repair and portable install
+        if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
+        shell: python
+        run: |
+          import pathlib,subprocess,sys,importlib.util,json
+          subprocess.run(['cmake','-S','.','-B','build','-DSTORMTTY_CONPTY_OFFLINE=ON'],check=True,timeout=120)
+          subprocess.run(['cmake','--build','build','--target','stormtty','--parallel','2'],check=True,timeout=180)
+          runtime=pathlib.Path('build/runtimes/conpty/1.25.260930003/x64')
+          # Delete only a generated private payload; the owned receipt enables cached repair.
+          (runtime/'OpenConsole.exe').unlink()
+          subprocess.run(['cmake','--build','build','--target','stormtty','--parallel','2'],check=True,timeout=180)
+          subprocess.run([sys.executable,'tools/prepare-bundled-conpty.py','--destination',str(runtime),'--cache','.cache/conpty','--verify-only'],check=True,timeout=90)
+          install=pathlib.Path('build/portable console é').resolve()
+          subprocess.run(['cmake','--install','build','--prefix',str(install)],check=True,timeout=240)
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
+          capture=pathlib.Path('build/artifacts/native-console-installed-settings.png').resolve()
+          result=runner.run_owned([str(install/'stormtty.exe'),'--smoke-settings','--capture',str(capture)],timeout=90,output_dir=capture.parent)
+          print('INSTALLED_CONSOLE_PROCESS_RESULT='+json.dumps(result.metadata(),sort_keys=True),flush=True)
+          print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+          raise SystemExit(result.exit_code)
       - name: Compile isolated additional-blur experiment
         id: blur_probe_build
         if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
@@ -282,7 +303,7 @@ jobs:
         shell: python
         run: |
           import pathlib,base64,hashlib
-          for name in ('native-window.png', 'native-layout.png', 'native-modal.png', 'native-projects.png', 'native-settings.png'):
+          for name in ('native-window.png', 'native-layout.png', 'native-modal.png', 'native-projects.png', 'native-settings.png', 'native-settings-console.png', 'native-console-installed-settings-console.png'):
             p=pathlib.Path('build/artifacts')/name
             print('STORMTTY_NATIVE_FRAME_NAME='+name)
             if p.exists():

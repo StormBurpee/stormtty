@@ -19,6 +19,7 @@
 #include <shobjidl.h>
 #include "stormtty/native_window.hpp"
 #include "stormtty/windows_managed_shell.hpp"
+#include "stormtty/windows_console_runtime.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/session.hpp"
 #include "stormtty/settings_panel.hpp"
@@ -371,9 +372,10 @@ private:
     ContextMenu context_menu_;
     std::map<std::string,std::function<void()>> menu_actions_;
     std::set<SessionId> smoke_commands_sent_;
+    std::set<SessionId> smoke_bundled_sessions_; // Actual provider at creation, never mutable Settings.
     std::set<SessionId> smoke_managed_sessions_; // Actual launch profile, not the mutable Settings default.
     std::map<SessionId,std::shared_ptr<Session>> smoke_sessions_; // Includes retired/disposable actors for provider assertions.
-    bool smoke_marker_presented_{}, smoke_finished_{};
+    bool smoke_marker_presented_{}, smoke_finished_{}, smoke_console_capture_pending_{};
     int exit_code_{};
     unsigned smoke_modal_stage_{}, smoke_settings_stage_{};
     ULONGLONG smoke_started_at_{};
@@ -853,13 +855,9 @@ Session* NativeWindow::session_for(PaneId pane) const {
 Session* NativeWindow::active_session() const { return session_for(workspace().active_pane()); }
 SessionId NativeWindow::new_session() {
     ProcessOptions process;
-    if (!options_.console_runtime_directory.empty()) {
-        process.provider=ProcessProvider::windows_packaged_experimental;
-        process.provider_directory=narrow(options_.console_runtime_directory.wstring());
-    }
-    // Empty opt-in preserves ProcessOptions' platform-default/system provider.
-    // This single factory covers tabs, splits, new projects and smoke actors;
-    // Settings never persists or changes the per-launch provider selection.
+    select_windows_console_provider(process,config_.windows_console_backend,options_.console_runtime_directory);
+    // One factory covers tabs, splits and projects. Each Process owns its chosen
+    // provider for life; only a successfully saved choice affects new sessions.
     if (has_managed_zsh_selection(config_) && !managed_shell_profile_)
         throw std::runtime_error("Managed Zsh is selected but no app-owned runtime is available. Build with STORMTTY_BUNDLE_ZSH=ON or use --shell-runtime; no fallback was launched.");
     const Profile* selected=using_managed_shell()?&*managed_shell_profile_:nullptr;
@@ -896,8 +894,9 @@ SessionId NativeWindow::new_session() {
     terminal.default_background=color_hex(config_.theme.background,{23,25,29,255});
     const SessionId id{next_session_++};
     std::weak_ptr<WakeState> weak = wake_;
+    const bool bundled=process.provider==ProcessProvider::windows_packaged_experimental;
     auto session = Session::start(std::move(process), terminal, [weak] { if (auto state = weak.lock()) state->wake(); }, SessionRetentionPolicy::retain_document);
-    if (options_.smoke_test) { smoke_sessions_.emplace(id,session); if (using_managed_shell()) smoke_managed_sessions_.insert(id); }
+    if (options_.smoke_test) { smoke_sessions_.emplace(id,session); if (bundled) smoke_bundled_sessions_.insert(id); if (using_managed_shell()) smoke_managed_sessions_.insert(id); }
     sessions_.emplace(id, std::move(session));
     return id;
 }
@@ -1328,6 +1327,14 @@ void NativeWindow::settings_completed() {
         const auto& editor=settings_snapshot_->existed?*completion->loaded.config:config_;
         settings_panel_.open(config_,editor,completion->shells.profiles);
         if (!settings_binding_.empty()) settings_panel_.open_for_binding(config_,settings_binding_,completion->shells.profiles);
+        settings_panel_.set_console_backend_status(bundled_console_runtime_present(),
+            !options_.console_runtime_directory.empty()?
+                "--console-runtime overrides this launch. Saved choice applies without that flag.":
+            !native_amd64_console_supported()?
+                "Bundled preview supports native AMD64 Windows only (not ARM64/emulation).":
+            bundled_console_runtime_present()?
+                "Pinned Microsoft ConPTY 1.25.260930003. Compact resize remains unqualified.":
+                "Bundle unavailable. Rebuild/copy runtimes/conpty beside StormTTY, or select System.");
         settings_panel_.resize({width_,height_}); context_menu_.resize({width_,height_}); settings_binding_.clear(); notice_.clear();
         if (tooltip_) SendMessageW(tooltip_,TTM_POP,0,0);
         SetFocus(hwnd_); settings_input_changed(); caret_schedule(); changed();
@@ -1342,9 +1349,10 @@ void NativeWindow::settings_completed() {
             try { preview_settings(completion->candidate); }
             catch (const std::exception& error) { apply_error=error.what(); }
             config_=std::move(completion->candidate);
-            notice_=apply_error.empty()?(managed_shell_profile_ && options_.shell_runtime_override?
+            notice_=apply_error.empty()?(!options_.console_runtime_directory.empty()?
+                "Settings saved. --console-runtime overrides this launch; saved backend applies without that flag.":managed_shell_profile_ && options_.shell_runtime_override?
                 "Settings saved. --shell-runtime keeps managed Zsh for this launch; the saved shell applies without that override.":
-                "Settings saved. Your default shell applies to new tabs and panes."):
+                "Settings saved. Shell and console backend apply to new tabs and panes; existing sessions are unchanged."):
                 "Settings saved, but presentation could not update. Restart to apply: "+apply_error;
         } else settings_panel_.persistence_result(false,completion->saved.error);
         caret_schedule(true); changed(true);
@@ -2390,6 +2398,7 @@ void NativeWindow::smoke_progress(bool presented) {
         std::fprintf(stderr,"Native hierarchy smoke: caption/tab/footer routing verified; synthetic hit tests are not desktop Snap visual verification.\n");
     }
     if (options_.smoke_settings && smoke_settings_stage_<8) {
+        const bool switch_console=options_.console_runtime_directory.empty() && bundled_console_runtime_present();
         auto* active=active_session(); const auto info=active?active->info():SessionInfo{};
         const auto activate_setting=[&](std::string_view control) {
             for (unsigned i=0;i<256 && settings_panel_.focused_control()!=control;++i) settings_panel_.key({{"TAB"}});
@@ -2420,11 +2429,32 @@ void NativeWindow::smoke_progress(bool presented) {
             if (!activate_setting("appearance.theme.daylight") || config_.theme!=*find_builtin_theme("daylight")) {
                 smoke_finish("Named theme preview did not update the live host palette."); return;
             }
+            if (switch_console) {
+                if (!activate_setting("nav.shell") || !activate_setting("console.bundled") ||
+                    settings_panel_.draft().windows_console_backend!=WindowsConsoleBackend::bundled_preview ||
+                    config_.windows_console_backend!=WindowsConsoleBackend::system || !smoke_bundled_sessions_.empty()) {
+                    smoke_finish("Console preview changed a live provider before Save."); return;
+                }
+                if (!activate_setting("nav.appearance")) { smoke_finish("Could not return from console settings."); return; }
+            }
             smoke_settings_stage(2); return;
         }
         if (smoke_settings_stage_==2) {
             if (!presented || !actor_has_theme(*find_builtin_theme("daylight"))) return;
-            try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
+            if (!smoke_console_capture_pending_) {
+                try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
+                if (switch_console && !options_.capture_path.empty()) {
+                    if (!activate_setting("nav.shell")) { smoke_finish("Console Settings capture could not open the owned section."); return; }
+                    smoke_console_capture_pending_=true;
+                    return; // Capture only after this new scene has presented.
+                }
+            } else {
+                const auto original_path=options_.capture_path;
+                options_.capture_path=original_path.parent_path()/(original_path.stem().wstring()+L"-console"+original_path.extension().wstring());
+                try { capture_frame(); }
+                catch (const std::exception& error) { options_.capture_path=original_path; smoke_finish(error.what()); return; }
+                options_.capture_path=original_path;
+            }
             MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam=VK_ESCAPE; key_message(key);
             if (settings_panel_.is_open() || config_!=smoke_settings_original_ || !focused_session_) { smoke_finish("Settings Escape did not roll back preview and restore terminal focus."); return; }
             system_menu({12,48},true);
@@ -2451,6 +2481,10 @@ void NativeWindow::smoke_progress(bool presented) {
                     !has_managed_zsh_selection(settings_panel_.draft()) || using_managed_shell()) {
                     smoke_finish("Configured Settings did not offer managed Zsh while preserving the old shell before Save."); return;
                 }
+            }
+            if (switch_console && (!activate_setting("nav.shell") || !activate_setting("console.bundled") ||
+                config_.windows_console_backend!=WindowsConsoleBackend::system || !smoke_bundled_sessions_.empty())) {
+                smoke_finish("Console selection did not remain draft-only before Save."); return;
             }
             if (!activate_setting("nav.appearance") || !activate_setting("appearance.theme.instrument")) {
                 smoke_finish("Named theme could not be selected before Save."); return;
@@ -2484,13 +2518,24 @@ void NativeWindow::smoke_progress(bool presented) {
                     smoke_managed_sessions_.contains(sessions_.begin()->first)) {
                     smoke_finish("Managed shell reference did not persist or original Cmd actor was replaced."); return;
                 }
+            }
+            if (switch_console) {
+                const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
+                if (!saved || saved.config->windows_console_backend!=WindowsConsoleBackend::bundled_preview ||
+                    config_.windows_console_backend!=WindowsConsoleBackend::bundled_preview || !smoke_bundled_sessions_.empty()) {
+                    smoke_finish("Bundled backend did not persist, or replaced an existing System actor."); return;
+                }
+            }
+            if ((managed_shell_profile_ && !options_.shell_runtime_override) || switch_console) {
                 new_tab();
                 const auto* pane=workspace().pane(workspace().active_pane());
-                if (sessions_.size()!=2 || !pane || !smoke_managed_sessions_.contains(pane->session) ||
+                if (sessions_.size()!=2 || !pane ||
+                    (managed_shell_profile_ && !options_.shell_runtime_override && !smoke_managed_sessions_.contains(pane->session)) ||
+                    (switch_console && !smoke_bundled_sessions_.contains(pane->session)) ||
                     std::none_of(sessions_.begin(),sessions_.end(),[&](const auto& entry){return entry.second==smoke_settings_actor_;})) {
-                    smoke_finish("Saved managed shell did not launch a new Zsh tab while retaining the original Cmd actor."); return;
+                    smoke_finish("Saved shell/backend did not launch a new actor while retaining the original actor."); return;
                 }
-                std::fprintf(stderr,"Bundled shell Settings smoke: legacy Cmd preserved; managed reference saved/reparsed; new real Zsh actor selected without CLI or restarting old actor.\n");
+                std::fprintf(stderr,"Settings smoke: saved shell/backend selected for new real actor without CLI; original System actor retained.\n");
             }
             open_settings(); smoke_settings_stage(5); return;
         }
@@ -2499,7 +2544,11 @@ void NativeWindow::smoke_progress(bool presented) {
             if (!settings_panel_.is_open() || !settings_baseline_matches(settings_panel_.draft(),config_,Platform::windows)) {
                 smoke_finish("Settings Save-to-reopen falsely rejected its canonical saved baseline."); return;
             }
-            if (!activate_setting("font.increase")) {smoke_finish("Reopened Settings could not edit font size.");return;}
+            if (switch_console && (!activate_setting("nav.shell") || !activate_setting("console.system") ||
+                config_.windows_console_backend!=WindowsConsoleBackend::bundled_preview)) {
+                smoke_finish("System recovery choice changed provider before Save."); return;
+            }
+            if (!activate_setting("nav.appearance") || !activate_setting("font.increase")) {smoke_finish("Reopened Settings could not edit font size.");return;}
             settings_panel_.key({{"ENTER",CommandModifier::control}});settings_input_changed();
             if (!settings_panel_.saving() || !settings_job_) {smoke_finish("Second Save did not start.");return;}
             smoke_settings_stage(6);return;
@@ -2507,6 +2556,18 @@ void NativeWindow::smoke_progress(bool presented) {
         if (smoke_settings_stage_==6) {
             if (settings_job_) return;
             if (settings_panel_.is_open()) {smoke_finish("Second Save failed.");return;}
+            if (switch_console) {
+                const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
+                if (!saved || saved.config->windows_console_backend!=WindowsConsoleBackend::system ||
+                    config_.windows_console_backend!=WindowsConsoleBackend::system || smoke_bundled_sessions_.size()!=1 || sessions_.size()!=2) {
+                    smoke_finish("System recovery did not persist or replaced an existing bundled actor."); return;
+                }
+                new_tab();
+                const auto* pane=workspace().pane(workspace().active_pane());
+                if (!pane || sessions_.size()!=3 || smoke_bundled_sessions_.contains(pane->session)) {
+                    smoke_finish("Saved System choice did not create a new System actor."); return;
+                }
+            }
             open_settings();smoke_settings_stage(7);return;
         }
         if (smoke_settings_stage_==7) {
@@ -2577,7 +2638,7 @@ void NativeWindow::smoke_progress(bool presented) {
             // started; its provider identity is asserted even after retirement.
             if (!smoke_disposable_ || !smoke_disposable_->info().bytes_received) return;
             const auto diagnostic=smoke_disposable_->diagnostics();
-            if (!options_.console_runtime_directory.empty() && !diagnostic.bundled_provider) return;
+            if ((!options_.console_runtime_directory.empty() || config_.windows_console_backend==WindowsConsoleBackend::bundled_preview) && !diagnostic.bundled_provider) return;
             try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
             modal_focus_.select(ModalDecision::confirm); answer_modal(modal_focus_.activate());
             if (modal_ || workspace().state().tabs.size()!=1 || sessions_.size()!=1) { smoke_finish("Explicit modal close did not retire only its background terminal."); return; }
@@ -2694,8 +2755,8 @@ void NativeWindow::smoke_progress(bool presented) {
 void NativeWindow::smoke_finish(std::string_view error) {
     if (!options_.smoke_test || smoke_finished_) return;
     if (error.empty()) {
-        const bool packaged_requested=!options_.console_runtime_directory.empty();
         for (const auto& [id,session]:smoke_sessions_) {
+            const bool packaged_requested=smoke_bundled_sessions_.contains(id);
             const auto actual=session->diagnostics();
             const bool identity_matches=packaged_requested ?
                 actual.bundled_provider && actual.provider.find("1.25.260930003")!=std::string::npos :

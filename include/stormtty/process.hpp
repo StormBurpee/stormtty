@@ -40,8 +40,9 @@ struct ProcessOptions {
     ProcessGridSize grid;
     std::size_t input_capacity_bytes{1024 * 1024};
     ProcessProvider provider{ProcessProvider::platform_default};
-    // Explicit isolated qualification only; never selected by default. Requires
-    // the pinned, signature-verified official x64 package in an absolute directory.
+    // Explicit bundled preview or diagnostic override; never selected by default.
+    // Requires the pinned, signature-verified official package in an absolute
+    // directory on native AMD64 Windows (not x64 emulation on ARM64).
     std::string provider_directory;
 };
 
