@@ -29,3 +29,14 @@
    if (p <= path)
      return 0;
    if ((p = strstr (p, ".tar")) != NULL)
+--- a/winsup/utils/mingw/strace.cc
++++ b/winsup/utils/mingw/strace.cc
+@@ -228,7 +228,7 @@
+ {
+   for (; *argv; argv++)
+     {
+-      char *p = NULL;
++      const char *p = NULL;
+       const char *a = *argv;
+ 
+       int len = strlen (a);

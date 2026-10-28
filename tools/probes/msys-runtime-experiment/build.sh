@@ -48,8 +48,8 @@ cp PKGBUILD "$output/provenance/PKGBUILD"
 # Pin build/output locations rather than inheriting a runner's makepkg overrides.
 config="$output/provenance/makepkg.conf"
 cp /etc/makepkg.conf "$config"
-{ printf '\nBUILDDIR=\nPKGDEST=%q\nSRCDEST=%q\nMAKEFLAGS=-j2\n' \
-    "$output/packages" "$output/msys2-runtime"; } >> "$config"
+{ printf '\nBUILDDIR=\nPKGDEST=%q\nSRCDEST=%q\nMAKEFLAGS=%q\n' \
+    "$output/packages" "$output/msys2-runtime" '-j2 -k'; } >> "$config"
 printf 'export CC=%q\n' "$CC" >> "$config"
 printf 'export CXX=%q\n' "$CXX" >> "$config"
 # --holdver uses the verified archive's bundled Git source, not a remote update.
@@ -62,10 +62,13 @@ cp winsup/cygwin/fhandler/console.cc "$output/provenance/console-before.cc"
 # Common utility-only compatibility, NOT the experimental runtime behavior patch.
 [[ $(git hash-object winsup/utils/mingw/cygcheck.cc) == 22c7d181aede363995405698ec11673fa5b15ac8 ]]
 [[ $(git hash-object winsup/utils/mingw/dump_setup.cc) == 050679a0d32758b52c1b73f4e3c9a143e2a72264 ]]
+[[ $(git hash-object winsup/utils/mingw/strace.cc) == a6b2e5d5488c1726ec2bb713a30eac409f6ee938 ]]
+cp winsup/utils/mingw/strace.cc "$output/provenance/strace-before.cc"
 cp winsup/utils/mingw/cygcheck.cc "$output/provenance/cygcheck-before.cc"
 cp winsup/utils/mingw/dump_setup.cc "$output/provenance/dump_setup-before.cc"
 git apply --check "$here/0000-utils-const-compat.patch"
 git apply "$here/0000-utils-const-compat.patch"
+cp winsup/utils/mingw/strace.cc "$output/provenance/strace-after.cc"
 cp winsup/utils/mingw/cygcheck.cc "$output/provenance/cygcheck-after.cc"
 cp winsup/utils/mingw/dump_setup.cc "$output/provenance/dump_setup-after.cc"
 if [[ $variant == patched ]]; then

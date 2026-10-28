@@ -218,7 +218,7 @@ Run40720429559 passed native signature/trust and relocated GCC15 smoke gates,
 and compiled/linked `new-msys-2.0.dll`, but the full control package build then
 failed in MinGW `cygcheck` utilities: updated MinGW headers return const pointers
 for string searches on const inputs. Original `.BUILDINFO` used headers14.r147;
-the job installed14.r501. The three affected locals are read-only queries.
+the job installed14.r501. The four affected locals are read-only queries.
 `0000-utils-const-compat.patch` adds `const` to those locals only, with no casts,
 permissive flags, warning suppression, skipped targets or changed tests.
 
@@ -229,3 +229,21 @@ must match between variants. It does not modify runtime DLL source. The sole
 runtime behavior difference remains `0001-retire-resize-before-signal.patch`.
 The original archive/recipe/hash checks are unchanged. A linked DLL alone is
 not a completed package or runtime qualification result.
+
+Run40724747130 compiled the first three corrected sites, then exposed the same
+const mismatch at `strace.cc:235`: its `p` is declared separately at line231 and
+assigned a search result later. The common patch now also makes that read-only
+cursor const. Review covered the entire `make_command_line` cursor loop: it only
+advances/reads the input; writes go to the separate line buffer. Audited remaining
+MinGW string-search callsites including later assignments and path-testsuite;
+other strace search targets are mutable buffers or const-compatible receivers.
+No additional speculative changes were made.
+
+Both builds also use common `MAKEFLAGS=-j2 -k` diagnostics: collect independent
+compile failures in a single build instead of stopping at the first utility.
+GNU make's nonzero failure status remains fatal to makepkg/build.sh; no install,
+stage or comparison is attempted on build failure. This is not warning suppression
+or an ignore-errors setting. The audit included60 narrow/memory search callsites
+across all MinGW utility source, including later assignments; no wide-search
+calls were present. Successful compilation of the prior corrected files is
+native evidence; review of remaining sites is not a replacement for compiling.
