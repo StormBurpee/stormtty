@@ -3,6 +3,41 @@ project(StormTTY VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+if(APPLE)
+    # The host uses AppKit unified toolbars and the native Metal/CoreText stack.
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum supported macOS" FORCE)
+    elseif(CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "11.0")
+        message(FATAL_ERROR "The native macOS host requires macOS 11 or newer")
+    endif()
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    set(CMAKE_OBJCXX_EXTENSIONS OFF)
+    # Apple libc++ in Xcode 16.4 lacks the required standard cancellation API.
+    # Use a supported matching compiler/header/runtime set (LLVM libc++ 20+),
+    # not private experimental feature macros or a replacement cancellation ABI.
+    include(CheckCXXSourceCompiles)
+    check_cxx_source_compiles("#include <stop_token>
+        #include <thread>
+        #include <condition_variable>
+        #include <mutex>
+        int main() {
+            std::stop_source source;
+            std::condition_variable_any cv;
+            std::mutex mutex;
+            std::jthread worker([&](std::stop_token token) {
+                std::unique_lock lock(mutex);
+                cv.wait(lock, token, [] { return false; });
+            });
+            worker.request_stop();
+            source.request_stop();
+            return source.get_token().stop_requested() ? 0 : 1;
+        }" STORMTTY_HAS_STANDARD_CANCELLATION)
+    if(NOT STORMTTY_HAS_STANDARD_CANCELLATION)
+        message(FATAL_ERROR "macOS needs a C++20 library with stable stop_token/jthread and cancellable condition_variable_any. Use LLVM/libc++ 20+ with matching headers/runtime for both CXX and OBJCXX; see src/platform/macos/README.md. Do not enable experimental libc++ macros.")
+    endif()
+endif()
 option(STORMTTY_BUILD_APP "Build the native application shell" OFF)
 include(CTest)
 find_package(Threads REQUIRED)
@@ -76,6 +111,28 @@ if(WIN32)
         stormtty_test(renderer_smoke tests/renderer_smoke.cpp stormtty_renderer)
         stormtty_test(renderer_png tests/renderer_png.cpp stormtty_renderer)
     endif()
+elseif(APPLE)
+    foreach(framework AppKit CoreText CoreGraphics Metal QuartzCore ImageIO)
+        find_library(STORMTTY_${framework}_FRAMEWORK NAMES ${framework} REQUIRED)
+        list(APPEND STORMTTY_MACOS_FRAMEWORKS "${STORMTTY_${framework}_FRAMEWORK}")
+    endforeach()
+    add_library(stormtty_renderer src/platform/macos/renderer.mm src/platform/macos/png_decoder.mm)
+    target_include_directories(stormtty_renderer PUBLIC include)
+    target_link_libraries(stormtty_renderer PUBLIC stormtty_terminal PRIVATE ${STORMTTY_MACOS_FRAMEWORKS})
+    target_compile_options(stormtty_renderer PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+    stormtty_warnings(stormtty_renderer)
+    if(BUILD_TESTING)
+        stormtty_test(macos_toolchain_probe tools/macos-toolchain-probe.cpp Threads::Threads)
+        target_compile_definitions(macos_toolchain_probe PRIVATE STORMTTY_EXPECTED_LLVM_ROOT="${STORMTTY_LLVM_ROOT}")
+        set_tests_properties(macos_toolchain_probe PROPERTIES TIMEOUT 10 LABELS "macos;toolchain")
+        stormtty_test(macos_input_tests tests/macos_input_tests.cpp stormtty_workspace)
+        stormtty_test(macos_png_tests tests/macos_png_tests.mm stormtty_renderer)
+        stormtty_test(macos_renderer_tests tests/macos_renderer_tests.mm stormtty_renderer)
+        foreach(test macos_png_tests macos_renderer_tests)
+            target_compile_options(${test} PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+        endforeach()
+        set_tests_properties(macos_png_tests macos_renderer_tests PROPERTIES LABELS "macos;native")
+    endif()
 endif()
 if(STORMTTY_BUILD_APP)
     if(WIN32)
@@ -92,7 +149,34 @@ if(STORMTTY_BUILD_APP)
             add_test(NAME native_window_smoke COMMAND stormtty --smoke --capture "${CMAKE_BINARY_DIR}/artifacts/native-window.png")
             set_tests_properties(native_window_smoke PROPERTIES TIMEOUT 60)
         endif()
+    elseif(APPLE)
+        add_executable(stormtty MACOSX_BUNDLE src/app/macos_main.mm src/platform/macos/window.mm)
+        target_link_libraries(stormtty PRIVATE stormtty_workspace stormtty_session stormtty_renderer ${STORMTTY_MACOS_FRAMEWORKS})
+        target_compile_options(stormtty PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+        set_target_properties(stormtty PROPERTIES
+            MACOSX_BUNDLE_BUNDLE_NAME "StormTTY"
+            MACOSX_BUNDLE_GUI_IDENTIFIER "app.stormtty.StormTTY"
+            MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+            MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
+        stormtty_warnings(stormtty)
+        if(BUILD_TESTING)
+            file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts")
+            add_test(NAME native_macos_window_smoke COMMAND stormtty --smoke --capture "${CMAKE_BINARY_DIR}/artifacts/native-macos.png")
+            set_tests_properties(native_macos_window_smoke PROPERTIES TIMEOUT 60 LABELS "macos;native;gui")
+        endif()
     else()
-        message(FATAL_ERROR "The macOS native host is a separate milestone; portable core/PTY tests are available now")
+        message(FATAL_ERROR "The native application targets Windows and macOS; Linux supports portable core/PTY tests")
     endif()
+endif()
+
+# Native renderer tests need the same private font assets even with APP=OFF.
+if(WIN32)
+    foreach(font_target stormtty renderer_smoke)
+        if(TARGET ${font_target})
+            add_custom_command(TARGET ${font_target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:${font_target}>/assets/fonts"
+                VERBATIM)
+        endif()
+    endforeach()
 endif()

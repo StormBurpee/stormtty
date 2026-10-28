@@ -28,6 +28,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tools/ci-msvc-env.ps1
+      - name: Install macOS C++20 toolchain
+        if: runner.os == 'macOS'
+        run: brew install llvm@20
       - name: Bootstrap pinned terminal engine
         run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
       - name: Check bootstrap boundary tests
@@ -36,8 +39,11 @@ jobs:
         if: runner.os == 'Windows'
         run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON
       - name: Configure portable core and native POSIX transport
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=OFF
+      - name: Configure native macOS application
+        if: runner.os == 'macOS'
+        run: cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/MacOSLLVM.cmake -DSTORMTTY_LLVM_ROOT="$(brew --prefix llvm@20)" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON
       - name: Build
         run: cmake --build build --parallel 2
       - name: Run real native tests

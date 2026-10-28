@@ -80,6 +80,77 @@ std::wstring utf16(std::string_view text) {
     MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), count);
     return result;
 }
+// Resolve only beside this executable, never relative to the terminal's CWD,
+// PATH, a user-controlled shell title, or the system font installation directory.
+std::wstring bundled_font_directory() {
+    constexpr std::size_t maximum_path = 32768;
+    std::wstring path(256,L'\0');
+    for (;;) {
+        const auto length=GetModuleFileNameW(nullptr,path.data(),static_cast<DWORD>(path.size()));
+        if(!length) return {};
+        if(length<path.size()) {path.resize(length);break;}
+        if(path.size()==maximum_path) return {};
+        path.resize(std::min(maximum_path,path.size()*2));
+    }
+    const auto slash=path.find_last_of(L"\\/");
+    if(slash==std::wstring::npos) return {};
+    path.resize(slash+1);
+    path+=L"assets\\fonts\\";
+    if(path.size()+64>=maximum_path) return {};
+    // Extended absolute paths avoid dependence on a process manifest's long-path
+    // setting. Keep existing extended paths and short paths unchanged.
+    if(path.size()+64>=MAX_PATH && path.rfind(L"\\\\?\\",0)!=0) {
+        if(path.rfind(L"\\\\",0)==0) path=L"\\\\?\\UNC\\"+path.substr(2);
+        else path=L"\\\\?\\"+path;
+    }
+    return path;
+}
+Com<IDWriteFontCollection> load_bundled_fonts(IDWriteFactory* factory) noexcept {
+    try {
+        // Factory5 is runtime-probed. AddFontFile imports all variable-font
+        // instances, including real weights, rather than just a default face.
+        Com<IDWriteFactory5> factory5;
+        if(FAILED(factory->QueryInterface(__uuidof(IDWriteFactory5),reinterpret_cast<void**>(factory5.put())))) return {};
+        const auto directory=bundled_font_directory();
+        if(directory.empty()) return {};
+        Com<IDWriteFontSetBuilder1> builder;
+        if(FAILED(factory5->CreateFontSetBuilder(builder.put()))) return {};
+        constexpr std::array<const wchar_t*,2> filenames{L"CascadiaMono.ttf",L"CascadiaMonoItalic.ttf"};
+        for(const auto* filename:filenames) {
+            const auto path=directory+filename;
+            WIN32_FILE_ATTRIBUTE_DATA attributes{};
+            if(!GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&attributes) ||
+               (attributes.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) || attributes.nFileSizeHigh ||
+               !attributes.nFileSizeLow || attributes.nFileSizeLow>8u*1024u*1024u) return {};
+            Com<IDWriteFontFile> file;
+            if(FAILED(factory->CreateFontFileReference(path.c_str(),&attributes.ftLastWriteTime,file.put()))) return {};
+            BOOL supported{};DWRITE_FONT_FILE_TYPE file_type{};DWRITE_FONT_FACE_TYPE face_type{};UINT32 faces{};
+            if(FAILED(file->Analyze(&supported,&file_type,&face_type,&faces)) || !supported || !faces || faces>64 ||
+               (file_type!=DWRITE_FONT_FILE_TYPE_TRUETYPE && file_type!=DWRITE_FONT_FILE_TYPE_CFF)) return {};
+            if(FAILED(builder->AddFontFile(file.get()))) return {};
+        }
+        Com<IDWriteFontSet> set;
+        if(FAILED(builder->CreateFontSet(set.put())) || !set->GetFontCount() || set->GetFontCount()>256) return {};
+        Com<IDWriteFontCollection1> collection;
+        if(FAILED(factory5->CreateFontCollectionFromFontSet(set.get(),collection.put()))) return {};
+        UINT32 index{};BOOL exists{};
+        if(FAILED(collection->FindFamilyName(L"Cascadia Mono",&index,&exists)) || !exists) return {};
+        Com<IDWriteFontFamily1> family;
+        if(FAILED(collection->GetFontFamily(index,family.put()))) return {};
+        for(auto style:{DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STYLE_ITALIC}) {
+            Com<IDWriteFont> face;
+            if(FAILED(family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STRETCH_NORMAL,style,face.put())) ||
+               face->GetStyle()!=style || face->GetSimulations()!=DWRITE_FONT_SIMULATIONS_NONE) return {};
+        }
+        Com<IDWriteFontCollection> result;
+        if(FAILED(collection.as(result))) return {};
+        return result;
+    } catch (...) {
+        // Missing, oversized, malformed or unsupported optional assets use the
+        // existing system-font fallback. No registration, downloads or retries.
+        return {};
+    }
+}
 D2D1_COLOR_F color(Color c, float opacity = 1) noexcept {
     return {float(c.r) / 255, float(c.g) / 255, float(c.b) / 255, float(c.a) / 255 * opacity};
 }
@@ -257,6 +328,8 @@ struct Renderer::Impl {
     Com<IDWriteFactory4> write4;
     Com<IDWriteTextFormat> terminal_format;
     Com<IDWriteTypography> typography;
+    Com<IDWriteFontCollection> bundled_fonts;
+    bool bundled_fonts_attempted{};
     Com<ID3D11Texture2D> canvas_texture;
     Com<ID2D1Bitmap1> canvas;
     Com<ID2D1SolidColorBrush> brush;
@@ -379,17 +452,32 @@ struct Renderer::Impl {
         em_size = options.font.size_dip * dpi / 96;
         auto family = utf16(options.font.family);
         const auto locale = utf16(options.font.locale);
-        Com<IDWriteFontCollection> fonts;
-        check(write_factory->GetSystemFontCollection(fonts.put(),FALSE),"Get system fonts");
-        UINT32 family_index{};BOOL exists{};
-        check(fonts->FindFamilyName(family.c_str(),&family_index,&exists),"Find terminal font");
-        if(!exists) {
-            family=L"Consolas";
-            check(fonts->FindFamilyName(family.c_str(),&family_index,&exists),"Find fallback mono font");
-            if(!exists) family=L"Courier New";
+        IDWriteFontCollection* chosen_collection=nullptr;
+        if(CompareStringOrdinal(family.c_str(),-1,L"Cascadia Mono",-1,TRUE)==CSTR_EQUAL) {
+            if(!bundled_fonts_attempted) {
+                bundled_fonts_attempted=true;
+                bundled_fonts=load_bundled_fonts(write_factory.get());
+            }
+            // Private Cascadia wins over an arbitrary system-installed version.
+            // Other configured font families still resolve in the system collection.
+            chosen_collection=bundled_fonts.get();
         }
-        check(write_factory->CreateTextFormat(family.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+        if(!chosen_collection) {
+            Com<IDWriteFontCollection> fonts;
+            check(write_factory->GetSystemFontCollection(fonts.put(),FALSE),"Get system fonts");
+            UINT32 family_index{};BOOL exists{};
+            check(fonts->FindFamilyName(family.c_str(),&family_index,&exists),"Find terminal font");
+            if(!exists) {
+                family=L"Consolas";
+                check(fonts->FindFamilyName(family.c_str(),&family_index,&exists),"Find fallback mono font");
+                if(!exists) family=L"Courier New";
+            }
+        }
+        // A custom base collection does not replace DirectWrite's default system
+        // fallback list. Keep that list for CJK, emoji and other absent glyphs.
+        check(write_factory->CreateTextFormat(family.c_str(), chosen_collection, DWRITE_FONT_WEIGHT_NORMAL,
               DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, em_size, locale.c_str(), terminal_format.put()), "Create terminal format");
+        counters.bundled_font=chosen_collection!=nullptr;
         check(terminal_format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP), "Disable text wrapping");
         check(write_factory->CreateTypography(typography.put()),"Create terminal typography");
         const UINT32 enabled=options.font.ligatures?1u:0u;

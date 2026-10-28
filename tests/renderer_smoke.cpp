@@ -2,6 +2,7 @@
 #include "stormtty/renderer.hpp"
 #include <array>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -32,6 +33,7 @@ std::shared_ptr<RenderFrame> frame() {
 void native_render_test() {
     RendererOptions options;options.force_warp=true;options.image_cache_bytes=4096;
     Renderer renderer(nullptr,options);renderer.resize(256,160);
+    require(renderer.stats().bundled_font,"Packaged Cascadia Mono upright/italic private collection was not selected");
     auto source=frame();
     auto first=std::make_shared<FrameRow>(*source->lines[0]);
     first->cells[0].grapheme="A";
@@ -104,6 +106,19 @@ void native_render_test() {
     renderer.resize(0,0);require(renderer.render(scene)==RenderResult::suspended,"zero-size surface did not suspend");
     renderer.resize(256,160,96);require(renderer.render(scene)==RenderResult::presented,"restore from zero size failed");
 }
+void font_override_test() {
+    RendererOptions options;options.force_warp=true;options.font.family="Consolas";
+    Renderer renderer(nullptr,options);renderer.resize(96,48);
+    require(!renderer.stats().bundled_font,"Explicit system font override was replaced with bundled Cascadia");
+    auto source=frame();WindowScene scene;scene.panes.push_back({104,{0,0,96,48},source});
+    require(renderer.render(scene)==RenderResult::presented,"System font override did not render");
+    options.font.family="Cascadia Mono";renderer.set_font(options.font);
+    require(renderer.stats().bundled_font,"Switching back to bundled font failed");
+    require(renderer.render(scene)==RenderResult::presented,"Bundled font switch did not invalidate layout");
+    options.font.family="StormTTY missing font fixture";renderer.set_font(options.font);
+    require(!renderer.stats().bundled_font,"Unknown user font must preserve system fallback policy");
+    require(renderer.render(scene)==RenderResult::presented,"Missing user font fallback did not render");
+}
 void transparency_test() {
     RendererOptions options;options.force_warp=true;options.background_opacity=.9f;
     Renderer renderer(nullptr,options);renderer.resize(96,48);
@@ -153,8 +168,12 @@ void rejected_image_test() {
 } // namespace
 int main() {
     try {
-        native_render_test();transparency_test();cache_pressure_test();rejected_image_test();
-        std::cout<<"PASS Windows WARP renderer: pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
+        // Asset resolution must follow the executable, not the process/shell CWD.
+        const auto previous_directory=std::filesystem::current_path();
+        struct RestoreDirectory {std::filesystem::path path;~RestoreDirectory(){std::error_code ignored;std::filesystem::current_path(path,ignored);}} restore{previous_directory};
+        std::filesystem::current_path(std::filesystem::temp_directory_path());
+        native_render_test();font_override_test();transparency_test();cache_pressure_test();rejected_image_test();
+        std::cout<<"PASS Windows WARP renderer: private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
         return 0;
     } catch(const std::exception& error) { std::cerr<<"FAIL renderer smoke: "<<error.what()<<'\n';return 1; }
 }

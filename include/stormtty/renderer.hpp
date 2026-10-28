@@ -75,6 +75,7 @@ struct RendererStats {
     std::uint64_t device_recoveries{}, dirty_rectangles{};
     std::size_t shape_cache_bytes{}, image_cache_bytes{};
     bool warp{}, color_fonts{}, composition{};
+    bool bundled_font{}; // Actual selected terminal base is a private bundled face.
 };
 // One owner thread. All OS/D3D/COM types are hidden for future Metal/CoreText.
 // HWND is passed as native_window on Windows; nullptr selects an offscreen WARP

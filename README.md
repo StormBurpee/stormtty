@@ -58,8 +58,8 @@ criteria](docs/acceptance-gates.md), not published benchmark wins.
 
 | Platform | Implementation | Verification boundary |
 | --- | --- | --- |
-| **Windows** | Native application, custom chrome, tabs, splits, command palette, ConPTY and DirectWrite/Direct3D renderer | Windows GNU executable and tests cross-link. Native MSVC execution, physical interaction and visual QA remain gates. |
-| **macOS** | Shared core and POSIX PTY transport; AppKit/CoreText/Metal host in progress | Native build/runtime qualification is pending. No supported macOS application yet. |
+| **Windows** | Native application, custom chrome, tabs, splits, command palette, ConPTY and DirectWrite/Direct3D renderer | Native MSVC build passes. Session, terminal and renderer tests execute on Windows; full-suite qualification, physical interaction and visual QA remain gates. |
+| **macOS** | Shared core, POSIX PTY transport and implemented AppKit/CoreText/Metal host; native integration is under qualification | Native build/runtime qualification is pending. No supported macOS application yet. |
 | **Linux** | Portable core, terminal adapter, process and session test host | Core/process/session tests pass locally. A Linux desktop application is not a current product target. |
 
 The [native workflow](.github/workflows/native.yml) separates Linux, Windows and
@@ -101,10 +101,31 @@ The build copies the shared terminal library next to the executable. Keep them
 together when running the development build. Do not substitute a Windows GNU
 engine archive into an MSVC build; the import check rejects the ABI mismatch.
 
-### macOS and Linux: core and PTY tests
+### macOS: native development build
 
-On macOS, install Xcode Command Line Tools first; `xcrun --show-sdk-path` must
-succeed. On Linux, use a native C++20 toolchain.
+Install Xcode Command Line Tools and Homebrew's `llvm@20`. Apple's libc++ in
+Xcode 16.4 does not expose the standard cancellation APIs used by the session
+layer. The supplied toolchain uses LLVM 20's compiler, headers and matching
+runtime together; substituting headers alone is not sufficient.
+
+```sh
+brew install llvm@20
+python3 tools/bootstrap.py --install-zig --prefix .deps/ghostty-native
+cmake -S . -B build-macos -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/MacOSLLVM.cmake -DSTORMTTY_LLVM_ROOT="$(brew --prefix llvm@20)" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON
+cmake --build build-macos --parallel 2
+ctest --test-dir build-macos --output-on-failure
+open build-macos/stormtty.app
+```
+
+The native host and this toolchain path are awaiting native CI qualification.
+The application is not a self-contained distribution: its Ghostty and LLVM
+runtime dependencies still need audited packaging. macOS 11 is the source API
+baseline, not a verified minimum OS for the Homebrew-built runtime. See the
+[macOS implementation notes](src/platform/macos/README.md).
+
+### Linux: core and PTY tests
+
+Use a native C++20 toolchain. Linux does not have an application host.
 
 ```sh
 python3 tools/bootstrap.py --install-zig --prefix .deps/ghostty-native
@@ -112,9 +133,6 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=.d
 cmake --build build --parallel 2
 ctest --test-dir build --output-on-failure
 ```
-
-This builds the shared libraries and tests, not a desktop application. The macOS
-native host is a separate, in-progress integration.
 
 For an existing Zig installation, custom caches, offline builds, target selection
 and cross-compilation, see the [bootstrap guide](tools/bootstrap.README.md).
@@ -241,12 +259,17 @@ feature list.
 | Work | State | What still needs to be established |
 | --- | --- | --- |
 | Shared workspace, commands, config, terminal adapter and sessions | Implemented; portable tests pass | Broader regression and adversarial coverage |
-| Windows native application | Implemented; cross-link checks pass | MSVC/runtime evidence, desktop visual QA, DPI, Snap and interaction checks |
-| macOS application | In progress | Native AppKit/Metal integration and runtime evidence |
+| Windows native application | Native MSVC build passes; session and renderer tests pass | Complete native regression suite, desktop visual QA, DPI, Snap and interaction checks |
+| macOS application | Source integrated; qualification pending | Apple SDK compilation, matched libc++ runtime and native AppKit/Metal evidence |
 | Modern terminal and Ink workloads | Qualification pending | Resize, Unicode, input, synchronized output and graphics across the complete native path |
 | Text input and accessibility | Incomplete | Full TSF/IME and UI Automation behavior, screen-reader and physical-input testing |
 | Find, settings editor and cross-window tear-off | Planned | User-facing implementation and tests |
 | Performance and distribution | Pending | Recorded-hardware measurements, ConPTY provider qualification, packaging and complete notices |
+
+First-class Codex and Claude workflows are a longer-term product direction:
+agent sessions and their harness should feel native to the workspace, rather
+than bolted onto a shell. That layer is not implemented yet. It does not relax
+the terminal compatibility, performance, input or accessibility requirements.
 
 See the [acceptance gates](docs/acceptance-gates.md) for the detailed test matrix.
 Proposed latency and memory budgets there are targets, not results.
@@ -269,7 +292,7 @@ On Windows, the opt-in development smoke mode runs a controlled ConPTY session
 and can save its renderer framebuffer:
 
 ```powershell
-.\build\stormtty.exe --smoke --capture frame.png
+.\build-msvc\stormtty.exe --smoke --capture frame.png
 ```
 
 Smoke mode does not read user configuration or profile scripts. A framebuffer

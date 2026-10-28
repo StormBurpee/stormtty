@@ -84,3 +84,75 @@ an actor thread without prior COM initialization.
 - [Composition swapchains](https://learn.microsoft.com/en-us/windows/desktop/api/dxgi1_2/nf-dxgi1_2-idxgifactory2-createswapchainforcomposition)
 - [Frame latency wait handle and ownership](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-getframelatencywaitableobject)
 - [Supported Windows 11 system backdrops](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwm_systembackdrop_type)
+
+## Private Cascadia Mono packaging and verification
+
+The Windows renderer now tries a **private DirectWrite collection**, without any
+`AddFontResource`, registry write, installer, or global font registration. Only
+these fixed executable-relative assets are considered:
+
+```text
+<directory containing stormtty.exe>/assets/fonts/CascadiaMono.ttf
+<directory containing stormtty.exe>/assets/fonts/CascadiaMonoItalic.ttf
+<directory containing stormtty.exe>/assets/fonts/Cascadia-LICENSE.txt
+```
+
+`GetModuleFileNameW` is grown with a 32K path bound; Unicode, long paths and a
+changed shell/process working directory do not change the lookup root. A maximum
+8 MiB per font, supported OpenType-file analysis, bounded font counts and actual
+normal/italic faces without synthetic simulation are checked. Both fonts must
+load, or the existing system-font fallback remains available. Failed optional
+asset loading is attempted once per renderer lifetime, not every frame.
+
+`IDWriteFactory5` is runtime-probed. `IDWriteFontSetBuilder1::AddFontFile` includes
+all variable-font instances; the resulting collection is private and used only
+when the requested family is `Cascadia Mono` (case-insensitive). A configured
+system family such as Consolas still uses the system collection. Missing user
+families retain the prior Consolas/Courier New fallback policy. DirectWrite's
+system fallback list is retained for CJK, emoji and other missing glyphs; the
+private base family is not a replacement fallback list. UI fonts are unchanged.
+The private collection survives D3D device recreation; font/DPI changes invalidate
+shapes as before.
+
+Distribution uses the **unmodified Microsoft Cascadia v2407.24** variable TTFs:
+
+| Asset | Bytes | SHA-256 |
+|---|---:|---|
+| `CascadiaMono.ttf` | 714804 | `08026f617eea315caca59898784e999f6cdb2d0c34d2040deeb042bcdc359fa2` |
+| `CascadiaMonoItalic.ttf` | 524380 | `d9d23dfb03c6844448a24cf0337a657ac99965262874d2e6fb5b82ac0ac08c4d` |
+| `Cascadia-LICENSE.txt` | 4489 | `51882cd3cdba4e16f220f44ddb08a635c38c44ea6e0975db2574f4be6f958238` |
+
+Keep the SIL Open Font License notice alongside the files. Do not package the
+150 MB release archive or concept-only static font. Packaging verifies the
+pinned asset hashes; the renderer bounds/parses local assets but does not
+implement a separate runtime cryptographic integrity check.
+
+Root-owned CMake should copy the three assets after building **both `stormtty`
+and `renderer_smoke`**, and retain that directory in portable artifacts/install:
+
+```cmake
+function(stormtty_copy_bundled_fonts target)
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "$<TARGET_FILE_DIR:${target}>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${PROJECT_SOURCE_DIR}/assets/fonts/CascadiaMono.ttf"
+      "${PROJECT_SOURCE_DIR}/assets/fonts/CascadiaMonoItalic.ttf"
+      "${PROJECT_SOURCE_DIR}/assets/fonts/Cascadia-LICENSE.txt"
+      "$<TARGET_FILE_DIR:${target}>/assets/fonts"
+    VERBATIM)
+endfunction()
+```
+
+`RendererStats::bundled_font` reports whether the current terminal format
+actually selected the private collection. The default Windows WARP smoke now
+requires it, changes process CWD to the temporary directory, and tests a system
+font override, switching back to Cascadia, and an unknown-family fallback. This
+prevents missing packaging from passing silently through a system-installed font.
+The earlier WARP/PNG tests passed native Windows CI (job `122576227915`, reported
+by root); that result **predates this private-font change**. This change requires
+a new native smoke run and visual font/weight/italic/fallback inspection before
+claiming it verified on Windows.
+
+API basis: [Microsoft custom font sets](https://learn.microsoft.com/en-us/windows/win32/directwrite/custom-font-sets-win10)
+and [default system fallback behavior](https://learn.microsoft.com/en-us/windows/win32/api/dwrite_2/nf-dwrite_2-idwritetextlayout2-setfontfallback).

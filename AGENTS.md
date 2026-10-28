@@ -14,3 +14,5 @@ Build an actual native terminal for Windows and macOS, with Windows first. Not a
 - Use workspace-backed caches/TMPDIR; do not fill /tmp tmpfs with builds.
 - Coordinate owned files. Do not rewrite another worker's implementation or shared build files without agreement.
 - Root owns remote publication and CI. No external Codex task without the user's separate approval.
+
+- Keep editor/vendor project settings out of the repository. CLion profiles and exclusions belong to the developer's local settings; maintain the shared CMake build as the source of truth.
