@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1680" height="830" viewBox="40 110 1600 790" role="img"><title>StormTTY v2 Smoke — windows static design concept, not a native screenshot</title>
+<defs><filter id="shadow" x="-15%" y="-20%" width="130%" height="150%"><feGaussianBlur in="SourceAlpha" stdDeviation="20"/><feOffset dy="20"/><feComponentTransfer><feFuncA type="linear" slope=".26"/></feComponentTransfer><feMerge><feMergeNode/></feMerge></filter><filter id="blur"><feGaussianBlur stdDeviation="28"/></filter></defs>
+<defs><g id="wall"><rect width="1680" height="1120" fill="#BFC9CB"/><path d="M0 1008.0 L0 0 L924.0000000000001 0 Z" fill="#8B9FA7"/><path d="M672.0 1120 L1411.2 0 L1680 0 L1680 1120Z" fill="#CEC9BE"/><path d="M1108.8 1120 L1680 134.4 L1680 1120Z" fill="#ADBAB9"/></g></defs><use xlink:href="#wall"/>
+
+
+
+
+<defs><clipPath id="win7"><rect x="88" y="150" width="1504" height="662" rx="12"/></clipPath></defs>
+<rect x="88" y="150" width="1504" height="662" rx="12" fill="#17212A" filter="url(#shadow)"/>
+<g clip-path="url(#win7)"><use xlink:href="#wall" filter="url(#blur)"/>
+<rect x="88" y="198" width="1504" height="614" rx="0" fill="#101820" fill-opacity="0.9"/>
+<rect x="88" y="150" width="1504" height="48" rx="0" fill="#1B2630" fill-opacity="0.8"/>
+<path d="M106 169l5 5 -5 5 M116 179h7" fill="none" stroke="#CDD9DE" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" />
+<path d="M1472 174L1482 174" stroke="#CAD5DB" stroke-width="1" stroke-linecap="round" />
+<rect x="1518" y="169" width="10" height="10" rx="1" fill="none" stroke="#CAD5DB" stroke-width="1" />
+<path d="M1564 169L1574 179" stroke="#CAD5DB" stroke-width="1" stroke-linecap="round" />
+<path d="M1574 169L1564 179" stroke="#CAD5DB" stroke-width="1" stroke-linecap="round" />
+<rect x="140" y="158" width="188" height="32" rx="7" fill="#34414A" stroke="#667783" stroke-width="0.65" />
+<path d="M148 158.5L320 158.5" stroke="#DAE4E9" stroke-width="0.7" stroke-linecap="round" opacity=".18"/>
+<text x="155" y="179" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="13" font-weight="600" fill="#F0F3F4" >stormtty</text>
+<path d="M306 171L312 177" stroke="#AEBCC5" stroke-width="1" stroke-linecap="round" />
+<path d="M312 171L306 177" stroke="#AEBCC5" stroke-width="1" stroke-linecap="round" />
+<text x="350" y="179" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="13" font-weight="400" fill="#C0CBD2" >reference</text>
+<path d="M466 168L466 180" stroke="#C0CBD2" stroke-width="1" stroke-linecap="round" />
+<path d="M460 174L472 174" stroke="#C0CBD2" stroke-width="1" stroke-linecap="round" />
+<path d="M1411 168h14 M1411 174h14 M1411 180h8" fill="none" stroke="#C0CBD2" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" />
+<path d="M89 198L1591 198" stroke="#CCDCE5" stroke-width="0.6" stroke-linecap="round" opacity=".09"/>
+<path d="M1050.56 210L1050.56 962" stroke="#A4B6C1" stroke-width="0.65" stroke-linecap="round" opacity=".22"/>
+<rect x="108" y="214" width="2" height="9" rx="1" fill="#BBD2DD" />
+<text x="118" y="223" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="12" font-weight="500" fill="#BBC8D0" >Source</text>
+<text x="1070.56" y="223" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="12" font-weight="400" fill="#A4B2BD" >Interfaces</text>
+<text x="1028.56" y="223" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="11" font-weight="400" fill="#92A2AF" text-anchor="end">bash</text>
+<text x="1570" y="223" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="11" font-weight="400" fill="#92A2AF" text-anchor="end">bash</text>
+<text x="108" y="260" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#9DAFBC" >~/src/stormtty</text>
+<text x="108" y="284" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >$ find src -maxdepth 2 -type f | sort</text>
+<text x="108" y="332" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >src/app/windows_main.cpp</text>
+<text x="108" y="356" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >src/core/commands.cpp</text>
+<text x="108" y="380" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >src/core/config.cpp</text>
+<text x="108" y="404" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >src/core/text.hpp</text>
+<text x="108" y="428" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >src/core/workspace.cpp</text>
+<text x="108" y="452" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >src/core/workspace_serialization.cpp</text>
+<text x="108" y="476" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >src/session/session.cpp</text>
+<text x="108" y="500" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >src/terminal/README.md</text>
+<text x="108" y="524" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >src/terminal/terminal.cpp</text>
+<text x="108" y="596" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >$ git log -3 --oneline</text>
+<text x="108" y="620" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#CCD6DD" >35c5f28 Make Windows-first and macOS-native platform boundaries explicit</text>
+<text x="108" y="644" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#CCD6DD" >b372b12 Record native architecture, design direction and verification gates</text>
+<text x="108" y="668" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#CCD6DD" >af06571 Initialize StormTTY with an explicit native product direction</text>
+<text x="108" y="716" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#C1D6DF" >$</text>
+<rect x="126" y="700" width="2" height="20" rx="0" fill="#DBE7EC" />
+<text x="1070.56" y="260" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#9DAFBC" >~/src/stormtty</text>
+<text x="1070.56" y="284" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >$ find include -type f | sort</text>
+<text x="1070.56" y="332" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >include/stormtty/commands.hpp</text>
+<text x="1070.56" y="356" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >include/stormtty/config.hpp</text>
+<text x="1070.56" y="380" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >include/stormtty/frame.hpp</text>
+<text x="1070.56" y="404" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >include/stormtty/native_window.hpp</text>
+<text x="1070.56" y="428" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >include/stormtty/process.hpp</text>
+<text x="1070.56" y="452" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >include/stormtty/renderer.hpp</text>
+<text x="1070.56" y="476" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >include/stormtty/session.hpp</text>
+<text x="1070.56" y="500" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >include/stormtty/terminal.hpp</text>
+<text x="1070.56" y="524" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#EEF1F3" >include/stormtty/workspace.hpp</text>
+<text x="1070.56" y="596" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="16" font-weight="400" fill="#98AAB7" >$</text>
+</g>
+<rect x="88.5" y="150.5" width="1503" height="661" rx="12" fill="none" stroke="#D4DFE4" stroke-width="0.8" stroke-opacity=".24"/>
+
+
+
+<text x="88" y="864" font-family="DejaVu Sans,sans-serif" font-size="18" fill="#263843">Smoke / Windows</text><text x="1592" y="864" text-anchor="end" font-family="DejaVu Sans,sans-serif" font-size="16" fill="#263843">Static design concept, not a native screenshot</text></svg>
