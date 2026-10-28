@@ -2,9 +2,8 @@
 
 This standalone executable is **not StormTTY's renderer**, is not linked into the
 application, and has no production settings/configuration change. It qualifies a
-possible backend before any renderer migration. No native compilation or physical
-visual success is claimed by the initial source delivery; the authoring environment
-has Linux/Zig GNU toolchains, not Microsoft SDK/C++/WinRT headers. The attempted
+possible backend before any renderer migration. Native compilation, lifecycle checks and physical blur quality are separate
+qualification steps. The normal application build does not enable this experiment. The attempted
 Zig syntax check stops in dispatcherqueue.h because windows.system.h is absent;
 this is an unsupported-toolchain blocker, not a native compile pass.
 
@@ -44,21 +43,12 @@ cl /nologo /std:c++20 /EHsc /W4 /utf-8 /DUNICODE /D_UNICODE tools/probes/host-ba
 if ($LASTEXITCODE -ne 0) { throw 'Probe compilation failed' }
 ```
 
-Root may add this optional CMake block; it is deliberately not installed or linked
-into stormtty and is OFF by default:
+The optional CMake target is OFF by default, is not installed, and is never linked
+into `stormtty`. For an existing MSVC build directory:
 
-```cmake
-option(STORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE "Build standalone Windows additional-blur experiment" OFF)
-if(STORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE)
-    if(NOT WIN32 OR NOT MSVC)
-        message(FATAL_ERROR "Host backdrop probe requires MSVC and Windows SDK 10.0.22621+")
-    endif()
-    add_executable(stormtty_host_backdrop_probe tools/probes/host-backdrop-blur.cpp)
-    target_compile_features(stormtty_host_backdrop_probe PRIVATE cxx_std_20)
-    target_compile_options(stormtty_host_backdrop_probe PRIVATE /W4 /EHsc /utf-8)
-    target_compile_definitions(stormtty_host_backdrop_probe PRIVATE UNICODE _UNICODE)
-    target_link_libraries(stormtty_host_backdrop_probe PRIVATE windowsapp CoreMessaging d3d11 dxgi d2d1 dwrite dwmapi user32 gdi32 advapi32 ole32)
-endif()
+```powershell
+cmake -S . -B build-msvc -DSTORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE=ON
+cmake --build build-msvc --target stormtty_host_backdrop_probe
 ```
 
 A GNU cross build with the option OFF must not parse/include this file. Existing
