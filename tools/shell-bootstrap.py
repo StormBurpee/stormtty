@@ -311,6 +311,11 @@ def write_notice_packet(destination: Path, lock: dict, lock_hash: str, sources: 
             "  release (GPLv3 section 6(d) is the intended route); upstream links alone are not enough.",
             "- No Ghostty GPL shell-integration scripts have been copied into this bundle.", "",
             "Exact package/source inventory:"]
+    addon_lock = json.loads(Path(__file__).with_name("shell-addons.lock.json").read_text())
+    for addon in addon_lock["components"]:
+        text += [f"{addon['name']} {addon['revision']} ({addon['license']})",
+                 f"  Source: {addon['url']}", f"  SHA-256: {addon['sha256']}",
+                 f"  Notice: stormtty/vendor/{addon['name']}/{addon['notice']}", ""]
     source_map = {s["filename"]: s for s in lock["sources"]}
     for package in lock["packages"]:
         source = source_map[package["source"]]
@@ -318,9 +323,11 @@ def write_notice_packet(destination: Path, lock: dict, lock_hash: str, sources: 
                  f"  Binary: {package['url']}", f"  Binary SHA-256: {package['sha256']}",
                  f"  Source: {source['url']}", f"  Source SHA-256: {source['sha256']}", ""]
     (notices / "THIRD-PARTY-NOTICES.txt").write_text("\n".join(text), encoding="utf-8")
-    (notices / "source-manifest.json").write_text(json.dumps(lock["sources"], indent=2) + "\n", encoding="utf-8")
+    (notices / "source-manifest.json").write_text(json.dumps(lock["sources"] + addon_lock["components"], indent=2) + "\n", encoding="utf-8")
     (notices / "shell-bootstrap.lock.json").write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
-    manifest = {"schema": 1, "bundle_id": lock["bundle_id"], "platform": lock["platform"],
+    manifest = {"schema": 1, "managed_addons_native_qualification": "pending",
+                "managed_addons_lock_sha256": digest(Path(__file__).with_name("shell-addons.lock.json")),
+                "bundle_id": lock["bundle_id"], "platform": lock["platform"],
                 "qualification_only": lock["qualification_only"],
                 "default_activation_allowed": lock["default_activation_allowed"],
                 "native_qualification": lock["native_qualification"],
@@ -370,13 +377,17 @@ def stage(args) -> Path:
             shutil.copyfile(preset, preset_target)
             records["stormtty/zsh/.zshrc"] = {"path": "stormtty/zsh/.zshrc", "directory": False,
                 "bytes": preset.stat().st_size, "sha256": digest(preset), "package": "stormtty-original-preset"}
+            addon_spec = importlib.util.spec_from_file_location("shell_addons", Path(__file__).with_name("shell-addons.py"))
+            addons = importlib.util.module_from_spec(addon_spec)
+            addon_spec.loader.exec_module(addons)
+            addons.stage(root, cache, args.offline, records)
             stage_runtime_config(root, records)
             write_notice_packet(root, lock, digest(args.lock), args.sources, records)
             if destination.exists() or destination.is_symlink():
                 raise RuntimeError("Destination appeared while staging; refusing overwrite")
             root.rename(destination)
         print(f"Staged {destination / 'usr/bin/zsh.exe'}", flush=True)
-        print("Build-default qualified. Public distribution requires the notice overlay and matching source delivery.", flush=True)
+        print("Base Zsh build-default qualified; new managed addons still need native qualification. Public distribution requires notices and matching source delivery.", flush=True)
         return destination
     finally:
         guard.unlink(missing_ok=True)

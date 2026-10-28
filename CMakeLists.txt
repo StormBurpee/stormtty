@@ -205,11 +205,18 @@ if(WIN32)
     configure_file(src/app/windows_resources.rc.in "${CMAKE_CURRENT_BINARY_DIR}/stormtty-resources.rc" @ONLY)
     set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/stormtty-resources.rc" PROPERTIES
         OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/branding/stormtty.ico;${CMAKE_CURRENT_SOURCE_DIR}/src/app/windows_resources.h")
-    add_library(stormtty_settings_services src/platform/windows/settings_services.cpp)
+    add_library(stormtty_settings_services src/platform/windows/settings_services.cpp src/platform/windows/shell_state.cpp)
     target_link_libraries(stormtty_settings_services PUBLIC stormtty_workspace PRIVATE advapi32 shell32 ole32)
     stormtty_warnings(stormtty_settings_services)
     if(BUILD_TESTING)
         stormtty_test(settings_services_tests tests/settings_services_tests.cpp stormtty_settings_services)
+        stormtty_test(windows_shell_state_tests tests/windows_shell_state_tests.cpp stormtty_settings_services)
+        # Runtime argument is supplied by native managed-shell qualification CI.
+        add_executable(managed_shell_state_probe tests/managed_shell_state_probe.cpp)
+        target_link_libraries(managed_shell_state_probe PRIVATE stormtty_session stormtty_settings_services shell32 ole32)
+        target_compile_definitions(managed_shell_state_probe PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+        stormtty_warnings(managed_shell_state_probe)
+        stormtty_copy_ghostty_runtime(managed_shell_state_probe)
         # Built everywhere on Windows; registered only with the real bundled
         # runtime below. Cross-compilation is not native execution evidence.
         add_executable(console_backend_tests tests/console_backend_tests.cpp)

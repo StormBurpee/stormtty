@@ -1,6 +1,6 @@
 # StormTTY Zsh runtime staging (Windows x64 qualification)
 
-No installer, package scripts, global PATH changes or user dotfile edits. This stages the 17 exact official MSYS2 archives in `shell-bootstrap.lock.json`, plus StormTTY's original session-only preset. It does **not** fork Zsh, enable a default profile, or establish a Windows runtime pass.
+No installer, package scripts, global PATH changes or user dotfile edits. This stages the 17 exact official MSYS2 archives in `shell-bootstrap.lock.json`, plus the owned managed loader and pinned OMZ/plugin sources. It does **not** fork Zsh or establish a new Windows runtime pass. The app's existing default activation remains separate from addon qualification.
 
 ## Windows build and CI
 
@@ -26,7 +26,7 @@ CMake target/workflow wiring is root-owned. Layout is exactly `root/usr/bin/zsh.
 - Executable: absolute `root/usr/bin/zsh.exe`; argv: `-d`, `-i` (non-login).
 - Scoped environment: `ZDOTDIR=<root>/stormtty/zsh` in forward-slash Windows form; `STORMTTY_SESSION_ID=managed`; `TERM=xterm-256color`; `COLORTERM=truecolor`; `LANG=C.UTF-8`; `MSYSTEM=MSYS`; unset `MSYS`, `ENV`, `BASH_ENV`.
 - Preserve actual `HOME`, CWD and other inherited environment. Prefix the runtime `usr/bin` only in this child's PATH; never mutate application/global PATH.
-- Preset reads no user dotfiles and uses only the bundled function directories. Original directory/exit/duration prompt, ZLE editing and completion; no Git/network subprocess in the prompt. No history/cache writes yet (`HISTFILE` unset, `SAVEHIST=0`, `compinit -i -D`). It unexports its bootstrap variables.
+- The managed loader uses bundled functions and modules, private bounded history/cache, and an optional dedicated user-created `~/.stormtty/zsh/config.zsh` (never global shell dotfiles). Semantic-colour directory/Git/exit/duration prompt; no Git/network subprocess in the prompt. It unexports its bootstrap variables. See the managed OMZ section below for state, security and qualification details.
 - A successfully loaded preset sets the non-exported readonly shell parameter `STORMTTY_MANAGED_ZSH=1`; host smoke can assert this alongside nonempty `ZSH_VERSION`. It proves preset loading, not full qualification.
 - Existing user-configured profiles and defaults remain separate. Do not quietly replay commands through another shell after launch failure.
 
@@ -76,8 +76,8 @@ update that caller setting if it no longer names the desired location. Explicit
 empty `HOME` is restored by the preset using a child-only host marker because the
 pinned runtime imports even empty path variables through its converter. The
 marker is consumed, not exported into descendant shells. No `cd` is inserted:
-project CWD and saved shell choices still win; HOME dotfiles are not loaded or
-written. Global PATH is unchanged.
+project CWD and saved shell choices still win; Global HOME shell dotfiles are not loaded or written; only the dedicated
+`~/.stormtty/zsh` state/config contract below applies. Global PATH is unchanged.
 
 `/tmp` uses the runtime's `usertemp` mount (`GetTempPathW`), so ordinary temporary
 files go to the launching user's Windows temp location rather than the possibly
@@ -108,3 +108,109 @@ and user-dotfile isolation. It fails explicitly on non-Windows hosts; Linux
 staging tests/cross-compilation do **not** qualify native path behavior. This new
 configuration needs that native gate; prior shell/ConPTY qualification is not a
 substitute for it.
+
+## Managed Oh My Zsh source bundle (new; native qualification pending)
+
+The managed profile now loads **real upstream `oh-my-zsh.sh`**, with its
+completion, key-binding, history, Git, compfix and async-prompt libraries.
+`tools/shell-addons.lock.json` pins exact official source commits, archive sizes,
+SHA-256 hashes and licenses for Oh My Zsh (MIT), zsh-autosuggestions (MIT), and
+zsh-syntax-highlighting (BSD-3-Clause). `shell-addons.py` downloads only at build
+preparation, verifies every cache reuse, and stages an allowlisted source subset
+rather than thousands of unused plugins/themes. Full original source archives
+are retained in the build cache and included in the corresponding-source ZIP;
+upstream copyright/license files remain next to each runtime component.
+
+Three explicit distribution changes to OMZ are applied by the build recipe:
+1. The loader's revision lookup is replaced with the pinned commit, eliminating
+   a pointless Git process against an archive without `.git` metadata.
+2. `tools/check_for_upgrade.sh` is replaced by a no-op. Merely setting OMZ's
+   update mode to disabled is insufficient: upstream first migrates the user's
+   `~/.zsh-update`. We must neither migrate that file nor update this immutable
+   bundle. CLI/update-management libraries and unrelated themes/plugins are not
+   staged. Completion security (`compinit -i`, not `-u` or `-C`) remains enabled.
+3. When persistent state is unavailable, the loader skips cache creation and
+   uses `compinit -i -D` without dumps, while still loading the same real OMZ
+   libraries and packaged editing modules. No fallback HOME or temporary
+   persistent directory is invented.
+
+On POSIX hosts, only `~/.stormtty/zsh/` is writable state. On Windows the
+host prepares `%LOCALAPPDATA%/StormTTY/managed-zsh-v1` through the native helper
+(described in `docs/windows-managed-shell-state.md`), then supplies a
+launch-scoped reserved `STORMTTY_NATIVE_ZSH_STATE` path. It overwrites/removes
+ambient values after environment merging; the loader consumes and unsets it
+immediately, including on empty HOME. The loader converts drive paths through
+the verified `/c` mount contract and preserves UNC spelling. No native proof
+is inherited by descendant shells. Both locations hold: bounded history (10,000 persisted,
+20,000 in memory), versioned completion dump/compiled cache, and an optional
+**user-created** `config.zsh`. The loader never writes a config template or reads
+`~/.zshrc`, `.zprofile`, `.dircolors`, or existing OMZ configuration. It rejects
+linked or group/other-writable private state directories rather than changing
+permissions on existing data. Existing config/history/completion dump and compiled
+dump must be regular, owned files without group/other write permissions before
+any are read or sourced. The HOME ancestor itself must also be owned and not
+group/other writable. Empty/unusable HOME or rejected state keeps the same real
+OMZ/editing modules in an explicitly nonpersistent mode: no history, cache or
+user-config access. `STORMTTY_EPHEMERAL=1` exposes this mode for qualification.
+On MSYS/Cygwin, persistent state is accepted only through that native-validated
+host path: synthetic POSIX uid/mode values on `noacl` mounts do not prove Windows
+file security. Without the helper's path the trusted modules remain ephemeral.
+Native helper and loader bridge still require Windows runtime qualification;
+POSIX contract simulations and cross-compilation do not establish ACL safety. All existing HOME/CWD/temp/drive
+resolution and alternative-shell profiles remain unchanged. History may contain
+secrets: a leading space excludes a command; never attach state directories to
+bug reports or timing artifacts. Delete private history only by explicit choice.
+
+The owned two-line prompt uses semantic terminal colours, not RGB palette
+assumptions or mandatory Nerd Font glyphs. A plain associative
+`STORMTTY_CONTEXT` snapshot supplies cwd, branch/detached HEAD, exit and elapsed
+time. Branch discovery reads at most 64 ancestors and bounded 4 KiB Git metadata
+files, handles worktrees/submodules, and does **not** invoke Git, parse repository
+config, scan dirty files or execute hooks. Paths/branches have terminal controls
+removed and percent escapes doubled before prompt rendering; `PROMPT_SUBST`
+remains off. OSC 133 command lifecycle is unchanged. No native footer transport
+is claimed yet; that future protocol must treat metadata as untrusted data and
+must never execute host commands. Dirty/ahead/behind, fzf, zoxide and a native
+footer context adapter are not shipped by this first source slice.
+
+Verification:
+
+```sh
+python tools/shell-managed-tests.py
+# With verified source archives already in the normal shell cache:
+python tools/shell-managed-tests.py --assets-cache /absolute/cache --benchmark
+# Native Windows: use the exact freshly staged runtime executable, not system Zsh:
+python tools/shell-managed-tests.py --assets-cache C:/cache --zsh C:/runtime/usr/bin/zsh.exe --benchmark
+```
+
+The benchmark labels the actual platform/execution and reports numeric process-to-exit cold/warm elapsed timings only—not first-prompt latency.
+“Cold” means a fresh private state directory, **not** an OS filesystem-cache
+flush. No user paths/history/config contents are emitted. Linux source tests
+cannot qualify MSYS2, Windows ACL/noacl semantics, ZLE rendering/key interactions,
+or physical UX. The existing native qualification in the base shell lock does
+not qualify these new modules; the runtime manifest explicitly records that
+addon qualification remains pending. Run native shell/path/lifecycle gates and
+interactively check Tab, Up, Right-arrow suggestion acceptance, Ctrl-R, Ctrl-C,
+Unicode paths, multi-tab history, invalid commands and prompt redraws before
+claiming the new managed experience is qualified.
+
+### Hook compatibility and user opt-outs
+
+The managed `precmd` captures the original exit status into `STORMTTY_CONTEXT`
+and OSC 133 D, then returns **zero**. Zsh supplies the original command status to
+each hook, but a hook failure aborts later hooks. Returning the command's failure
+would suppress later highlighting/third-party hooks. See the upstream
+[hook contract](https://zsh.sourceforge.io/Doc/Release/Functions.html#Hook-Functions).
+The focused POSIX PTY test checks `false` → OSC D=1 → later hook still sees status
+1 → next prompt → Right-arrow accepts a real autosuggestion and executes it.
+It is not Windows ConPTY or physical UI evidence.
+
+In the dedicated user-created `config.zsh`, `STORMTTY_PROMPT=custom` explicitly
+opts out of the owned prompt renderer. A user theme (including a future optional
+P10k integration) may then set `PROMPT`/`RPROMPT`, enable `PROMPT_SUBST`, and install
+its own hooks; the managed code will not replace its prompt or unset that option.
+Structured context and OSC C/D lifecycle still run. Custom themes must integrate
+OSC A/B prompt boundaries themselves if desired—the loader does not scrape or
+rewrite their prompt strings. `STORMTTY_AUTOSUGGESTIONS=0` and
+`STORMTTY_HIGHLIGHTING=0` opt out of those respective packaged editing modules.
+No optional theme is downloaded, enabled or configured automatically.
