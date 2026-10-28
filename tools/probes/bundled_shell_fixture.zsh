@@ -25,6 +25,7 @@ stormtty_probe_cwd() {
   printf '\033]7;file://stormtty%s\007' "$PWD"
 }
 stormtty_probe_native() { "$STORMTTY_PROBE_NATIVE" --native-handles }
+stormtty_probe_native_size() { "$STORMTTY_PROBE_NATIVE" --native-size }
 stormtty_probe_wait() { stormtty_probe_emit "WAITING:${1}"; "$STORMTTY_PROBE_SLEEP" 30 }
 stormtty_probe_after_interrupt() {
   local previous=$stormtty_probe_status
@@ -60,7 +61,9 @@ precmd() {
   (( ++stormtty_probe_sequence ))
 }
 stormtty_probe_line_init() {
-  print -r -- "__STORMTTY_PROMPT:${stormtty_probe_sequence}:${stormtty_probe_status}__"
+  # Do not print behind ZLE's back: its cursor model would still describe the
+  # old prompt and reset-prompt could overwrite preceding command output.
+  PROMPT="__STORMTTY_PROMPT:${stormtty_probe_sequence}:${stormtty_probe_status}__"$'\n''probe> '
   zle reset-prompt
 }
 zle -N zle-line-init stormtty_probe_line_init

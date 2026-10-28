@@ -16,6 +16,7 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <sys/ioctl.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -94,6 +95,21 @@ std::string inherited_path() {
     const auto path = std::getenv("PATH"); return path ? path : "";
 #endif
 }
+int native_size() {
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    if (!GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info)) return 43;
+    const auto columns = info.srWindow.Right - info.srWindow.Left + 1;
+    const auto rows = info.srWindow.Bottom - info.srWindow.Top + 1;
+#else
+    winsize info{};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &info) != 0) return 43;
+    const auto columns = info.ws_col;
+    const auto rows = info.ws_row;
+#endif
+    std::cout << "__STORMTTY_NATIVE_SIZE:" << columns << 'x' << rows << "__\n" << std::flush;
+    return 0;
+}
 int native_handles() {
 #ifdef _WIN32
     DWORD in{}, out{}, err{};
@@ -109,6 +125,7 @@ int native_handles() {
 }
 }
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--native-size") return native_size();
     if (argc == 2 && std::string_view(argv[1]) == "--native-handles") return native_handles();
     if (argc < 4 || argc > 6) {
         std::cerr << "usage: bundled_shell_probe SHELL_ABSOLUTE FIXTURE_ABSOLUTE SCRATCH_DIR [inbox | --packaged-provider ABSOLUTE_DIRECTORY]\n";
@@ -177,11 +194,19 @@ int main(int argc, char** argv) {
                 "OSC 7 did not reach Session cwd metadata");
         require(session->request_resize({111, 35, 8, 16}) == SessionSendResult::accepted,
                 "resize request rejected");
-        require(until([&] {
+        const bool shell_resized = until([&] {
             prompt.send("stormtty_probe_size");
             prompt.ready(0);
             return screen(session).find("__STORMTTY_SIZE:111x35__") != std::string::npos;
-        }), "shell did not observe terminal resize");
+        });
+        // Independently report the native child's actual terminal size even if
+        // the shell marker is missing; never substitute it for the shell check.
+        std::cout << "shell_resize_observed=" << shell_resized << "\n" << screen(session);
+        prompt.send("stormtty_probe_native_size");
+        prompt.ready(0);
+        std::cout << "native resize diagnostic:\n" << screen(session);
+        require(shell_resized, "shell did not observe terminal resize");
+        expect(session, "__STORMTTY_NATIVE_SIZE:111x35__");
         prompt.send("stormtty_probe_wait first"); expect(session, "__STORMTTY_WAITING:first__");
         key(session, Key::c, Modifier::control);
         prompt.ready(130);
@@ -212,7 +237,7 @@ int main(int argc, char** argv) {
 #endif
         return 0;
     } catch (const std::exception& e) {
-        if (session) { session->request_close(); (void)session->wait_closed(10s); }
+        if (session) { std::cerr << "Failure frame:\n" << screen(session); session->request_close(); (void)session->wait_closed(10s); }
         std::cerr << "FAIL: " << e.what() << '\n'; return 1;
     }
 }
