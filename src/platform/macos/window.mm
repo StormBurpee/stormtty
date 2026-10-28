@@ -590,8 +590,14 @@ public:
 - (NSString*)accessibilityValue{auto h=host.lock();auto session=h?h->active():nullptr;auto frame=session?session->frame():nullptr;
     try{if(frame&&frame->cursor.password_input)return @"Secure terminal input";return stormtty::macos::ns(stormtty::macos::frame_text(frame));}catch(...){return @"Terminal output unavailable";}}
 - (NSString*)accessibilitySelectedText{auto h=host.lock();auto session=h?h->active():nullptr;try{auto frame=session?session->frame():nullptr;if(frame&&frame->cursor.password_input)return @"";return stormtty::macos::ns(stormtty::macos::frame_text(frame,65536,true));}catch(...){return @"";}}
-- (NSInteger)accessibilityNumberOfCharacters{return static_cast<NSInteger>(self.accessibilityValue.length);}
-- (NSRange)accessibilityVisibleCharacterRange{return NSMakeRange(0,self.accessibilityValue.length);}
+- (NSInteger)accessibilityNumberOfCharacters{
+    id value=[self accessibilityValue];
+    return [value isKindOfClass:NSString.class]?static_cast<NSInteger>([(NSString*)value length]):0;
+}
+- (NSRange)accessibilityVisibleCharacterRange{
+    id value=[self accessibilityValue];
+    return NSMakeRange(0,[value isKindOfClass:NSString.class]?[(NSString*)value length]:0);
+}
 - (BOOL)isAccessibilityFocused{return self.window.firstResponder==self;}
 @end
 
