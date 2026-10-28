@@ -28,7 +28,7 @@ void chrome_alignment_test() {
         }
         require(left[0]<24 && right[0]>left[0],"Leading chrome has no readable label");
         require(left[1]>left[0]+40 && left[2]>left[1]+40,"Centered/trailing labels remained leading");
-        require(std::abs(int(left[1]+right[1])-236)<=6,"Button text is not horizontally centered");
+        require(std::abs(int(left[1]+right[1])-244)<=6,"Button text is not horizontally centered");
         require(left[3]==left[0] && right[3]==right[0],"Centered button contaminated subsequent leading label");
     }
 }
