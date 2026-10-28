@@ -1,0 +1,10 @@
+# Preserve upstream notice bytes exactly: their source hashes are intentional.
+tools/shell-notices/texts/** -text
+
+# Shell startup and fixtures must remain executable by POSIX shells on Windows.
+*.zsh text eol=lf
+*.sh text eol=lf
+
+# Lock/recipe bytes identify a runtime consistently across developer platforms.
+tools/*bootstrap*.json text eol=lf
+tools/shell-notices/*.json text eol=lf

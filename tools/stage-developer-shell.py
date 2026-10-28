@@ -131,6 +131,11 @@ def validate(source, lock_path, preset):
 
 
 def stage(source, destination, files, receipt):
+    # Derive inventory-relative names before canonicalizing. Windows temp paths
+    # can be spelled with 8.3 aliases while resolve() returns long names; mixing
+    # those representations can miss overlap or break relative_to().
+    relative_files = {path.relative_to(source): expected for path, expected in files.items()}
+    source = source.resolve(strict=True)
     destination = destination.absolute()
     if destination.is_symlink() or (destination.exists() and getattr(destination.lstat(), "st_file_attributes", 0) & 0x400):
         raise RuntimeError("Destination must not be a linked/reparse directory")
@@ -144,11 +149,11 @@ def stage(source, destination, files, receipt):
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".stormtty-runtime-", dir=destination.parent) as temp:
         fresh = Path(temp) / "new"; fresh.mkdir()
-        for path in files:
-            target = fresh / path.relative_to(source)
+        for name, expected in relative_files.items():
+            target = fresh / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, target)
-            if digest(target) != files[path]: raise RuntimeError("Runtime changed after validation")
+            shutil.copyfile(source / name, target)
+            if digest(target) != expected: raise RuntimeError("Runtime changed after validation")
         (fresh / RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         old = Path(temp) / "old"
         if destination.exists(): destination.rename(old)

@@ -91,6 +91,12 @@ inline void apply_developer_shell_default(Config& config, bool saved_config) {
     config.profiles.push_back(std::move(managed));
 }
 
+// Parsing canonicalizes binding order. Compare persisted meaning, while the
+// file service retains the original exact bytes/identity for write conflicts.
+inline bool settings_baseline_matches(const Config& loaded, const Config& running, Platform platform) {
+    return serialize_config(loaded,platform)==serialize_config(running,platform);
+}
+
 // Enters the platform message loop. Called once, from the main UI thread.
 // Windows is implemented; other platforms provide their own native shell.
 struct NativeRunOptions {

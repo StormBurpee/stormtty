@@ -112,6 +112,15 @@ class StagingTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"overlap"):
             stager.stage(self.root,self.root/"nested",files,receipt)
 
+    def test_noncanonical_source_overlap(self):
+        source=self.root/".."/self.root.name
+        files,receipt=stager.validate(source,self.lock,self.preset)
+        with self.assertRaisesRegex(RuntimeError,"overlap"):
+            stager.stage(source,self.root/"nested",files,receipt)
+        target=self.base/"canonical-target"
+        stager.stage(source,target,files,receipt)
+        self.assertEqual((target/stager.REQUIRED[0]).read_bytes(),(self.root/stager.REQUIRED[0]).read_bytes())
+
     def test_incremental_metadata_change_is_validated(self):
         target=self.base/"target";stamp=self.base/"stamp"
         args=["stage", "--source",str(self.root),"--lock",str(self.lock),"--preset",str(self.preset),

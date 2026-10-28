@@ -1062,7 +1062,7 @@ void NativeWindow::settings_completed() {
         if (!completion->loaded) { show_error(completion->loaded.error); return; }
         // The snapshot and parsed config come from one read. Refuse to edit an
         // externally changed baseline rather than saving stale running values.
-        if (completion->loaded.snapshot->existed && *completion->loaded.config!=config_) {
+        if (completion->loaded.snapshot->existed && !settings_baseline_matches(*completion->loaded.config,config_,Platform::windows)) {
             show_error("The settings file changed since launch. Restart to load it before editing; nothing was overwritten."); return;
         }
         if (modal_) { show_error("Settings are ready. Finish the current confirmation, then open Settings again."); return; }
@@ -2043,7 +2043,7 @@ void NativeWindow::smoke_progress(bool presented) {
     if (!options_.smoke_test || smoke_finished_) return;
     if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
     for (const auto& [id,session]:sessions_) { (void)id; const auto info=session->info(); if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; } }
-    if (options_.smoke_settings && smoke_settings_stage_<5) {
+    if (options_.smoke_settings && smoke_settings_stage_<6) {
         auto* active=active_session(); const auto info=active?active->info():SessionInfo{};
         if (smoke_settings_stage_==0) {
             if (info.state!=SessionState::running || !info.bytes_received) return;
@@ -2111,7 +2111,7 @@ void NativeWindow::smoke_progress(bool presented) {
             }
             if (managed_shell_profile_ && !options_.shell_runtime_override) {
                 const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
-                if (!saved || !has_managed_zsh_selection(*saved.config) || serialize_config(*saved.config,Platform::windows)!=serialize_config(config_,Platform::windows) ||
+                if (!saved || !has_managed_zsh_selection(*saved.config) || !settings_baseline_matches(*saved.config,config_,Platform::windows) ||
                     smoke_managed_sessions_.contains(sessions_.begin()->first)) {
                     smoke_finish("Managed shell reference did not persist or original Cmd actor was replaced."); return;
                 }
@@ -2123,7 +2123,16 @@ void NativeWindow::smoke_progress(bool presented) {
                 }
                 std::fprintf(stderr,"Bundled shell Settings smoke: legacy Cmd preserved; managed reference saved/reparsed; new real Zsh actor selected without CLI or restarting old actor.\n");
             }
-            smoke_settings_stage(5);
+            open_settings(); smoke_settings_stage(5); return;
+        }
+        if (smoke_settings_stage_==5) {
+            if (settings_job_) return;
+            if (!settings_panel_.is_open() || !settings_baseline_matches(settings_panel_.draft(),config_,Platform::windows)) {
+                smoke_finish("Settings Save-to-reopen falsely rejected its canonical saved baseline."); return;
+            }
+            settings_panel_.cancel(); settings_input_changed();
+            if (settings_panel_.is_open() || !focused_session_) { smoke_finish("Reopened Settings did not restore terminal focus on Cancel."); return; }
+            smoke_settings_stage(6);
         }
     }
     if (options_.smoke_modal && smoke_modal_stage_<2) {

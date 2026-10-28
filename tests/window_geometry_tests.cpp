@@ -148,6 +148,16 @@ int main() {
     const auto saved_reference=parse_config(serialize_config(save->config,Platform::windows),Platform::windows);
     require(saved_reference && has_managed_zsh_selection(*saved_reference.config),"Settings saved reference roundtrip");
     settings.persistence_result(true);
+    // Save keeps draft insertion order while reload canonicalizes bindings.
+    // This is not an external-file change and must not block reopening Settings.
+    require(*saved_reference.config!=save->config,"fixture exercises canonical binding-order difference");
+    require(settings_baseline_matches(*saved_reference.config,save->config,Platform::windows),"Save-to-reopen accepts identical persisted settings");
+    auto changed_settings=*saved_reference.config; changed_settings.font.size_dip+=1;
+    require(!settings_baseline_matches(changed_settings,save->config,Platform::windows),"external font change still rejects stale running baseline");
+    changed_settings=*saved_reference.config; changed_settings.default_profile=original_cmd.default_profile;
+    require(!settings_baseline_matches(changed_settings,save->config,Platform::windows),"external shell change still rejects stale running baseline");
+    changed_settings=*saved_reference.config; changed_settings.bindings.pop_back();
+    require(!settings_baseline_matches(changed_settings,save->config,Platform::windows),"external binding change still rejects stale running baseline");
     settings.open(*saved_reference.config,std::span<const Profile>(&managed,1));
     require(has_managed_zsh_selection(settings.draft()) && !settings.dirty(),"next Settings open retains managed choice");
     settings.cancel();
