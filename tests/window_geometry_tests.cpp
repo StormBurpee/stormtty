@@ -19,6 +19,28 @@ int main() {
         if (!count) require(footer.chips.empty() && !footer.overflow.width,"empty footer has no filler");
     }
     require(layout_background_footer({0,700,1100,0},4).chips.empty(),"focus mode hides background geometry");
+    for(double width:{0.,1.,12.,24.,80.,120.,300.,480.,640.,1100.,2200.})
+        for(double height:{0.,3.,12.,26.}) for(std::size_t count:{0u,1u,4u,256u}) {
+        const auto footer=layout_session_footer({13,700,width,height},count,true,true,true);
+        std::vector<Rect> cells{footer.directory,footer.git,footer.status,footer.background.overflow};
+        cells.insert(cells.end(),footer.background.chips.begin(),footer.background.chips.end());
+        for(const auto& r:cells) if(r.width>0 && r.height>0) {
+            require(r.x>=13 && r.x+r.width<=13+width+0.001 && r.y>=700 && r.y+r.height<=700+height+0.001,
+                "combined footer cells remain bounded at all widths and heights");
+            for(const auto& other:cells) if(&r!=&other && other.width>0 && other.height>0)
+                require(r.x+r.width<=other.x+0.001 || other.x+other.width<=r.x+0.001,
+                    "active context and background hit targets never overlap");
+        }
+        if(count && width>16 && height>6) require(!footer.background.chips.empty() || footer.background.overflow.width>0,
+            "background overflow stays reachable alongside active context");
+        if(width>=80 && height>6) require(footer.directory.width>0,"active directory survives narrow background layout");
+    }
+    const auto combined=layout_session_footer({0,700,1100,26},1,true,true,true);
+    require(combined.directory.width>100 && combined.git.width>0 && combined.background.chips.size()==1,
+        "wide footer preserves directory and Git beside actual background sessions");
+    const auto narrow_footer=layout_session_footer({0,700,300,26},4,true,true,true);
+    require(narrow_footer.git.width==0 && narrow_footer.status.width==0 && narrow_footer.background.overflow.width>0,
+        "narrow footer drops secondary context before directory and background access");
     const auto compact_notice=layout_notice({184,104,860,590},140,16);
     require(compact_notice.panel==Rect{196,646,164,36},"short notice is compact, workspace-local, and above footer");
     require(compact_notice.text==Rect{208,656,140,16},"notice retains 12px horizontal and 10px vertical padding");

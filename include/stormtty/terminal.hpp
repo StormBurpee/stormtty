@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stormtty/frame.hpp"
+#include "stormtty/shell_context.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -195,6 +196,7 @@ public:
     bool render_held() const;
     TerminalSize size() const;
     std::vector<TerminalEffect> take_effects();
+    [[nodiscard]] std::optional<ShellContext> shell_context() const; // Owned display-only value, owner thread.
     [[nodiscard]] CommandSnapshot command_snapshot() const; // Owned value, owner thread.
 
     // Actor-only incremental real-scrollback search. A work unit is one bounded

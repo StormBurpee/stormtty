@@ -216,6 +216,7 @@ struct TerminalCore::Impl {
     std::uint64_t frame_generation{}, row_generation{};
     bool held{}, output_finished{};
     CommandSnapshot command;
+    ShellContextState shell_context;
     Clock::time_point hold_started{}, animation_origin{Clock::now()}, last_tick{animation_origin};
     std::optional<Clock::time_point> animation_deadline;
     std::uint64_t content_revision{1}, search_request_id{}, search_fed_revision{}, search_work{}, search_update{}, search_generation{};
@@ -292,6 +293,8 @@ struct TerminalCore::Impl {
         set(GHOSTTY_TERMINAL_OPT_RENDER_HOLD, reinterpret_cast<const void*>(on_hold));
         set(GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, reinterpret_cast<const void*>(on_semantic_prompt));
         set(GHOSTTY_TERMINAL_OPT_RESET, reinterpret_cast<const void*>(on_reset));
+        set(GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE, reinterpret_cast<const void*>(on_unknown));
+        set(GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES, &shell_context_wire_limit);
         // The pinned renderer only refreshes fg/bg when BOTH engine defaults
         // exist. Materialize unspecified defaults from its initial colors so a
         // one-sided theme still renders and answers OSC queries consistently.
@@ -344,7 +347,21 @@ struct TerminalCore::Impl {
         if (command.phase == CommandPhase::running) command.phase = CommandPhase::interrupted;
     }
     static void on_reset(GhosttyTerminal, void* data) noexcept {
-        static_cast<Impl*>(data)->interrupt_command();
+        auto& self = *static_cast<Impl*>(data);
+        self.interrupt_command();
+        self.shell_context.reset();
+    }
+    static void on_unknown(GhosttyTerminal, void* data,
+                           const GhosttyTerminalUnknownSequence* sequence) noexcept {
+        auto& self = *static_cast<Impl*>(data);
+        if (self.output_finished || !sequence || sequence->tag != GHOSTTY_TERMINAL_UNKNOWN_SEQUENCE_OSC) return;
+        self.callback([&] {
+            const auto& osc = sequence->value.osc;
+            // Borrowed bytes exist only during this callback. The parser owns
+            // accepted fields; Ghostty owns framing, cancellation and the cap.
+            const std::string_view content{reinterpret_cast<const char*>(osc.content.ptr), osc.content.len};
+            self.shell_context.apply(parse_shell_context_osc(content, osc.truncated));
+        });
     }
     static void on_semantic_prompt(GhosttyTerminal, void* data,
                                    const GhosttyTerminalSemanticPrompt* event) noexcept {
@@ -394,7 +411,13 @@ struct TerminalCore::Impl {
     }
     static void on_pwd(GhosttyTerminal, void* data) noexcept {
         auto& self = *static_cast<Impl*>(data);
-        self.callback([&] { self.string_effect(GHOSTTY_TERMINAL_DATA_PWD, EffectKind::working_directory); });
+        self.callback([&] {
+            GhosttyString pwd{};
+            checked(ghostty_terminal_get(self.terminal, GHOSTTY_TERMINAL_DATA_PWD, &pwd), "read shell context directory");
+            // Correlate synchronously before the next OSC in this same feed.
+            self.shell_context.observe_directory({reinterpret_cast<const char*>(pwd.ptr), pwd.len});
+            self.string_effect(GHOSTTY_TERMINAL_DATA_PWD, EffectKind::working_directory);
+        });
     }
     static void on_clipboard_write(GhosttyTerminal, void* data, const GhosttyClipboardWrite* request) noexcept {
         auto& self = *static_cast<Impl*>(data);
@@ -833,6 +856,10 @@ void TerminalCore::scroll_to_bottom() {
     impl_->check_thread();
     GhosttyTerminalScrollViewport scroll{}; scroll.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM;
     ghostty_terminal_scroll_viewport(impl_->terminal, scroll);
+}
+std::optional<ShellContext> TerminalCore::shell_context() const {
+    impl_->check_thread();
+    return impl_->shell_context.context();
 }
 CommandSnapshot TerminalCore::command_snapshot() const {
     impl_->check_thread();

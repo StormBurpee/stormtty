@@ -326,7 +326,13 @@ private:
     void close_parked(ProjectSessionReference, bool approved = false);
     void background_menu(Point, std::optional<SessionId> = {});
     std::string background_title(const ParkedSession&, bool status = true) const;
-    BackgroundFooterLayout background_layout() const { return layout_background_footer(navigation_.footer,projects_.active()->parked_sessions.size()); }
+    struct FooterPresentation {
+        std::string directory, head, status;
+        bool detached{}, subdued{}, failed{};
+    };
+    FooterPresentation footer_presentation() const;
+    SessionFooterLayout footer_layout() const;
+    BackgroundFooterLayout background_layout() const { return footer_layout().background; }
     Rect empty_terminal_button() const { const auto r=workspace_viewport(); return {r.x+std::max(0.0,(r.width-156)/2),r.y+std::max(0.0,(r.height-36)/2),std::min(156.0,r.width),std::min(36.0,r.height)}; }
     void close_tab(TabId, bool approved = false);
     void show_modal(std::string title, std::vector<std::string> body, std::string confirm, std::function<void()> action, bool destructive = true);
@@ -483,6 +489,7 @@ private:
     ModalFocus modal_focus_;
     std::optional<ModalDecision> modal_pressed_;
     WPARAM caption_pressed_{};
+    std::string footer_signature_;
     std::size_t palette_index_{};
     bool palette_background_only_{};
     TabId rename_tab_{};
@@ -1180,21 +1187,70 @@ void NativeWindow::update_sessions() {
     if (error) show_error(*error);
     const auto context=directory_context();
     if (context_label_!=context) { context_label_=context; state_changed=true; ++chrome_generation_; }
+    const auto footer=footer_presentation();
+    const auto footer_signature=footer.directory+"\n"+footer.head+"\n"+footer.status+(footer.subdued?"1":"0")+(footer.detached?"1":"0");
+    if(footer_signature_!=footer_signature) {footer_signature_=footer_signature;state_changed=true;++chrome_generation_;}
     if (!titles.empty() || state_changed) refresh_tooltips();
     settings_completed();
     drain_input(); dirty_=true; caret_schedule(); position_ime();
     if (options_.smoke_test) smoke_progress();
 }
+NativeWindow::FooterPresentation NativeWindow::footer_presentation() const {
+    FooterPresentation result;
+    const auto* actor=active_session();
+    if (!actor) return result;
+    const auto info=actor->info();
+    const auto* active_pane=workspace().pane(workspace().active_pane());
+    const bool managed=active_pane && managed_shell_profile_ && active_pane->profile==managed_shell_profile_->id;
+    if (info.shell_context) {
+        result.directory=info.shell_context->display_directory;
+        result.head=info.shell_context->head;
+        result.detached=info.shell_context->git==GitHeadKind::detached;
+    } else if (!managed) {
+        // Unintegrated shells still expose their observed directory. It remains
+        // display data, never a local filesystem lookup or implicit command.
+        result.directory=info.working_directory;
+        if(result.directory.empty()) if(const auto* project=projects_.active()) result.directory=project->metadata.working_directory;
+        std::erase_if(result.directory,[](unsigned char c){return c<0x20 || c==0x7f;});
+    }
+    // A managed context clear can accompany an invalid/oversized new PWD.
+    // Never revive its previous raw directory; show the neutral profile instead.
+    if(result.directory.empty()) {
+        if(const auto* pane=workspace().pane(workspace().active_pane())) {
+            result.directory=pane->profile;
+            if(managed_shell_profile_ && managed_shell_profile_->id==pane->profile) result.directory=managed_shell_profile_->label;
+            else for(const auto& profile:config_.profiles) if(profile.id==pane->profile) {result.directory=profile.label;break;}
+        }
+    }
+    result.subdued=info.command.phase==CommandPhase::running;
+    if(info.state==SessionState::failed) {result.status="failed";result.failed=true;}
+    else if(info.state==SessionState::exited) result.status="exited";
+    else if(info.state==SessionState::closing) result.status="closing";
+    else if(info.command.phase==CommandPhase::completed && info.command.last_exit_code && *info.command.last_exit_code!=0) {
+        result.status="exit "+std::to_string(*info.command.last_exit_code); result.failed=true;
+    }
+    return result;
+}
+SessionFooterLayout NativeWindow::footer_layout() const {
+    const auto context=footer_presentation();
+    return layout_session_footer(navigation_.footer,projects_.active()->parked_sessions.size(),
+        active_session()!=nullptr,!context.head.empty(),!context.status.empty());
+}
 std::string NativeWindow::directory_context() const {
     std::string path;
-    if (auto* session=active_session()) path=session->info().working_directory;
-    const bool observed=!path.empty();
-    if (path.empty()) if (const auto* project=projects_.active()) path=project->metadata.working_directory;
+    bool managed_without_context=false;
+    if (auto* session=active_session()) {
+        const auto info=session->info();
+        const auto* pane=workspace().pane(workspace().active_pane());
+        managed_without_context=!info.shell_context && pane && managed_shell_profile_ && pane->profile==managed_shell_profile_->id;
+        if(!managed_without_context) path=info.shell_context?info.shell_context->display_directory:info.working_directory;
+    }
+    if (path.empty() && !managed_without_context) if (const auto* project=projects_.active()) path=project->metadata.working_directory;
     // OSC metadata is display-only; it is never an implicit chdir or command.
     path.erase(std::remove_if(path.begin(),path.end(),[](unsigned char c){return c<0x20 || c==0x7f;}),path.end());
     const auto* project=projects_.active();
     const std::string name=project?project->metadata.name:"Workspace";
-    return path.empty()?name:name+"  /  "+(observed?"Shell directory · ":"Launch folder · ")+path;
+    return path.empty()?name:name+"  /  "+path;
 }
 void NativeWindow::reset_project_view() {
     // Local Pane/Tab/Node identifiers can collide across projects. Actor IDs are
@@ -1308,7 +1364,9 @@ void NativeWindow::refresh_tooltips() {
     for (const auto& row:navigation_.projects) if (const auto* project=projects_.find(row.project)) add(row.bounds,project->metadata.name+"\n"+project->metadata.working_directory);
     add(navigation_.toggle,navigation_.expanded?"Collapse workspaces":width_<640?"Navigation stays compact in narrow windows":"Expand workspaces");
     add(navigation_.settings,"Settings · Ctrl+,"); add(navigation_.new_project,"New workspace… Choose a folder"); add(navigation_.context,context_label_); add(navigation_.focus,"Focus mode: hide navigation, directory context and footer");
-    const auto footer=background_layout();
+    const auto context=footer_presentation(); const auto placement=footer_layout();
+    add(placement.directory,context.directory); add(placement.git,context.head); add(placement.status,context.status);
+    const auto footer=placement.background;
     for (std::size_t i=0;i<footer.chips.size();++i) add(footer.chips[i],background_title(projects_.active()->parked_sessions[i])+"\nClick to restore · Right-click for actions");
     add(footer.overflow,"All background terminals");
     add(chrome_.new_tab,"New tab · Ctrl+Shift+T"); add(chrome_.palette,"Commands · Ctrl+Shift+P"); add(chrome_.menu,"StormTTY menu");
@@ -1542,7 +1600,12 @@ std::vector<NativeWindow::PaletteEntry> NativeWindow::palette_commands() const {
         const auto title=(palette_background_only_?"":"Restore · ")+background_title(parked,false);
         auto context=projects_.active()->metadata.name;
         if (const auto actor=sessions_.find(parked.session); actor!=sessions_.end()) {
-            auto cwd=actor->second->info().working_directory;
+            const auto info=actor->second->info();
+            const bool managed=managed_shell_profile_ && parked.profile==managed_shell_profile_->id;
+            // Match the footer: typed context is display data; a managed clear
+            // must not resurrect the previous raw OSC 7 URI in search results.
+            auto cwd=info.shell_context?info.shell_context->display_directory:
+                managed?managed_shell_profile_->label:info.working_directory;
             std::erase_if(cwd,[](unsigned char c){return c<0x20 || c==0x7f;});
             if (!cwd.empty() && cwd!=context) context+=(context.empty()?"":" · ")+cwd;
         }
@@ -1839,9 +1902,25 @@ WindowScene NativeWindow::scene() {
         Color footer=chrome; if (backdrop_) footer.a=230;
         rectangle(navigation_.footer,footer,0,{},0,true);
         rectangle({0,navigation_.footer.y,width_,1/scale_},seam);
+        const auto placement=footer_layout();
+        const auto context=footer_presentation();
+        label(placement.directory,context.directory,context.subdued?secondary:text,11);
+        if(placement.git.width>0 && !context.head.empty()) {
+            const auto r=placement.git;
+            // Owned vector branch mark, independent of shell font/icon plugins.
+            const double x=r.x+3,y=r.y+r.height/2;
+            line(x,y-5,x,y+5,secondary,1);
+            line(x,y,x+6,y-4,secondary,1);
+            rectangle({x-1.5,y-6.5,3,3},secondary,1.5);
+            rectangle({x-1.5,y+3.5,3,3},secondary,1.5);
+            rectangle({x+4.5,y-5.5,3,3},secondary,1.5);
+            label({r.x+16,r.y,std::max(0.0,r.width-16),r.height},context.detached?"@"+context.head:context.head,
+                context.subdued?secondary:accent,11);
+        }
+        label(placement.status,context.status,context.failed?accent:secondary,10,false,ChromeTextAlignment::trailing);
+        if(placement.divider.height>0) rectangle(placement.divider,seam);
         if (!projects_.active()->parked_sessions.empty()) {
-            const auto footer_layout=background_layout();
-            label(footer_layout.label,"Background",secondary,11);
+            const auto footer_layout=placement.background;
             for (std::size_t i=0;i<footer_layout.chips.size();++i) {
                 const auto bounds=footer_layout.chips[i]; const auto& parked=projects_.active()->parked_sessions[i];
                 rectangle(bounds,raised,4);
@@ -1865,25 +1944,6 @@ WindowScene NativeWindow::scene() {
                 if (unread) rectangle({footer_layout.overflow.x+5,footer_layout.overflow.y+footer_layout.overflow.height/2-2,4,4},accent,2);
                 label(footer_layout.overflow,"+"+std::to_string(parked.size()-footer_layout.chips.size())+" more",secondary,11,false,ChromeTextAlignment::center);
             }
-        } else {
-        std::string profile="Terminal";
-        if (const auto* pane=workspace().pane(workspace().active_pane())) {
-            profile=pane->profile;
-            if (managed_shell_profile_ && pane->profile==managed_shell_profile_->id) profile=managed_shell_profile_->label;
-            else for (const auto& candidate:config_.profiles) if (candidate.id==pane->profile) { profile=candidate.label; break; }
-        }
-        const double count_width=width_>=640?220:104;
-        label({12,navigation_.footer.y+3,std::max(0.0,width_-count_width-36),20},"Local  ·  "+profile,secondary,11);
-        std::string summary=std::to_string(sessions_.size())+(sessions_.size()==1?" session":" sessions");
-        if (width_>=640 && projects_.entries().size()>1) summary+="  ·  "+std::to_string(projects_.entries().size())+" workspaces";
-        if (auto* session=active_session(); width_>=640 && session) {
-            const auto info=session->info();
-            if (info.state==SessionState::exited) summary+="  ·  exited";
-            else if (info.state==SessionState::failed) summary+="  ·  failed";
-            else if (info.state==SessionState::starting) summary+="  ·  starting";
-            else if (info.state==SessionState::closing) summary+="  ·  closing";
-        }
-        label({std::max(12.0,width_-count_width-12),navigation_.footer.y+3,std::min(count_width,std::max(0.0,width_-24)),20},summary,secondary,11,false,ChromeTextAlignment::trailing);
         }
     }
     if (workspace().state().tabs.empty()) {
@@ -2756,6 +2816,7 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
 bool NativeWindow::smoke_palette_evidence(SessionId parked) {
     const auto actor=sessions_.at(parked);
     const auto actor_count=sessions_.size();
+    const auto parked_context=actor->info().shell_context;
     const auto fail=[&](std::string_view message){smoke_finish(message); return false;};
     smoke_chrome_time_=GetTickCount64()+1000;
     toggle_palette(); palette_transition_.finish();
@@ -2782,7 +2843,12 @@ bool NativeWindow::smoke_palette_evidence(SessionId parked) {
     // Repeated stale activation is rejected before touching placement or ownership.
     activate_palette_entry(stale); notice_.clear();
     if (active_session()!=actor.get() || sessions_.size()!=actor_count) return fail("Stale palette activation changed session ownership.");
+    if (parked_context && actor->info().shell_context!=parked_context) return fail("Restoring a background actor changed its owned shell context.");
+    const auto footer=footer_layout();
+    if (footer.directory.width<=0 || footer_presentation().directory.empty()) return fail("Restored terminal has no active footer context.");
+    smoke_motion_capture(L"footer-restored",0);
     park_pane(workspace().active_pane());
+    if (parked_context && actor->info().shell_context!=parked_context) return fail("Parking an actor transplanted its shell context.");
     if (projects_.active()->parked_sessions.size()!=1 || projects_.active()->parked_sessions.front().session!=parked)
         return fail("Palette smoke could not restore the original background fixture.");
     smoke_chrome_time_.reset();
@@ -3137,6 +3203,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         for (const auto& [id,actor]:smoke_project_actors_) {
             if (!sessions_.contains(id) || sessions_.at(id)!=actor) { smoke_finish("Workspace activation replaced an actor."); return; }
             const auto info=actor->info(); if (info.state!=SessionState::running || !info.bytes_received) return;
+            if (smoke_managed_sessions_.contains(id) && !info.shell_context) return;
         }
         smoke_focus_evidence(true);
         const auto row=std::find_if(navigation_.projects.begin(),navigation_.projects.end(),[&](const auto& item){return item.project==smoke_secondary_project_;});
@@ -3167,6 +3234,9 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         smoke_projects_live_verified_=true;
     }
     if (options_.smoke_layout && !smoke_tab_drag_verified_) {
+        if(const auto* pane=workspace().pane(workspace().active_pane()); pane && smoke_managed_sessions_.contains(pane->session)) {
+            const auto* actor=active_session(); if(!actor || !actor->info().shell_context) return;
+        }
         if (chrome_.compact || chrome_.tabs.size()<3) { smoke_finish("Layout smoke task tabs unexpectedly compact."); return; }
         smoke_focus_evidence(false);
         const auto first=chrome_.tabs.front(), last=chrome_.tabs.back();
@@ -3184,6 +3254,22 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if (projects_.active()->parked_sessions.size()!=2 || sessions_.size()!=actor_count || layout_.panes.size()!=3) {
             smoke_finish("Layout smoke did not retain its real background actors and foreground splits."); return;
         }
+        const auto footer=footer_layout();
+        if(footer.directory.width<=0 || (footer.background.chips.empty() && footer.background.overflow.width<=0)) {
+            smoke_finish("Active footer context disappeared behind background terminals."); return;
+        }
+        const auto* foreground=active_session();
+        if(!foreground || footer_presentation().directory.empty()) {
+            smoke_finish("Foreground footer lost its actual session directory/profile."); return;
+        }
+        std::fprintf(stderr,"Native footer smoke: active directory/context retained beside background restore targets; no synthetic Git metadata injected.\n");
+        const auto current_context=foreground->info().shell_context;
+        if(current_context && footer_presentation().directory!=current_context->display_directory) {
+            smoke_finish("Footer did not use the active actor's owned display directory."); return;
+        }
+        smoke_chrome_time_=GetTickCount64()+1000;
+        smoke_motion_capture(L"footer-background",0);
+        smoke_chrome_time_.reset();
     }
     if (options_.smoke_projects && smoke_projects_live_verified_ && !smoke_background_command_verified_) {
         const auto actor=sessions_.at(smoke_parked_session_);

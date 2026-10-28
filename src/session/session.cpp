@@ -348,22 +348,26 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
         };
         auto effects = [&] {
             const auto command = core.command_snapshot();
-            bool command_changed{};
+            auto context = core.shell_context();
+            auto pending = core.take_effects();
+            for (auto& effect : pending)
+                if (effect.kind == EffectKind::write_pty) append(std::move(effect.text));
+            bool metadata_changed{};
             {
                 std::lock_guard lock(mutex);
-                command_changed = information.command != command;
+                metadata_changed = information.command != command || information.shell_context != context;
                 information.command = command;
+                information.shell_context = std::move(context);
+                // Publish cwd and its correlated context atomically. No reader
+                // can see the new branch beside the preceding directory.
+                for (auto& effect : pending) {
+                    if (effect.kind == EffectKind::title) information.title = std::move(effect.text);
+                    else if (effect.kind == EffectKind::working_directory)
+                        information.working_directory = std::move(effect.text);
+                    // Clipboard payloads remain denied, never executed/copied.
+                }
             }
-            if (command_changed) notify();
-            for (auto& effect : core.take_effects()) {
-                if (effect.kind == EffectKind::write_pty) { append(std::move(effect.text)); continue; }
-                std::lock_guard lock(mutex);
-                if (effect.kind == EffectKind::title) information.title = std::move(effect.text);
-                else if (effect.kind == EffectKind::working_directory)
-                    information.working_directory = std::move(effect.text);
-                // Clipboard protocol requests are denied by the adapter; never
-                // copy their payloads into the OS clipboard or execute titles.
-            }
+            if (metadata_changed) notify();
         };
         for (;;) {
             // Cancel superseded work before consuming any more search units,
