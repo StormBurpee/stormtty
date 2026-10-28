@@ -9,7 +9,9 @@ throw. Renderers only receive `FramePtr` (`shared_ptr<const RenderFrame>`).
 
 - `feed` parses bytes without constructing a host frame on every input. A
   requested `snapshot` materializes dirty rows and shares unchanged immutable
-  rows. Content generations do not advance for cursor-only row invalidations.
+  rows. Content generations do not advance for cursor-only row invalidations. Cheap
+  color/cursor metadata is compared even when the engine dirty flags are clean;
+  changed default colors re-resolve row colors before publishing.
 - Row IDs come from the public API, not unpacked private cell layouts. Generation
   values are equality/cache keys, not timestamps.
 - Pixel buffers are copied only for new image generations, under the same actor
@@ -23,6 +25,14 @@ throw. Renderers only receive `FramePtr` (`shared_ptr<const RenderFrame>`).
   constructed. A failed GPU presentation can retry the same owned frame.
 
 ## Protocol behavior
+
+- Optional `default_foreground`/`default_background` configure actual engine RGB
+  defaults, not renderer-only replacements. SGR 39/49/0 and OSC 110/111 reset to
+  those defaults; OSC 10/11 queries return effective configured/overridden values.
+  Explicit true-color and indexed ANSI colors remain unchanged. All configured
+  colors must have alpha 255; default-background translucency stays renderer-only.
+  Unspecified colors use the initial engine render defaults; both defaults are
+  installed so one-sided optional themes work with the pinned engine.
 
 - DEC 2026 begins by capturing the exact pre-hold frame *inside* the engine's
   allowed render-hold callback, even if more bytes follow in the same feed. The

@@ -34,7 +34,7 @@ jobs:
         run: python -m unittest discover -s tools -p 'bootstrap_test*.py' -v
       - name: Configure native Windows application
         if: runner.os == 'Windows'
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON
       - name: Configure portable core and native POSIX transport
         if: runner.os != 'Windows'
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=OFF

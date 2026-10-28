@@ -170,6 +170,9 @@ struct TerminalCore::Impl {
 
     explicit Impl(TerminalOptions config) : options(config), geometry(config.size) {
         valid_size(geometry);
+        if ((config.default_foreground && config.default_foreground->a != 255) ||
+            (config.default_background && config.default_background->a != 255))
+            throw std::invalid_argument("terminal default colors must be opaque RGB; apply opacity in the renderer");
         if (config.render_hold_timeout <= std::chrono::milliseconds::zero() ||
             config.scrollback_budget_bytes > std::numeric_limits<std::size_t>::max() ||
             config.effect_queue_limit_bytes < 256 || config.clipboard_limit_bytes > config.effect_queue_limit_bytes)
@@ -195,6 +198,17 @@ struct TerminalCore::Impl {
         set(GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ, reinterpret_cast<const void*>(on_clipboard_read));
         set(GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(on_clipboard_write));
         set(GHOSTTY_TERMINAL_OPT_RENDER_HOLD, reinterpret_cast<const void*>(on_hold));
+        // The pinned renderer only refreshes fg/bg when BOTH engine defaults
+        // exist. Materialize unspecified defaults from its initial colors so a
+        // one-sided theme still renders and answers OSC queries consistently.
+        auto initial_colors = sized<GhosttyRenderStateColors>();
+        checked(ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_COLORS, &initial_colors), "read initial colors");
+        const auto set_default_color = [&](GhosttyTerminalOption option, Color value) {
+            const GhosttyColorRgb rgb{value.r, value.g, value.b};
+            set(option, &rgb);
+        };
+        set_default_color(GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, options.default_foreground.value_or(color(initial_colors.foreground)));
+        set_default_color(GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, options.default_background.value_or(color(initial_colors.background)));
         set(GHOSTTY_TERMINAL_OPT_RESIZE_PULL_SCROLLBACK, &options.resize_pull_scrollback);
         set(GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &options.image_budget_bytes);
         const bool disabled = false;
@@ -349,7 +363,32 @@ FramePtr TerminalCore::Impl::capture() {
     bool mouse{};
     checked(ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &mouse), "read mouse reporting");
     const bool alternate = screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE;
-    if (frame && dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE &&
+    // Dynamic colors and some cursor metadata are updated by Ghostty even when
+    // no rows/global flags are dirty. Check these cheap fields before reusing an
+    // owned frame; changed defaults require re-resolving previously clean rows.
+    auto colors = sized<GhosttyRenderStateColors>();
+    checked(ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors), "read colors");
+    const auto foreground = color(colors.foreground), background = color(colors.background);
+    if (frame && (frame->foreground != foreground || frame->background != background))
+        dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+    auto cursor = sized<GhosttyRenderStateCursor>();
+    checked(ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor), "read cursor");
+    FrameCursor next_cursor;
+    if (cursor.viewport_has_value) {
+        next_cursor.column = cursor.viewport_x; next_cursor.row = cursor.viewport_y;
+        next_cursor.wide_tail = cursor.wide_tail;
+    }
+    next_cursor.visible = cursor.visible && cursor.viewport_has_value;
+    next_cursor.blinking = cursor.blinking;
+    next_cursor.password_input = cursor.password_input;
+    next_cursor.color = colors.cursor_has_value ? color(colors.cursor) : foreground;
+    switch (cursor.visual_style) {
+    case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR: next_cursor.shape = CursorShape::bar; break;
+    case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE: next_cursor.shape = CursorShape::underline; break;
+    case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW: next_cursor.shape = CursorShape::hollow_block; break;
+    default: next_cursor.shape = CursorShape::block; break;
+    }
+    if (frame && dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE && next_cursor == frame->cursor &&
         image_generation == frame->image_placements_generation && alternate == frame->alternate_screen &&
         mouse == frame->mouse_reporting && frame->columns == geometry.columns && frame->rows == geometry.rows &&
         frame->cell_width == geometry.cell_width && frame->cell_height == geometry.cell_height) return frame;
@@ -360,22 +399,8 @@ FramePtr TerminalCore::Impl::capture() {
     next->cell_width = geometry.cell_width; next->cell_height = geometry.cell_height;
     next->alternate_screen = alternate; next->mouse_reporting = mouse;
     next->image_placements_generation = image_generation;
-    auto colors = sized<GhosttyRenderStateColors>();
-    checked(ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors), "read colors");
-    next->foreground = color(colors.foreground); next->background = color(colors.background);
-    auto cursor = sized<GhosttyRenderStateCursor>();
-    checked(ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor), "read cursor");
-    next->cursor.column = cursor.viewport_x; next->cursor.row = cursor.viewport_y;
-    next->cursor.visible = cursor.visible && cursor.viewport_has_value;
-    next->cursor.blinking = cursor.blinking; next->cursor.wide_tail = cursor.wide_tail;
-    next->cursor.password_input = cursor.password_input;
-    next->cursor.color = colors.cursor_has_value ? color(colors.cursor) : next->foreground;
-    switch (cursor.visual_style) {
-    case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR: next->cursor.shape = CursorShape::bar; break;
-    case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE: next->cursor.shape = CursorShape::underline; break;
-    case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW: next->cursor.shape = CursorShape::hollow_block; break;
-    default: next->cursor.shape = CursorShape::block; break;
-    }
+    next->foreground = foreground; next->background = background;
+    next->cursor = next_cursor;
     std::unordered_map<RowId, std::shared_ptr<const FrameRow>, RowHash> previous;
     if (frame) for (const auto& row : frame->lines) previous.emplace(row->id, row);
     checked(ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &rows.value), "read rows");

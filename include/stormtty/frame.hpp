@@ -48,6 +48,7 @@ struct FrameCursor {
     bool visible{}, blinking{}, wide_tail{}, password_input{};
     CursorShape shape{CursorShape::block};
     Color color{};
+    bool operator==(const FrameCursor&) const = default;
 };
 enum class PixelFormat { rgb, rgba, gray_alpha, gray };
 struct ImagePixels {

@@ -85,11 +85,17 @@ Windows SDK and Ninja available:
 
 ```powershell
 python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON
-cmake --build build --parallel 2
-ctest --test-dir build --output-on-failure
-.\build\stormtty.exe
+cmake -S . -B build-msvc -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON
+cmake --build build-msvc --parallel 2
+ctest --test-dir build-msvc --output-on-failure
+.\build-msvc\stormtty.exe
 ```
+
+Use a fresh build directory when changing compilers. CMake caches its first compiler
+selection; a previously configured `build` directory may still select an older LLVM
+installation even inside a Visual Studio prompt. The explicit `cl` selection above
+uses the compiler matching the installed MSVC headers. Do not disable STL version
+checks or edit Visual Studio headers to work around a compiler mismatch.
 
 The build copies the shared terminal library next to the executable. Keep them
 together when running the development build. Do not substitute a Windows GNU

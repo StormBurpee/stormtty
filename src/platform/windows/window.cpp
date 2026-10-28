@@ -454,6 +454,10 @@ SessionId NativeWindow::new_session() {
     }
     TerminalOptions terminal;
     terminal.scrollback_lines=config_.scrollback_lines;
+    // VT default colors belong to the engine, including OSC queries/resets.
+    // Translucency is exclusively a renderer policy; terminal colors stay opaque.
+    terminal.default_foreground=color_hex(config_.theme.foreground,{236,238,242,255});
+    terminal.default_background=color_hex(config_.theme.background,{23,25,29,255});
     const SessionId id{next_session_++};
     std::weak_ptr<WakeState> weak = wake_;
     auto session = Session::start(std::move(process), terminal, [weak] { if (auto state = weak.lock()) state->wake(); });

@@ -18,6 +18,11 @@ struct TerminalSize {
 };
 struct TerminalOptions {
     TerminalSize size{};
+    // Opaque RGB defaults belong to VT state (including OSC queries/resets), not
+    // just window chrome. nullopt uses the engine's initial render default. Alpha
+    // must be 255; background opacity is exclusively a renderer policy.
+    std::optional<Color> default_foreground;
+    std::optional<Color> default_background;
     bool resize_pull_scrollback{false}; // ConPTY must use false; POSIX may opt in.
     std::uint64_t image_budget_bytes{64u * 1024u * 1024u};
     std::uint64_t scrollback_budget_bytes{32u * 1024u * 1024u};

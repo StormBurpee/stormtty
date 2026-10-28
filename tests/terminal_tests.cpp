@@ -96,6 +96,71 @@ void ansi_styles() {
     CHECK(!x.background_is_default); CHECK(y.background_is_default); CHECK(!y.style.bold);
     t.feed("\x1b[2J\x1b[HZ"); CHECK(line(t.snapshot(), 0) == "Z"); CHECK(line(f, 0) == "XY");
 }
+void configured_theme_defaults_and_queries() {
+    auto options = small();
+    options.default_foreground = Color{0x12,0x34,0x56,255};
+    options.default_background = Color{0x2a,0x45,0x6b,255};
+    TerminalCore themed(options), baseline(small());
+    themed.feed("D\x1b[38;2;1;2;3;48;2;4;5;6mE\x1b[39;49mR\x1b[31;44mP\x1b[0mZ");
+    baseline.feed("\x1b[31;44mP");
+    const auto frame = themed.snapshot(); const auto& cells = frame->lines[0]->cells;
+    CHECK(frame->foreground == *options.default_foreground); CHECK(frame->background == *options.default_background);
+    CHECK(cells[0].foreground == *options.default_foreground && cells[0].background == *options.default_background);
+    CHECK(cells[0].background_is_default);
+    CHECK(cells[1].foreground == (Color{1,2,3,255}) && cells[1].background == (Color{4,5,6,255}));
+    CHECK(!cells[1].background_is_default);
+    CHECK(cells[2].foreground == *options.default_foreground && cells[2].background == *options.default_background);
+    CHECK(cells[2].background_is_default);
+    CHECK(cells[3].foreground == baseline.snapshot()->lines[0]->cells[0].foreground);
+    CHECK(cells[3].background == baseline.snapshot()->lines[0]->cells[0].background);
+    CHECK(!cells[3].background_is_default); // The indexed ANSI palette is not overwritten by default theme colors.
+    CHECK(cells[4].foreground == *options.default_foreground && cells[4].background == *options.default_background);
+    themed.feed("\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
+    CHECK(replies(themed) == "\x1b]10;rgb:1212/3434/5656\x1b\\\x1b]11;rgb:2a2a/4545/6b6b\x1b\\");
+    auto foreground_only = small(); foreground_only.default_foreground = options.default_foreground;
+    TerminalCore single_fg(foreground_only);
+    CHECK(single_fg.snapshot()->foreground == *options.default_foreground);
+    CHECK(single_fg.snapshot()->background == baseline.snapshot()->background);
+    auto background_only = small(); background_only.default_background = options.default_background;
+    TerminalCore single_bg(background_only);
+    CHECK(single_bg.snapshot()->background == *options.default_background);
+    CHECK(single_bg.snapshot()->foreground == baseline.snapshot()->foreground);
+}
+void theme_overrides_reset_and_validation() {
+    auto options = small();
+    options.default_foreground = Color{0x12,0x34,0x56,255};
+    options.default_background = Color{0x2a,0x45,0x6b,255};
+    TerminalCore t(options);
+    t.feed("D\x1b[38;2;1;2;3;48;2;4;5;6mE\x1b[0m"
+           "\x1b]10;rgb:aa/bb/cc\x1b\\\x1b]11;rgb:dd/ee/ff\x1b\\");
+    const auto overridden = t.snapshot();
+    CHECK(overridden->foreground == (Color{0xaa,0xbb,0xcc,255}));
+    CHECK(overridden->background == (Color{0xdd,0xee,0xff,255}));
+    CHECK(overridden->lines[0]->cells[0].background_is_default);
+    CHECK(overridden->lines[0]->cells[1].foreground == (Color{1,2,3,255}));
+    CHECK(overridden->lines[0]->cells[1].background == (Color{4,5,6,255}));
+    t.feed("\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
+    CHECK(replies(t) == "\x1b]10;rgb:aaaa/bbbb/cccc\x1b\\\x1b]11;rgb:dddd/eeee/ffff\x1b\\");
+    t.feed("\x1b]110\x1b\\\x1b]111\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
+    CHECK(replies(t) == "\x1b]10;rgb:1212/3434/5656\x1b\\\x1b]11;rgb:2a2a/4545/6b6b\x1b\\");
+    CHECK(t.snapshot()->foreground == *options.default_foreground);
+    CHECK(t.snapshot()->background == *options.default_background);
+    CHECK(t.snapshot()->lines[0]->cells[0].foreground == *options.default_foreground);
+    CHECK(t.snapshot()->lines[0]->cells[0].background == *options.default_background);
+    CHECK(overridden->background == (Color{0xdd,0xee,0xff,255})); // Published old frame stays owned/unchanged.
+    t.feed("\x1b" "c"); // RIS resets protocol state, not configured theme defaults.
+    CHECK(t.snapshot()->foreground == *options.default_foreground);
+    CHECK(t.snapshot()->background == *options.default_background);
+    t.feed("\x1b[?1049h\x1b[HX");
+    CHECK(t.snapshot()->lines[0]->cells[0].foreground == *options.default_foreground);
+    CHECK(t.snapshot()->lines[0]->cells[0].background == *options.default_background);
+    options.default_foreground->a = 254;
+    bool rejected{}; try { TerminalCore invalid(options); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    options.default_foreground->a = 255; options.default_background->a = 128;
+    rejected = false; try { TerminalCore invalid(options); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+}
 void alternate_buffer() {
     TerminalCore t(small()); t.feed("primary"); auto primary = t.snapshot();
     t.feed("\x1b[?1049h\x1b[Halternate"); auto alternate = t.snapshot();
@@ -326,6 +391,8 @@ int main() {
     install_png_decoder(rejecting_png_decoder);
     const std::vector<std::pair<const char*, std::function<void()>>> tests{
         {"split UTF-8/ANSI feeds", split_feeds}, {"fragmented stream equivalence", fragmented_stream_equivalence}, {"ANSI styles and default backgrounds", ansi_styles},
+        {"configured theme defaults/query replies", configured_theme_defaults_and_queries},
+        {"theme OSC/reset/alpha validation", theme_overrides_reset_and_validation},
         {"alternate buffer", alternate_buffer}, {"immutable row sharing", immutable_sharing},
         {"resize and reflow", resize_and_wrap}, {"ConPTY/POSIX resize policy", backend_resize_policy}, {"DEC2026 exact pre-hold capture", hold_captures_exact_boundary},
         {"DEC2026 timeout and resize release", hold_timeout_and_resize}, {"back-to-back render holds", back_to_back_holds},
