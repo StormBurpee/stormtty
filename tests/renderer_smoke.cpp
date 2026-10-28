@@ -14,10 +14,13 @@
 #include <d3d11.h>
 #include <dxgi1_3.h>
 #include <dcomp.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -67,6 +70,9 @@ template<class T> struct ProbeCom {
     ProbeCom& operator=(const ProbeCom&)=delete;
 };
 void save_motion_png(const std::filesystem::path& path,const std::vector<std::uint8_t>& rgba,UINT width,UINT height) {
+    require(width && height && width<=std::numeric_limits<UINT>::max()/4 &&
+        std::uint64_t(width)*height*4==rgba.size() && rgba.size()<=std::numeric_limits<UINT>::max(),
+        "Motion PNG framebuffer dimensions are invalid");
     auto check=[](HRESULT hr){require(SUCCEEDED(hr),"Motion PNG encoding failed");};
     ProbeCom<IWICImagingFactory> factory; ProbeCom<IWICStream> stream;
     ProbeCom<IWICBitmapEncoder> encoder; ProbeCom<IWICBitmapFrameEncode> frame;
@@ -75,10 +81,29 @@ void save_motion_png(const std::filesystem::path& path,const std::vector<std::ui
     check(factory.value->CreateEncoder(GUID_ContainerFormatPng,nullptr,&encoder.value));
     check(encoder.value->Initialize(stream.value,WICBitmapEncoderNoCache));
     check(encoder.value->CreateNewFrame(&frame.value,nullptr)); check(frame.value->Initialize(nullptr));
-    check(frame.value->SetSize(width,height)); auto format=GUID_WICPixelFormat32bppRGBA;
-    check(frame.value->SetPixelFormat(&format)); require(IsEqualGUID(format,GUID_WICPixelFormat32bppRGBA),"Motion PNG format changed");
-    check(frame.value->WritePixels(height,width*4,static_cast<UINT>(rgba.size()),const_cast<BYTE*>(rgba.data())));
+    check(frame.value->SetSize(width,height));
+    // Match NativeWindow::capture_frame: WIC PNG negotiates BGRA, not RGBA.
+    // Readback is straight RGBA. Swap only R/B, preserving alpha and the original
+    // capture used by the incremental-versus-full-render assertions below.
+    auto pixels=rgba;
+    WICPixelFormatGUID format=GUID_WICPixelFormat32bppBGRA;
+    check(frame.value->SetPixelFormat(&format));
+    if (IsEqualGUID(format,GUID_WICPixelFormat32bppBGRA)) {
+        for (std::size_t i=0;i<pixels.size();i+=4) std::swap(pixels[i],pixels[i+2]);
+    } else {
+        require(IsEqualGUID(format,GUID_WICPixelFormat32bppRGBA),"Motion PNG negotiated an unsupported pixel format");
+    }
+    check(frame.value->WritePixels(height,width*4,static_cast<UINT>(pixels.size()),pixels.data()));
     check(frame.value->Commit()); check(encoder.value->Commit());
+    // Close the writer before reopening the committed PNG. Every real renderer
+    // sample must decode to identical straight RGBA, not merely exist on disk.
+    frame.reset(); encoder.reset(); stream.reset();
+    std::ifstream input(path,std::ios::binary);
+    require(input.is_open(),"Motion PNG could not be reopened");
+    const std::vector<std::uint8_t> encoded{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
+    const auto decoded=decode_windows_png(encoded,rgba.size());
+    require(decoded && decoded->width==width && decoded->height==height && decoded->rgba==rgba,
+        "Motion PNG round-trip changed framebuffer pixels");
 }
 void cursor_motion_raster_test() {
     RendererOptions options; options.force_warp=true; options.font.family="Consolas";
@@ -110,7 +135,7 @@ void cursor_motion_raster_test() {
     scene.panes[0].cursor_reveal=1; require(renderer.render(scene)==RenderResult::unchanged,"Settled cursor keeps rendering at idle");
     // Incremental damage must be identical to a fresh full render, including inverse glyphs.
     scene.force_redraw=true; renderer.render(scene); require(renderer.read_pixels()==captures.back(),"Cursor damage left stale inverse glyph pixels");
-    std::cout<<"Cursor motion captures: initial 0ms, intermediate 28ms, settled 85ms; input-gated destination reveal, WARP native pixels\n";
+    std::cout<<"Cursor motion captures: all 7 PNGs round-trip verified; initial 0ms, intermediate 28ms, settled 85ms; input-gated destination reveal, WARP native pixels\n";
 }
 void direct_composition_probe(bool initial_no_redirection, bool waitable, D3D_DRIVER_TYPE driver) {
     // Failure-only diagnostic, independent of Renderer and its dynamic style

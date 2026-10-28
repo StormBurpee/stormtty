@@ -55,6 +55,7 @@ constexpr UINT_PTR smoke_timeout_timer = 2;
 constexpr UINT_PTR chrome_motion_timer = 3;
 constexpr UINT_PTR material_probe_timer = 4;
 constexpr UINT_PTR typing_motion_timer = 5;
+constexpr UINT_PTR typing_smoke_timer = 6;
 constexpr std::string_view smoke_marker="__STORMTTY_NATIVE_SMOKE_OK__";
 constexpr std::size_t clipboard_limit = 1024 * 1024;
 
@@ -299,9 +300,10 @@ private:
     void changed(bool geometry = false);
     void render();
     bool smoke_frame_ready() const;
-    void smoke_progress(bool presented = false);
+    void smoke_progress(bool presented = false, bool frame_observed = false);
     void smoke_finish(std::string_view error = {});
     bool smoke_typing_progress();
+    void smoke_typing_diagnostic(const char* event);
     void smoke_settings_stage(unsigned stage);
     void capture_frame();
     NoticeLayout notice_layout();
@@ -389,6 +391,9 @@ private:
     int exit_code_{};
     unsigned smoke_modal_stage_{}, smoke_settings_stage_{};
     unsigned smoke_typing_stage_{};
+    bool smoke_typing_handshake_sent_{}, smoke_typing_handshake_seen_{};
+    int smoke_typing_input_result_{-1};
+    unsigned smoke_typing_last_logged_{99};
     std::uint16_t smoke_typing_column_{}, smoke_typing_row_{};
     bool smoke_typing_reveal_seen_{}, smoke_typing_reduced_{};
     ULONGLONG smoke_started_at_{};
@@ -573,6 +578,7 @@ void NativeWindow::create() {
     settings_changed();
     ShowWindow(hwnd_, SW_SHOWNORMAL);
     UpdateWindow(hwnd_);
+    if (options_.smoke_test && !options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && !SetTimer(hwnd_,typing_smoke_timer,25,nullptr)) throw std::runtime_error("Could not start bounded typing smoke progress timer.");
     if (options_.smoke_test && !SetTimer(hwnd_,smoke_timeout_timer,20000,nullptr)) throw std::runtime_error("Could not start the native smoke deadline.");
 }
 int NativeWindow::run() {
@@ -1946,7 +1952,7 @@ void NativeWindow::render() {
     if (!render_busy_) dirty_ = false;
     observe_material_renderer();
     if (result==RenderResult::presented || result==RenderResult::unchanged) begin_material_probe(rendered);
-    if (options_.smoke_test) smoke_progress(result==RenderResult::presented);
+    if (options_.smoke_test) smoke_progress(result==RenderResult::presented,true);
     // Occlusion is retried on actual exposure/activation/output, not a timer.
 }
 
@@ -1965,6 +1971,7 @@ void NativeWindow::terminal_text(std::string text, Key key, std::uint16_t modifi
     if (!animate) typing_motion_.reset();
     if (key == Key::unidentified && !modifiers) submit([this,session,animate,text = std::move(text)] {
         const auto result=session->text(text);
+        if (options_.smoke_test && smoke_typing_stage_>0 && smoke_typing_stage_<6) smoke_typing_input_result_=static_cast<int>(result);
         if (animate && result==SessionSendResult::accepted && active_ && !composing_ && !reduced_motion_ && !minimized_ && !in_size_move_ && drag_!=Drag::selection && session_for(workspace().active_pane())==session.get()) typing_motion_.input(GetTickCount64());
         return result;
     },bytes);
@@ -1980,6 +1987,7 @@ void NativeWindow::terminal_text(std::string text, Key key, std::uint16_t modifi
         if (modifiers & Modifier::right_alt) input.consumed_modifiers = Modifier::alt | Modifier::control | Modifier::right_alt;
         submit([this,session,animate,input = std::move(input)] {
             const auto result=session->key(input);
+        if (options_.smoke_test && smoke_typing_stage_>0 && smoke_typing_stage_<6) smoke_typing_input_result_=static_cast<int>(result);
             if (animate && result==SessionSendResult::accepted && active_ && !composing_ && !reduced_motion_ && !minimized_ && !in_size_move_ && drag_!=Drag::selection && session_for(workspace().active_pane())==session.get()) typing_motion_.input(GetTickCount64());
             return result;
         },bytes+64);
@@ -2091,7 +2099,9 @@ bool NativeWindow::key_message(MSG& message) {
         KeyInput input;
         input.key = key; input.modifiers = modifiers;
         input.action = up ? KeyAction::release : (message.lParam & (1LL << 30) ? KeyAction::repeat : KeyAction::press);
-        submit([session,input] { return session->key(input); });
+        submit([this,session,input] { const auto result=session->key(input);
+            if (options_.smoke_test && smoke_typing_stage_>0 && smoke_typing_stage_<6) smoke_typing_input_result_=static_cast<int>(result);
+            return result; });
         if (down) caret_schedule(true);
         return true; // Do not also manufacture WM_CHAR for Enter/Tab/Backspace.
     }
@@ -2459,15 +2469,33 @@ void NativeWindow::cancel_drag() {
     changed();
 }
 
+void NativeWindow::smoke_typing_diagnostic(const char* event) {
+    if (!options_.smoke_test) return;
+    auto* actor=active_session(); const auto frame=actor?actor->frame():FramePtr{};
+    const auto info=actor?actor->info():SessionInfo{};
+    std::fprintf(stderr,"Typing smoke event=%s phase=%u elapsed_ms=%llu active=%d reduced=%d visible=%d alternate=%d cursor=%u,%u expected=%u,%u input_result=%d pending=%zu frame_generation=%llu rx_bytes=%llu process_state=%d finished=%d handshake=%d/%d reveal_seen=%d motion=%d timer=%d\n",
+        event,smoke_typing_stage_,GetTickCount64()-smoke_started_at_,active_,reduced_motion_,frame && frame->cursor.visible,frame && frame->alternate_screen,
+        frame?unsigned(frame->cursor.column):0,frame?unsigned(frame->cursor.row):0,unsigned(smoke_typing_column_+((smoke_typing_stage_==1 || smoke_typing_stage_==4)?1:0)),unsigned(smoke_typing_row_),smoke_typing_input_result_,pending_input_.size(),
+        static_cast<unsigned long long>(frame?frame->generation:0),static_cast<unsigned long long>(info.bytes_received),static_cast<int>(info.state),actor && actor->process_finished(),
+        smoke_typing_handshake_sent_,smoke_typing_handshake_seen_,smoke_typing_reveal_seen_,typing_motion_.active(GetTickCount64()),typing_timer_active_);
+}
+
 // Exercise the real HWND input bridge and actual PTY echo, not a synthetic
 // cursor amount. The existing overall smoke deadline bounds a missing echo.
 bool NativeWindow::smoke_typing_progress() {
-    if (smoke_typing_stage_==6) return true;
+    if (smoke_typing_stage_==6) { KillTimer(hwnd_,typing_smoke_timer); return true; }
+    if (smoke_typing_last_logged_!=smoke_typing_stage_) { smoke_typing_last_logged_=smoke_typing_stage_; smoke_typing_diagnostic("phase-enter"); }
     auto* session=active_session(); auto frame=session?session->frame():FramePtr{};
-    if (!session || !frame || !active_ || !frame->cursor.visible || frame->alternate_screen || layout_.panes.empty()) return false;
+    if (!session || !frame || !active_ || frame->alternate_screen || layout_.panes.empty()) return false;
     const auto send_character=[&](WPARAM character,WPARAM virtual_key) {
+        smoke_typing_input_result_=-1;
         text_vk_=virtual_key; text_flags_=0; text_modifiers_=0;
-        SendMessageW(hwnd_,WM_CHAR,character,0);
+        if (virtual_key==VK_BACK) {
+            // Real Backspace is consumed by key_message before TranslateMessage.
+            MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam=VK_BACK;
+            if (!key_message(key)) { smoke_finish("Typing smoke Backspace was not handled by the normal key path."); return; }
+        } else SendMessageW(hwnd_,WM_CHAR,character,0);
+        smoke_typing_diagnostic("input-dispatched");
         text_vk_=0;
     };
     const bool at_origin=frame->cursor.row==smoke_typing_row_ && frame->cursor.column==smoke_typing_column_;
@@ -2477,6 +2505,37 @@ bool NativeWindow::smoke_typing_progress() {
         frame->lines[frame->cursor.row]->cells[smoke_typing_column_].grapheme=="x";
     if (smoke_typing_stage_==0) {
         if (session->info().state!=SessionState::running || !session->info().bytes_received || frame->cursor.column+2>=frame->columns) return false;
+        // Startup bytes are not a ready prompt. First prove the interactive
+        // child has executed a controlled command and published its exact
+        // controlled prompt; never type into a half-built startup frame.
+        if (!smoke_typing_handshake_sent_) {
+            const auto* pane=workspace().pane(workspace().active_pane());
+            auto actor=sessions_.at(pane->session);
+            // Controlled prompt belongs only to this disposable smoke child.
+            // Other modes still exercise the configured managed prompt/hooks.
+            const std::string command=using_managed_shell()?
+                "precmd_functions=(); PROMPT='__STORMTTY_TYPING_PROMPT__>'; print -r -- __STORMTTY_TYPING_READY__":
+                "prompt __STORMTTY_TYPING_PROMPT__$G&echo __STORMTTY_TYPING_READY__";
+            submit([actor,command]{return actor->text(command);},command.size());
+            KeyInput enter; enter.key=Key::enter;
+            submit([actor,enter]{return actor->key(enter);});
+            smoke_typing_handshake_sent_=true; smoke_typing_diagnostic("handshake-sent"); return false;
+        }
+        if (!smoke_typing_handshake_seen_) {
+            for (const auto& row:frame->lines) if (row) {
+                std::string line; for (const auto& cell:row->cells) if(cell.span) line+=cell.grapheme.empty()?" ":cell.grapheme;
+                while (!line.empty() && line.back()==' ') line.pop_back();
+                if (line=="__STORMTTY_TYPING_READY__") { smoke_typing_handshake_seen_=true; smoke_typing_diagnostic("handshake-seen"); break; }
+            }
+            if (!smoke_typing_handshake_seen_) return false;
+        }
+        constexpr std::string_view ready_prompt="__STORMTTY_TYPING_PROMPT__>";
+        if (frame->cursor.row>=frame->lines.size() || !frame->lines[frame->cursor.row] || frame->cursor.column!=ready_prompt.size()) return false;
+        std::string prompt;
+        for (const auto& cell:frame->lines[frame->cursor.row]->cells) if (cell.span) prompt+=cell.grapheme.empty()?" ":cell.grapheme;
+        while (!prompt.empty() && prompt.back()==' ') prompt.pop_back();
+        if (prompt!=ready_prompt || (!reduced_motion_ && !frame->cursor.visible)) return false;
+        smoke_typing_diagnostic("prompt-ready");
         smoke_typing_column_=frame->cursor.column; smoke_typing_row_=frame->cursor.row;
         smoke_typing_reduced_=reduced_motion_;
         const auto bounds=content_bounds(layout_.panes.front());
@@ -2488,6 +2547,7 @@ bool NativeWindow::smoke_typing_progress() {
     }
     if (smoke_typing_stage_==1) {
         if (!echoed) return false;
+        if (smoke_typing_input_result_!=static_cast<int>(SessionSendResult::accepted)) { smoke_finish("Typing echo was observed without accepted host input."); return false; }
         if (!smoke_typing_reduced_ && !smoke_typing_reveal_seen_) { smoke_finish("Accepted WM_CHAR echo after terminal click did not start cursor settle."); return false; }
         if (smoke_typing_reduced_ && (typing_motion_.active(GetTickCount64()) || typing_timer_active_)) { smoke_finish("OS reduced motion allowed typing animation."); return false; }
         smoke_typing_stage_=2;
@@ -2498,6 +2558,7 @@ bool NativeWindow::smoke_typing_progress() {
     }
     if (smoke_typing_stage_==3) {
         if (!at_origin) return false;
+        if (smoke_typing_input_result_!=static_cast<int>(SessionSendResult::accepted)) { smoke_finish("Typing smoke erase did not use accepted input."); return false; }
         if (smoke_typing_reduced_) {
             std::fprintf(stderr,"Typing host smoke: click/WM_CHAR/PTY echo and reduced-motion idle verified; active settle unavailable under OS reduced motion.\n");
             smoke_typing_stage_=6; return true;
@@ -2506,6 +2567,7 @@ bool NativeWindow::smoke_typing_progress() {
     }
     if (smoke_typing_stage_==4) {
         if (!echoed) return false;
+        if (smoke_typing_input_result_!=static_cast<int>(SessionSendResult::accepted)) { smoke_finish("Typing echo was observed without accepted host input."); return false; }
         if (!smoke_typing_reveal_seen_) { smoke_finish("Repeated host typing did not start cursor settle."); return false; }
         reduced_motion_=true;
         const auto reduced_scene=scene();
@@ -2516,6 +2578,7 @@ bool NativeWindow::smoke_typing_progress() {
         smoke_typing_stage_=5; send_character(L'\b',VK_BACK); return false;
     }
     if (smoke_typing_stage_==5 && at_origin) {
+        if (smoke_typing_input_result_!=static_cast<int>(SessionSendResult::accepted)) { smoke_finish("Typing smoke final erase did not use accepted input."); return false; }
         std::fprintf(stderr,"Typing host smoke: real click/release, WM_CHAR acceptance and PTY echo, active settle, finite idle and reduced-motion cancellation verified.\n");
         smoke_typing_stage_=6; return true;
     }
@@ -2634,7 +2697,7 @@ void NativeWindow::smoke_settings_stage(unsigned stage) {
     if (options_.smoke_settings) std::fprintf(stderr,"Native CI settings stage=%u elapsed_ms=%llu job_pending=%d panel_open=%d saving=%d\n",
         stage,GetTickCount64()-smoke_started_at_,settings_job_,settings_panel_.is_open(),settings_panel_.saving());
 }
-void NativeWindow::smoke_progress(bool presented) {
+void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if (!options_.smoke_test || smoke_finished_) return;
     if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
     for (const auto& [id,session]:sessions_) { (void)id; const auto info=session->info(); if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; } }
@@ -3029,7 +3092,7 @@ void NativeWindow::smoke_progress(bool presented) {
         activate_project(smoke_secondary_project_);
         smoke_background_command_verified_=true;
     }
-    if (!options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && !smoke_typing_progress()) return;
+    if (!options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && (!frame_observed || !smoke_typing_progress())) return;
     bool all_closed=true;
     for (const auto& [id,session]:sessions_) {
         const auto info=session->info();
@@ -3103,6 +3166,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
             }
         }
     }
+    if (!error.empty()) smoke_typing_diagnostic("failure");
     smoke_finished_=true; exit_code_=error.empty()?0:2;
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
@@ -3275,6 +3339,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     case wake_message:
         wake_->posted.store(false,std::memory_order_release); update_sessions(); InvalidateRect(hwnd_,nullptr,FALSE); return 0;
     case WM_TIMER:
+        if (wparam==typing_smoke_timer) { dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0; }
         if (wparam==typing_motion_timer) {
             if (!typing_motion_.active(GetTickCount64())) { KillTimer(hwnd_,typing_motion_timer); typing_timer_active_=false; }
             dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0;
@@ -3428,7 +3493,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_DESTROY:
         wake_->window.store(nullptr,std::memory_order_release);
-        KillTimer(hwnd_,typing_motion_timer); KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer); KillTimer(hwnd_,chrome_motion_timer); KillTimer(hwnd_,material_probe_timer);
+        KillTimer(hwnd_,typing_smoke_timer); KillTimer(hwnd_,typing_motion_timer); KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer); KillTimer(hwnd_,chrome_motion_timer); KillTimer(hwnd_,material_probe_timer);
         if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);
         tooltip_=nullptr; tooltip_texts_.clear();
         for (auto& [id,session]:sessions_) { (void)id; session->request_close(); }
