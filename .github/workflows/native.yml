@@ -52,15 +52,20 @@ jobs:
         if: runner.os == 'macOS'
         run: cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/MacOSLLVM.cmake -DSTORMTTY_LLVM_ROOT="$(brew --prefix llvm@20)" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=ON
       - name: Build
+        id: build
         run: cmake --build build --parallel 2
       - name: Run real native tests
+        id: native_tests
         run: ctest --test-dir build --output-on-failure --output-junit test-results.xml --parallel 1
+      - name: Collect targeted macOS GUI failure evidence
+        if: always() && runner.os == 'macOS' && steps.build.outcome == 'success' && steps.native_tests.outcome == 'failure'
+        run: python tools/macos-crash-evidence.py
       - name: Record native frame for review
         if: always() && runner.os == 'Windows'
         shell: python
         run: |
           import pathlib,base64,hashlib
-          for name in ('native-window.png', 'native-layout.png', 'native-modal.png'):
+          for name in ('native-window.png', 'native-layout.png', 'native-modal.png', 'native-projects.png'):
             p=pathlib.Path('build/artifacts')/name
             print('STORMTTY_NATIVE_FRAME_NAME='+name)
             if p.exists():
@@ -81,6 +86,8 @@ jobs:
             build/Testing/Temporary/LastTest.log
             build/CMakeFiles/CMakeConfigureLog.yaml
             build/artifacts/*.png
+            build/artifacts/macos-debugger.log
+            build/artifacts/stormtty-crash.*
             .deps/ghostty-native/stormtty-build.json
             .deps/ghostty-native/stormtty-bootstrap.lock.json
           if-no-files-found: warn

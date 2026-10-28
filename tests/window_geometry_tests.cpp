@@ -41,6 +41,27 @@ int main() {
     require(chrome.new_tab.width == 0, "compact hides new-tab before sacrificing drag/caption");
     chrome = layout_chrome(1100,720,{{1}},{1},46,0);
     require(chrome.band.height==0 && chrome.tabs.front().bounds.height==0, "fullscreen chrome has no hit area");
+    std::vector<ProjectWorkspaceId> projects;
+    for (unsigned i=1;i<=256;++i) projects.push_back({i});
+    for (int width=330;width<=2200;width+=37) for (int height=180;height<=1000;height+=53) {
+        for (const bool expanded:{false,true}) for (const bool focus:{false,true}) {
+            const auto nav=layout_project_navigation(width,height,48,projects,250,expanded,focus,true);
+            require(nav.viewport.x==nav.rail.width,"project rail and viewport share boundary");
+            require(nav.viewport.x+nav.viewport.width==width,"project viewport fits client");
+            require(nav.viewport.y+nav.viewport.height==height,"context viewport fits client height");
+            require(nav.projects.size()<=nav.capacity,"navigation rows are bounded");
+            for (const auto& row:nav.projects) {
+                require(row.bounds.y>=nav.toggle.y+nav.toggle.height,"project row excludes toggle");
+                require(row.bounds.y+row.bounds.height<=nav.new_project.y,"project rows exclude folder creation");
+                require(row.project.value>=1 && row.project.value<=256,"only actual supplied projects are shown");
+            }
+            require(focus ? nav.rail.width==0 && nav.context.height==0 : nav.rail.width==(expanded && width>=640?184:44),"collapsed/focus/narrow geometry");
+        }
+    }
+    const auto no_context=layout_project_navigation(1100,720,48,{{1}},0,false,false,false);
+    require(no_context.context.height==0 && no_context.viewport.y==48,"unknown directory does not invent context row");
+    const auto empty_nav=layout_project_navigation(1100,720,48,{},999,false,false,true);
+    require(empty_nav.projects.empty() && empty_nav.first==0,"navigation never invents project rows");
     ModalFocus modal;
     require(modal.activate()==ModalDecision::cancel,"modal starts with safe Cancel");
     modal.next(); require(modal.activate()==ModalDecision::confirm,"Tab explicitly focuses destructive choice");

@@ -10,6 +10,10 @@
 namespace stormtty {
 enum class SessionState { starting, running, closing, exited, failed };
 enum class SessionSendResult { accepted, would_block, closed, too_large };
+struct SearchSubmission {
+    SessionSendResult result{SessionSendResult::closed};
+    std::uint64_t request_id{};
+};
 struct SessionInfo {
     SessionState state{SessionState::starting};
     std::string title, working_directory, error;
@@ -42,6 +46,16 @@ public:
     SessionSendResult scroll(std::int64_t rows);
     SessionSendResult scroll_to_bottom();
     SessionSendResult request_resize(TerminalSize);
+    // Latest typing request wins; superseded pending search/navigation commands
+    // are coalesced, and in-progress work is cancelled on the actor. Results are
+    // an owned mailbox; reading it never scans terminal contents on the UI thread.
+    // Current lifetime contract destroys VT on child exit: exited tabs cannot
+    // search retained scrollback, and submissions then return closed.
+    SearchSubmission search(SearchOptions);
+    SearchSubmission cancel_search();
+    [[nodiscard]] SearchSnapshotPtr search_snapshot() const;
+    SessionSendResult select_search_match(SearchToken, std::size_t index);
+    SessionSendResult navigate_search(SearchToken, SearchDirection, bool wrap = true);
     void request_close() noexcept;
     [[nodiscard]] bool closed() const noexcept;
     // Test/background-only convenience; do not call from window callbacks.

@@ -1,8 +1,10 @@
 #pragma once
 
 #include "stormtty/workspace.hpp"
+#include "stormtty/project_workspaces.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <vector>
 
 namespace stormtty {
@@ -88,6 +90,36 @@ inline NativeHit chrome_hit_test(const ChromeLayout& layout, Point p,
     if (layout.menu.contains(p) || layout.new_tab.contains(p) || layout.palette.contains(p)) return NativeHit::client;
     for (const auto& tab : layout.tabs) if (tab.bounds.contains(p)) return NativeHit::client;
     return layout.band.contains(p) ? NativeHit::caption : NativeHit::client;
+}
+
+struct ProjectNavigationItem { ProjectWorkspaceId project; Rect bounds; };
+struct ProjectNavigationLayout {
+    Rect rail, toggle, new_project, context, focus, viewport;
+    std::vector<ProjectNavigationItem> projects;
+    std::size_t first{}, capacity{};
+    bool expanded{};
+};
+inline ProjectNavigationLayout layout_project_navigation(double width, double height, double crown,
+        const std::vector<ProjectWorkspaceId>& projects, std::size_t first, bool expanded,
+        bool focus_mode, bool show_context) {
+    ProjectNavigationLayout result;
+    width=std::max(0.0,width); height=std::max(0.0,height); crown=std::clamp(crown,0.0,height);
+    result.expanded=expanded && width>=640;
+    const double rail=focus_mode?0:std::min(width,result.expanded?184.0:44.0);
+    const double context=focus_mode||!show_context?0:std::min(28.0,height-crown);
+    result.rail={0,crown,rail,height-crown};
+    result.context={rail,crown,std::max(0.0,width-rail),context};
+    result.focus={std::max(rail,width-32),crown+4,std::min(24.0,std::max(0.0,width-rail)),context>0?20.0:0.0};
+    result.viewport={rail,crown+context,std::max(0.0,width-rail),std::max(0.0,height-crown-context)};
+    if (rail==0) return result;
+    result.toggle={6,crown+4,32,28};
+    result.new_project={4,std::max(crown+36,height-42),std::max(0.0,rail-8),36};
+    result.capacity=static_cast<std::size_t>(std::max(0.0,std::floor((result.new_project.y-(crown+40))/36)));
+    const auto maximum_first=projects.size()>result.capacity?projects.size()-result.capacity:0;
+    result.first=std::min(first,maximum_first);
+    for (std::size_t row=0;row<result.capacity && result.first+row<projects.size();++row)
+        result.projects.push_back({projects[result.first+row],{4,crown+40+row*36,std::max(0.0,rail-8),34}});
+    return result;
 }
 
 // Shared presentation-only modal geometry and keyboard decision state. Hosts

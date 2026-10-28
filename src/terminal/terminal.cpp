@@ -8,6 +8,7 @@
 #include <cstring>
 #include <exception>
 #include <limits>
+#include <new>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -32,6 +33,7 @@ template<class T, void (*Free)(T)> struct Handle {
     ~Handle() { if (value) Free(value); }
     Handle(const Handle&) = delete;
     Handle& operator=(const Handle&) = delete;
+    void reset(T replacement = {}) noexcept { if (value) Free(value); value = replacement; }
     operator T() const noexcept { return value; }
 };
 template<class T> T sized() { T value{}; value.size = sizeof(T); return value; }
@@ -128,6 +130,54 @@ template<class Encode> std::string encode(Encode&& run) {
     out.resize(length);
     return out;
 }
+// Each search gets its own capped allocator. Upstream search feed/tick can log
+// and swallow OOM, so rejection flags are checked after EVERY engine operation.
+// Failed budgets must never masquerade as a complete search with missing hits.
+struct SearchAllocator {
+    std::size_t limit{}, used{}, peak{};
+    bool limited{}, failed{};
+    static void* allocate(void* context, std::size_t length, std::uint8_t alignment, std::uintptr_t) noexcept {
+        auto& self = *static_cast<SearchAllocator*>(context);
+        if (length > self.limit - self.used) { self.limited = true; return nullptr; }
+        if (alignment >= std::numeric_limits<std::size_t>::digits - 1) { self.failed = true; return nullptr; }
+        const auto bytes = std::max<std::size_t>(alignof(std::max_align_t), std::size_t{1} << alignment);
+        void* memory = ::operator new(length, std::align_val_t(bytes), std::nothrow);
+        if (!memory) { self.failed = true; return nullptr; }
+        self.used += length; self.peak = std::max(self.peak, self.used);
+        return memory;
+    }
+    // Always fall back to allocate/copy/free so peak live bytes are accounted
+    // accurately, including shrinks (no retained larger physical allocation).
+    static bool resize(void*, void*, std::size_t, std::uint8_t, std::size_t, std::uintptr_t) noexcept { return false; }
+    static void* remap(void*, void*, std::size_t, std::uint8_t, std::size_t, std::uintptr_t) noexcept { return nullptr; }
+    static void release(void* context, void* memory, std::size_t length, std::uint8_t alignment, std::uintptr_t) noexcept {
+        auto& self = *static_cast<SearchAllocator*>(context);
+        self.used -= length;
+        const auto bytes = std::max<std::size_t>(alignof(std::max_align_t), std::size_t{1} << alignment);
+        ::operator delete(memory, std::align_val_t(bytes));
+    }
+    static constexpr GhosttyAllocatorVtable vtable{allocate, resize, remap, release};
+    GhosttyAllocator abi{this, &vtable};
+};
+bool valid_utf8(std::string_view text) {
+    for (std::size_t i = 0; i < text.size();) {
+        const auto first = static_cast<unsigned char>(text[i++]);
+        if (first < 0x80) continue;
+        unsigned count{}; std::uint32_t scalar{}, minimum{};
+        if (first >= 0xc2 && first <= 0xdf) { count = 1; scalar = first & 0x1f; minimum = 0x80; }
+        else if (first >= 0xe0 && first <= 0xef) { count = 2; scalar = first & 0x0f; minimum = 0x800; }
+        else if (first >= 0xf0 && first <= 0xf4) { count = 3; scalar = first & 7; minimum = 0x10000; }
+        else return false;
+        if (count > text.size() - i) return false;
+        while (count--) {
+            const auto next = static_cast<unsigned char>(text[i++]);
+            if ((next & 0xc0) != 0x80) return false;
+            scalar = (scalar << 6) | (next & 0x3f);
+        }
+        if (scalar < minimum || scalar > 0x10ffff || (scalar >= 0xd800 && scalar <= 0xdfff)) return false;
+    }
+    return true;
+}
 struct RowHash {
     std::size_t operator()(const RowId& id) const noexcept {
         return std::hash<std::uint64_t>{}(id.words[0]) ^ (std::hash<std::uint64_t>{}(id.words[1]) << 1);
@@ -167,6 +217,47 @@ struct TerminalCore::Impl {
     bool held{};
     Clock::time_point hold_started{}, animation_origin{Clock::now()}, last_tick{animation_origin};
     std::optional<Clock::time_point> animation_deadline;
+    std::uint64_t content_revision{1}, search_request_id{}, search_fed_revision{}, search_work{}, search_update{}, search_generation{};
+    SearchAllocator search_memory; // Must outlive the handle using it.
+    Handle<GhosttySearch, ghostty_search_free> search;
+    SearchOptions search_options;
+    SearchSnapshotPtr search_result;
+    std::vector<SearchMatch> search_building;
+    std::size_t search_count{};
+    bool search_materializing{};
+    std::optional<std::size_t> search_selected;
+
+    SearchSnapshotPtr publish_search(SearchStatus status, std::string message = {},
+                                     std::vector<SearchMatch> matches = {}) {
+        auto value = std::make_shared<SearchSnapshot>();
+        value->token = {search_request_id, content_revision, search_generation};
+        value->update_id = ++search_update; value->work_units = search_work;
+        value->status = status; value->query = search_options.query;
+        value->message = std::move(message); value->matches_found = search_count;
+        GhosttyTerminalScreen screen{};
+        checked(ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen), "search screen");
+        value->alternate_screen = screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE;
+        value->matches = std::move(matches); value->selected_index = search_selected;
+        search_result = std::move(value);
+        return search_result;
+    }
+    SearchSnapshotPtr stop_search(SearchStatus status, std::string message) {
+        search.reset(); search_building.clear(); search_materializing = false;
+        search_selected.reset();
+        return publish_search(status, std::move(message));
+    }
+    bool search_allocation_ok() {
+        if (search_memory.limited) { stop_search(SearchStatus::limited, "Search memory budget reached; narrow the query or raise its budget."); return false; }
+        if (search_memory.failed) { stop_search(SearchStatus::error, "Search allocation failed; no complete results were published."); return false; }
+        return true;
+    }
+    SearchApplyResult search_action(SearchApplyResult result) {
+        auto value = std::make_shared<SearchSnapshot>(*search_result);
+        value->update_id = ++search_update; value->last_apply_result = result;
+        value->selected_index = search_selected; search_result = std::move(value);
+        return result;
+    }
+
 
     explicit Impl(TerminalOptions config) : options(config), geometry(config.size) {
         valid_size(geometry);
@@ -222,6 +313,7 @@ struct TerminalCore::Impl {
         set(GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY, &options.apc_limit_bytes);
         set(GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES, &options.clipboard_limit_bytes);
         checked(ghostty_terminal_resize(terminal, geometry.columns, geometry.rows, geometry.cell_width, geometry.cell_height), "set cell geometry");
+        publish_search(SearchStatus::idle);
     }
     void check_thread() const {
         if (owner != std::this_thread::get_id()) throw std::logic_error("TerminalCore used outside its owner thread");
@@ -567,12 +659,16 @@ void TerminalCore::feed(std::string_view bytes) {
 void TerminalCore::feed(std::span<const std::uint8_t> bytes) {
     impl_->check_thread();
     const PngBudgetScope png_scope(impl_->options.image_budget_bytes);
-    if (!bytes.empty()) ghostty_terminal_vt_write(impl_->terminal, bytes.data(), bytes.size());
+    if (!bytes.empty()) {
+        ++impl_->content_revision;
+        ghostty_terminal_vt_write(impl_->terminal, bytes.data(), bytes.size());
+    }
     impl_->check_thread();
 }
 void TerminalCore::resize(TerminalSize size) {
     impl_->check_thread(); valid_size(size);
     if (size == impl_->geometry) return;
+    ++impl_->content_revision;
     checked(ghostty_terminal_resize(impl_->terminal, size.columns, size.rows, size.cell_width, size.cell_height), "resize terminal");
     impl_->geometry = size;
     ghostty_mouse_encoder_reset(impl_->mouse_encoder);
@@ -711,5 +807,160 @@ std::vector<TerminalEffect> TerminalCore::take_effects() {
     std::vector<TerminalEffect> result;
     result.swap(impl_->effects); impl_->effect_bytes = 0;
     return result;
+}
+
+void TerminalCore::begin_search(std::uint64_t request_id, SearchOptions options) {
+    impl_->check_thread(); auto& self = *impl_;
+    self.search.reset(); self.search_building.clear(); self.search_materializing = false;
+    self.search_request_id = request_id; ++self.search_generation;
+    self.search_fed_revision = 0; self.search_work = 0;
+    self.search_count = 0; self.search_selected.reset();
+    if (options.query.size() > 4096) {
+        self.search_options = {};
+        self.publish_search(SearchStatus::error, "Search query exceeds the 4096-byte limit.");
+        return;
+    }
+    self.search_options = std::move(options);
+    const auto& config = self.search_options;
+    if (!request_id || config.query.size() > 4096 || !valid_utf8(config.query) ||
+        !config.max_matches || config.max_matches > 4096 ||
+        config.memory_budget_bytes < 64u * 1024u || config.memory_budget_bytes > 64u * 1024u * 1024u ||
+        !config.max_work_units_per_step || config.max_work_units_per_step > 16 ||
+        !config.max_total_work_units || config.max_total_work_units > 1000000) {
+        self.publish_search(SearchStatus::error, "Invalid UTF-8 query or search budget (query <=4096 bytes, matches 1..4096, memory 64KiB..64MiB, step 1..16, total 1..1000000).");
+        return;
+    }
+    if (config.query.empty()) { self.publish_search(SearchStatus::idle); return; }
+    self.search_memory.limit = config.memory_budget_bytes;
+    self.search_memory.limited = self.search_memory.failed = false; self.search_memory.peak = 0;
+    const auto created = ghostty_search_new(&self.search_memory.abi, &self.search.value, self.terminal);
+    if (!self.search_allocation_ok()) return;
+    if (created != GHOSTTY_SUCCESS) { self.stop_search(SearchStatus::error, "Could not create engine search."); return; }
+    GhosttyString needle{reinterpret_cast<const std::uint8_t*>(config.query.data()), config.query.size()};
+    const auto set = ghostty_search_set(self.search, GHOSTTY_SEARCH_OPT_NEEDLE, &needle);
+    if (!self.search_allocation_ok()) return;
+    if (set != GHOSTTY_SUCCESS) { self.stop_search(SearchStatus::error, "Could not set engine search query."); return; }
+    self.publish_search(SearchStatus::running);
+}
+void TerminalCore::cancel_search(std::uint64_t request_id) {
+    impl_->check_thread(); impl_->search_request_id = request_id;
+    ++impl_->search_generation; impl_->search_count = 0;
+    impl_->stop_search(SearchStatus::cancelled, {});
+}
+SearchSnapshotPtr TerminalCore::search_snapshot() const { impl_->check_thread(); return impl_->search_result; }
+std::uint64_t TerminalCore::revision() const { impl_->check_thread(); return impl_->content_revision; }
+bool TerminalCore::search_needs_work() const {
+    impl_->check_thread();
+    return impl_->search.value && (impl_->search_result->status == SearchStatus::running ||
+                                  impl_->search_fed_revision != impl_->content_revision);
+}
+SearchSnapshotPtr TerminalCore::search_step() {
+    impl_->check_thread(); auto& self = *impl_;
+    try {
+        if (!search_needs_work()) return self.search_result;
+        if (self.search_result->token.revision != self.content_revision) {
+            self.search_building.clear(); self.search_materializing = false; self.search_selected.reset();
+            self.search_count = 0;
+            self.publish_search(SearchStatus::running);
+        }
+        for (std::uint32_t unit = 0; unit < self.search_options.max_work_units_per_step; ++unit) {
+            if (self.search_work >= self.search_options.max_total_work_units)
+                return self.stop_search(SearchStatus::limited, "Search work budget reached; refine or restart the query.");
+            ++self.search_work;
+            GhosttySearchStatus status{};
+            checked(ghostty_search_get(self.search, GHOSTTY_SEARCH_DATA_STATUS, &status), "read search status");
+            if (self.search_fed_revision != self.content_revision || status == GHOSTTY_SEARCH_STATUS_FEED_REQUIRED) {
+                checked(ghostty_search_feed(self.search), "feed search");
+                self.search_fed_revision = self.content_revision;
+            } else if (self.search_materializing) {
+                // Never retain GhosttySelection or GridRef across this actor call.
+                // The whole getter is bounded by max_matches; only 64 results are
+                // converted per unit, and any later mutation restarts conversion.
+                std::vector<GhosttySelection> selections(self.search_count);
+                GhosttySelectionBuffer buffer{selections.data(), selections.size(), 0};
+                checked(ghostty_search_get(self.search, GHOSTTY_SEARCH_DATA_MATCHES, &buffer), "read bounded search matches");
+                if (buffer.len != self.search_count)
+                    return self.stop_search(SearchStatus::error, "Search changed while materializing owned results.");
+                const auto end = std::min(self.search_count, self.search_building.size() + 64);
+                for (auto index = self.search_building.size(); index < end; ++index) {
+                    GhosttyPointCoordinate start{}, finish{};
+                    if (ghostty_terminal_point_from_grid_ref(self.terminal, &selections[index].start, GHOSTTY_POINT_TAG_SCREEN, &start) != GHOSTTY_SUCCESS ||
+                        ghostty_terminal_point_from_grid_ref(self.terminal, &selections[index].end, GHOSTTY_POINT_TAG_SCREEN, &finish) != GHOSTTY_SUCCESS)
+                        return self.stop_search(SearchStatus::error, "Search result was evicted; restart the query.");
+                    self.search_building.push_back({{start.x, start.y}, {finish.x, finish.y}});
+                }
+                if (self.search_building.size() == self.search_count) {
+                    self.search_materializing = false;
+                    return self.publish_search(SearchStatus::complete, {}, std::move(self.search_building));
+                }
+            } else if (status == GHOSTTY_SEARCH_STATUS_RUNNING) {
+                checked(ghostty_search_tick(self.search, &status), "tick search");
+            }
+            if (!self.search_allocation_ok()) return self.search_result;
+            checked(ghostty_search_get(self.search, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &self.search_count), "count search matches");
+            if (self.search_count > self.search_options.max_matches)
+                return self.stop_search(SearchStatus::limited, "Too many matches; refine the query or raise the result limit.");
+            checked(ghostty_search_get(self.search, GHOSTTY_SEARCH_DATA_STATUS, &status), "read search progress");
+            if (status == GHOSTTY_SEARCH_STATUS_COMPLETE && !self.search_materializing) {
+                self.search_materializing = true;
+                self.search_building.clear(); self.search_building.reserve(self.search_count);
+            }
+        }
+        return self.publish_search(SearchStatus::running);
+    } catch (const std::bad_alloc&) {
+        // Owned-result allocation failure is not a successful empty search.
+        return self.stop_search(SearchStatus::error, "Could not allocate owned search results.");
+    } catch (const std::exception& error) {
+        return self.stop_search(SearchStatus::error, error.what());
+    }
+}
+SearchApplyResult TerminalCore::select_search_match(SearchToken token, std::size_t index) {
+    impl_->check_thread(); auto& self = *impl_;
+    if (token != self.search_result->token || token.revision != self.content_revision)
+        return self.search_action(SearchApplyResult::stale);
+    if (self.search_result->status != SearchStatus::complete)
+        return self.search_action(SearchApplyResult::not_ready);
+    if (index >= self.search_result->matches.size()) return self.search_action(SearchApplyResult::no_match);
+    const auto match = self.search_result->matches[index];
+    GhosttyPoint start{}, end{}; start.tag = end.tag = GHOSTTY_POINT_TAG_SCREEN;
+    start.value.coordinate = {match.start.column, match.start.row};
+    end.value.coordinate = {match.end.column, match.end.row};
+    auto selection = sized<GhosttySelection>();
+    selection.start = sized<GhosttyGridRef>(); selection.end = sized<GhosttyGridRef>();
+    if (ghostty_terminal_grid_ref(self.terminal, start, &selection.start) != GHOSTTY_SUCCESS ||
+        ghostty_terminal_grid_ref(self.terminal, end, &selection.end) != GHOSTTY_SUCCESS)
+        return self.search_action(SearchApplyResult::stale);
+    self.set(GHOSTTY_TERMINAL_OPT_SELECTION, &selection);
+    GhosttyTerminalScrollViewport viewport{}; viewport.tag = GHOSTTY_SCROLL_VIEWPORT_ROW;
+    viewport.value.row = match.start.row > self.geometry.rows / 2 ? match.start.row - self.geometry.rows / 2 : 0;
+    ghostty_terminal_scroll_viewport(self.terminal, viewport);
+    if (self.held) {
+        GhosttyTerminalModeConfig config{GHOSTTY_MODE_SYNC_OUTPUT, false};
+        self.set(GHOSTTY_TERMINAL_OPT_MODE, &config); self.held = false;
+    }
+    self.search_selected = index;
+    return self.search_action(SearchApplyResult::applied);
+}
+SearchApplyResult TerminalCore::navigate_search(SearchToken token, SearchDirection direction, bool wrap) {
+    impl_->check_thread(); auto& self = *impl_;
+    if (token != self.search_result->token || token.revision != self.content_revision)
+        return self.search_action(SearchApplyResult::stale);
+    if (self.search_result->status != SearchStatus::complete) return self.search_action(SearchApplyResult::not_ready);
+    const auto count = self.search_result->matches.size();
+    if (!count) return self.search_action(SearchApplyResult::no_match);
+    std::size_t index = direction == SearchDirection::backward ? 0 : count - 1;
+    if (self.search_selected) {
+        index = *self.search_selected;
+        if (direction == SearchDirection::backward) {
+            if (index + 1 < count) ++index;
+            else if (wrap) index = 0;
+            else return self.search_action(SearchApplyResult::boundary);
+        } else {
+            if (index > 0) --index;
+            else if (wrap) index = count - 1;
+            else return self.search_action(SearchApplyResult::boundary);
+        }
+    }
+    return select_search_match(token, index);
 }
 } // namespace stormtty

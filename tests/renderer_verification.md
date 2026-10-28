@@ -246,3 +246,22 @@ explicitly distinguishes composition swapchains from `CreateSwapChainForHwnd`
 when that surface is absent. Checked updates follow
 [SetWindowLongPtrW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw)
 and [SetWindowPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos).
+
+The first native run of these new host checks
+([Windows job 122609459062](https://github.com/StormBurpee/stormtty/actions/runs/40625544947/job/122609459062))
+failed at the requested-versus-actual composition-path assertion. This is **not**
+a native pass for backing-surface ownership; the original one-line failure did
+not identify which DirectComposition API failed. Fallback now logs the exact API
+stage, HRESULT, WARP choice, EXSTYLE/read error, window visibility and dimensions,
+and the test prints each requested/actual path. These diagnostics contain no
+terminal text, paths or user payload. The strict assertion is retained pending
+that evidence. Only on that assertion's failure, four independent direct-API
+probes compare ordinary versus statically no-redirection HWNDs, waitable versus
+non-waitable WARP composition swapchains, and a hardware-device control. Each
+uses a separate hidden HWND/device, logs exact failure stage and HRESULT plus
+adapter description/flags/vendor/device, requested driver, feature level and
+process session, then releases its resources. They do not call Renderer or its
+style-changing guard and do not suppress the original failure.
+WARP alone is not sufficient reason to skip it: Microsoft's
+[composition sample](https://github.com/microsoft/Windows.UI.Composition-Win32-Samples/blob/master/cpp/ScreenCaptureforHWND/ScreenCaptureforHWND/d3dHelpers.h)
+supports WARP device fallback followed by a composition swapchain.

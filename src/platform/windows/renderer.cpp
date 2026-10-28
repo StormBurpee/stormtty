@@ -503,17 +503,32 @@ struct Renderer::Impl {
             counters.composition = false;
             if (options.composition) {
                 desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+                const char* stage = "DCompositionCreateDevice";
                 auto hr = DCompositionCreateDevice(dxgi_device.get(), __uuidof(IDCompositionDevice),
                                                   reinterpret_cast<void**>(composition.put()));
-                if (SUCCEEDED(hr)) hr = factory->CreateSwapChainForComposition(device.get(), &desc, nullptr, swapchain.put());
-                if (SUCCEEDED(hr)) hr = composition->CreateTargetForHwnd(window, TRUE, composition_target.put());
-                if (SUCCEEDED(hr)) hr = composition->CreateVisual(composition_visual.put());
-                if (SUCCEEDED(hr)) hr = composition_visual->SetContent(swapchain.get());
-                if (SUCCEEDED(hr)) hr = composition_target->SetRoot(composition_visual.get());
-                if (SUCCEEDED(hr)) hr = composition->Commit();
-                if (SUCCEEDED(hr)) hr = host_style.set(true);
+                auto step = [&](const char* action, auto&& operation) {
+                    if (SUCCEEDED(hr)) { stage = action; hr = operation(); }
+                };
+                step("CreateSwapChainForComposition", [&] { return factory->CreateSwapChainForComposition(device.get(), &desc, nullptr, swapchain.put()); });
+                step("CreateTargetForHwnd", [&] { return composition->CreateTargetForHwnd(window, TRUE, composition_target.put()); });
+                step("CreateVisual", [&] { return composition->CreateVisual(composition_visual.put()); });
+                step("SetContent", [&] { return composition_visual->SetContent(swapchain.get()); });
+                step("SetRoot", [&] { return composition_target->SetRoot(composition_visual.get()); });
+                step("Commit", [&] { return composition->Commit(); });
+                step("Enable NOREDIRECTIONBITMAP", [&] { return host_style.set(true); });
                 counters.composition = SUCCEEDED(hr);
                 if (!counters.composition) {
+                    SetLastError(ERROR_SUCCESS);
+                    const auto style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+                    const auto style_error = GetLastError();
+                    char diagnostic[320]{};
+                    std::snprintf(diagnostic, sizeof diagnostic,
+                        "StormTTY renderer: DComp fallback stage=%s hr=0x%08lx warp=%u exstyle=0x%08lx style_error=%lu visible=%u size=%ux%u\n",
+                        stage, static_cast<unsigned long>(hr), unsigned(counters.warp),
+                        static_cast<unsigned long>(style), static_cast<unsigned long>(style_error),
+                        unsigned(IsWindowVisible(window)!=FALSE), width, height);
+                    OutputDebugStringA(diagnostic);
+                    std::fputs(diagnostic, stderr);
                     check(release_swapchain(), "Restore HWND redirection after composition failure");
                 }
             }

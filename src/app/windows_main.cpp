@@ -14,19 +14,13 @@
 #include <shellapi.h>
 #include <objbase.h>
 #include "stormtty/native_window.hpp"
+#include "../platform/windows/startup_notice.hpp"
 #include <filesystem>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
 
 namespace {
-std::wstring widen(std::string_view text) {
-    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    if (size <= 0) return L"StormTTY could not decode an error message.";
-    std::wstring out(static_cast<std::size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), out.data(), size);
-    return out;
-}
 struct ComApartment {
     HRESULT status = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     ~ComApartment() { if (SUCCEEDED(status)) CoUninitialize(); }
@@ -43,7 +37,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
         Arguments args;
         if (!args.values) throw std::runtime_error("Could not read command-line arguments.");
-        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal") smoke=true;
+        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects") smoke=true;
         stormtty::NativeRunOptions options; options.smoke_test=smoke;
         // Must precede creation of any HWND, including startup error dialogs.
         // ERROR_ACCESS_DENIED means the executable manifest already set it.
@@ -54,18 +48,29 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         auto config = stormtty::default_config(stormtty::Platform::windows);
         std::filesystem::path config_path;
         bool required = false;
+        unsigned smoke_modes=0;
         for (int i = 1; i < args.count; ++i) {
             const std::wstring argument(args.values[i]);
             if (argument == L"--config" && i + 1 < args.count) { config_path = args.values[++i]; required = true; }
-            else if (argument == L"--smoke") {}
-            else if (argument == L"--smoke-layout") options.smoke_layout=true;
-            else if (argument == L"--smoke-modal") options.smoke_modal=true;
+            else if (argument == L"--smoke") { ++smoke_modes; }
+            else if (argument == L"--smoke-layout") { options.smoke_layout=true; ++smoke_modes; }
+            else if (argument == L"--smoke-modal") { options.smoke_modal=true; ++smoke_modes; }
+            else if (argument == L"--smoke-projects") { options.smoke_projects=true; ++smoke_modes; }
             else if (argument == L"--capture" && i+1<args.count) options.capture_path=args.values[++i];
             else if (argument == L"--help") {
-                MessageBoxW(nullptr, L"StormTTY [--config path]\nCI: StormTTY --smoke [--capture frame.png]\nLayout CI: StormTTY --smoke-layout --capture layout.png\nModal CI: StormTTY --smoke-modal --capture modal.png\n\nCtrl+Shift+P opens commands.\nCtrl+Shift+T creates a tab.\nCtrl+Tab changes tabs.\nCtrl+Shift+V pastes.\nAlt+Space opens the Windows system menu.", L"StormTTY", MB_OK);
-                return 0;
+                constexpr std::string_view help="StormTTY [--config path]\n\n"
+                    "Verification modes (choose one):\n"
+                    "--smoke [--capture frame.png]\n"
+                    "--smoke-layout --capture layout.png\n"
+                    "--smoke-modal --capture modal.png\n"
+                    "--smoke-projects --capture projects.png\n\n"
+                    "Ctrl+Shift+P opens commands.\nCtrl+Shift+T creates a tab.\n"
+                    "Ctrl+Tab changes tabs.\nCtrl+Shift+V pastes.\nAlt+Space opens the system menu.";
+                if (smoke) { std::fprintf(stdout,"%.*s\n",static_cast<int>(help.size()),help.data()); return 0; }
+                return stormtty::show_startup_notice("StormTTY controls",help,stormtty::StartupNoticeKind::information)==0?0:1;
             } else throw std::runtime_error("Unknown or incomplete option. Use --help or --config path.");
         }
+        if (smoke_modes>1) throw std::invalid_argument("Choose only one native smoke scenario.");
         if (smoke && required) throw std::runtime_error("Smoke mode does not load user configuration or profile scripts.");
         if (!smoke && !options.capture_path.empty()) throw std::runtime_error("--capture is available only with explicit --smoke mode.");
         if (config_path.empty() && !smoke) {
@@ -88,10 +93,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return stormtty::run_native_application(std::move(config),std::move(options));
     } catch (const std::exception& exception) {
         if (smoke) std::fprintf(stderr,"Native smoke startup error: %s\n",exception.what());
-        else MessageBoxW(nullptr, widen(exception.what()).c_str(), L"StormTTY startup error", MB_OK | MB_ICONERROR);
+        else (void)stormtty::show_startup_notice("StormTTY startup error",exception.what(),stormtty::StartupNoticeKind::error);
     } catch (...) {
         if (smoke) std::fprintf(stderr,"Native smoke startup failed unexpectedly.\n");
-        else MessageBoxW(nullptr, L"An unexpected startup error occurred.", L"StormTTY", MB_OK | MB_ICONERROR);
+        else (void)stormtty::show_startup_notice("StormTTY startup error","An unexpected startup error occurred.",stormtty::StartupNoticeKind::error);
     }
     return 1;
 }

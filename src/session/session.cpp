@@ -14,7 +14,11 @@ constexpr std::size_t command_budget = 1024 * 1024;
 constexpr std::size_t output_budget = 2 * 1024 * 1024;
 constexpr std::size_t write_budget = 4 * 1024 * 1024;
 constexpr std::size_t chunk_limit = 32 * 1024;
-enum class Op { key, text, paste, mouse, focus, select, clear, copy, scroll, bottom, resize };
+enum class Op { key, text, paste, mouse, focus, select, clear, copy, scroll, bottom, resize,
+                search_start, search_cancel, search_select, search_navigate };
+bool search_operation(Op op) {
+    return op == Op::search_start || op == Op::search_cancel || op == Op::search_select || op == Op::search_navigate;
+}
 struct Command {
     Op op{};
     std::uint64_t sequence{};
@@ -26,7 +30,12 @@ struct Command {
     std::int64_t rows{};
     std::uint16_t x1{}, y1{}, x2{}, y2{};
     bool flag{};
-    std::size_t bytes() const { return sizeof(Command) + text.size() + key.text.size(); }
+    SearchOptions search_options;
+    SearchToken search_token;
+    SearchDirection search_direction{SearchDirection::backward};
+    std::uint64_t search_request{};
+    std::size_t search_index{};
+    std::size_t bytes() const { return sizeof(Command) + text.size() + key.text.size() + search_options.query.size(); }
 };
 struct OutputEvent { std::uint64_t sequence{}; std::string bytes; };
 struct PendingWrite { std::string bytes; std::size_t offset{}; };
@@ -46,6 +55,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     std::atomic<bool> done{false};
     mutable std::mutex frame_mutex;
     FramePtr latest;
+    mutable std::mutex search_mutex;
+    SearchSnapshotPtr latest_search;
+    std::atomic<std::uint64_t> requested_search{0};
     SessionInfo information;
     std::shared_ptr<Process> process;
 
@@ -55,6 +67,33 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
         FramePtr retired;
         { std::lock_guard lock(frame_mutex); retired = std::exchange(latest, std::move(frame)); }
         // Release potentially large rows/images outside the short mailbox lock.
+    }
+    void publish_search(SearchSnapshotPtr value) {
+        SearchSnapshotPtr retired;
+        { std::lock_guard lock(search_mutex); retired = std::exchange(latest_search, std::move(value)); }
+    }
+    SearchSubmission enqueue_search(SearchOptions options, bool cancel) {
+        if (options.query.size() > 4096) return {SessionSendResult::too_large, 0};
+        Command command; command.op = cancel ? Op::search_cancel : Op::search_start;
+        command.search_options = std::move(options);
+        const auto amount = command.bytes();
+        std::uint64_t request{};
+        {
+            std::lock_guard lock(mutex);
+            if (close_requested || done.load()) return {SessionSendResult::closed, 0};
+            std::size_t retired{};
+            for (const auto& pending : commands) if (search_operation(pending.op)) retired += pending.bytes();
+            if (amount > command_budget - (command_bytes - retired)) return {SessionSendResult::would_block, 0};
+            for (auto it = commands.begin(); it != commands.end();) {
+                if (search_operation(it->op)) it = commands.erase(it); else ++it;
+            }
+            command_bytes -= retired;
+            request = requested_search.fetch_add(1, std::memory_order_acq_rel) + 1;
+            command.search_request = request; command.sequence = ++next_sequence;
+            command_bytes += amount; commands.push_back(std::move(command));
+        }
+        changed.notify_all();
+        return {SessionSendResult::accepted, request};
     }
     void notify() noexcept { try { if (wake) wake(); } catch (...) {} }
     void set_error(std::string value) {
@@ -124,6 +163,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     void actor() {
         TerminalCore core(terminal_options); // Construct and destroy on this actor.
         publish(core.snapshot());
+        publish_search(core.search_snapshot());
         notify();
         const auto weak = weak_from_this();
         auto child = Process::start(process_options, {
@@ -142,6 +182,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
         std::size_t write_bytes = 0;
         bool closing = false, dirty = false;
         auto last_frame = TerminalCore::Clock::now();
+        auto next_search_step = last_frame;
         auto append = [&](std::string bytes) {
             if (bytes.empty()) return;
             if (bytes.size() > write_budget - write_bytes)
@@ -161,6 +202,11 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             }
         };
         for (;;) {
+            // Cancel superseded work before consuming any more search units,
+            // even if the newest typing command is behind bounded PTY output.
+            const auto requested = requested_search.load(std::memory_order_acquire);
+            if (requested && requested != core.search_snapshot()->token.request_id)
+                core.cancel_search(requested);
             std::deque<Command> batch;
             std::string bytes;
             std::optional<ProcessExit> child_exit;
@@ -186,6 +232,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                 closing = true;
                 { std::lock_guard lock(mutex); information.state = SessionState::closing; }
                 process->request_close();
+                core.cancel_search(requested_search.load()); publish_search(core.search_snapshot());
                 writes.clear(); write_bytes = 0; // Explicit close, never normal overload.
                 notify();
             }
@@ -212,6 +259,25 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                             core.resize(c.size);
                             process->request_resize({c.size.columns, c.size.rows});
                             dirty = true; break;
+                        case Op::search_start:
+                            if (c.search_request == requested_search.load()) {
+                                core.begin_search(c.search_request, std::move(c.search_options));
+                                publish_search(core.search_snapshot()); next_search_step = TerminalCore::Clock::now(); notify();
+                            }
+                            break;
+                        case Op::search_cancel:
+                            if (c.search_request == requested_search.load()) {
+                                core.cancel_search(c.search_request); publish_search(core.search_snapshot()); notify();
+                            }
+                            break;
+                        case Op::search_select:
+                            if (c.search_token.request_id != requested_search.load()) break;
+                            dirty = core.select_search_match(c.search_token, c.search_index) == SearchApplyResult::applied || dirty;
+                            publish_search(core.search_snapshot()); notify(); break;
+                        case Op::search_navigate:
+                            if (c.search_token.request_id != requested_search.load()) break;
+                            dirty = core.navigate_search(c.search_token, c.search_direction, c.flag) == SearchApplyResult::applied || dirty;
+                            publish_search(core.search_snapshot()); notify(); break;
                         }
                     } catch (const std::invalid_argument& e) { set_error(e.what()); }
                 }
@@ -233,6 +299,16 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                 if (pending.offset == pending.bytes.size()) writes.pop_front();
             }
             const auto now = TerminalCore::Clock::now();
+            if (!closing && !child_exit && core.search_needs_work() && now >= next_search_step &&
+                core.search_snapshot()->token.request_id == requested_search.load(std::memory_order_acquire)) {
+                const auto found = core.search_step();
+                // One bounded quantum, then yield to PTY/input. A new typing
+                // request arriving during the quantum suppresses old publication.
+                if (found->token.request_id == requested_search.load(std::memory_order_acquire)) {
+                    publish_search(found); notify();
+                }
+                next_search_step = TerminalCore::Clock::now() + std::chrono::milliseconds(5);
+            }
             const auto deadline = core.next_deadline();
             if ((dirty && now - last_frame >= std::chrono::milliseconds(8)) ||
                 (deadline && now >= *deadline) || child_exit) {
@@ -240,6 +316,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                 last_frame = now; dirty = false; effects(); notify();
             }
             if (child_exit) {
+                if (core.search_needs_work()) {
+                    core.cancel_search(requested_search.load()); publish_search(core.search_snapshot());
+                }
                 std::lock_guard lock(mutex);
                 information.exit_code = child_exit->exit_code;
                 if (!child_exit->error.empty()) information.error = child_exit->error;
@@ -262,6 +341,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             if (deadline) until = std::min(until, *deadline);
             if (!writes.empty()) until = std::min(until, now + std::chrono::milliseconds(5));
             if (starting) until = std::min(until, now + std::chrono::milliseconds(20));
+            if (!closing && core.search_needs_work()) until = std::min(until, next_search_step);
             std::unique_lock lock(mutex);
             const auto ready = [&] { return !commands.empty() || !output.empty() || exit.has_value() || (close_requested && !closing); };
             if (until == TerminalCore::Clock::time_point::max()) changed.wait(lock, ready);
@@ -319,6 +399,16 @@ SessionSendResult Session::copy_selection(SelectionCallback value) { Command c; 
 SessionSendResult Session::scroll(std::int64_t value) { Command c; c.op = Op::scroll; c.rows = value; return impl_->enqueue(std::move(c)); }
 SessionSendResult Session::scroll_to_bottom() { Command c; c.op = Op::bottom; return impl_->enqueue(std::move(c)); }
 SessionSendResult Session::request_resize(TerminalSize value) { Command c; c.op = Op::resize; c.size = value; return impl_->enqueue(std::move(c)); }
+SearchSubmission Session::search(SearchOptions options) { return impl_->enqueue_search(std::move(options), false); }
+SearchSubmission Session::cancel_search() { return impl_->enqueue_search({}, true); }
+SearchSnapshotPtr Session::search_snapshot() const { std::lock_guard lock(impl_->search_mutex); return impl_->latest_search; }
+SessionSendResult Session::select_search_match(SearchToken token, std::size_t index) {
+    Command c; c.op = Op::search_select; c.search_token = token; c.search_index = index; return impl_->enqueue(std::move(c));
+}
+SessionSendResult Session::navigate_search(SearchToken token, SearchDirection direction, bool wrap) {
+    Command c; c.op = Op::search_navigate; c.search_token = token; c.search_direction = direction; c.flag = wrap;
+    return impl_->enqueue(std::move(c));
+}
 void Session::request_close() noexcept { impl_->close(); }
 bool Session::closed() const noexcept { return impl_->done.load(std::memory_order_acquire); }
 bool Session::wait_closed(std::chrono::milliseconds timeout) const {

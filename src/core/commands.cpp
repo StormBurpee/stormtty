@@ -1,4 +1,5 @@
 #include "stormtty/commands.hpp"
+#include "stormtty/project_workspaces.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +9,12 @@
 namespace stormtty {
 namespace {
 constexpr std::array commands{
+    Command{"workspace.new", "New workspace…", "Choose a real folder and start its configured shell"},
+    Command{"workspace.next", "Next workspace", "Switch projects without restarting hidden sessions"},
+    Command{"workspace.previous", "Previous workspace", "Switch projects without restarting hidden sessions"},
+    Command{"workspace.close", "Close workspace…", "Close this project's tabs and sessions after confirmation"},
+    Command{"workspace.toggle_navigation", "Expand or collapse workspaces", "Toggle the compact project navigation rail"},
+    Command{"window.focus_mode", "Toggle focus mode", "Hide project navigation and directory context; keep the terminal"},
     Command{"app.command_palette", "Show commands", "Search every application action and its shortcut"},
     Command{"tab.new", "New tab", "Start a fresh session using the selected profile"},
     Command{"tab.close", "Close tab", "Close all panes in the current tab; host confirms running processes"},
@@ -71,6 +78,14 @@ const Command* find_command(std::string_view id) noexcept {
 }
 CommandAvailability command_availability(std::string_view id, const CommandContext& c) noexcept {
     if (!find_command(id)) return {false, "Unknown command"};
+    if (id == "window.focus_mode") return {c.supports_focus_mode, c.supports_focus_mode ? "" : "Focus mode is not implemented by this host"};
+    if (id.starts_with("workspace.")) {
+        if (!c.supports_project_workspaces) return {false,"Project workspaces are not implemented by this host"};
+        if (id=="workspace.next" || id=="workspace.previous") return {c.project_workspaces>1,c.project_workspaces>1?"":"Only one workspace is open"};
+        if (id=="workspace.close") return {c.project_workspaces>0,c.project_workspaces>0?"":"No workspace is open"};
+        if (id=="workspace.new") return {c.project_workspaces<ProjectWorkspaceCatalog::maximum_projects,c.project_workspaces<ProjectWorkspaceCatalog::maximum_projects?"":"Workspace limit reached"};
+        return {true,{}};
+    }
     if (id == "tab.new") return {c.tabs < Workspace::maximum_tabs, c.tabs < Workspace::maximum_tabs ? "" : "Tab limit reached"};
     if (id == "app.command_palette" || id == "settings.open" || id == "window.fullscreen") return {true, {}};
     if (!c.tabs || !c.panes) return {false, "No active terminal pane"};

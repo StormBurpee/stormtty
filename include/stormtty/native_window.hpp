@@ -50,6 +50,7 @@ private:
 struct NativeRunOptions {
     bool smoke_test{}; // Explicit CI mode; never enabled on a normal launch.
     bool smoke_modal{}; // Styled modal + routing/close smoke, not desktop activation QA.
+    bool smoke_projects{}; // Two actual folder contexts, actor retention and scoped close.
     bool smoke_layout{}; // Three visible real shells + two background tabs.
     std::filesystem::path capture_path; // Smoke-only actual framebuffer PNG.
 };

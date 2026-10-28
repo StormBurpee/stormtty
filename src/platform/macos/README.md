@@ -160,8 +160,9 @@ Native targets to run with the official SDK and a supported Metal device:
   The PNG is the actual Metal terminal/chrome surface; native titlebar tab buttons
   and system traffic lights are not in that surface. It is not a whole-window
   screenshot or a substitute for physical AppKit UI inspection.
-  Capture/readback transfers renderer ownership to one worker while UI rendering
-  is quiesced; it does not block an AppKit callback. No Metal device or desktop
+  Capture/readback keeps the renderer Host-owned and gives one worker exclusive
+  access while UI renderer operations are deferred; it does not block an AppKit
+  callback. No Metal device or desktop
   session is a failed gate, not a silently passing mocked renderer.
 
 Physical follow-up gates: Japanese/Chinese/Korean IMEs, dead keys and layouts,

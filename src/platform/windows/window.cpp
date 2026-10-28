@@ -16,6 +16,7 @@
 #include <imm.h>
 #include <wincodec.h>
 #include <commctrl.h>
+#include <shobjidl.h>
 #include "stormtty/native_window.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/session.hpp"
@@ -157,9 +158,54 @@ struct WindowClass {
     ~WindowClass() { if (atom) UnregisterClassW(L"StormTTY.NativeWindow", instance); }
 };
 
+template<class T> struct ComObject {
+    T* value{};
+    ~ComObject() { if (value) value->Release(); }
+    T** put() noexcept { return &value; }
+    T* operator->() const noexcept { return value; }
+};
+std::string project_name(std::filesystem::path path) {
+    auto name=narrow(path.filename().wstring()); if (name.empty()) name=narrow(path.wstring());
+    if (name.empty()) return "Local shell";
+    if (name.size()>ProjectWorkspaceCatalog::maximum_name_bytes) {
+        std::size_t end=ProjectWorkspaceCatalog::maximum_name_bytes-3;
+        while (end && (static_cast<unsigned char>(name[end])&0xc0)==0x80) --end;
+        name.resize(end); name+="…";
+    }
+    return name;
+}
+// CreateWindowEx normalizes an overlapped (zero-valued WS_OVERLAPPED) style
+// to include a caption on Windows. Remove it after creation, then force the
+// documented nonclient recalculation; do not change the window to a popup.
+void enforce_custom_frame_style(HWND window, bool diagnostics) {
+    constexpr LONG_PTR required=WS_THICKFRAME|WS_SYSMENU|WS_MINIMIZEBOX|WS_MAXIMIZEBOX;
+    const auto created=GetWindowLongPtrW(window,GWL_STYLE);
+    const auto desired=(created|required)&~static_cast<LONG_PTR>(WS_CAPTION);
+    SetLastError(ERROR_SUCCESS);
+    const auto previous=SetWindowLongPtrW(window,GWL_STYLE,desired);
+    if (!previous && GetLastError()!=ERROR_SUCCESS) throw std::runtime_error("Could not establish custom nonclient window styles.");
+    if (!SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED))
+        throw std::runtime_error("Could not recalculate the custom nonclient frame.");
+    const auto actual=GetWindowLongPtrW(window,GWL_STYLE);
+    const auto missing=required&~actual;
+    if (diagnostics || (actual&WS_CAPTION) || missing) std::fprintf(stderr,
+        "Native frame styles: requested=0x%08lx created=0x%08lx enforced=0x%08lx actual=0x%08lx caption_bits=0x%08lx missing_required=0x%08lx\n",
+        static_cast<unsigned long>(WS_OVERLAPPEDWINDOW&~WS_CAPTION),static_cast<unsigned long>(created),
+        static_cast<unsigned long>(desired),static_cast<unsigned long>(actual),static_cast<unsigned long>(actual&WS_CAPTION),static_cast<unsigned long>(missing));
+    if ((actual&WS_CAPTION) || missing) throw std::runtime_error("Windows did not retain the required caption-free resize/system-control styles; see frame-style diagnostic.");
+}
+
 class NativeWindow final {
 public:
-    explicit NativeWindow(Config config, NativeRunOptions options) : config_(std::move(config)), options_(std::move(options)), wake_(std::make_shared<WakeState>()) {}
+    explicit NativeWindow(Config config, NativeRunOptions options) : config_(std::move(config)), options_(std::move(options)), wake_(std::make_shared<WakeState>()) {
+        std::string directory;
+        for (const auto& profile:config_.profiles) if (profile.id==config_.default_profile) { directory=profile.working_directory; break; }
+        if (directory.empty()) directory=narrow(std::filesystem::current_path().wstring());
+        const auto path=std::filesystem::path(widen(directory));
+        auto name=project_name(path);
+        auto project=projects_.create({name,directory,"Local"});
+        if (!project) throw std::runtime_error(project.error);
+    }
     ~NativeWindow() {
         wake_->window.store(nullptr, std::memory_order_release);
         for (auto& [id, session] : sessions_) { (void)id; session->request_close(); }
@@ -238,8 +284,23 @@ private:
     bool smoke_marker_presented_{}, smoke_finished_{};
     int exit_code_{};
     unsigned smoke_modal_stage_{};
+    bool smoke_projects_live_verified_{};
+    ProjectWorkspaceId smoke_primary_project_{}, smoke_secondary_project_{};
+    std::map<SessionId,std::shared_ptr<Session>> smoke_project_actors_;
     std::shared_ptr<Session> smoke_disposable_;
-    Workspace workspace_;
+    ProjectWorkspaceCatalog projects_;
+    Workspace& workspace() { return *projects_.active_workspace(); }
+    const Workspace& workspace() const { return *projects_.active_workspace(); }
+    void choose_project_folder();
+    void activate_project(ProjectWorkspaceId);
+    void close_project(ProjectWorkspaceId, bool approved = false);
+    void reset_project_view();
+    std::string directory_context() const;
+    Rect workspace_viewport() const { return navigation_.viewport; }
+    bool navigation_expanded_{}, focus_mode_{}, force_redraw_{};
+    std::size_t navigation_first_{};
+    ProjectNavigationLayout navigation_;
+    std::string context_label_;
     std::map<SessionId, std::shared_ptr<Session>> sessions_;
     std::map<SessionId, TerminalSize> sizes_;
     std::map<SessionId, SessionState> session_states_;
@@ -303,6 +364,7 @@ void NativeWindow::create() {
     hwnd_ = CreateWindowExW(0, L"StormTTY.NativeWindow", L"StormTTY", WS_OVERLAPPEDWINDOW & ~WS_CAPTION,
                            CW_USEDEFAULT, CW_USEDEFAULT, 1100, 720, nullptr, nullptr, GetModuleHandleW(nullptr), this);
     if (!hwnd_) throw std::runtime_error("Could not create the native StormTTY window.");
+    enforce_custom_frame_style(hwnd_,options_.smoke_test);
     wake_->window.store(hwnd_, std::memory_order_release);
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES};
     if (InitCommonControlsEx(&controls)) {
@@ -320,14 +382,30 @@ void NativeWindow::create() {
     renderer_ = std::make_unique<Renderer>(hwnd_, options);
     settings_changed();
     new_tab();
+    if (options_.smoke_projects) {
+        smoke_primary_project_=projects_.active_id();
+        std::array<wchar_t,MAX_PATH+1> directory{};
+        UINT length=GetSystemDirectoryW(directory.data(),static_cast<UINT>(directory.size()));
+        if (!length || length>=directory.size()) throw std::runtime_error("Could not discover the smoke workspace folder.");
+        std::string path=narrow(std::wstring(directory.data(),length));
+        if (path==projects_.active()->metadata.working_directory) {
+            length=GetWindowsDirectoryW(directory.data(),static_cast<UINT>(directory.size()));
+            if (!length || length>=directory.size()) throw std::runtime_error("Could not discover the second smoke folder.");
+            path=narrow(std::wstring(directory.data(),length));
+        }
+        const auto second=projects_.create({project_name(std::filesystem::path(widen(path))),path,"Local"});
+        if (!second) throw std::runtime_error(second.error);
+        smoke_secondary_project_=*second.value; activate_project(*second.value); new_tab();
+        smoke_project_actors_=sessions_; navigation_expanded_=true; activate_project(smoke_primary_project_);
+    }
     if (options_.smoke_layout) {
-        const auto first=workspace_.active_pane();
-        workspace_.rename_tab(workspace_.active_tab(),"Native layout smoke");
-        new_tab(); workspace_.rename_tab(workspace_.active_tab(),"Background shell 1");
-        new_tab(); workspace_.rename_tab(workspace_.active_tab(),"Background shell 2");
+        const auto first=workspace().active_pane();
+        workspace().rename_tab(workspace().active_tab(),"Native layout smoke");
+        new_tab(); workspace().rename_tab(workspace().active_tab(),"Background shell 1");
+        new_tab(); workspace().rename_tab(workspace().active_tab(),"Background shell 2");
         activate(first); split(Direction::right); split(Direction::down); activate(first);
         for (const auto& divider:layout_.dividers) if (divider.axis==Axis::horizontal) {
-            workspace_.set_split_ratio(divider.node,0.60); break;
+            workspace().set_split_ratio(divider.node,0.60); break;
         }
         changed(true);
     }
@@ -442,12 +520,17 @@ void NativeWindow::refresh_layout() {
     width_ = (bounds.right - bounds.left) / scale_; height_ = (bounds.bottom - bounds.top) / scale_;
     maximized_ = IsZoomed(hwnd_) != FALSE;
     std::vector<TabId> tabs;
-    for (const auto& tab : workspace_.state().tabs) tabs.push_back(tab.id);
+    for (const auto& tab : workspace().state().tabs) tabs.push_back(tab.id);
     const auto caption_width = std::max(46.0, GetSystemMetricsForDpi(SM_CXSIZE, dpi_) / scale_);
-    chrome_ = layout_chrome(width_, height_, tabs, workspace_.active_tab(), caption_width, fullscreen_ ? 0 : 48);
+    chrome_ = layout_chrome(width_, height_, tabs, workspace().active_tab(), caption_width, fullscreen_ ? 0 : 48);
     zoom_return_={};
-    if (const auto* tab=workspace_.tab(workspace_.active_tab()); tab && tab->zoomed_pane && chrome_.drag.width>=180 && !fullscreen_) zoom_return_={chrome_.drag.x+4,10,120,28};
-    layout_ = workspace_.layout(workspace_.active_tab(), {0, chrome_.band.height, width_, std::max(0.0, height_ - chrome_.band.height)}, {1.0 / scale_, 7, 80, 48});
+    if (const auto* tab=workspace().tab(workspace().active_tab()); tab && tab->zoomed_pane && chrome_.drag.width>=180 && !fullscreen_) zoom_return_={chrome_.drag.x+4,10,120,28};
+    std::vector<ProjectWorkspaceId> projects;
+    for (const auto& project:projects_.entries()) projects.push_back(project.id);
+    context_label_=directory_context();
+    navigation_=layout_project_navigation(width_,height_,chrome_.band.height,projects,navigation_first_,navigation_expanded_,focus_mode_,!context_label_.empty());
+    navigation_first_=navigation_.first;
+    layout_ = workspace().layout(workspace().active_tab(), workspace_viewport(), {1.0 / scale_, 7, 80, 48});
     if (renderer_) {
         {
             RendererCallGuard guard(renderer_call_);
@@ -498,12 +581,12 @@ void NativeWindow::drain_input() {
     if (!pending_input_.empty() && count >= 256) wake_->wake();
 }
 Session* NativeWindow::session_for(PaneId pane) const {
-    const auto* model = workspace_.pane(pane);
+    const auto* model = workspace().pane(pane);
     if (!model) return nullptr;
     auto found = sessions_.find(model->session);
     return found == sessions_.end() ? nullptr : found->second.get();
 }
-Session* NativeWindow::active_session() const { return session_for(workspace_.active_pane()); }
+Session* NativeWindow::active_session() const { return session_for(workspace().active_pane()); }
 SessionId NativeWindow::new_session() {
     ProcessOptions process;
     for (const auto& profile : config_.profiles) if (profile.id == config_.default_profile) {
@@ -511,6 +594,7 @@ SessionId NativeWindow::new_session() {
         for (const auto& [name, value] : profile.environment) process.environment.push_back({name, value});
         break;
     }
+    if (const auto* project=projects_.active(); project && !project->metadata.working_directory.empty()) process.working_directory=project->metadata.working_directory;
     // The built-in alias is resolved only against the trusted system directory,
     // never the current directory/PATH. Other configured executables must be
     // absolute and are validated by the process transport.
@@ -521,7 +605,7 @@ SessionId NativeWindow::new_session() {
         const UINT length = GetSystemDirectoryW(directory.data(), static_cast<UINT>(directory.size()));
         if (!length || length >= directory.size()) throw std::runtime_error("Could not discover the Windows system shell.");
         process.executable = narrow(std::wstring(directory.data(), length) + L"\\cmd.exe");
-        if (options_.smoke_test) { process.arguments={"/d","/q"}; process.environment.clear(); process.working_directory.clear(); }
+        if (options_.smoke_test) { process.arguments={"/d","/q"}; process.environment.clear(); if (!options_.smoke_projects) process.working_directory.clear(); }
         else if (std::find(process.arguments.begin(),process.arguments.end(),"/d")==process.arguments.end()) process.arguments.insert(process.arguments.begin(),"/d"); // Do not unexpectedly run cmd AutoRun registry code.
     }
     TerminalOptions terminal;
@@ -538,22 +622,22 @@ SessionId NativeWindow::new_session() {
 }
 void NativeWindow::new_tab() {
     const auto id = new_session();
-    auto result = workspace_.create_tab(id, config_.default_profile);
+    auto result = workspace().create_tab(id, config_.default_profile);
     if (!result) { sessions_.at(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
     changed(true);
 }
 void NativeWindow::split(Direction direction) {
-    const auto active = workspace_.active_pane();
+    const auto active = workspace().active_pane();
     if (!active) return;
     const auto id = new_session();
-    auto result = workspace_.split(active, direction, id, config_.default_profile);
+    auto result = workspace().split(active, direction, id, config_.default_profile);
     if (!result) { sessions_.at(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
     activate(*result.value); changed(true);
 }
 void NativeWindow::retire_unused_sessions() {
     for (auto iterator = sessions_.begin(); iterator != sessions_.end();) {
-        const bool used = std::any_of(workspace_.state().panes.begin(), workspace_.state().panes.end(), [&](const auto& item) { return item.second.session == iterator->first; });
-        if (!used) { iterator->second->request_close(); sizes_.erase(iterator->first); iterator = sessions_.erase(iterator); }
+        const bool used = projects_.contains_session(iterator->first);
+        if (!used) { iterator->second->request_close(); sizes_.erase(iterator->first); session_states_.erase(iterator->first); iterator = sessions_.erase(iterator); }
         else ++iterator;
     }
 }
@@ -578,66 +662,147 @@ void NativeWindow::answer_modal(ModalDecision decision) {
     if (hwnd_) { changed(); caret_schedule(); }
 }
 void NativeWindow::close_pane(PaneId pane, bool approved) {
-    if (!workspace_.pane(pane)) return;
+    if (!workspace().pane(pane)) return;
     auto* session = session_for(pane);
     if (!approved && session && !session->closed()) {
-        show_modal("Close this pane?",{"Programs may still be running.","Closing can discard unsaved work."},"Close pane",[this,pane]{close_pane(pane,true);}); return;
+        const ProjectPaneReference target{projects_.active_id(),pane};
+        const auto session_id=workspace().pane(pane)->session;
+        show_modal("Close this pane?",{"Programs may still be running.","Closing can discard unsaved work."},"Close pane",[this,target,session_id]{
+            const auto* project=projects_.workspace(target.project); const auto* current=project?project->pane(target.local):nullptr;
+            if (!current || current->session!=session_id || projects_.active_id()!=target.project) { show_error("The close target changed; nothing was closed."); return; }
+            close_pane(target.local,true);
+        }); return;
     }
-    workspace_.close_pane(pane); retire_unused_sessions();
-    if (workspace_.state().tabs.empty()) { DestroyWindow(hwnd_); return; }
+    workspace().close_pane(pane); retire_unused_sessions();
+    if (workspace().state().tabs.empty()) { close_project(projects_.active_id()); return; }
     changed(true);
 }
 void NativeWindow::close_tab(TabId tab, bool approved) {
-    if (!workspace_.tab(tab)) return;
+    if (!workspace().tab(tab)) return;
     bool live = false;
-    for (auto pane : workspace_.pane_order(tab)) if (auto* session = session_for(pane); session && !session->closed()) live = true;
+    for (auto pane : workspace().pane_order(tab)) if (auto* session = session_for(pane); session && !session->closed()) live = true;
     if (!approved && live) {
-        show_modal("Close this tab?",{"Its panes may have running programs.","Closing can discard unsaved work."},"Close tab",[this,tab]{close_tab(tab,true);}); return;
+        const ProjectTabReference target{projects_.active_id(),tab};
+        std::vector<SessionId> expected;
+        for (const auto pane:workspace().pane_order(tab)) expected.push_back(workspace().pane(pane)->session);
+        show_modal("Close this tab?",{"Its panes may have running programs.","Closing can discard unsaved work."},"Close tab",[this,target,expected]{
+            const auto* project=projects_.workspace(target.project); std::vector<SessionId> current;
+            if (project) for (const auto pane:project->pane_order(target.local)) current.push_back(project->pane(pane)->session);
+            if (!project || !project->tab(target.local) || current!=expected || projects_.active_id()!=target.project) { show_error("The close target changed; nothing was closed."); return; }
+            close_tab(target.local,true);
+        }); return;
     }
-    workspace_.close_tab(tab); retire_unused_sessions();
-    if (workspace_.state().tabs.empty()) { DestroyWindow(hwnd_); return; }
+    workspace().close_tab(tab); retire_unused_sessions();
+    if (workspace().state().tabs.empty()) { close_project(projects_.active_id()); return; }
     changed(true);
 }
 void NativeWindow::sync_focus() {
     SessionId desired{};
-    if (active_ && !palette_open_ && !rename_open_ && !modal_) if (const auto* pane=workspace_.pane(workspace_.active_pane())) desired=pane->session;
+    if (active_ && !palette_open_ && !rename_open_ && !modal_) if (const auto* pane=workspace().pane(workspace().active_pane())) desired=pane->session;
     if (desired==focused_session_) return;
     const auto previous=focused_session_; focused_session_=desired;
     if (sessions_.contains(previous)) { auto old=sessions_.at(previous); submit([old] { return old->focus(false); }); }
     if (sessions_.contains(desired)) { auto current=sessions_.at(desired); submit([current] { return current->focus(true); }); }
 }
 void NativeWindow::activate(PaneId pane) {
-    if (workspace_.active_pane() == pane) return;
+    if (workspace().active_pane() == pane) return;
     if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
-    if (!workspace_.focus(pane)) return;
+    if (!workspace().focus(pane)) return;
     text_input_.reset(); cursor_on_=true; caret_schedule(); changed(true);
 }
 void NativeWindow::update_sessions() {
-    std::vector<std::pair<PaneId,std::string>> titles;
+    struct TitleUpdate { ProjectWorkspaceId project; PaneId pane; std::string title; };
+    std::vector<TitleUpdate> titles;
     bool state_changed=false;
-    for (const auto& [pane_id,pane]:workspace_.state().panes) {
-        auto found=sessions_.find(pane.session);
-        if (found==sessions_.end()) continue;
+    // Hidden workspaces retain actors and model metadata. Never retire them just
+    // because only the active project's panes are submitted to the renderer.
+    for (const auto& project:projects_.entries()) for (const auto& [pane_id,pane]:project.workspace.state().panes) {
+        auto found=sessions_.find(pane.session); if (found==sessions_.end()) continue;
         const auto info=found->second->info();
-        if (!info.title.empty() && pane.title!=info.title) titles.emplace_back(pane_id,info.title);
-        if (!info.error.empty() && notice_!=info.error) { notice_=info.error; ++chrome_generation_; }
+        if (!info.title.empty() && pane.title!=info.title) titles.push_back({project.id,pane_id,info.title});
+        if (project.id==projects_.active_id() && !info.error.empty() && notice_!=info.error) { notice_=info.error; ++chrome_generation_; }
         if (!session_states_.contains(pane.session) || session_states_[pane.session]!=info.state) { session_states_[pane.session]=info.state; state_changed=true; ++chrome_generation_; }
     }
-    // Model mutations transactionally replace state; never retain iterators or
-    // Pane references across them.
-    for (auto& [pane,title]:titles) { workspace_.set_pane_title(pane,std::move(title)); ++chrome_generation_; }
+    for (auto& title:titles) { projects_.workspace(title.project)->set_pane_title(title.pane,std::move(title.title)); ++chrome_generation_; }
     std::optional<std::string> clipboard,error;
     { std::lock_guard lock(wake_->mutex); clipboard.swap(wake_->clipboard); error.swap(wake_->error); }
     if (clipboard) set_clipboard(*clipboard);
     if (error) show_error(*error);
+    const auto context=directory_context();
+    if (context_label_!=context) { context_label_=context; state_changed=true; ++chrome_generation_; }
     if (!titles.empty() || state_changed) refresh_tooltips();
     drain_input(); dirty_=true; caret_schedule(); position_ime();
     if (options_.smoke_test) smoke_progress();
 }
+std::string NativeWindow::directory_context() const {
+    std::string path;
+    if (auto* session=active_session()) path=session->info().working_directory;
+    const bool observed=!path.empty();
+    if (path.empty()) if (const auto* project=projects_.active()) path=project->metadata.working_directory;
+    // OSC metadata is display-only; it is never an implicit chdir or command.
+    path.erase(std::remove_if(path.begin(),path.end(),[](unsigned char c){return c<0x20 || c==0x7f;}),path.end());
+    return path.empty()?std::string{}:(observed?"Shell directory · ":"Launch folder · ")+path;
+}
+void NativeWindow::reset_project_view() {
+    // Local Pane/Tab/Node identifiers can collide across projects. Actor IDs are
+    // host-global; renderer identity is SessionId and all local view caches reset.
+    hover_transitions_.clear(); tab_transitions_.clear(); pane_reveals_.clear();
+    closing_palette_primitives_.clear(); closing_palette_texts_.clear(); palette_transition_.finish();
+    hover_={-1,-1}; palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false;
+    text_input_.reset(); selection_pane_={}; drop_preview_.reset(); force_redraw_=true;
+    if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
+    const auto& entries=projects_.entries();
+    const auto selected=std::find_if(entries.begin(),entries.end(),[&](const auto& project){return project.id==projects_.active_id();});
+    const auto index=static_cast<std::size_t>(selected-entries.begin());
+    if (index<navigation_first_) navigation_first_=index;
+    else if (navigation_.capacity && index>=navigation_first_+navigation_.capacity) navigation_first_=index-navigation_.capacity+1;
+    changed(true); caret_schedule();
+}
+void NativeWindow::activate_project(ProjectWorkspaceId id) {
+    if (modal_ || id==projects_.active_id()) return;
+    if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
+    cancel_drag();
+    const auto status=projects_.activate(id); if (!status) { show_error(status.error); return; }
+    reset_project_view();
+}
+void NativeWindow::choose_project_folder() {
+    ComObject<IFileOpenDialog> dialog;
+    auto check=[](HRESULT hr){if (FAILED(hr)) throw std::runtime_error("Could not open the native workspace folder picker.");};
+    check(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,__uuidof(IFileOpenDialog),reinterpret_cast<void**>(dialog.put())));
+    FILEOPENDIALOGOPTIONS flags{}; check(dialog->GetOptions(&flags));
+    check(dialog->SetOptions(flags|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST|FOS_NOCHANGEDIR));
+    check(dialog->SetTitle(L"Choose a workspace folder")); check(dialog->SetOkButtonLabel(L"Open workspace"));
+    const auto shown=dialog->Show(hwnd_); if (shown==HRESULT_FROM_WIN32(ERROR_CANCELLED)) return; check(shown);
+    if (modal_ || !hwnd_) return;
+    ComObject<IShellItem> item; check(dialog->GetResult(item.put()));
+    PWSTR raw=nullptr; check(item->GetDisplayName(SIGDN_FILESYSPATH,&raw));
+    struct PathOwner { PWSTR value; ~PathOwner(){CoTaskMemFree(value);} } owner{raw};
+    const std::filesystem::path path(raw); auto name=project_name(path);
+    const auto created=projects_.create({name,narrow(path.wstring()),"Local"});
+    if (!created) { show_error(created.error); return; }
+    activate_project(*created.value); new_tab();
+}
+void NativeWindow::close_project(ProjectWorkspaceId id, bool approved) {
+    if (!projects_.find(id)) return;
+    bool live=false;
+    for (const auto session:projects_.session_ids(id)) if (sessions_.contains(session) && !sessions_.at(session)->closed()) live=true;
+    if (!approved && live) {
+        const auto expected=projects_.session_ids(id);
+        show_modal("Close this workspace?",{"Its sessions may have running programs.","Closing can discard unsaved work."},"Close workspace",[this,id,expected]{
+            if (!projects_.find(id) || projects_.session_ids(id)!=expected) { show_error("The workspace changed; nothing was closed."); return; }
+            close_project(id,true);
+        }); return;
+    }
+    if (projects_.entries().size()==1) { DestroyWindow(hwnd_); return; } // Deliberate final close, never a replacement shell.
+    if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
+    cancel_drag();
+    const auto removed=projects_.remove(id); if (!removed) { show_error(removed.error); return; }
+    retire_unused_sessions(); reset_project_view();
+}
 void NativeWindow::show_error(std::string_view error) { notice_ = std::string(error); changed(); }
 
 std::string NativeWindow::pane_title(PaneId id, bool full) const {
-    const auto* pane = workspace_.pane(id);
+    const auto* pane = workspace().pane(id);
     if (!pane) return {};
     std::string result = pane->title;
     const Profile* profile = nullptr;
@@ -666,7 +831,7 @@ std::string NativeWindow::pane_title(PaneId id, bool full) const {
     return result;
 }
 std::string NativeWindow::tab_title(TabId id, bool full) const {
-    const auto* tab = workspace_.tab(id);
+    const auto* tab = workspace().tab(id);
     if (!tab) return {};
     return tab->title.empty() ? pane_title(tab->active_pane, full) : tab->title;
 }
@@ -687,6 +852,9 @@ void NativeWindow::refresh_tooltips() {
     };
     for (const auto& tab:chrome_.tabs) add(tab.bounds,tab_title(tab.tab,true));
     if (layout_.panes.size()>1) for (const auto& pane:layout_.panes) add({pane.bounds.x,pane.bounds.y,pane.bounds.width,28},pane_title(pane.pane,true));
+    for (const auto& row:navigation_.projects) if (const auto* project=projects_.find(row.project)) add(row.bounds,project->metadata.name+"\n"+project->metadata.working_directory);
+    add(navigation_.toggle,navigation_.expanded?"Collapse workspaces":width_<640?"Navigation stays compact in narrow windows":"Expand workspaces");
+    add(navigation_.new_project,"New workspace… Choose a folder"); add(navigation_.context,context_label_); add(navigation_.focus,"Focus mode: hide project navigation and directory context");
     add(chrome_.new_tab,"New tab · Ctrl+Shift+T"); add(chrome_.palette,"Commands · Ctrl+Shift+P"); add(chrome_.menu,"StormTTY menu");
 }
 double NativeWindow::hover_amount(std::uint64_t id) const {
@@ -702,6 +870,8 @@ void NativeWindow::hover_changed(Point point) {
         modified=modified || before!=next;
     };
     target(1,chrome_.menu); target(2,chrome_.new_tab); target(3,chrome_.palette);
+    target(8,navigation_.toggle); target(9,navigation_.new_project); target(10,navigation_.focus);
+    for (const auto& project:navigation_.projects) target((1ull<<62)|project.project.value,project.bounds);
     target(4,chrome_.minimize); target(5,chrome_.maximize); target(6,chrome_.close); target(7,zoom_return_);
     for (const auto& tab:chrome_.tabs) { target(16+tab.tab.value*2,tab.bounds); target(17+tab.tab.value*2,tab.close); }
     for (const auto& divider:layout_.dividers) target((1ull<<63)|divider.node.value,divider.hit_bounds);
@@ -710,13 +880,14 @@ void NativeWindow::hover_changed(Point point) {
 void NativeWindow::motion_schedule() {
     const auto now=GetTickCount64(); const auto duration=reduced_motion_?0:120;
     palette_transition_.target(palette_open_||rename_open_?1:0,now,reduced_motion_?0:100);
-    for (const auto& tab:chrome_.tabs) tab_transitions_[tab.tab].target(tab.tab==workspace_.active_tab()?1:0,now,duration);
+    for (const auto& tab:chrome_.tabs) tab_transitions_[tab.tab].target(tab.tab==workspace().active_tab()?1:0,now,duration);
     for (const auto& pane:layout_.panes) pane_reveals_[pane.pane].target(1,now,duration);
-    std::erase_if(tab_transitions_,[&](const auto& item){return !workspace_.tab(item.first);});
-    std::erase_if(pane_reveals_,[&](const auto& item){return !workspace_.pane(item.first);});
+    std::erase_if(tab_transitions_,[&](const auto& item){return !workspace().tab(item.first);});
+    std::erase_if(pane_reveals_,[&](const auto& item){return !workspace().pane(item.first);});
     std::erase_if(hover_transitions_,[&](const auto& item){
-        if (item.first&(1ull<<63)) return !workspace_.node(NodeId{item.first&~(1ull<<63)});
-        return item.first>=16 && !workspace_.tab(TabId{(item.first-16)/2});
+        if (item.first&(1ull<<63)) return !workspace().node(NodeId{item.first&~(1ull<<63)});
+        if (item.first&(1ull<<62)) return !projects_.find(ProjectWorkspaceId{item.first&~(1ull<<62)});
+        return item.first>=16 && !workspace().tab(TabId{(item.first-16)/2});
     });
     bool running=false;
     auto check=[&](ChromeTransition& transition) { if (reduced_motion_ || minimized_) transition.finish(); running=running||transition.active(now); };
@@ -737,11 +908,12 @@ void NativeWindow::motion_schedule() {
 }
 CommandContext NativeWindow::command_context() const {
     CommandContext context;
-    context.tabs = workspace_.state().tabs.size();
-    context.total_panes = workspace_.state().panes.size();
-    context.panes = workspace_.pane_order(workspace_.active_tab()).size();
+    context.supports_project_workspaces=true; context.project_workspaces=projects_.entries().size(); context.supports_focus_mode=true;
+    context.tabs = workspace().state().tabs.size();
+    context.total_panes = workspace().state().panes.size();
+    context.panes = workspace().pane_order(workspace().active_tab()).size();
     context.clipboard_has_text = IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE;
-    if (const auto* tab = workspace_.tab(workspace_.active_tab())) context.zoomed = tab->zoomed_pane.has_value();
+    if (const auto* tab = workspace().tab(workspace().active_tab())) context.zoomed = tab->zoomed_pane.has_value();
     if (auto* session = active_session()) {
         context.session_running = !session->closed();
         if (auto frame = session->frame()) for (const auto& row : frame->lines) if (row && row->selection) { context.has_selection = true; break; }
@@ -775,11 +947,25 @@ void NativeWindow::dispatch(std::string_view command) {
     if (drag_!=Drag::none || mouse_capture_pane_) cancel_drag();
     if (!host_availability(command, command_context()).enabled) { show_error(host_availability(command, command_context()).reason); return; }
     notice_.clear();
-    const auto pane = workspace_.active_pane();
-    const auto tab = workspace_.active_tab();
-    const Rect viewport{0, chrome_.band.height, width_, std::max(0.0, height_ - chrome_.band.height)};
+    const auto pane = workspace().active_pane();
+    const auto tab = workspace().active_tab();
+    const Rect viewport=workspace_viewport();
     auto report = [this](Status status) { if (!status) show_error(status.error); };
     if (command == "app.command_palette") { toggle_palette(); return; }
+    if (command == "workspace.new") { choose_project_folder(); return; }
+    if (command == "workspace.close") { close_project(projects_.active_id()); return; }
+    if (command == "workspace.toggle_navigation") {
+        if (width_<640 && !focus_mode_) { show_error("Widen the window to expand workspaces. The compact rail remains available."); return; }
+        navigation_expanded_=!navigation_expanded_; focus_mode_=false; changed(true); return;
+    }
+    if (command == "window.focus_mode") { focus_mode_=!focus_mode_; changed(true); return; }
+    if (command == "workspace.next" || command == "workspace.previous") {
+        const auto& entries=projects_.entries();
+        const auto found=std::find_if(entries.begin(),entries.end(),[&](const auto& item){return item.id==projects_.active_id();});
+        const auto index=static_cast<std::size_t>(found-entries.begin());
+        const auto next=(index+(command=="workspace.next"?1:entries.size()-1))%entries.size();
+        activate_project(entries[next].id); return;
+    }
     if (command == "tab.new") { new_tab(); return; }
     if (command == "tab.close") { close_tab(tab); return; }
     if (command == "pane.close") { close_pane(pane); return; }
@@ -789,46 +975,46 @@ void NativeWindow::dispatch(std::string_view command) {
     if (command == "edit.paste") { paste(); return; }
     if (command == "window.fullscreen") { toggle_fullscreen(); return; }
     if (command == "tab.rename") {
-        rename_open_ = true; palette_open_ = false; rename_tab_ = tab; query_ = workspace_.tab(tab)->title; changed(); return;
+        rename_open_ = true; palette_open_ = false; rename_tab_ = tab; query_ = workspace().tab(tab)->title; changed(); return;
     }
     if (command == "tab.next" || command == "tab.previous" || command == "tab.move_left" || command == "tab.move_right") {
-        const auto& tabs = workspace_.state().tabs;
+        const auto& tabs = workspace().state().tabs;
         const auto found = std::find_if(tabs.begin(), tabs.end(), [tab](const Tab& item) { return item.id == tab; });
         const auto index = static_cast<std::size_t>(std::distance(tabs.begin(), found));
         const bool previous = command == "tab.previous" || command == "tab.move_left";
         const auto next = (index + tabs.size() + (previous ? tabs.size() - 1 : 1)) % tabs.size();
-        if (command.starts_with("tab.move_")) report(workspace_.reorder_tab(tab, next));
+        if (command.starts_with("tab.move_")) report(workspace().reorder_tab(tab, next));
         else activate(tabs[next].active_pane);
-    } else if (command == "pane.zoom") report(workspace_.toggle_zoom());
+    } else if (command == "pane.zoom") report(workspace().toggle_zoom());
     else if (command == "pane.new_tab") {
-        auto result = workspace_.move_pane_to_new_tab(pane);
+        auto result = workspace().move_pane_to_new_tab(pane);
         if (!result) show_error(result.error);
     } else if (command == "pane.move_to_tab" || command == "pane.swap") {
         OwnedMenu menu;
         if (!menu) throw std::runtime_error("Could not create the pane destination menu.");
         std::vector<PaneId> destinations;
         if (command == "pane.move_to_tab") {
-            for (const auto& candidate : workspace_.state().tabs) if (candidate.id != tab) {
+            for (const auto& candidate : workspace().state().tabs) if (candidate.id != tab) {
                 destinations.push_back(candidate.active_pane);
                 AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(destinations.size()), widen(tab_title(candidate.id)).c_str());
             }
-        } else for (const auto target : workspace_.pane_order(tab)) if (target != pane) {
+        } else for (const auto target : workspace().pane_order(tab)) if (target != pane) {
             destinations.push_back(target); AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(destinations.size()), widen(pane_title(target)).c_str());
         }
         POINT position{static_cast<LONG>(width_ * scale_ / 2), static_cast<LONG>(80 * scale_)}; ClientToScreen(hwnd_, &position);
         const auto selected = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY, position.x, position.y, hwnd_, nullptr);
         if (selected && static_cast<std::size_t>(selected) <= destinations.size()) {
-            if (command == "pane.swap") report(workspace_.swap_panes(pane, destinations[selected - 1]));
-            else report(workspace_.move_pane(pane, destinations[selected - 1], Direction::right));
+            if (command == "pane.swap") report(workspace().swap_panes(pane, destinations[selected - 1]));
+            else report(workspace().move_pane(pane, destinations[selected - 1], Direction::right));
         }
     } else if (command.starts_with("pane.focus_") || command.starts_with("pane.move_")) {
         const auto direction = command.ends_with("left") ? Direction::left : command.ends_with("right") ? Direction::right : command.ends_with("up") ? Direction::up : Direction::down;
-        auto status = workspace_.focus_direction(direction, viewport, {1/scale_,7,80,48});
-        const auto target = workspace_.active_pane();
-        workspace_.focus(pane);
+        auto status = workspace().focus_direction(direction, viewport, {1/scale_,7,80,48});
+        const auto target = workspace().active_pane();
+        workspace().focus(pane);
         if (!status) show_error(status.error);
         else if (command.starts_with("pane.focus_")) activate(target);
-        else report(workspace_.move_pane(pane, target, direction));
+        else report(workspace().move_pane(pane, target, direction));
     } else if (command.starts_with("pane.resize_") || command == "pane.equalize") {
         const auto placement = std::find_if(layout_.panes.begin(), layout_.panes.end(), [pane](const PanePlacement& p) { return p.pane == pane; });
         const DividerPlacement* best = nullptr;
@@ -840,8 +1026,8 @@ void NativeWindow::dispatch(std::string_view command) {
             if (!best || divider.split_bounds.width * divider.split_bounds.height < best->split_bounds.width * best->split_bounds.height) best = &divider;
         }
         if (best) {
-            if (command == "pane.equalize") report(workspace_.equalize_split(best->node));
-            else report(workspace_.resize_split(best->node, best->applied_ratio + ((command.ends_with("left") || command.ends_with("up")) ? -0.05 : 0.05), viewport, {1/scale_,7,80,48}));
+            if (command == "pane.equalize") report(workspace().equalize_split(best->node));
+            else report(workspace().resize_split(best->node, best->applied_ratio + ((command.ends_with("left") || command.ends_with("up")) ? -0.05 : 0.05), viewport, {1/scale_,7,80,48}));
         } else show_error("There is no adjacent divider in that direction.");
     }
     changed(true);
@@ -856,7 +1042,7 @@ WindowScene NativeWindow::scene() {
     const Color secondary = high_contrast_ ? text : daylight?Color{88,101,114,255}:Color{162,173,190,255};
     const Color accent = high_contrast_ ? system_color(COLOR_WINDOWTEXT) : color_hex(config_.theme.accent, {167,196,210,255});
     const Color seam = high_contrast_ ? text : Color{162,173,190,56};
-    result.background = background; result.chrome_generation = chrome_generation_;
+    result.background = background; result.chrome_generation = chrome_generation_; result.force_redraw=force_redraw_;
     auto rectangle = [&](Rect bounds, Color fill, double radius = 0, Color stroke = {}, double stroke_width = 0, bool replace = false) {
         result.primitives.push_back({pixels(bounds), fill, stroke, static_cast<float>(radius * scale_), static_cast<float>(stroke_width * scale_), ChromePrimitiveKind::rectangle, replace});
     };
@@ -872,11 +1058,45 @@ WindowScene NativeWindow::scene() {
         auto channel=[&](int x,int y){return static_cast<std::uint8_t>(std::lround(x+(y-x)*t));};
         return Color{channel(a.r,b.r),channel(a.g,b.g),channel(a.b,b.b),channel(a.a,b.a)};
     };
+    if (navigation_.rail.width>0) {
+        Color rail=high_contrast_?background:daylight?Color{244,246,248,255}:Color{19,24,31,255};
+        if (backdrop_) rail.a=240;
+        rectangle(navigation_.rail,rail,0,{},0,true);
+        rectangle({navigation_.rail.width-1/scale_,chrome_.band.height,1/scale_,navigation_.rail.height},seam);
+        if (const auto amount=hover_amount(8); amount>0) rectangle(navigation_.toggle,opacity(raised,amount),5);
+        const double tx=navigation_.toggle.x+16,ty=navigation_.toggle.y+14;
+        rectangle({tx-7,ty-6,14,12},{0,0,0,0},1,secondary,1);
+        line(tx-2,ty-6,tx-2,ty+6,secondary);
+        if (navigation_.expanded) label({44,chrome_.band.height+10,132,18},"WORKSPACES",secondary,11);
+        for (const auto& row:navigation_.projects) {
+            const auto* project=projects_.find(row.project); if (!project) continue;
+            const bool selected=row.project==projects_.active_id();
+            const double amount=hover_amount((1ull<<62)|row.project.value);
+            if (selected||amount>0) rectangle(row.bounds,selected?raised:opacity(raised,amount*.65),5);
+            const double x=row.bounds.x+10,y=row.bounds.y+10;
+            rectangle({x,y+3,16,10},{0,0,0,0},1,selected?accent:secondary,1);
+            line(x,y+3,x,y,selected?accent:secondary); line(x,y,x+6,y,selected?accent:secondary); line(x+6,y,x+9,y+3,selected?accent:secondary);
+            if (navigation_.expanded) label({row.bounds.x+38,row.bounds.y+7,row.bounds.width-44,20},project->metadata.name,selected?text:secondary,13,selected);
+        }
+        if (const auto amount=hover_amount(9); amount>0) rectangle(navigation_.new_project,opacity(raised,amount),5);
+        const double x=navigation_.new_project.x+18,y=navigation_.new_project.y+18;
+        line(x-5,y,x+5,y,secondary); line(x,y-5,x,y+5,secondary);
+        if (navigation_.expanded) label({navigation_.new_project.x+38,navigation_.new_project.y+8,navigation_.new_project.width-44,20},"New workspace",secondary,12);
+    }
+    if (navigation_.context.height>0) {
+        Color context=chrome; context.a=high_contrast_?255:90;
+        rectangle(navigation_.context,context);
+        label({navigation_.context.x+20,navigation_.context.y+6,std::max(0.0,navigation_.context.width-60),18},context_label_,secondary,12);
+        rectangle({navigation_.context.x,navigation_.context.y+navigation_.context.height-1/scale_,navigation_.context.width,1/scale_},seam);
+        if (const auto amount=hover_amount(10); amount>0) rectangle(navigation_.focus,opacity(raised,amount),4);
+        const double x=navigation_.focus.x+12,y=navigation_.focus.y+10;
+        for (const int sign:{-1,1}) { line(x+sign*7,y+sign*3,x+sign*7,y+sign*6,secondary); line(x+sign*7,y+sign*6,x+sign*3,y+sign*6,secondary); }
+    }
     for (const auto& placement : layout_.panes) {
         if (auto* session = session_for(placement.pane)) {
             auto frame=session->frame();
             const bool cursor_visible=!frame || !frame->cursor.blinking || cursor_on_;
-            result.panes.push_back({placement.pane.value,pixels(content_bounds(placement)),std::move(frame),active_ && placement.pane==workspace_.active_pane() && !palette_open_ && !rename_open_ && !modal_,cursor_visible,reduced_motion_ || cursor_on_});
+            result.panes.push_back({placement.session.value,pixels(content_bounds(placement)),std::move(frame),active_ && placement.pane==workspace().active_pane() && !palette_open_ && !rename_open_ && !modal_,cursor_visible,reduced_motion_ || cursor_on_});
         }
         if (layout_.panes.size() > 1) {
             const Rect header{placement.bounds.x, placement.bounds.y, placement.bounds.width, 28};
@@ -885,8 +1105,8 @@ WindowScene NativeWindow::scene() {
                 rectangle({header.x,header.y+header.height-1/scale_,header.width,1/scale_},daylight?Color{130,142,155,100}:Color{43,50,61,140});
             }
             const double reveal=pane_reveals_[placement.pane].value(now);
-            if (placement.pane == workspace_.active_pane()) rectangle({header.x + 12,header.y + 10,2,8}, accent);
-            label({header.x + 20,header.y + 6,std::max(0.0,header.width - 56),18}, pane_title(placement.pane), opacity(placement.pane == workspace_.active_pane() ? text : secondary,reveal), 13);
+            if (placement.pane == workspace().active_pane()) rectangle({header.x + 12,header.y + 10,2,8}, accent);
+            label({header.x + 20,header.y + 6,std::max(0.0,header.width - 56),18}, pane_title(placement.pane), opacity(placement.pane == workspace().active_pane() ? text : secondary,reveal), 13);
             label({header.x + header.width - 28,header.y + 3,24,22}, "···", secondary, 16);
         }
     }
@@ -904,7 +1124,7 @@ WindowScene NativeWindow::scene() {
             label({zoom_return_.x+8,zoom_return_.y+5,zoom_return_.width-16,20},"Return to split",accent,12);
         }
         for (const auto& tab : chrome_.tabs) {
-            const bool selected = tab.tab == workspace_.active_tab();
+            const bool selected = tab.tab == workspace().active_tab();
             const double settle=tab_transitions_[tab.tab].value(now), hovered=hover_amount(16+tab.tab.value*2);
             if (settle>0 || hovered>0) rectangle(tab.bounds, opacity(blend(raised,(daylight||high_contrast_)?background:Color{32,38,51,255},settle),std::max(settle,hovered*.65)),6,
                 opacity(high_contrast_?accent:Color{76,86,106,180},settle),1/scale_);
@@ -944,7 +1164,7 @@ WindowScene NativeWindow::scene() {
         for (const auto& tab : chrome_.tabs) if (tab.bounds.contains(hover_)) rectangle({tab.bounds.x,tab.bounds.y,2,tab.bounds.height},accent);
     }
     if (!preedit_.empty() && composing_) {
-        for (const auto& placement : layout_.panes) if (placement.pane == workspace_.active_pane()) {
+        for (const auto& placement : layout_.panes) if (placement.pane == workspace().active_pane()) {
             if (auto* session = active_session(); session && session->frame()) {
                 const auto frame = session->frame(); const auto content = content_bounds(placement); const auto metrics = renderer_->metrics();
                 const double x = content.x + frame->cursor.column * metrics.width / scale_;
@@ -1021,6 +1241,7 @@ void NativeWindow::render() {
     if (renderer_call_) { defer_layout(); return; }
     RenderResult result;
     { RendererCallGuard guard(renderer_call_); result=renderer_->render(scene()); }
+    if (result==RenderResult::presented) force_redraw_=false;
     render_busy_ = result == RenderResult::busy;
     if (!render_busy_) dirty_ = false;
     if (options_.smoke_test) smoke_progress(result==RenderResult::presented);
@@ -1033,7 +1254,7 @@ void NativeWindow::terminal_text(std::string text, Key key, std::uint16_t modifi
         if (query_.size() + text.size() <= 1024) query_ += text;
         palette_index_ = 0; changed(); return;
     }
-    const auto* pane = workspace_.pane(workspace_.active_pane());
+    const auto* pane = workspace().pane(workspace().active_pane());
     if (!pane || !sessions_.contains(pane->session)) return;
     auto session = sessions_.at(pane->session);
     const auto bytes = text.size();
@@ -1081,7 +1302,7 @@ bool NativeWindow::key_message(MSG& message) {
             palette_index_ = 0; changed(); return true;
         }
         if (vk == VK_RETURN) {
-            if (rename_open_) { workspace_.rename_tab(rename_tab_,query_); rename_open_ = false; refresh_tooltips(); changed(); }
+            if (rename_open_) { workspace().rename_tab(rename_tab_,query_); rename_open_ = false; refresh_tooltips(); changed(); }
             else {
                 const auto commands = palette_commands();
                 if (!commands.empty()) {
@@ -1111,7 +1332,7 @@ bool NativeWindow::key_message(MSG& message) {
             dispatch(*command); return true;
         }
     }
-    const auto* pane = workspace_.pane(workspace_.active_pane());
+    const auto* pane = workspace().pane(workspace().active_pane());
     if (!pane || !sessions_.contains(pane->session)) return false;
     const Key key = physical_key(vk,message.lParam);
     if (key == Key::unidentified) return false;
@@ -1128,7 +1349,7 @@ bool NativeWindow::key_message(MSG& message) {
     return false;
 }
 void NativeWindow::copy() {
-    const auto* pane = workspace_.pane(workspace_.active_pane());
+    const auto* pane = workspace().pane(workspace().active_pane());
     if (!pane || !sessions_.contains(pane->session)) return;
     auto session = sessions_.at(pane->session);
     std::weak_ptr<WakeState> weak = wake_;
@@ -1179,7 +1400,7 @@ void NativeWindow::paste() {
     }
     if (text.size()>clipboard_limit) { show_error("Paste exceeds the 1 MiB safety limit; nothing was sent."); return; }
     const bool unsafe=!TerminalCore::paste_is_safe(text);
-    const auto* pane=workspace_.pane(workspace_.active_pane());
+    const auto* pane=workspace().pane(workspace().active_pane());
     if (!pane || !sessions_.contains(pane->session)) return;
     auto session=sessions_.at(pane->session); const auto size=text.size();
     auto send=[this,session,text=std::move(text),unsafe,size] {
@@ -1195,7 +1416,7 @@ void NativeWindow::terminal_mouse(Point point, MouseAction action, MouseButton b
         const bool captured=mouse_capture_pane_ && placement.pane==mouse_capture_pane_;
         if (mouse_capture_pane_ ? !captured : !placement.bounds.contains(point)) continue;
         const auto content=content_bounds(placement);
-        const auto* pane=workspace_.pane(placement.pane);
+        const auto* pane=workspace().pane(placement.pane);
         if (!pane || !sessions_.contains(pane->session)) return;
         auto session=sessions_.at(pane->session);
         const auto frame=session->frame();
@@ -1224,7 +1445,7 @@ void NativeWindow::popup_menu(Point point, bool pane_actions) {
     OwnedMenu menu;
     if (!menu) return;
     std::vector<std::string_view> commands=pane_actions ? std::vector<std::string_view>{"pane.split_right","pane.split_down","pane.zoom","pane.new_tab","pane.swap","pane.move_to_tab","pane.close"} :
-        std::vector<std::string_view>{"tab.new","pane.split_right","pane.split_down","tab.rename","tab.next","tab.previous","app.command_palette","window.fullscreen","tab.close"};
+        std::vector<std::string_view>{"workspace.new","workspace.next","workspace.previous","workspace.toggle_navigation","window.focus_mode","tab.new","pane.split_right","pane.split_down","tab.rename","tab.next","tab.previous","app.command_palette","window.fullscreen","tab.close","workspace.close"};
     for (std::size_t i=0;i<commands.size();++i) {
         const auto* command=find_command(commands[i]);
         if (command) AppendMenuW(menu,MF_STRING | (host_availability(command->id,context).enabled?MF_ENABLED:MF_GRAYED),i+1,widen(command->label).c_str());
@@ -1256,13 +1477,18 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
     if (chrome_.menu.contains(point)) { popup_menu({point.x,40}); return; }
     if (chrome_.new_tab.contains(point)) { if (GetKeyState(VK_SHIFT)&0x8000) popup_menu({point.x,40}); else new_tab(); return; }
     if (chrome_.palette.contains(point)) { toggle_palette(); return; }
+    if (navigation_.toggle.contains(point)) { dispatch("workspace.toggle_navigation"); return; }
+    if (navigation_.new_project.contains(point)) { dispatch("workspace.new"); return; }
+    if (navigation_.focus.contains(point)) { dispatch("window.focus_mode"); return; }
+    for (const auto& row:navigation_.projects) if (row.bounds.contains(point)) { activate_project(row.project); return; }
+    if (navigation_.rail.contains(point) || navigation_.context.contains(point)) return;
     for (const auto& tab:chrome_.tabs) if (tab.bounds.contains(point)) {
         if (chrome_.compact) {
             OwnedMenu picker; if (!picker) return;
             std::vector<PaneId> panes;
-            for (const auto& item:workspace_.state().tabs) {
+            for (const auto& item:workspace().state().tabs) {
                 panes.push_back(item.active_pane);
-                AppendMenuW(picker,MF_STRING|(item.id==workspace_.active_tab()?MF_CHECKED:0),panes.size(),widen(tab_title(item.id)).c_str());
+                AppendMenuW(picker,MF_STRING|(item.id==workspace().active_tab()?MF_CHECKED:0),panes.size(),widen(tab_title(item.id)).c_str());
             }
             POINT position{static_cast<LONG>(tab.bounds.x*scale_),static_cast<LONG>(chrome_.band.height*scale_)}; ClientToScreen(hwnd_,&position);
             const auto chosen=TrackPopupMenuEx(picker,TPM_RETURNCMD|TPM_NONOTIFY,position.x,position.y,hwnd_,nullptr);
@@ -1270,12 +1496,12 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
             return;
         }
         if (tab.close.contains(point)) { close_tab(tab.tab); return; }
-        if (double_click) { activate(workspace_.tab(tab.tab)->active_pane); dispatch("tab.rename"); return; }
-        activate(workspace_.tab(tab.tab)->active_pane);
+        if (double_click) { activate(workspace().tab(tab.tab)->active_pane); dispatch("tab.rename"); return; }
+        activate(workspace().tab(tab.tab)->active_pane);
         drag_=Drag::tab; drag_tab_=tab.tab; drag_origin_=point; SetCapture(hwnd_); return;
     }
     for (const auto& divider:layout_.dividers) if (divider.hit_bounds.contains(point)) {
-        if (double_click) { workspace_.equalize_split(divider.node); changed(true); return; }
+        if (double_click) { workspace().equalize_split(divider.node); changed(true); return; }
         drag_=Drag::divider; drag_node_=divider.node; drag_divider_=divider; drag_origin_=point; SetCapture(hwnd_); return;
     }
     for (const auto& placement:layout_.panes) if (placement.bounds.contains(point)) {
@@ -1284,7 +1510,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
         activate(pane);
         if (layout_.panes.size()>1 && point.y<bounds.y+28) {
             if (point.x>=bounds.x+bounds.width-32) { popup_menu(point,true); return; }
-            if (double_click) { workspace_.toggle_zoom(); changed(true); return; }
+            if (double_click) { workspace().toggle_zoom(); changed(true); return; }
             drag_=Drag::pane; drag_pane_=pane; drag_origin_=point; SetCapture(hwnd_); return;
         }
         auto* session=active_session(); auto frame=session?session->frame():nullptr;
@@ -1296,7 +1522,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
             selection_column_=static_cast<std::uint16_t>(std::clamp((point.x-content.x)*scale_/metrics.width,0.0,frame && frame->columns?static_cast<double>(frame->columns-1):0.0));
             selection_row_=static_cast<std::uint16_t>(std::clamp((point.y-content.y)*scale_/metrics.height,0.0,frame && frame->rows?static_cast<double>(frame->rows-1):0.0));
             selection_pane_=pane; drag_=Drag::selection; drag_origin_=point; SetCapture(hwnd_);
-            const auto* model=workspace_.pane(pane); if (model && sessions_.contains(model->session)) { auto owned=sessions_.at(model->session); submit([owned] { return owned->clear_selection(); }); }
+            const auto* model=workspace().pane(pane); if (model && sessions_.contains(model->session)) { auto owned=sessions_.at(model->session); submit([owned] { return owned->clear_selection(); }); }
             return;
         }
     }
@@ -1314,7 +1540,7 @@ void NativeWindow::pointer_move(Point point) {
         const double extent=drag_divider_.axis==Axis::horizontal?split.width:split.height;
         const double position=drag_divider_.axis==Axis::horizontal?point.x-split.x:point.y-split.y;
         const double gap=1/scale_;
-        if (extent>gap) workspace_.resize_split(drag_node_,(position-gap/2)/(extent-gap),{0,chrome_.band.height,width_,height_-chrome_.band.height},{1/scale_,7,80,48});
+        if (extent>gap) workspace().resize_split(drag_node_,(position-gap/2)/(extent-gap),workspace_viewport(),{1/scale_,7,80,48});
         changed(true); return;
     }
     if (drag_==Drag::pane && drag_started_) {
@@ -1334,7 +1560,7 @@ void NativeWindow::pointer_move(Point point) {
     }
     if (drag_==Drag::selection && drag_started_) {
         for (const auto& pane:layout_.panes) if (pane.pane==selection_pane_) {
-            const auto* model=workspace_.pane(pane.pane); if (!model || !sessions_.contains(model->session)) break;
+            const auto* model=workspace().pane(pane.pane); if (!model || !sessions_.contains(model->session)) break;
             auto session=sessions_.at(model->session); auto frame=session->frame(); if (!frame || !frame->columns || !frame->rows) break;
             const auto content=content_bounds(pane); const auto metrics=renderer_->metrics();
             const auto column=static_cast<std::uint16_t>(std::clamp((point.x-content.x)*scale_/metrics.width,0.0,static_cast<double>(frame->columns-1)));
@@ -1365,12 +1591,12 @@ void NativeWindow::pointer_up(Point point) {
         return;
     }
     if (drag_==Drag::pane && drag_started_ && drop_target_) {
-        const auto status=drop_direction_?workspace_.move_pane(drag_pane_,drop_target_,*drop_direction_):workspace_.swap_panes(drag_pane_,drop_target_);
+        const auto status=drop_direction_?workspace().move_pane(drag_pane_,drop_target_,*drop_direction_):workspace().swap_panes(drag_pane_,drop_target_);
         if (!status) show_error(status.error);
     } else if (drag_==Drag::tab && drag_started_) {
         // Cross-window tear-off is intentionally not faked. A drag outside the
         // band cancels and retains the one existing owner/session.
-        if (chrome_.band.contains(point)) for (std::size_t i=0;i<chrome_.tabs.size();++i) if (chrome_.tabs[i].bounds.contains(point)) { workspace_.reorder_tab(drag_tab_,i); break; }
+        if (chrome_.band.contains(point)) for (std::size_t i=0;i<chrome_.tabs.size();++i) if (chrome_.tabs[i].bounds.contains(point)) { workspace().reorder_tab(drag_tab_,i); break; }
     } else if (drag_==Drag::none) terminal_mouse(point,MouseAction::release,MouseButton::left,false);
     cancel_drag(); changed(true);
 }
@@ -1380,12 +1606,6 @@ void NativeWindow::cancel_drag() {
     changed();
 }
 
-template<class T> struct WicObject {
-    T* value{};
-    ~WicObject() { if (value) value->Release(); }
-    T** put() noexcept { return &value; }
-    T* operator->() const noexcept { return value; }
-};
 void NativeWindow::capture_frame() {
     if (options_.capture_path.empty()) return;
     auto pixels=renderer_->read_pixels();
@@ -1393,15 +1613,15 @@ void NativeWindow::capture_frame() {
     const auto width=static_cast<UINT>(bounds.right),height=static_cast<UINT>(bounds.bottom);
     if (!width || !height || pixels.size()!=static_cast<std::size_t>(width)*height*4) throw std::runtime_error("Native capture returned invalid framebuffer dimensions.");
     auto check=[](HRESULT result) { if (FAILED(result)) throw std::runtime_error("Could not encode the native CI framebuffer PNG."); };
-    WicObject<IWICImagingFactory> factory;
+    ComObject<IWICImagingFactory> factory;
     check(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,__uuidof(IWICImagingFactory),reinterpret_cast<void**>(factory.put())));
-    WicObject<IWICStream> stream;
+    ComObject<IWICStream> stream;
     check(factory->CreateStream(stream.put()));
     check(stream->InitializeFromFilename(options_.capture_path.c_str(),GENERIC_WRITE));
-    WicObject<IWICBitmapEncoder> encoder;
+    ComObject<IWICBitmapEncoder> encoder;
     check(factory->CreateEncoder(GUID_ContainerFormatPng,nullptr,encoder.put()));
     check(encoder->Initialize(stream.value,WICBitmapEncoderNoCache));
-    WicObject<IWICBitmapFrameEncode> frame;
+    ComObject<IWICBitmapFrameEncode> frame;
     check(encoder->CreateNewFrame(frame.put(),nullptr));
     check(frame->Initialize(nullptr)); check(frame->SetSize(width,height));
     check(frame->SetResolution(dpi_,dpi_));
@@ -1419,19 +1639,20 @@ void NativeWindow::capture_frame() {
     check(frame->WritePixels(height,width*4,static_cast<UINT>(pixels.size()),pixels.data()));
     check(frame->Commit()); check(encoder->Commit());
 }
+bool frame_has_smoke_marker(const FramePtr& frame) {
+    if (!frame) return false;
+    for (const auto& row:frame->lines) if (row) {
+        std::string line; for (const auto& cell:row->cells) line+=cell.grapheme;
+        while (!line.empty() && line.back()==' ') line.pop_back();
+        if (line==smoke_marker) return true;
+    }
+    return false;
+}
 bool NativeWindow::smoke_frame_ready() const {
     if (layout_.panes.empty()) return false;
     for (const auto& placement:layout_.panes) {
-        auto* session=session_for(placement.pane); const auto frame=session?session->frame():nullptr;
-        if (!frame) return false;
-        bool marker=false;
-        for (const auto& row:frame->lines) if (row) {
-            std::string line; for (const auto& cell:row->cells) line+=cell.grapheme;
-            // A complete output line, not just an echoed input command.
-            while (!line.empty() && line.back()==' ') line.pop_back();
-            if (line==smoke_marker) { marker=true; break; }
-        }
-        if (!marker) return false;
+        auto* session=session_for(placement.pane);
+        if (!session || !frame_has_smoke_marker(session->frame())) return false;
     }
     return true;
 }
@@ -1443,29 +1664,44 @@ void NativeWindow::smoke_progress(bool presented) {
         auto* active=active_session(); const auto info=active?active->info():SessionInfo{};
         if (smoke_modal_stage_==0 && info.state==SessionState::running && info.bytes_received) {
             const auto styles=GetWindowLongPtrW(hwnd_,GWL_STYLE);
-            if ((styles&WS_CAPTION) || !(styles&WS_THICKFRAME) || !(styles&WS_MAXIMIZEBOX)) { smoke_finish("Custom frame style invariants failed."); return; }
-            const auto original=workspace_.active_pane(); const auto original_session=workspace_.pane(original)->session;
+            constexpr LONG_PTR required=WS_THICKFRAME|WS_SYSMENU|WS_MINIMIZEBOX|WS_MAXIMIZEBOX;
+            if ((styles&WS_CAPTION) || (required&~styles)) {
+                std::fprintf(stderr,"Native modal frame style=0x%08lx caption_bits=0x%08lx missing_required=0x%08lx\n",
+                    static_cast<unsigned long>(styles),static_cast<unsigned long>(styles&WS_CAPTION),static_cast<unsigned long>(required&~styles));
+                smoke_finish("Custom frame style invariants failed after activation; see style masks."); return;
+            }
+            const auto original=workspace().active_pane(); const auto original_session=workspace().pane(original)->session;
             close_pane(original);
             if (!modal_ || modal_focus_.activate()!=ModalDecision::cancel || focused_session_) { smoke_finish("Modal did not default to Cancel and remove terminal focus."); return; }
             MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam='X';
             if (!key_message(key)) { smoke_finish("Modal printable key leaked to terminal routing."); return; }
             key.wParam=VK_ESCAPE; key_message(key);
-            if (modal_ || !workspace_.pane(original) || focused_session_!=original_session) { smoke_finish("Escape did not restore terminal focus without closing."); return; }
+            if (modal_ || !workspace().pane(original) || focused_session_!=original_session) { smoke_finish("Escape did not restore terminal focus without closing."); return; }
             close_pane(original); key.wParam=VK_RETURN; key_message(key);
-            if (modal_ || !workspace_.pane(original)) { smoke_finish("Default Enter did not cancel destructive close."); return; }
-            new_tab(); const auto disposable=workspace_.pane(workspace_.active_pane())->session;
-            smoke_disposable_=sessions_.at(disposable); close_tab(workspace_.active_tab());
+            if (modal_ || !workspace().pane(original)) { smoke_finish("Default Enter did not cancel destructive close."); return; }
+            new_tab(); const auto disposable=workspace().pane(workspace().active_pane())->session;
+            smoke_disposable_=sessions_.at(disposable); close_tab(workspace().active_tab());
             if (!modal_) { smoke_finish("Disposable tab did not show styled close confirmation."); return; }
             smoke_modal_stage_=1; return;
         }
         if (smoke_modal_stage_==1 && presented) {
             try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
             modal_focus_.select(ModalDecision::confirm); answer_modal(modal_focus_.activate());
-            if (modal_ || workspace_.state().tabs.size()!=1 || sessions_.size()!=1) { smoke_finish("Explicit modal close did not retire only its tab."); return; }
+            if (modal_ || workspace().state().tabs.size()!=1 || sessions_.size()!=1) { smoke_finish("Explicit modal close did not retire only its tab."); return; }
             smoke_modal_stage_=2;
         } else return;
     }
     if (options_.smoke_modal && smoke_disposable_ && !smoke_disposable_->closed()) return;
+    if (options_.smoke_projects && !smoke_projects_live_verified_) {
+        if (projects_.entries().size()!=2 || sessions_.size()!=2 || smoke_project_actors_.size()!=2) { smoke_finish("Workspace creation did not retain two distinct actors."); return; }
+        for (const auto& [id,actor]:smoke_project_actors_) {
+            if (!sessions_.contains(id) || sessions_.at(id)!=actor) { smoke_finish("Workspace activation replaced an actor."); return; }
+            const auto info=actor->info(); if (info.state!=SessionState::running || !info.bytes_received) return;
+        }
+        activate_project(smoke_secondary_project_); retire_unused_sessions(); activate_project(smoke_primary_project_); retire_unused_sessions();
+        if (sessions_.size()!=2 || !projects_.validate()) { smoke_finish("Hidden live actors were retired or workspace IDs collided."); return; }
+        smoke_projects_live_verified_=true;
+    }
     bool all_closed=true;
     for (const auto& [id,session]:sessions_) {
         const auto info=session->info();
@@ -1484,6 +1720,19 @@ void NativeWindow::smoke_progress(bool presented) {
     if (all_closed) {
         if (!smoke_frame_ready()) { smoke_finish("Controlled smoke shell exited without its expected output marker."); return; }
         if (smoke_marker_presented_ && renderer_->stats().presents) {
+            if (options_.smoke_projects) {
+                for (const auto& [id,actor]:smoke_project_actors_) if (!sessions_.contains(id) || sessions_.at(id)!=actor || !frame_has_smoke_marker(actor->frame())) {
+                    smoke_finish("A hidden workspace lost its original actor or real shell output."); return;
+                }
+                try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
+                const auto retained=projects_.session_ids(smoke_primary_project_);
+                close_project(smoke_secondary_project_,true);
+                if (projects_.entries().size()!=1 || projects_.active_id()!=smoke_primary_project_ || retained.size()!=1 || sessions_.size()!=1 ||
+                    !sessions_.contains(retained.front()) || sessions_.at(retained.front())!=smoke_project_actors_.at(retained.front())) {
+                    smoke_finish("Scoped project close affected the surviving workspace."); return;
+                }
+                smoke_finish(); return;
+            }
             try { if (!options_.smoke_modal) capture_frame(); smoke_finish(); }
             catch (const std::exception& error) { smoke_finish(error.what()); }
         }
@@ -1495,8 +1744,9 @@ void NativeWindow::smoke_finish(std::string_view error) {
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
+        if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts, original live actor identity across activation/retirement, hidden real output, scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
-        if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace_.state().tabs.size(),layout_.panes.size());
+        if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());
     } else std::fprintf(stderr,"Native CI smoke failed: %.*s\n",static_cast<int>(error.size()),error.data());
     if (hwnd_) DestroyWindow(hwnd_);
 }
@@ -1507,7 +1757,7 @@ void NativeWindow::position_ime() {
     if (palette_open_ || rename_open_) {
         position={static_cast<LONG>(std::max(16.0,(width_-560)/2+16)*scale_),static_cast<LONG>(96*scale_)};
         exclusion={position.x,position.y,position.x+1,position.y+static_cast<LONG>(20*scale_)};
-    } else for (const auto& pane:layout_.panes) if (pane.pane==workspace_.active_pane()) {
+    } else for (const auto& pane:layout_.panes) if (pane.pane==workspace().active_pane()) {
         const auto content=content_bounds(pane); const auto metrics=renderer_->metrics();
         auto* session=active_session(); auto frame=session?session->frame():nullptr;
         position.x=static_cast<LONG>(content.x*scale_+(frame?frame->cursor.column:0)*metrics.width);
@@ -1694,7 +1944,10 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_RBUTTONUP: {
         if (modal_) return 0;
         const auto p=point(lparam);
-        if (p.y<chrome_.band.height) popup_menu(p);
+        if (navigation_.rail.contains(p)) {
+            for (const auto& row:navigation_.projects) if (row.bounds.contains(p)) { activate_project(row.project); break; }
+            popup_menu(p);
+        } else if (p.y<chrome_.band.height || navigation_.context.contains(p)) popup_menu(p);
         else if (mouse_capture_pane_) terminal_mouse(p,MouseAction::release,MouseButton::right,false);
         else popup_menu(p,true);
         return 0;
@@ -1710,8 +1963,13 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         remainder+=GET_WHEEL_DELTA_WPARAM(wparam);
         const int steps=remainder/WHEEL_DELTA; remainder%=WHEEL_DELTA;
         if (!steps) return 0;
-        PaneId target=workspace_.active_pane();
+        PaneId target=workspace().active_pane();
         const auto position=point(lparam,true);
+        if (navigation_.rail.contains(position)) {
+            const auto next=static_cast<std::int64_t>(navigation_first_)-steps;
+            navigation_first_=static_cast<std::size_t>(std::max<std::int64_t>(0,next)); changed(true); return 0;
+        }
+        if (navigation_.context.contains(position)) return 0;
         for (const auto& placement:layout_.panes) if (placement.bounds.contains(position)) { target=placement.pane; break; }
         auto* session=session_for(target); const auto frame=session?session->frame():nullptr;
         if (frame && frame->mouse_reporting && !(GetKeyState(VK_SHIFT)&0x8000)) {
@@ -1720,7 +1978,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         } else if (message==WM_MOUSEWHEEL) {
             UINT rows=3; SystemParametersInfoW(SPI_GETWHEELSCROLLLINES,0,&rows,0);
             if (rows==WHEEL_PAGESCROLL) rows=frame?frame->rows:24;
-            if (const auto* pane=workspace_.pane(target); pane && sessions_.contains(pane->session)) {
+            if (const auto* pane=workspace().pane(target); pane && sessions_.contains(pane->session)) {
                 auto owned=sessions_.at(pane->session); const auto amount=-static_cast<std::int64_t>(steps)*rows;
                 submit([owned,amount] { return owned->scroll(amount); });
             }
@@ -1732,7 +1990,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
             if (modal_) { SetCursor(LoadCursorW(nullptr,IDC_ARROW)); return TRUE; }
             POINT cursor{}; GetCursorPos(&cursor); ScreenToClient(hwnd_,&cursor); const Point p{cursor.x/scale_,cursor.y/scale_};
             for (const auto& divider:layout_.dividers) if (divider.hit_bounds.contains(p)) { SetCursor(LoadCursorW(nullptr,divider.axis==Axis::horizontal?IDC_SIZEWE:IDC_SIZENS)); return TRUE; }
-            SetCursor(LoadCursorW(nullptr,modal_ || p.y<chrome_.band.height?IDC_ARROW:IDC_IBEAM)); return TRUE;
+            SetCursor(LoadCursorW(nullptr,modal_ || p.y<chrome_.band.height || navigation_.rail.contains(p) || navigation_.context.contains(p)?IDC_ARROW:IDC_IBEAM)); return TRUE;
         }
         break;
     case WM_CAPTURECHANGED:

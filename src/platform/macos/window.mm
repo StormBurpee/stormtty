@@ -18,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace stormtty::macos { class Host; }
 @interface STChromeView : NSView {
@@ -104,6 +105,7 @@ public:
     double scale{1};std::uint32_t pixel_width{},pixel_height{};
     bool closing{},finished{},close_authorized{},confirming_close{},reduce_motion{},cursor_on{true},blink_scheduled{},retry_scheduled{};
     bool smoke_input{},smoke_seen{},smoke_presented{},smoke_capture_pending{},smoke_force_present{};
+    bool appearance_pending{},resize_pending{},update_active{},update_again{};
     std::chrono::steady_clock::time_point smoke_present_deadline{};
     int exit_code{};std::atomic<bool> wake_queued{false};
     NodeId dragged_divider;PaneId selection_pane;std::uint16_t selection_x{},selection_y{};
@@ -186,6 +188,7 @@ public:
             id=="edit.copy"||id=="edit.paste"||id=="window.fullscreen"||id=="settings.open"||id=="terminal.find";
     }
     void appearance() {
+        if(smoke_capture_pending){appearance_pending=true;return;}
         const auto system=[NSWorkspace sharedWorkspace];
         const bool opaque=system.accessibilityDisplayShouldReduceTransparency||system.accessibilityDisplayShouldIncreaseContrast||config.appearance.backdrop==BackdropPreference::none;
         reduce_motion=config.appearance.reduced_motion==ReducedMotionPreference::enabled||
@@ -257,7 +260,8 @@ public:
         ++chrome;
     }
     void resize() {
-        if(!renderer||!view||smoke_capture_pending)return;
+        if(smoke_capture_pending){resize_pending=true;return;}
+        if(!renderer||!view)return;
         scale=window.backingScaleFactor>0?window.backingScaleFactor:1;
         // Derive the reserved traffic-light area from AppKit, not Windows or
         // guessed caption metrics. Accessory width is the supported mutable axis.
@@ -348,7 +352,7 @@ public:
         for(auto& [id,session]:sessions)if(!retained.contains(id))session->request_close();
     }
     void command(std::string_view id) {
-        if(closing)return;
+        if(closing||smoke_capture_pending)return;
         if(!command_availability(id,context()).enabled)return;
         if(id=="tab.new"){create_tab();return;}
         if(id=="pane.split_right"||id=="pane.split_down"){
@@ -462,9 +466,15 @@ public:
             std::max(1.,frame->cell_width/scale),std::max(1.,frame->cell_height/scale));
     }
     void update() {
-        if(finished)return;flush_input();
-        if(closing){bool closed=true;for(const auto& [id,s]:sessions){(void)id;closed&=s->closed();}if(closed)finish();return;}
+        if(finished)return;
+        if(update_active){update_again=true;return;}
+        update_active=true;
+        struct UpdateScope {Host& host;~UpdateScope(){host.update_active=false;if(std::exchange(host.update_again,false))host.wake();}} scope{*this};
+        flush_input();
+        if(closing){if(smoke_capture_pending)return;bool closed=true;for(const auto& [id,s]:sessions){(void)id;closed&=s->closed();}if(closed)finish();return;}
         if(smoke_capture_pending)return;
+        if(std::exchange(appearance_pending,false))appearance();
+        if(std::exchange(resize_pending,false))resize();
         std::set<SessionId> retained;for(const auto& [id,pane]:workspace.state().panes){(void)id;retained.insert(pane.session);}
         for(auto it=sessions.begin();it!=sessions.end();)if(!retained.contains(it->first)&&it->second->closed()){sent_sizes.erase(it->first);it=sessions.erase(it);}else ++it;
         if(options.smoke_test){auto session=active();if(!session)throw std::runtime_error("Smoke session missing");auto info=session->info();
@@ -507,8 +517,9 @@ public:
         if(options.smoke_test&&smoke_presented&&active()->closed()&&!smoke_capture_pending){
             smoke_capture_pending=true;
             // Readback waits for the actual Metal command buffer only on a
-            // background thread, never in an AppKit callback. Renderer remains
-            // single-owner: UI is now quiesced and ownership is handed off once.
+            // background thread, never in an AppKit callback. Renderer lifetime
+            // remains owned by Host; capture_pending gates every UI renderer
+            // operation until this worker reports completion on the main queue.
             // Give the real main run loop a committed, attached layer before
             // asking a background worker to observe its presentation callback.
             [view layoutSubtreeIfNeeded];[window displayIfNeeded];[CATransaction flush];
@@ -522,26 +533,37 @@ public:
                 <<" displayActive="<<(screen?CGDisplayIsActive(display):0)<<" windowFrame="<<utf8(NSStringFromRect(window.frame))
                 <<" viewBounds="<<utf8(NSStringFromRect(view.bounds));
             const auto visibility=context.str();std::fprintf(stdout,"macOS smoke presentation context: %s\n",visibility.c_str());std::fflush(stdout);
-            auto self=shared_from_this();auto capture_renderer=std::make_shared<std::unique_ptr<Renderer>>(std::move(renderer));
+            auto self=shared_from_this();
             const auto capture_width=pixel_width,capture_height=pixel_height;
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
-                @autoreleasepool { try {auto pixels=(*capture_renderer)->read_pixels();if(pixels.empty())throw std::runtime_error("Smoke Metal framebuffer is empty");
+                @autoreleasepool { try {auto pixels=self->renderer->read_pixels();if(pixels.empty())throw std::runtime_error("Smoke Metal framebuffer is empty");
                     if(!self->options.capture_path.empty())write_macos_capture(self->options.capture_path,pixels,capture_width,capture_height);
-                    dispatch_async(dispatch_get_main_queue(),^{self->guard([&]{std::fprintf(stdout,"PASS macOS AppKit + POSIX PTY + Session + TerminalCore + CoreText + Metal framebuffer + exit\n");self->begin_close(true);});});
+                    dispatch_async(dispatch_get_main_queue(),^{self->guard([&]{self->smoke_capture_pending=false;std::fprintf(stdout,"PASS macOS AppKit + POSIX PTY + Session + TerminalCore + CoreText + Metal framebuffer + exit\n");self->begin_close(true);self->wake();});});
                 }catch(const std::exception& e){const auto error=std::string(e.what());
                     dispatch_async(dispatch_get_main_queue(),^{self->guard([&]{
                         // Dropped first drawables do not establish a displayed
-                        // frame. Restore sole renderer ownership on the UI and
-                        // request another real present within the observation
+                        // frame. The completed worker releases its exclusive
+                        // readback phase before another main-run-loop present.
+                        // Request another real present within the observation
                         // deadline; never accept a zero timestamp or fake/skip.
+                        self->smoke_capture_pending=false;
                         if(error.starts_with("Metal drawable was not observed presented onscreen")&&std::chrono::steady_clock::now()<self->smoke_present_deadline&&!self->closing){
                             std::fprintf(stderr,"macOS smoke re-presentation after observer timeout: %s; %s\n",error.c_str(),visibility.c_str());
-                            self->renderer=std::move(*capture_renderer);self->smoke_capture_pending=false;self->smoke_presented=false;self->smoke_force_present=true;
-                            [self->window orderFront:nil];[self->window displayIfNeeded];[CATransaction flush];
-                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(),^{self->wake();});
-                        }else self->fail(error+"; "+visibility);
+                            self->smoke_presented=false;self->smoke_force_present=true;
+                            // Do not synchronously redisplay/order the window
+                            // inside a readback completion callback. Its native
+                            // layout/delegate callbacks may be reentrant. The
+                            // existing visible window gets the next real Metal
+                            // present from an ordinary main-loop wake instead.
+                            // self is a reference captured by the enclosing C++
+                            // guard lambda. A nested escaping Block would copy
+                            // that reference, not retain its shared_ptr owner.
+                            // A local value gives Blocks an owning C++ capture.
+                            const auto retry_host=self;
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(),^{retry_host->wake();});
+                        }else{self->fail(error+"; "+visibility);self->wake();}
                     });});
-                } }
+                }catch(...){dispatch_async(dispatch_get_main_queue(),^{self->smoke_capture_pending=false;self->fail("Unexpected macOS smoke readback failure");self->wake();});} }
             });
         }
     }

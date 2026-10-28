@@ -100,7 +100,9 @@ The parent CI owner records whether this entry point actually ran and passed.
   action. Terminal key/text/mouse/wheel/IME input is intercepted while modal;
   process output continues. A paste action retains the original actor target.
 - The HWND retains thick-frame, system-menu, minimize/maximize styles but omits
-  WS_CAPTION. NCCALCSIZE/NCPAINT/NCACTIVATE are application-owned before DWM;
+  WS_CAPTION. Because overlapped-window creation can normalize caption styles,
+  the host explicitly enforces and reads back this mask after CreateWindowEx,
+  recalculates the frame, and prints exact masks on smoke/failure. NCCALCSIZE/NCPAINT/NCACTIVATE are application-owned before DWM;
   caption commands are explicitly dispatched on mouse-up. HTMAXBUTTON remains
   available for documented Snap integration. This source change and style tests
   are not proof of physical inactive-window, corner, shadow or Snap behavior.
@@ -109,6 +111,36 @@ The parent CI owner records whether this entry point actually ran and passed.
   styled confirmation, accepts close for a disposable real tab, then requires
   the surviving shell's output marker and clean exit. A framebuffer cannot show
   a stale underlying DWM redirection bitmap or prove desktop activation behavior.
-- Startup failures/help still have their separate pre-renderer MessageBox path;
-  removal is tracked as follow-up. Do not claim all application alerts are custom
-  until that fallback is replaced as well. UIA modal semantics are not yet exposed.
+- Startup failures/help now use a separate dependency-light Graphite GDI notice
+  window, so reporting a GPU startup failure does not require a working renderer
+  or launch a shell. No stock MessageBox remains in the Windows entry/shell path.
+  UIA semantics for the renderer-backed runtime modal are not yet exposed.
+
+## Real project navigation (separate follow-up)
+
+- Each displayed workspace is an actual catalog entry with a real launch folder,
+  tabs, split tree and opaque session associations. Startup uses the configured
+  profile folder or actual process current directory; no illustrative projects,
+  agent panels, Git branches or remote-connection claims are created.
+- New workspace opens the Windows filesystem folder picker and launches the
+  selected profile in that directory. The picker does not change the host's cwd.
+  The rail is 44 DIP collapsed, 184 DIP expanded on sufficiently wide windows;
+  scrolling handles the bounded project list. Focus mode hides navigation and
+  context without restarting sessions. Task tabs retain their rename command.
+- Context explicitly distinguishes observed **Shell directory** metadata from
+  declared **Launch folder**. Observed terminal metadata is sanitized/displayed
+  only, never executed or used to change directories automatically.
+- Hidden projects retain their original actors, output and model metadata.
+  Renderer pane identity uses host-global SessionId; local pane/tab/node caches
+  reset at project activation. Close confirmations capture qualified project/
+  local IDs and original session associations. Last-project close exits the
+  window deliberately; it never spawns an unsolicited replacement process.
+- Palette/native menu expose new/next/previous/close/navigation/focus commands.
+  Hosts explicitly advertise capability; unsupported hosts show disabled reasons.
+  No new default shortcuts take terminal chords. No on-disk persistence is claimed.
+  Pane/tab moves are within the active workspace; cross-project and cross-window
+  transfers are not implemented or represented as successful.
+- `--smoke-projects --capture projects.png` uses two actual local directories and
+  real shells. It checks live actor identity across activation/retirement, hidden
+  terminal output, and removal of only one project. It does not prove interactive
+  folder-picker behavior or physical visual/accessibility quality.

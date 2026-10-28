@@ -7,6 +7,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <d3d11.h>
+#include <dxgi1_3.h>
+#include <dcomp.h>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -57,6 +60,70 @@ struct HostWindow {
         require(previous!=0 || GetLastError()==ERROR_SUCCESS,"Add unrelated host style failed");
     }
 };
+template<class T> struct ProbeCom {
+    T* value{};
+    ~ProbeCom() { if(value)value->Release(); }
+    ProbeCom()=default;
+    ProbeCom(const ProbeCom&)=delete;
+    ProbeCom& operator=(const ProbeCom&)=delete;
+};
+void direct_composition_probe(bool initial_no_redirection, bool waitable, D3D_DRIVER_TYPE driver) {
+    // Failure-only diagnostic, independent of Renderer and its dynamic style
+    // guard. The enclosing HostWindow keeps this class registered. Each probe
+    // uses a separate HWND/device and releases everything before the next one.
+    struct ProbeWindow { HWND value{}; ~ProbeWindow(){if(value)DestroyWindow(value);} } window;
+    window.value=CreateWindowExW(initial_no_redirection ? WS_EX_NOREDIRECTIONBITMAP : 0,
+        HostWindow::class_name,L"DComp baseline probe",WS_POPUP,0,0,96,48,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    const char* stage="CreateWindowExW";
+    const auto window_error=GetLastError();
+    auto hr=window.value ? S_OK : (window_error ? HRESULT_FROM_WIN32(window_error) : E_FAIL);
+    auto step=[&](const char* action,auto&& operation) {
+        if(SUCCEEDED(hr)) {stage=action;hr=operation();}
+    };
+    ProbeCom<ID3D11Device> device;
+    ProbeCom<IDXGIDevice> dxgi;
+    ProbeCom<IDXGIAdapter> adapter;
+    ProbeCom<IDXGIAdapter1> adapter1;
+    ProbeCom<IDXGIFactory2> factory;
+    ProbeCom<IDXGISwapChain1> swapchain;
+    ProbeCom<IDCompositionDevice> composition;
+    ProbeCom<IDCompositionTarget> target;
+    ProbeCom<IDCompositionVisual> visual;
+    constexpr std::array<D3D_FEATURE_LEVEL,3> levels{D3D_FEATURE_LEVEL_11_0,D3D_FEATURE_LEVEL_10_1,D3D_FEATURE_LEVEL_10_0};
+    D3D_FEATURE_LEVEL level{};
+    step("D3D11CreateDevice",[&]{return D3D11CreateDevice(nullptr,driver,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        levels.data(),static_cast<UINT>(levels.size()),D3D11_SDK_VERSION,&device.value,&level,nullptr);});
+    step("Query IDXGIDevice",[&]{return device.value->QueryInterface(__uuidof(IDXGIDevice),reinterpret_cast<void**>(&dxgi.value));});
+    step("GetAdapter",[&]{return dxgi.value->GetAdapter(&adapter.value);});
+    DXGI_ADAPTER_DESC1 adapter_description{};bool have_adapter_description=false;
+    if(adapter.value && SUCCEEDED(adapter.value->QueryInterface(__uuidof(IDXGIAdapter1),reinterpret_cast<void**>(&adapter1.value))))
+        have_adapter_description=SUCCEEDED(adapter1.value->GetDesc1(&adapter_description));
+    step("Get DXGI factory",[&]{return adapter.value->GetParent(__uuidof(IDXGIFactory2),reinterpret_cast<void**>(&factory.value));});
+    step("DCompositionCreateDevice",[&]{return DCompositionCreateDevice(dxgi.value,__uuidof(IDCompositionDevice),reinterpret_cast<void**>(&composition.value));});
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    desc.Width=96;desc.Height=48;desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;desc.SampleDesc.Count=1;
+    desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=2;desc.Scaling=DXGI_SCALING_STRETCH;
+    desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.AlphaMode=DXGI_ALPHA_MODE_PREMULTIPLIED;
+    desc.Flags=waitable ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0;
+    step("CreateSwapChainForComposition",[&]{return factory.value->CreateSwapChainForComposition(device.value,&desc,nullptr,&swapchain.value);});
+    step("CreateTargetForHwnd",[&]{return composition.value->CreateTargetForHwnd(window.value,TRUE,&target.value);});
+    step("CreateVisual",[&]{return composition.value->CreateVisual(&visual.value);});
+    step("SetContent",[&]{return visual.value->SetContent(swapchain.value);});
+    step("SetRoot",[&]{return target.value->SetRoot(visual.value);});
+    step("Commit",[&]{return composition.value->Commit();});
+    DWORD session{};const bool have_session=ProcessIdToSessionId(GetCurrentProcessId(),&session)!=FALSE;
+    char description[512]{};
+    if(have_adapter_description)
+        WideCharToMultiByte(CP_UTF8,0,adapter_description.Description,-1,description,sizeof description,nullptr,nullptr);
+    std::cerr<<"DComp independent baseline: initial_no_redirection="<<initial_no_redirection<<" waitable="<<waitable
+             <<" driver="<<(driver==D3D_DRIVER_TYPE_WARP ? "WARP" : "HARDWARE")
+             <<" stage="<<stage<<" hr=0x"<<std::hex<<static_cast<unsigned long>(hr)
+             <<" exstyle=0x"<<(window.value ? GetWindowLongPtrW(window.value,GWL_EXSTYLE) : 0)
+             <<" feature_level=0x"<<unsigned(level)<<" adapter_flags=0x"<<adapter_description.Flags
+             <<" vendor=0x"<<adapter_description.VendorId<<" device=0x"<<adapter_description.DeviceId<<std::dec
+             <<" adapter_known="<<have_adapter_description<<" adapter="<<description
+             <<" session_known="<<have_session<<" session="<<session<<'\n';
+}
 void native_host_surface_test() {
     // A real HWND, not offscreen alpha readback: both initial bit states, both
     // presentation paths, recovery, and mutations owned by the host itself.
@@ -64,11 +131,21 @@ void native_host_surface_test() {
         for (const bool composition : {false,true}) {
             HostWindow host(original_no_redirection,composition ? 0 : WS_EX_TOOLWINDOW);
             const auto original=host.style();
+            std::cerr<<"Renderer HWND case: original_no_redirection="<<original_no_redirection
+                     <<" composition_requested="<<composition<<" original_exstyle=0x"<<std::hex<<original<<std::dec<<'\n';
             RendererOptions options;options.force_warp=true;options.composition=composition;
             {
                 Renderer renderer(host.hwnd,options);
                 require(host.style()==original,"Renderer changed host style before creating a surface");
                 renderer.resize(96,48);
+                std::cerr<<"Renderer HWND result: composition="<<renderer.stats().composition
+                         <<" warp="<<renderer.stats().warp<<" exstyle=0x"<<std::hex<<host.style()<<std::dec<<'\n';
+                if(renderer.stats().composition!=composition) {
+                    direct_composition_probe(false,true,D3D_DRIVER_TYPE_WARP);
+                    direct_composition_probe(true,true,D3D_DRIVER_TYPE_WARP);
+                    direct_composition_probe(true,false,D3D_DRIVER_TYPE_WARP);
+                    direct_composition_probe(true,true,D3D_DRIVER_TYPE_HARDWARE);
+                }
                 require(renderer.stats().composition==composition,"Requested native composition/opaque test path unavailable");
                 require(((host.style() & WS_EX_NOREDIRECTIONBITMAP)!=0)==composition,
                         "Host redirection style does not match active swapchain path");

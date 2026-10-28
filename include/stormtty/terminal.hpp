@@ -84,11 +84,54 @@ using PngDecoder = std::optional<DecodedPng> (*)(std::span<const std::uint8_t>, 
 void install_png_decoder(PngDecoder decoder, std::size_t max_decoded_bytes = 64u * 1024u * 1024u,
                          std::uint32_t max_dimension = 8192);
 
+// Literal UTF-8 search uses the pinned engine's ASCII case-insensitive matching.
+// Non-ASCII bytes are exact; regex, Unicode normalization/folding and a case
+// toggle are deliberately not advertised. Budgets bound each query, not PTY IO.
+struct SearchOptions {
+    std::string query; // Valid UTF-8, at most 4096 bytes; empty means idle.
+    std::size_t max_matches{1024}; // 1..4096; excessive matches report limited.
+    std::size_t memory_budget_bytes{8u * 1024u * 1024u}; // Engine allocator: 64 KiB..64 MiB.
+    std::uint32_t max_work_units_per_step{2}; // 1..16, not a wall-clock deadline.
+    std::uint64_t max_total_work_units{100000}; // 1..1000000 over this request.
+};
+enum class SearchStatus { idle, running, complete, cancelled, limited, error };
+enum class SearchDirection { forward, backward }; // Toward newer / older text.
+enum class SearchApplyResult { applied, stale, not_ready, no_match, boundary };
+struct SearchToken {
+    std::uint64_t request_id{}, revision{};
+    std::uint64_t generation{}; // Core-assigned; protects even reused caller request IDs.
+    bool operator==(const SearchToken&) const = default;
+};
+struct SearchPoint {
+    std::uint16_t column{};
+    std::uint32_t row{}; // Absolute screen row, including scrollback.
+    bool operator==(const SearchPoint&) const = default;
+};
+struct SearchMatch {
+    SearchPoint start{}, end{}; // Inclusive cell endpoints; no borrowed refs.
+    bool operator==(const SearchMatch&) const = default;
+};
+struct SearchSnapshot {
+    SearchToken token{};
+    std::uint64_t update_id{}, work_units{};
+    SearchStatus status{SearchStatus::idle};
+    bool alternate_screen{};
+    // This is an upstream semantic constraint, not an editable fake case toggle.
+    static constexpr bool ascii_case_insensitive = true;
+    std::string query, message;
+    std::size_t matches_found{}; // Provisional engine count until complete; live updates may change it.
+    std::vector<SearchMatch> matches; // Newest first, only published when complete.
+    std::optional<std::size_t> selected_index;
+    std::optional<SearchApplyResult> last_apply_result;
+};
+using SearchSnapshotPtr = std::shared_ptr<const SearchSnapshot>;
+
 // One actor thread owns each TerminalCore, including construction/destruction.
 // No mutexes/OS types; all methods except the static safety check require that
 // thread. Exceptions report allocation/API/budget errors to the session actor;
 // C callbacks never throw. feed never silently drops PTY bytes on overload.
-// A callback/budget failure is fatal: all subsequent operations rethrow.
+// A callback/effect-budget failure is fatal: subsequent operations rethrow.
+// Search-specific limits/errors use SearchStatus and do not poison the terminal.
 // Geometry is limited to 1048576 cells; session queues must bound retained frames.
 // Supported: VT/Unicode, alt-screen, reflow, DEC2026, selection, negotiated
 // key/mouse/paste/focus, direct Kitty graphics + animation, owned snapshots.
@@ -130,6 +173,22 @@ public:
     bool render_held() const;
     TerminalSize size() const;
     std::vector<TerminalEffect> take_effects();
+
+    // Actor-only incremental real-scrollback search. A work unit is one bounded
+    // engine feed/tick or a batch of <=64 coordinate conversions, not milliseconds.
+    // No ghostty_search_run or unbounded selection/copy API is used. Owned result
+    // arrays and temporary reference arrays are additionally bounded by max_matches.
+    void begin_search(std::uint64_t request_id, SearchOptions options);
+    // Stops search work/results, but does not erase a separately owned terminal selection.
+    void cancel_search(std::uint64_t request_id);
+    SearchSnapshotPtr search_step();
+    SearchSnapshotPtr search_snapshot() const;
+    bool search_needs_work() const;
+    std::uint64_t revision() const;
+    // Output, eviction, reset, and resize invalidate tokens. Streaming clients
+    // must retry against a fresh completed snapshot, never reuse stale positions.
+    SearchApplyResult select_search_match(SearchToken token, std::size_t index);
+    SearchApplyResult navigate_search(SearchToken token, SearchDirection direction, bool wrap = true);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

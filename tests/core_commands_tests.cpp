@@ -7,6 +7,21 @@ using namespace stormtty;
 int main() { return run_core_tests("commands", [] {
     std::set<std::string_view> ids;
     for (const auto& c : command_registry()) { CHECK(ids.insert(c.id).second); CHECK(!c.label.empty()); CHECK(find_command(c.id) == &c); }
+    CommandContext projects;
+    for (const auto* id : {"workspace.new","workspace.next","workspace.previous","workspace.close","workspace.toggle_navigation","window.focus_mode"}) {
+        CHECK(!command_availability(id,projects).enabled); CHECK(!command_availability(id,projects).reason.empty());
+    }
+    projects.supports_project_workspaces=true; projects.supports_focus_mode=true;
+    CHECK(command_availability("workspace.new",projects).enabled);
+    CHECK(command_availability("window.focus_mode",projects).enabled);
+    CHECK(!command_availability("workspace.close",projects).enabled);
+    projects.project_workspaces=1;
+    CHECK(command_availability("workspace.close",projects).enabled); CHECK(!command_availability("workspace.next",projects).enabled);
+    projects.project_workspaces=2;
+    CHECK(command_availability("workspace.next",projects).enabled); CHECK(command_availability("workspace.previous",projects).enabled);
+    projects.project_workspaces=256; CHECK(!command_availability("workspace.new",projects).enabled);
+    for (const auto platform : {Platform::windows,Platform::macos}) for (const auto& binding:default_bindings(platform))
+        CHECK(!binding.command.starts_with("workspace.") && binding.command!="window.focus_mode");
     CHECK(!find_command("unknown")); CHECK(!command_availability("unknown", {}).enabled);
     for (const auto platform : {Platform::windows, Platform::macos}) {
         auto bindings = default_bindings(platform); CHECK(validate_bindings(bindings, platform));
