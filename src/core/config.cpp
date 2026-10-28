@@ -105,8 +105,8 @@ Status validate_config(const Config& c, Platform platform) {
     if (c.version != 1) return Status::failure("Unsupported config version; expected version = 1");
     if (c.theme.name != "graphite" && c.theme.name != "instrument" && c.theme.name != "daylight" && c.theme.name != "custom") return Status::failure("Theme name must be graphite, instrument, daylight or custom");
     if (!color(c.theme.background) || !color(c.theme.foreground) || !color(c.theme.chrome) || !color(c.theme.accent)) return Status::failure("Theme colors must be #RRGGBB");
-    if (!std::isfinite(c.appearance.background_opacity) || c.appearance.background_opacity < 0.70 || c.appearance.background_opacity > 1.0)
-        return Status::failure("background_opacity must be between 0.70 and 1.0");
+    if (!std::isfinite(c.appearance.background_opacity) || c.appearance.background_opacity < 0.0 || c.appearance.background_opacity > 1.0)
+        return Status::failure("background_opacity must be between 0.0 and 1.0");
     if (c.appearance.backdrop != BackdropPreference::automatic && c.appearance.backdrop != BackdropPreference::none && c.appearance.backdrop != BackdropPreference::mica && c.appearance.backdrop != BackdropPreference::acrylic)
         return Status::failure("Invalid backdrop preference");
     if (c.appearance.reduced_motion != ReducedMotionPreference::system && c.appearance.reduced_motion != ReducedMotionPreference::enabled && c.appearance.reduced_motion != ReducedMotionPreference::disabled)
@@ -218,7 +218,7 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
             string_field("name", config.theme.name); string_field("background", config.theme.background);
             string_field("foreground", config.theme.foreground); string_field("chrome", config.theme.chrome); string_field("accent", config.theme.accent);
         } else if (section == "appearance") {
-            number_field("background_opacity", config.appearance.background_opacity, 0.70, 1.0, false);
+            number_field("background_opacity", config.appearance.background_opacity, 0.0, 1.0, false);
             if (key == "backdrop") {
                 handled = true; const auto* text_value = std::get_if<std::string>(&*value);
                 if (text_value && *text_value == "auto") config.appearance.backdrop = BackdropPreference::automatic;
@@ -347,7 +347,7 @@ allow_terminal_shortcut_override = false
 name = "graphite" # graphite, instrument, daylight, custom
 # Optional #RRGGBB: background, foreground, chrome, accent.
 [appearance]
-background_opacity = 0.94 # 0.70..1.0; default canvas only, not text or ANSI colors
+background_opacity = 0.94 # 0.0..1.0; default canvas only, not text or ANSI colors
 backdrop = "acrylic" # auto, none, mica or acrylic; unsupported hosts use opaque
 reduced_motion = "system" # system, enabled or disabled; default follows the OS
 # High contrast and unsupported renderers use opaque backgrounds.

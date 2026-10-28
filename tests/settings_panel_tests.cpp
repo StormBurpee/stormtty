@@ -64,14 +64,15 @@ int main() {return run_core_tests("settings panel",[] {
     for (const auto& [id,value]:std::vector<std::pair<std::string,BackdropPreference>>{{"auto",BackdropPreference::automatic},{"none",BackdropPreference::none},{"mica",BackdropPreference::mica},{"acrylic",BackdropPreference::acrylic}}) {
         activate(panel,"appearance.backdrop."+id);CHECK(panel.draft().appearance.backdrop==value);
     }
-    focus(panel,"appearance.opacity");CHECK(panel.key({{"HOME"}}));CHECK(near(panel.draft().appearance.background_opacity,0.7));
-    CHECK(panel.key({{"LEFT"}}));CHECK(near(panel.draft().appearance.background_opacity,0.7));
+    focus(panel,"appearance.opacity");CHECK(panel.key({{"HOME"}}));CHECK(near(panel.draft().appearance.background_opacity,0));
+    CHECK(panel.key({{"LEFT"}}));CHECK(near(panel.draft().appearance.background_opacity,0));
+    CHECK(panel.key({{"RIGHT"}}));CHECK(near(panel.draft().appearance.background_opacity,0.01));
     CHECK(panel.key({{"END"}}));CHECK(near(panel.draft().appearance.background_opacity,1));
     CHECK(panel.key({{"RIGHT"}}));CHECK(near(panel.draft().appearance.background_opacity,1));
     auto slider=item(panel,"appearance.opacity").bounds;
-    CHECK(panel.pointer_down({slider.x+8,slider.y+10}));CHECK(near(panel.draft().appearance.background_opacity,0.7));
+    CHECK(panel.pointer_down({slider.x+8,slider.y+10}));CHECK(near(panel.draft().appearance.background_opacity,0));
     CHECK(panel.pointer_move({slider.x+slider.width*5,slider.y+10}));CHECK(near(panel.draft().appearance.background_opacity,1));
-    CHECK(panel.pointer_up({slider.x+slider.width/2,slider.y+10}));CHECK(near(panel.draft().appearance.background_opacity,0.85));
+    CHECK(panel.pointer_up({slider.x+slider.width/2,slider.y+10}));CHECK(near(panel.draft().appearance.background_opacity,0.5));
     CHECK(panel.take_action());CHECK(!panel.take_action()); // Rapid slider previews coalesce.
     CHECK(panel.pointer_down({slider.x+8,slider.y+10}));panel.pointer_cancel();
     const auto canceled_drag=panel.draft();CHECK(panel.pointer_move({slider.x+slider.width,slider.y+10}));CHECK(panel.pointer_up({slider.x+slider.width,slider.y+10}));CHECK(panel.draft()==canceled_drag);
@@ -120,6 +121,34 @@ int main() {return run_core_tests("settings panel",[] {
     panel.open_for_binding(defaults,"pane.split_down");CHECK(panel.key({{"BACKSPACE"}}));CHECK(!panel.capturing_shortcut());
     CHECK(std::none_of(panel.draft().bindings.begin(),panel.draft().bindings.end(),[](const auto& b){return b.command=="pane.split_down";}));
     CHECK(panel.key({{"ENTER",CommandModifier::control}}));CHECK(panel.saving());CHECK(panel.take_action()->kind==SettingsActionKind::save);panel.persistence_result(true);
+
+    // A terminal shortcut is allowed only after an explicit confirmation. It
+    // is not mislabeled as OS-reserved, and holding a key cannot confirm it.
+    for (const auto platform:{Platform::windows,Platform::macos}) {
+        SettingsPanel shortcuts(platform);const auto original=default_config(platform);
+        shortcuts.open_for_binding(original,"pane.split_right");
+        const KeyChord alt_bracket{"]",CommandModifier::alt};
+        CHECK(shortcuts.key({alt_bracket}));CHECK(shortcuts.capturing_shortcut());CHECK(shortcuts.draft()==original);CHECK(shortcuts.error().empty());
+        CHECK(item(shortcuts,"binding.confirm").visible);
+        for (int repeat=0;repeat<5;++repeat) CHECK(shortcuts.key({alt_bracket}));
+        CHECK(shortcuts.draft()==original);
+        CHECK(shortcuts.key({{"TAB"}}));CHECK(shortcuts.focused_control()=="binding.confirm");
+        CHECK(shortcuts.key({{"ENTER"},true}));CHECK(shortcuts.draft()==original); // IME
+        CHECK(shortcuts.key({{"ENTER"},false,true}));CHECK(shortcuts.draft()==original); // AltGr
+        CHECK(shortcuts.key({{"ENTER"}}));CHECK(!shortcuts.capturing_shortcut());
+        CHECK(shortcuts.draft().allow_terminal_shortcut_override);CHECK(validate_config(shortcuts.draft(),platform));
+        const auto roundtrip=parse_config(serialize_config(shortcuts.draft(),platform),platform);CHECK(roundtrip);
+        CHECK(resolve_command({alt_bracket},roundtrip.config->bindings,{1,1},platform)=="pane.split_right");
+        CHECK(!resolve_command({alt_bracket,true},roundtrip.config->bindings,{1,1},platform));
+        CHECK(!resolve_command({alt_bracket,false,true},roundtrip.config->bindings,{1,1},platform));
+        shortcuts.cancel();CHECK(shortcuts.take_action()->config==original);
+        shortcuts.open_for_binding(original,"pane.split_right");CHECK(shortcuts.key({alt_bracket}));
+        CHECK(shortcuts.key({{"ESCAPE"}}));CHECK(shortcuts.draft()==original);CHECK(!shortcuts.capturing_shortcut());
+        shortcuts.open_for_binding(original,"pane.split_right");CHECK(shortcuts.key({alt_bracket}));click(shortcuts,"binding.confirm");
+        CHECK(shortcuts.draft().allow_terminal_shortcut_override);
+        click(shortcuts,"save");CHECK(shortcuts.take_action()->kind==SettingsActionKind::save);shortcuts.persistence_result(true);
+        shortcuts.open(shortcuts.original());CHECK(shortcuts.is_open());CHECK(!shortcuts.dirty());
+    }
 
     // Focus trapping, reverse traversal, scrolling to off-screen controls, and
     // clipping across tiny/resized/high-DPI viewports are portable guarantees.

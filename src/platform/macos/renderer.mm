@@ -123,7 +123,7 @@ struct Renderer::Impl {
     explicit Impl(void* handle,RendererOptions settings):view((__bridge NSView*)handle),options(std::move(settings)) {
         if(options.force_warp) throw std::invalid_argument("WARP is Windows-only; macOS native tests require a Metal device");
         options.maximum_image_dimension=std::min(options.maximum_image_dimension,8192u);
-        if(!std::isfinite(options.background_opacity)||options.background_opacity<.7f||options.background_opacity>1.f)throw std::invalid_argument("Invalid default background opacity");
+        if(!std::isfinite(options.background_opacity)||options.background_opacity<0.f||options.background_opacity>1.f)throw std::invalid_argument("Invalid default background opacity");
         options.shape_cache_bytes=std::min(options.shape_cache_bytes,std::size_t(64u*1024u*1024u));
         options.image_cache_bytes=std::min(options.image_cache_bytes,std::size_t(128u*1024u*1024u));
         create_device();measure();
@@ -514,7 +514,7 @@ Renderer& Renderer::operator=(Renderer&&) noexcept=default;
 void Renderer::resize(std::uint32_t w,std::uint32_t h,float dpi){impl_->resize(w,h,dpi);}
 void Renderer::set_font(FontOptions font){impl_->options.font=std::move(font);impl_->measure();}
 void Renderer::set_background_opacity(float opacity){
-    if(!std::isfinite(opacity)||opacity<0.7f||opacity>1.f)throw std::invalid_argument("Background opacity must be between 0.7 and 1");
+    if(!std::isfinite(opacity)||opacity<0.f||opacity>1.f)throw std::invalid_argument("Background opacity must be between 0 and 1");
     impl_->options.background_opacity=opacity;impl_->have_previous=false;
 }
 CellMetrics Renderer::metrics()const noexcept{return impl_->cell;}

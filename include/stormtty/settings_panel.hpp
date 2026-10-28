@@ -83,6 +83,7 @@ private:
     void adjust_opacity(Point);
     void request_save();
     void capture_binding(const KeyEvent&);
+    void assign_binding(const KeyChord&, bool confirm_terminal_override);
     const SettingsControl* hit(Point) const noexcept;
     Platform platform_;
     Config original_, draft_;
@@ -99,6 +100,7 @@ private:
     Color high_disabled_text_{128,128,128,255};
     std::uint64_t generation_{};
     std::optional<SettingsAction> pending_;
+    std::optional<KeyChord> terminal_override_;
 };
 
 } // namespace stormtty

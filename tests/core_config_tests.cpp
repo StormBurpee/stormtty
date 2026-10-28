@@ -27,8 +27,17 @@ int main() { return run_core_tests("config", [] {
     auto instrument = parse_config("version = 1\n[theme]\nname = \"instrument\"",Platform::windows);
     CHECK(instrument && instrument.config->theme.background == "#17191D");
     CHECK(parse_config("version = 1\n[appearance]\nbackground_opacity = 0.7\nbackdrop = \"none\"\nreduced_motion = \"disabled\"", Platform::windows));
-    CHECK(parse_config("version = 1\n[appearance]\nbackground_opacity = 1.0", Platform::windows));
-    for (const auto* bad : {"background_opacity = 0.69", "background_opacity = 1.01", "background_opacity = nan", "backdrop = \"acrylic-magic\"", "reduced_motion = \"sometimes\""}) {
+    for (const auto platform:{Platform::windows,Platform::macos}) for (const double opacity:{0.0,0.01,0.25,0.5,0.69,0.7,1.0}) {
+        auto config=default_config(platform);config.appearance.background_opacity=opacity;
+        CHECK(validate_config(config,platform));
+        auto roundtrip=parse_config(serialize_config(config,platform),platform);
+        CHECK(roundtrip && roundtrip.config->appearance.background_opacity==opacity);
+    }
+    auto invalid_opacity=graphite;
+    for (const double opacity:{-0.01,1.01,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}) {
+        invalid_opacity.appearance.background_opacity=opacity;CHECK(!validate_config(invalid_opacity,Platform::windows));
+    }
+    for (const auto* bad : {"background_opacity = -0.01", "background_opacity = 1.01", "background_opacity = nan", "backdrop = \"acrylic-magic\"", "reduced_motion = \"sometimes\""}) {
         auto current = default_config(Platform::windows); const auto old = current;
         CHECK(!reload_config(current, std::string("version = 1\n[appearance]\n") + bad, Platform::windows)); CHECK(current == old);
     }

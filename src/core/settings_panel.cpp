@@ -55,7 +55,7 @@ void SettingsPanel::open(const Config& config, std::span<const Profile> discover
     // Repeated open requests must not erase an unsaved or in-flight draft.
     if (open_) return;
     original_=config; draft_=config; profiles_.clear(); families_.clear(); pending_.reset();
-    error_.clear(); capture_command_.clear(); hover_.clear(); pressed_.clear();
+    error_.clear(); capture_command_.clear(); terminal_override_.reset(); hover_.clear(); pressed_.clear();
     open_=true; saving_=false; dragging_opacity_=false; scroll_=0;
     section_=SettingsSection::appearance; focus_="nav.appearance";
     const auto valid=validate_config(config,platform_);
@@ -81,7 +81,7 @@ void SettingsPanel::open_for_binding(const Config& config, std::string_view comm
     if (saving_) return;
     if (!open_) open(config,discovered);
     if (!find_command(command_id)) { error_="That command is not available."; ++generation_; return; }
-    section_=SettingsSection::shortcuts; scroll_=0; capture_command_=std::string(command_id);
+    section_=SettingsSection::shortcuts; scroll_=0; terminal_override_.reset(); capture_command_=std::string(command_id);
     focus_="binding:"+capture_command_; error_.clear(); ++generation_; rebuild_layout(); ensure_focus_visible();
 }
 void SettingsPanel::resize(Size viewport) {
@@ -162,11 +162,11 @@ void SettingsPanel::rebuild_layout() {
     }
     const double button_w=std::min(120.0,std::max(0.0,(w-2*pad-10)/2));
     add("cancel",{x+w-pad-button_w*2-10,layout_.footer.y+23,button_w,34});
-    add("save",{x+w-pad-button_w,layout_.footer.y+23,button_w,34});
+    add(terminal_override_?"binding.confirm":"save",{x+w-pad-button_w,layout_.footer.y+23,button_w,34});
 }
 void SettingsPanel::ensure_focus_visible() {
     const auto* item=find_control(layout_,focus_);
-    if (!item || focus_.starts_with("nav.") || focus_=="save" || focus_=="cancel" || focus_=="close" || layout_.content.height<=0) return;
+    if (!item || focus_.starts_with("nav.") || focus_=="save" || focus_=="binding.confirm" || focus_=="cancel" || focus_=="close" || layout_.content.height<=0) return;
     const double bottom=layout_.content.y+layout_.content.height;
     if (item->bounds.y<layout_.content.y) scroll_-=layout_.content.y-item->bounds.y;
     else if (item->bounds.y+item->bounds.height>bottom) scroll_+=item->bounds.y+item->bounds.height-bottom;
@@ -191,12 +191,13 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     if (!open_ || saving_) return;
     if (id=="cancel" || id=="close") {cancel();return;}
     if (id=="save") {request_save();return;}
+    if (id=="binding.confirm" && terminal_override_) {assign_binding(*terminal_override_,true);return;}
     if (id.starts_with("nav.")) {
         section_=id=="nav.shell"?SettingsSection::shell:id=="nav.shortcuts"?SettingsSection::shortcuts:SettingsSection::appearance;
-        capture_command_.clear(); scroll_=0; ++generation_; rebuild_layout(); return;
+        capture_command_.clear(); terminal_override_.reset(); scroll_=0; ++generation_; rebuild_layout(); return;
     }
     if (id.starts_with("binding:")) {
-        capture_command_=std::string(id.substr(8)); error_.clear(); ++generation_; return;
+        capture_command_=std::string(id.substr(8)); terminal_override_.reset(); error_.clear(); ++generation_; return;
     }
     const auto before=draft_;
     if (id=="font.family") {
@@ -207,7 +208,7 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     } else if (id=="font.decrease") draft_.font.size_dip=std::clamp(draft_.font.size_dip-1.0,6.0,72.0);
     else if (id=="font.increase") draft_.font.size_dip=std::clamp(draft_.font.size_dip+1.0,6.0,72.0);
     else if (id=="font.ligatures") draft_.font.ligatures=!draft_.font.ligatures;
-    else if (id=="appearance.opacity") draft_.appearance.background_opacity=std::clamp(std::round((draft_.appearance.background_opacity+direction*0.01)*100)/100,0.70,1.0);
+    else if (id=="appearance.opacity") draft_.appearance.background_opacity=std::clamp(std::round((draft_.appearance.background_opacity+direction*0.01)*100)/100,0.0,1.0);
     else if (id=="appearance.motion") {
         const int current=static_cast<int>(draft_.appearance.reduced_motion);
         draft_.appearance.reduced_motion=static_cast<ReducedMotionPreference>((current+direction+3)%3);
@@ -232,7 +233,19 @@ void SettingsPanel::capture_binding(const KeyEvent& event) {
     if (!event.key_down || event.composing || event.alt_graph) return;
     const auto& chord=event.chord;
     if (chord.key=="SHIFT" || chord.key=="CONTROL" || chord.key=="CTRL" || chord.key=="ALT" || chord.key=="COMMAND" || chord.key=="WIN" || chord.key.empty()) return;
-    if (chord.key=="ESCAPE") {capture_command_.clear();error_.clear();++generation_;return;}
+    if (chord.key=="ESCAPE") {capture_command_.clear();terminal_override_.reset();error_.clear();++generation_;rebuild_layout();return;}
+    // Confirmation is a separate, focusable action. Repeated key-down events
+    // cannot opt in merely because the user held a terminal key down.
+    if (terminal_override_ && chord.modifiers==CommandModifier::none) {
+        if (chord.key=="TAB") {focus_control("binding.confirm");return;}
+        if (chord.key=="ENTER" && focus_=="binding.confirm") {assign_binding(*terminal_override_,true);return;}
+    }
+    terminal_override_.reset();
+    focus_="binding:"+capture_command_;
+    rebuild_layout();
+    assign_binding(chord,false);
+}
+void SettingsPanel::assign_binding(const KeyChord& chord,bool confirm_terminal_override) {
     auto candidate=draft_;
     std::erase_if(candidate.bindings,[&](const auto& b){return b.command==capture_command_;});
     if (!(chord.key=="BACKSPACE" && chord.modifiers==CommandModifier::none) &&
@@ -245,10 +258,19 @@ void SettingsPanel::capture_binding(const KeyEvent& event) {
         }
         candidate.bindings.push_back({capture_command_,chord});
     }
-    auto valid=validate_bindings(candidate.bindings,platform_,candidate.allow_terminal_shortcut_override);
+    // Validate OS reservations and conflicts before offering a terminal override.
+    auto valid=validate_bindings(candidate.bindings,platform_,true);
+    if (valid && is_terminal_reserved(chord,platform_) &&
+        !(chord.modifiers==CommandModifier::none && (chord.key=="BACKSPACE" || chord.key=="DELETE"))) {
+        if (!confirm_terminal_override) {
+            terminal_override_=chord;error_.clear();++generation_;rebuild_layout();return;
+        }
+        candidate.allow_terminal_shortcut_override=true;
+    }
+    if (valid) valid=validate_bindings(candidate.bindings,platform_,candidate.allow_terminal_shortcut_override);
     if (valid) valid=validate_config(candidate,platform_);
-    if (!valid) {error_=bounded_message(valid.error);++generation_;return;}
-    draft_=std::move(candidate); capture_command_.clear(); changed();
+    if (!valid) {error_=bounded_message(valid.error);++generation_;rebuild_layout();return;}
+    draft_=std::move(candidate); capture_command_.clear(); terminal_override_.reset(); focus_="nav.shortcuts"; changed();
 }
 bool SettingsPanel::key(const KeyEvent& event) {
     if (!open_) return false;
@@ -295,7 +317,7 @@ bool SettingsPanel::key(const KeyEvent& event) {
             focus_control(id);activate(id);
         }
     } else if ((key=="HOME" || key=="END") && focus_=="appearance.opacity" && modifiers==CommandModifier::none) {
-        draft_.appearance.background_opacity=key=="HOME"?0.70:1.0; changed();
+        draft_.appearance.background_opacity=key=="HOME"?0.0:1.0; changed();
     } else if ((key=="PAGEUP" || key=="PAGEDOWN") && modifiers==CommandModifier::none) {
         scroll_+=(key=="PAGEUP"?-1:1)*std::max(48.0,layout_.content.height-48); ++generation_;rebuild_layout();
     }
@@ -306,7 +328,7 @@ void SettingsPanel::adjust_opacity(Point p) {
     if (!slider || !finite(p)) return;
     const double width=std::max(1.0,slider->bounds.width-16);
     const double t=std::clamp((p.x-slider->bounds.x-8)/width,0.0,1.0);
-    const double value=std::round((0.70+t*0.30)*100)/100;
+    const double value=std::round(t*100)/100;
     if (value!=draft_.appearance.background_opacity) {draft_.appearance.background_opacity=value;changed();}
 }
 bool SettingsPanel::pointer_down(Point point) {
@@ -352,13 +374,13 @@ void SettingsPanel::request_save() {
     if (!open_ || saving_) return;
     const auto valid=validate_config(draft_,platform_);
     if (!valid) {error_=bounded_message(valid.error);++generation_;return;}
-    capture_command_.clear();error_.clear();saving_=true;dragging_opacity_=false;pressed_.clear();
+    capture_command_.clear();terminal_override_.reset();error_.clear();saving_=true;dragging_opacity_=false;pressed_.clear();
     pending_=SettingsAction{SettingsActionKind::save,draft_};++generation_;rebuild_layout();
 }
 void SettingsPanel::cancel() {
     if (!open_ || saving_) return;
     pending_=SettingsAction{SettingsActionKind::cancel,original_};
-    draft_=original_;open_=false;capture_command_.clear();dragging_opacity_=false;pressed_.clear();++generation_;
+    draft_=original_;open_=false;capture_command_.clear();terminal_override_.reset();dragging_opacity_=false;pressed_.clear();++generation_;
 }
 std::optional<SettingsAction> SettingsPanel::take_action() {return std::exchange(pending_,std::nullopt);}
 void SettingsPanel::persistence_result(bool success,std::string error) {
@@ -480,7 +502,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         if (const auto* slider=find_control(layout_,"appearance.opacity");slider && slider->visible) {
             const auto r=slider->bounds;
             if (focus_==slider->id) box(r,transparent,accent,5,1);
-            const double progress=(draft_.appearance.background_opacity-0.70)/0.30;
+            const double progress=draft_.appearance.background_opacity;
             const double width=std::max(0.0,r.width-16), track_y=r.y+27;
             box({r.x+8,track_y,width,3},{52,62,79,255},transparent,1.5);
             box({r.x+8,track_y,width*progress,3},accent,transparent,1.5);
@@ -514,8 +536,8 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         }
     } else {
         content_box(layout_.preview,capturing_shortcut()?selection:Color{27,35,46,255},capturing_shortcut()?accent:border,7,1);
-        label({content.x+14,top+6,std::max(0.0,content.width-28),22},capturing_shortcut()?"Press your shortcut now":"Select an action to assign a shortcut",capturing_shortcut()?ink:muted,13,true,true);
-        label({content.x+14,top+29,std::max(0.0,content.width-28),18},"Esc cancels capture · Backspace clears · Conflicts never overwrite",subdued,11,false,true);
+        label({content.x+14,top+6,std::max(0.0,content.width-28),22},terminal_override_?format_key_chord(*terminal_override_,platform_)+" sends terminal input":capturing_shortcut()?"Press your shortcut now":"Select an action to assign a shortcut",capturing_shortcut()?ink:muted,13,true,true);
+        label({content.x+14,top+29,std::max(0.0,content.width-28),18},terminal_override_?"Use shortcut to assign it · Tab then Enter confirms · Esc cancels":"Esc cancels capture · Backspace clears · Conflicts never overwrite",subdued,11,false,true);
         for (const auto& command:command_registry()) {
             const auto* c=find_control(layout_,"binding:"+std::string(command.id));if (!c || !c->visible) continue;
             const auto r=c->bounds;const bool capturing=capture_command_==command.id;
@@ -542,15 +564,17 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             label({p.x+pad,layout_.footer.y+13,available,24},"Couldn't apply settings",{244,164,164,255},12,true);
             label({p.x+pad,layout_.footer.y+37,available,21},error_,muted,11);
         } else {
-            const std::string status=saving_?"Saving settings…":capturing_shortcut()?"Press a shortcut…":dirty()?"Unsaved changes":"No unsaved changes";
+            const std::string status=terminal_override_?format_key_chord(*terminal_override_,platform_)+" replaces terminal input":saving_?"Saving settings…":capturing_shortcut()?"Press a shortcut…":dirty()?"Unsaved changes":"No unsaved changes";
             box({p.x+pad,layout_.footer.y+28,5,5},dirty()?accent:green,transparent,2.5);
             label({p.x+pad+14,layout_.footer.y+17,std::max(0.0,available-14),25},status,muted,12);
-            label({p.x+pad+14,layout_.footer.y+42,std::max(0.0,available-14),18},capturing_shortcut()?"Esc to stop · Backspace to clear":platform_==Platform::macos?"Esc to cancel · Cmd+Enter to save":"Esc to cancel · Ctrl+Enter to save",subdued,10);
+            label({p.x+pad+14,layout_.footer.y+42,std::max(0.0,available-14),18},terminal_override_?"Use shortcut to confirm · Esc cancels":capturing_shortcut()?"Esc to stop · Backspace to clear":platform_==Platform::macos?"Esc to cancel · Cmd+Enter to save":"Esc to cancel · Ctrl+Enter to save",subdued,10);
         }
     } else if (!error_.empty()) {
         label({p.x+pad,layout_.footer.y+2,std::max(0.0,p.width-2*pad),18},error_,{244,164,164,255},10);
     }
-    button("cancel","Cancel");button("save",saving_?"Saving…":"Save changes",false,true);
+    button("cancel","Cancel");
+    if (terminal_override_) button("binding.confirm","Use shortcut",false,true);
+    else button("save",saving_?"Saving…":"Save changes",false,true);
     if (high_contrast_) {
         // Keep semantic geometry identical while replacing every visible paint
         // with supplied system colors. Selected text uses HighlightText, not

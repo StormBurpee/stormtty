@@ -249,7 +249,7 @@ duplicate assignments and conflicting shortcuts are errors. There are no
 includes, scripts, environment expansion or shell expressions. An invalid
 startup file is rejected rather than partially applied.
 
-`background_opacity` accepts `0.70` through `1.0` and affects only the default
+`background_opacity` accepts `0.0` through `1.0` and affects only the default
 terminal background. On supported Windows builds, `backdrop = "auto"` requests
 Desktop Acrylic; `"mica"` explicitly selects wallpaper-based Mica and `"none"`
 selects a solid background. Appearance shows the requested material or the

@@ -49,6 +49,12 @@ int main() { return run_core_tests("commands", [] {
     CHECK(is_os_reserved(*parse_key_chord("Cmd+Tab", Platform::macos).value, Platform::macos));
     std::vector<Binding> control_c{{"edit.copy", *parse_key_chord("Ctrl+C", Platform::windows).value}};
     CHECK(!validate_bindings(control_c, Platform::windows)); CHECK(validate_bindings(control_c, Platform::windows, true));
+    for (const auto platform:{Platform::windows,Platform::macos}) {
+        const auto chord=*parse_key_chord("Alt+]",platform).value;
+        CHECK(!is_os_reserved(chord,platform));CHECK(is_terminal_reserved(chord,platform));
+        const std::vector<Binding> bindings{{"pane.split_right",chord}};
+        CHECK(!validate_bindings(bindings,platform));CHECK(validate_bindings(bindings,platform,true));
+    }
     std::vector<Binding> alt_f4{{"pane.close", *parse_key_chord("Alt+F4", Platform::windows).value}};
     CHECK(!validate_bindings(alt_f4, Platform::windows, true));
     CHECK(!command_availability("pane.split_right", {}).enabled);
