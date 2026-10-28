@@ -316,6 +316,7 @@ private:
     ContextMenu context_menu_;
     std::map<std::string,std::function<void()>> menu_actions_;
     std::set<SessionId> smoke_commands_sent_;
+    std::map<SessionId,std::shared_ptr<Session>> smoke_sessions_; // Includes retired/disposable actors for provider assertions.
     bool smoke_marker_presented_{}, smoke_finished_{};
     int exit_code_{};
     unsigned smoke_modal_stage_{}, smoke_settings_stage_{};
@@ -487,10 +488,9 @@ int NativeWindow::run() {
                 int code=static_cast<int>(message.wParam);
                 // Explicit test-mode post-loop cleanup only. No WndProc or
                 // normal UI close ever waits for process/actor shutdown.
-                if (options_.smoke_test) for (const auto& [id,session]:sessions_) {
+                if (options_.smoke_test) for (const auto& [id,session]:smoke_sessions_) {
                     (void)id; if (!session->wait_closed(std::chrono::seconds(5))) code=3;
                 }
-                if (options_.smoke_modal && smoke_disposable_ && !smoke_disposable_->wait_closed(std::chrono::seconds(5))) code=3;
                 return code;
             }
             if (message.hwnd == hwnd_ && key_message(message)) continue;
@@ -649,6 +649,13 @@ Session* NativeWindow::session_for(PaneId pane) const {
 Session* NativeWindow::active_session() const { return session_for(workspace().active_pane()); }
 SessionId NativeWindow::new_session() {
     ProcessOptions process;
+    if (!options_.console_runtime_directory.empty()) {
+        process.provider=ProcessProvider::windows_packaged_experimental;
+        process.provider_directory=narrow(options_.console_runtime_directory.wstring());
+    }
+    // Empty opt-in preserves ProcessOptions' platform-default/system provider.
+    // This single factory covers tabs, splits, new projects and smoke actors;
+    // Settings never persists or changes the per-launch provider selection.
     for (const auto& profile : config_.profiles) if (profile.id == config_.default_profile) {
         process.executable = profile.executable; process.arguments = profile.arguments; process.working_directory = profile.working_directory;
         for (const auto& [name, value] : profile.environment) process.environment.push_back({name, value});
@@ -677,6 +684,7 @@ SessionId NativeWindow::new_session() {
     const SessionId id{next_session_++};
     std::weak_ptr<WakeState> weak = wake_;
     auto session = Session::start(std::move(process), terminal, [weak] { if (auto state = weak.lock()) state->wake(); });
+    if (options_.smoke_test) smoke_sessions_.emplace(id,session);
     sessions_.emplace(id, std::move(session));
     return id;
 }
@@ -2061,6 +2069,11 @@ void NativeWindow::smoke_progress(bool presented) {
             smoke_modal_stage_=1; return;
         }
         if (smoke_modal_stage_==1 && presented) {
+            // Do not cancel the disposable actor before its runtime has actually
+            // started; its provider identity is asserted even after retirement.
+            if (!smoke_disposable_ || !smoke_disposable_->info().bytes_received) return;
+            const auto diagnostic=smoke_disposable_->diagnostics();
+            if (!options_.console_runtime_directory.empty() && !diagnostic.bundled_provider) return;
             try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
             modal_focus_.select(ModalDecision::confirm); answer_modal(modal_focus_.activate());
             if (modal_ || workspace().state().tabs.size()!=1 || sessions_.size()!=1) { smoke_finish("Explicit modal close did not retire only its tab."); return; }
@@ -2116,6 +2129,21 @@ void NativeWindow::smoke_progress(bool presented) {
 }
 void NativeWindow::smoke_finish(std::string_view error) {
     if (!options_.smoke_test || smoke_finished_) return;
+    if (error.empty()) {
+        const bool packaged_requested=!options_.console_runtime_directory.empty();
+        for (const auto& [id,session]:smoke_sessions_) {
+            const auto actual=session->diagnostics();
+            const bool identity_matches=packaged_requested ?
+                actual.bundled_provider && actual.provider.find("1.25.260930003")!=std::string::npos :
+                !actual.bundled_provider && actual.provider=="Windows ConPTY (system)";
+            std::fprintf(stderr,"Native CI provider session=%llu requested=%s actual=%s bundled=%d advanced_protocols_verified=%d. %s\n",
+                static_cast<unsigned long long>(id.value),packaged_requested?"packaged-experimental":"system-default",
+                actual.provider.c_str(),actual.bundled_provider,actual.advanced_protocols_verified,actual.detail.c_str());
+            if (!identity_matches || actual.advanced_protocols_verified) {
+                error="A created smoke session did not use the expected verified console runtime, or overstated protocol qualification."; break;
+            }
+        }
+    }
     smoke_finished_=true; exit_code_=error.empty()?0:2;
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};

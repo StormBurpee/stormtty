@@ -117,6 +117,21 @@ jobs:
             if result.returncode: failures.append(case)
           print('Packaged comparison failures: '+repr(failures),flush=True)
           raise SystemExit(1 if failures else 0)
+      - name: Verify application with explicit packaged console
+        if: always() && runner.os == 'Windows' && steps.packaged_console.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,subprocess
+          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
+          failures=[]
+          for mode in ['smoke','smoke-layout','smoke-modal','smoke-projects','smoke-settings']:
+            capture=pathlib.Path('build/artifacts')/('native-packaged-'+mode+'.png')
+            args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--'+mode,'--console-runtime',str(provider),'--capture',str(capture.resolve())]
+            print('PACKAGED_APPLICATION_CASE='+mode,flush=True)
+            result=subprocess.run(args,timeout=60)
+            print('PACKAGED_APPLICATION_RESULT='+mode+':'+str(result.returncode),flush=True)
+            if result.returncode: failures.append(mode)
+          raise SystemExit(1 if failures else 0)
       - name: Collect targeted macOS GUI failure evidence
         if: always() && runner.os == 'macOS' && steps.build.outcome == 'success' && steps.native_tests.outcome == 'failure'
         run: python tools/macos-crash-evidence.py

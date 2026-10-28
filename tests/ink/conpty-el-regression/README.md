@@ -159,7 +159,7 @@ any checkpoint failure remains a failure, and all reachable pane outcomes are
 reported. This does not waive or disprove the separately captured upstream
 compact-resize race. Local Linux control completed 48/48 cycles with zero
 failures; full Windows GNU executable linking and strict provider/test compilation
-passed. Native packaged-provider concurrency qualification is pending CI.
+passed. Native packaged-provider concurrency results and their limits are recorded below.
 
 Before any eventual default switch, centralize package/version/archive and payload
 hashes in the dependency lock rather than independently updating C++ and PowerShell
@@ -168,3 +168,80 @@ metadata, check shipped hashes, and exercise missing/corrupt/wrong-architecture
 failures. Keep inbox an explicitly labeled fallback, not silent substitution.
 Default selection, broader OS/architecture qualification, and production package
 layout remain separate reviewed work; this diagnostic does not enable them.
+
+
+### Native repeated qualification: 2026-10-28
+
+[Run 40642828448, Windows job 122664693371](https://github.com/StormBurpee/stormtty/actions/runs/40642828448/job/122664693371)
+checked commit `b0ab3104e9b6129531fd4ed5ae6386e210de5689`, official packaged
+ConPTY `1.25.260930003`, native MSVC, Node 22, and Windows Server 2025.
+NuGet verification and Microsoft Authenticode succeeded; the exact pair hashes
+matched and actual OpenConsole identity was verified. Inbox controls still
+failed the previously isolated right-margin EL condition.
+
+The packaged provider passed the missing-host rejection, all three static-margin
+cases, and individual primary/fullscreen/compact-alt/host-close cases. Repeated
+concurrent qualification was **43/48, not a pass**:
+
+| Stress scenario | Completed cycles | Failures |
+|---|---:|---:|
+| Primary | 12/12 | 0 |
+| Fullscreen alternate | 12/12 | 0 |
+| Compact alternate | 19/24 | 5 |
+
+All five failures were pane 2 in rounds 1, 3, 5, 7, and 9, at the 80×24→56×20
+shrink checkpoint. Every failure observed 151 distinct incomplete frames and
+zero coherent frames over its checkpoint window. The last viewport had a clipped
+old top border at row 0, an otherwise complete current box at rows 1–14, visible
+`Size: 56x20`, and an intact Unicode right border. Session state remained running
+with an empty error field; the provider identity was verified and advanced
+protocol qualification remained false.
+
+This is the same persistent residual-row shape as the independent
+[compact alternate resize reproduction](../resize-race/README.md), which uses
+identical captured bytes with two resize offsets and reproduces the failure in
+both Ghostty and xterm.js. It is **separate from the inbox EL defect**. The native
+stress run did not capture each failure's raw byte/resize ordering; attributing
+its exact timing to that independently reproduced mechanism is an inference,
+not a claim that the native streams were themselves replayed.
+
+No identity, failed-launch recovery, pane-input, or asserted close/reap failure
+was logged. All 12 intentional failed-launch recovery checks completed without
+a reported failure, and all 43 completed panes passed their applicable mixed
+natural-exit/host-close assertions. The five failed panes did **not** proceed to
+grow or natural-exit assertions: their cleanup requests run, but the fixture
+destructor does not assert its close-wait result. Thus this run is not evidence
+of 48/48 successful lifecycle qualification, nor of exhaustive leak freedom.
+
+#### Recommendation for opt-in application integration
+
+Proceed only with explicit `--console-runtime` selection of the verified pinned
+pair; retain inbox as the unchanged default and retain a visible experimental
+provider identity. Missing/corrupt/wrong-runtime packaging must fail before
+launch, never silently substitute inbox. The evidence supports removal of the
+inbox EL artifact for this workload and successful primary/fullscreen concurrent
+cycles; it does **not** justify claiming general Ink resize compatibility,
+compact-alt qualification, all advanced protocols, physical input/IME, or a
+production-default provider switch.
+
+Keep the strict compact regression and aggregate stress result red. Do not
+filter bytes, clear the host viewport, skip failed rounds, or relabel them as
+expected passes. The opt-in application smoke must separately verify actual
+provider identity, multiple pane creation, resize/close, and error reporting;
+it cannot inherit native GUI verification from this headless Session workload.
+
+#### Follow-on cleanup assertion (not present in the run above)
+
+`provider-stress` now independently checks every pane that failed rendering:
+request close, require `wait_closed(12s)`, then require exited state and no
+lifecycle/transport error. It prints `failed-pane cleanup PASS (rendering still
+failed)` or an additional cleanup failure. These checks do not increment the
+completed-render-cycle count and cannot turn 43/48 into a pass.
+
+The added branch was exercised on Linux using a separate scratch fixture that
+immediately exits without rendering: all 48 rendering cases remained failures,
+all 48 cleanup checks passed, and the diagnostic correctly returned exit 1.
+This checks failure accounting and cleanup of already-exited actors; native
+cleanup of the persistent live resize failures still requires the next CI run.
+The existing seven Linux Ink/process/session cases passed, the full Windows GNU
+executable linked, and strict Windows test compilation passed after this change.

@@ -517,7 +517,7 @@ int transport_probe(const std::string& node, const std::string& fixture, const s
 // shrink/grow cycles plus 12 primary and 12 fullscreen cycles. Failures remain
 // strict and are reported per pane; a known race is never waived by repetition.
 int provider_stress(const std::string& node, const std::string& fixture) {
-    unsigned failures = 0, completed = 0;
+    unsigned failures = 0, completed = 0, failed_pane_cleanups = 0;
     const FixtureMode modes[]{FixtureMode::primary, FixtureMode::fullscreen,
                               FixtureMode::compact_alternate, FixtureMode::compact_alternate};
     for (unsigned round = 0; round < 12; ++round) {
@@ -597,7 +597,29 @@ int provider_stress(const std::string& node, const std::string& fixture) {
             ++completed;
             std::cout << "Provider stress round=" << round << " pane=" << pane << " " << mode_name(modes[pane]) << " PASS\n";
         }, "reap");
+        // Rendering failures must not bypass lifecycle qualification. Keep their
+        // rendering outcome failed while independently requiring actor/process
+        // closure, including panes already asked to close in an earlier phase.
+        for (std::size_t pane = 0; pane < panes.size(); ++pane) {
+            if (healthy[pane]) continue;
+            try {
+                auto& session = panes[pane]->session;
+                session->request_close();
+                check(session->wait_closed(12s), "Failed rendering pane did not reap");
+                const auto info = session->info();
+                check(info.state == SessionState::exited && info.error.empty(),
+                      "Failed rendering pane has a lifecycle/transport error");
+                ++failed_pane_cleanups;
+                std::cout << "Provider stress round=" << round << " pane=" << pane
+                          << " failed-pane cleanup PASS (rendering still failed)\n";
+            } catch (const std::exception& error) {
+                ++failures;
+                std::cerr << "Provider stress round=" << round << " pane=" << pane
+                          << " phase=failed-pane-cleanup FAIL: " << error.what() << '\n';
+            }
+        }
     }
+    std::cout << "Provider stress failed-pane cleanup checks passed=" << failed_pane_cleanups << '\n';
     std::cout << "Provider stress: " << completed << "/48 pane cycles completed; failures=" << failures << '\n';
     return failures ? 1 : 0;
 }

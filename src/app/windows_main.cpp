@@ -58,19 +58,36 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             else if (argument == L"--smoke-projects") { options.smoke_projects=true; ++smoke_modes; }
             else if (argument == L"--smoke-settings") { options.smoke_settings=true; ++smoke_modes; }
             else if (argument == L"--capture" && i+1<args.count) options.capture_path=args.values[++i];
+            else if (argument == L"--console-runtime" && i+1<args.count) {
+                if (!options.console_runtime_directory.empty()) throw std::invalid_argument("Specify --console-runtime only once.");
+                const std::filesystem::path directory(args.values[++i]);
+                const auto& path=directory.native();
+                // Match the provider's local-drive trust boundary; never resolve
+                // a relative runtime through cwd, PATH, environment or config.
+                const bool local_drive=path.size()>=3 &&
+                    ((path[0]>=L'A' && path[0]<=L'Z') || (path[0]>=L'a' && path[0]<=L'z')) &&
+                    path[1]==L':' && (path[2]==L'\\' || path[2]==L'/');
+                if (!directory.is_absolute() || !local_drive || path.size()>=32767)
+                    throw std::invalid_argument("--console-runtime requires an absolute local drive directory, such as C:\\runtime. UNC/device/relative paths are not accepted.");
+                options.console_runtime_directory=directory.lexically_normal();
+            }
             else if (argument == L"--help") {
-                constexpr std::string_view help="StormTTY [--config path]\n\n"
+                constexpr std::string_view help="StormTTY [--config path] [--console-runtime absolute-directory]\n\n"
                     "Verification modes (choose one):\n"
                     "--smoke [--capture frame.png]\n"
                     "--smoke-layout --capture layout.png\n"
                     "--smoke-modal --capture modal.png\n"
                     "--smoke-projects --capture projects.png\n"
                     "--smoke-settings --capture settings.png\n\n"
+                    "--console-runtime explicitly opts this launch into the pinned experimental\n"
+                    "Microsoft ConPTY runtime (1.25.260930003). No system fallback on failure.\n"
+                    "It can also be combined with any verification mode above.\n"
+                    "Without it, Windows system ConPTY remains the default.\n\n"
                     "Ctrl+Shift+P opens commands.\nCtrl+Shift+T creates a tab.\n"
                     "Ctrl+Tab changes tabs.\nCtrl+Shift+V pastes.\nAlt+Space opens the system menu.";
                 if (smoke) { std::fprintf(stdout,"%.*s\n",static_cast<int>(help.size()),help.data()); return 0; }
                 return stormtty::show_startup_notice("StormTTY controls",help,stormtty::StartupNoticeKind::information)==0?0:1;
-            } else throw std::runtime_error("Unknown or incomplete option. Use --help or --config path.");
+            } else throw std::runtime_error("Unknown or incomplete option. Use --help for supported options.");
         }
         if (smoke_modes>1) throw std::invalid_argument("Choose only one native smoke scenario.");
         if (smoke && required) throw std::runtime_error("Smoke mode does not load user configuration or profile scripts.");
