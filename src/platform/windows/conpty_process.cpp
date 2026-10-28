@@ -353,6 +353,18 @@ finished:
                         throw win_error("SetInformationJobObject");
                     STARTUPINFOEXW startup{};
                     startup.StartupInfo.cb = sizeof(startup); startup.lpAttributeList = attributes.value;
+                    // Explicit null standard-handle slots prevent a redirected
+                    // parent stdin/stdout/stderr (for example CTest's pipes)
+                    // from overriding the pseudoconsole's client handles.
+                    // Console initialization fills null slots from the attached
+                    // ConPTY. Keep bInheritHandles=FALSE; do NOT pass the host's
+                    // transport pipe handles as the child's standard handles.
+                    // This is also the launch pattern used by Microsoft Terminal:
+                    // src/cascadia/TerminalConnection/ConptyConnection.cpp.
+                    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+                    startup.StartupInfo.hStdInput = nullptr;
+                    startup.StartupInfo.hStdOutput = nullptr;
+                    startup.StartupInfo.hStdError = nullptr;
                     PROCESS_INFORMATION pi{};
                     if (closing.load()) throw LaunchCancelled{};
                     if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE,

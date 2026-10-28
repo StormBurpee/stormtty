@@ -1,6 +1,7 @@
 #include "stormtty/process.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -82,6 +83,21 @@ std::string child_environment() {
 int child_main(int argc, char** argv) {
     child_terminal_mode();
     std::string mode(argv[1]);
+#ifdef _WIN32
+    if (mode == "--child-console-handles") {
+        DWORD input_mode{}, output_mode{}, error_mode{};
+        const bool input_console = GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &input_mode) != FALSE;
+        const bool output_console = GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &output_mode) != FALSE;
+        const bool error_console = GetConsoleMode(GetStdHandle(STD_ERROR_HANDLE), &error_mode) != FALSE;
+        std::printf("CONSOLE-HANDLES:%d:%d:%d\n", input_console, output_console, error_console);
+        if (!input_console || !output_console || !error_console) return 42;
+        std::fputs("STDOUT-VIA-CONPTY\n", stdout);
+        std::fputs("STDERR-VIA-CONPTY\n", stderr);
+        if (std::getchar() != 'R') return 43;
+        std::fputs("STDIN-VIA-CONPTY\n", stdout);
+        return 0;
+    }
+#endif
     if (mode == "--child-exit") { std::fputs("STORM-TAIL-\xe2\x98\x83-\xf0\x9f\x8c\xa9\n", stdout); return 23; }
     if (mode == "--child-args") {
         for (int i = 2; i < argc; ++i) std::printf("ARG%d=[%s]\n", i - 2, argv[i]);
@@ -180,8 +196,64 @@ void send(Process& process, std::string_view bytes) {
     }
     throw std::runtime_error("input backpressure deadline");
 }
+#ifdef _WIN32
+// Only this serial native regression changes the test host's Win32 handle table;
+// no application launch code mutates global std handles. The original handles
+// remain owned by the test host and are restored even when an assertion throws.
+class RedirectedParentStandardHandles final {
+    struct OwnedHandle {
+        HANDLE value{};
+        ~OwnedHandle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+    } input_read_, input_write_, output_read_, output_write_;
+    std::array<HANDLE, 3> original_{
+        GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE)};
+    void restore() noexcept {
+        SetStdHandle(STD_INPUT_HANDLE, original_[0]);
+        SetStdHandle(STD_OUTPUT_HANDLE, original_[1]);
+        SetStdHandle(STD_ERROR_HANDLE, original_[2]);
+    }
+public:
+    RedirectedParentStandardHandles() {
+        SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+        require(CreatePipe(&input_read_.value, &input_write_.value, &attributes, 0) != FALSE, "redirected-parent input pipe creation failed");
+        require(CreatePipe(&output_read_.value, &output_write_.value, &attributes, 0) != FALSE, "redirected-parent output pipe creation failed");
+        require(SetHandleInformation(input_write_.value, HANDLE_FLAG_INHERIT, 0) != FALSE, "input peer inheritance reset failed");
+        require(SetHandleInformation(output_read_.value, HANDLE_FLAG_INHERIT, 0) != FALSE, "output peer inheritance reset failed");
+        try {
+            require(SetStdHandle(STD_INPUT_HANDLE, input_read_.value) != FALSE, "parent stdin redirect failed");
+            require(SetStdHandle(STD_OUTPUT_HANDLE, output_write_.value) != FALSE, "parent stdout redirect failed");
+            require(SetStdHandle(STD_ERROR_HANDLE, output_write_.value) != FALSE, "parent stderr redirect failed");
+        } catch (...) { restore(); throw; }
+    }
+    ~RedirectedParentStandardHandles() { restore(); }
+    RedirectedParentStandardHandles(const RedirectedParentStandardHandles&) = delete;
+    RedirectedParentStandardHandles& operator=(const RedirectedParentStandardHandles&) = delete;
+    bool output_empty() const {
+        DWORD available{};
+        require(PeekNamedPipe(output_read_.value, nullptr, 0, nullptr, &available, nullptr) != FALSE, "redirected-parent output probe failed");
+        return available == 0;
+    }
+};
+#endif
 void run_tests(const std::string& executable) {
     const auto options = [&](std::string mode) { ProcessOptions o; o.executable = executable; o.arguments = {std::move(mode)}; return o; };
+#ifdef _WIN32
+    {
+        // Regression for native CTest/CI launches: bInheritHandles=FALSE alone
+        // must not leave the child's stdio pointing at the parent's redirected
+        // pipes. Exercise console API identity and all three actual I/O routes.
+        RedirectedParentStandardHandles parent;
+        Session s(options("--child-console-handles"));
+        const bool ready = s.capture->contains("STDOUT-VIA-CONPTY");
+        if (ready) send(*s.process, "R"); else s.process->request_close();
+        const auto result = s.finish();
+        require(parent.output_empty(), "ConPTY child output leaked into redirected parent stdout/stderr");
+        require(ready && result.error.empty() && result.exit_code == 0, "redirected-parent ConPTY stdio regression failed");
+        require(s.capture->contains("CONSOLE-HANDLES:1:1:1", 0ms), "child standard handles are not all console handles");
+        require(s.capture->contains("STDERR-VIA-CONPTY", 0ms), "child stderr bypassed ConPTY");
+        require(s.capture->contains("STDIN-VIA-CONPTY", 0ms), "child stdin bypassed ConPTY");
+    }
+#endif
     {
         Session s(options("--child-exit")); auto result = s.finish();
         require(result.error.empty() && result.exit_code == 23, "child exit code/tail launch failed");
