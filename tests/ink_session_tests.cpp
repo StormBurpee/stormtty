@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 using namespace stormtty;
 using namespace std::chrono_literals;
@@ -512,6 +513,95 @@ int transport_probe(const std::string& node, const std::string& fixture, const s
     return failures ? 1 : 0;
 }
 
+// Concurrent multi-pane qualification. Twelve rounds include 24 compact-alt
+// shrink/grow cycles plus 12 primary and 12 fullscreen cycles. Failures remain
+// strict and are reported per pane; a known race is never waived by repetition.
+int provider_stress(const std::string& node, const std::string& fixture) {
+    unsigned failures = 0, completed = 0;
+    const FixtureMode modes[]{FixtureMode::primary, FixtureMode::fullscreen,
+                              FixtureMode::compact_alternate, FixtureMode::compact_alternate};
+    for (unsigned round = 0; round < 12; ++round) {
+        try {
+            // Deliberate late launch failure exercises host teardown and lock
+            // release; healthy concurrent launches immediately follow it.
+            ProcessOptions broken; select_experimental_provider(broken);
+            broken.executable = node + ".stormtty-intentionally-missing";
+            check(!std::filesystem::exists(utf8_path(broken.executable)), "Recovery probe path unexpectedly exists");
+            struct Result { std::mutex mutex; std::optional<ProcessExit> exit; };
+            const auto result = std::make_shared<Result>();
+            auto process = Process::start(std::move(broken), {{}, [result](ProcessExit exit) {
+                std::lock_guard lock(result->mutex); result->exit = std::move(exit);
+            }});
+            check(process->wait_for_exit(5s), "Failed-launch recovery did not reap");
+            std::lock_guard lock(result->mutex);
+            check(result->exit && !result->exit->exit_code && !result->exit->error.empty(),
+                  "Recovery probe did not observe the expected launch failure");
+        } catch (const std::exception& error) {
+            ++failures; std::cerr << "Provider stress round " << round << " recovery FAIL: " << error.what() << '\n';
+        }
+        std::vector<std::unique_ptr<FixtureSession>> panes;
+        for (auto mode : modes) panes.push_back(std::make_unique<FixtureSession>(node, fixture, mode));
+        std::vector<bool> healthy(panes.size(), true);
+        const auto each = [&](auto operation, const char* phase) {
+            for (std::size_t pane = 0; pane < panes.size(); ++pane) {
+                if (!healthy[pane]) continue;
+                try { operation(*panes[pane], pane); }
+                catch (const std::exception& error) {
+                    healthy[pane] = false; ++failures;
+                    std::cerr << "Provider stress round=" << round << " pane=" << pane << " phase=" << phase
+                              << " FAIL: " << error.what() << '\n';
+                    panes[pane]->session->request_close();
+                }
+            }
+        };
+        each([&](FixtureSession& test, std::size_t pane) {
+            test.text("Interactive TTY | Size: 80x24");
+            if (!experimental_provider_directory.empty()) {
+                const auto diagnostic = test.session->diagnostics();
+                check(diagnostic.bundled_provider && !diagnostic.advanced_protocols_verified,
+                      "Experimental provider identity or qualification flag is wrong");
+            }
+            const auto input = "pane" + std::to_string(pane) + "round" + std::to_string(round);
+            check(test.session->text(input) == SessionSendResult::accepted, "Concurrent input rejected");
+            test.text("Input: <" + input + ">");
+            test.animation();
+        }, "startup/input");
+        for (const auto size : {TerminalSize{56,20,8,16}, TerminalSize{96,28,8,16}}) {
+            // Submit to every pane before waiting, so controller workers and
+            // animations overlap rather than serializing independent sessions.
+            each([&](FixtureSession& test, std::size_t) {
+                check(test.session->request_resize(size) == SessionSendResult::accepted, "Concurrent resize rejected");
+            }, "resize submit");
+            each([&](FixtureSession& test, std::size_t) {
+                const auto expected = "Size: " + std::to_string(size.columns) + "x" + std::to_string(size.rows);
+                test.await([&](const FramePtr& frame) {
+                    return frame->columns == size.columns && frame->rows == size.rows &&
+                        frame_text(frame).find(expected) != std::string::npos;
+                }, "concurrent coherent resize: " + expected);
+                test.animation();
+            }, "resize/animation");
+        }
+        each([&](FixtureSession& test, std::size_t pane) {
+            if (pane % 2 == 0) test.key(Key::enter); else test.session->request_close();
+        }, "close submit");
+        each([&](FixtureSession& test, std::size_t pane) {
+            check(test.session->wait_closed(12s), "Concurrent close did not reap");
+            const auto info = test.session->info();
+            check(info.state == SessionState::exited && info.error.empty(), "Concurrent session exit failed");
+            if (pane % 2 == 0) {
+                check(info.exit_code == 0, "Natural concurrent exit was nonzero");
+                const auto final = test.session->frame();
+                check(frame_text(final).find("Ink fixture exited cleanly") != std::string::npos &&
+                      final->cursor.visible && !final->alternate_screen, "Concurrent final drain/mode restoration failed");
+            }
+            ++completed;
+            std::cout << "Provider stress round=" << round << " pane=" << pane << " " << mode_name(modes[pane]) << " PASS\n";
+        }, "reap");
+    }
+    std::cout << "Provider stress: " << completed << "/48 pane cycles completed; failures=" << failures << '\n';
+    return failures ? 1 : 0;
+}
+
 // Diagnostic only: no resize requests and no changes to the fixture or its
 // assertions. At 72/73 columns the same 72-column box touches/leaves the margin;
 // 56 columns reproduces the failing shrink geometry without an in-flight resize.
@@ -543,12 +633,16 @@ int main(int argc, char** argv) {
             argc -= 2;
         }
         check(argc == 3 || argc == 4 || argc == 5,
-            "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs> [all|primary|fullscreen|compact-alt|host-close|static-margin-probe|transport-probe <absolute-capture-dir>|provider-missing-host] [--packaged-provider <absolute-verified-dir>]");
+            "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs> [all|primary|fullscreen|compact-alt|host-close|static-margin-probe|transport-probe <absolute-capture-dir>|provider-missing-host|provider-stress] [--packaged-provider <absolute-verified-dir>]");
         check(utf8_path(argv[1]).is_absolute(), "Node executable path must be absolute");
         check(utf8_path(argv[2]).is_absolute(), "Ink fixture path must be absolute");
         check(std::filesystem::is_regular_file(utf8_path(argv[1])), "Node executable is missing");
         check(std::filesystem::is_regular_file(utf8_path(argv[2])), "Ink fixture is missing");
         const std::string_view mode = argc >= 4 ? argv[3] : "all";
+        if (mode == "provider-stress") {
+            check(argc == 4, "provider-stress takes no capture directory");
+            return provider_stress(argv[1], argv[2]);
+        }
         if (mode == "provider-missing-host") {
             check(!experimental_provider_directory.empty(), "Missing-host probe requires explicit packaged provider");
             const auto directory = utf8_path(experimental_provider_directory);

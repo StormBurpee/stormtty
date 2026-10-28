@@ -130,8 +130,8 @@ struct Attributes {
     Attributes& operator=(const Attributes&) = delete;
 };
 // Serializes host creation/identity verification across our Process instances.
-// Unrelated concurrent direct-child launches make experimental verification fail
-// closed. This is intentionally an isolated qualification path, not a default.
+// Unrelated client launches are permitted; zero or multiple matching new hosts
+// fail closed. This remains an explicit qualification path, not a default.
 std::mutex provider_launch_mutex;
 struct Module {
     HMODULE value{};
@@ -245,14 +245,26 @@ struct Provider {
             const auto after = direct_children();
             std::vector<DWORD> added;
             std::set_difference(after.begin(), after.end(), children_before.begin(), children_before.end(), std::back_inserter(added));
-            if (added.size() != 1) throw std::runtime_error("Experimental ConPTY host identity ambiguous; use isolated diagnostic process");
-            verified_host.reset(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, added.front()));
-            if (!verified_host.value) throw win_error("Open ConPTY host identity");
-            std::array<wchar_t,32768> image{}; DWORD length = static_cast<DWORD>(image.size());
-            if (!QueryFullProcessImageNameW(verified_host.value, 0, image.data(), &length)) throw win_error("Read ConPTY host image");
-            const auto actual = normalized_path(std::wstring(image.data(), length));
-            if (CompareStringOrdinal(actual.c_str(), -1, host_path.c_str(), -1, TRUE) != CSTR_EQUAL)
-                throw std::runtime_error("ConPTY host image mismatch: inbox fallback is forbidden");
+            std::size_t matching = 0;
+            for (const auto pid : added) {
+                Handle candidate(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid));
+                if (!candidate.value) {
+                    // An unrelated child can finish between snapshot and query.
+                    // Any other uncertainty must not become identity success.
+                    if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
+                    throw win_error("Open new child identity");
+                }
+                std::array<wchar_t,32768> image{}; DWORD length = static_cast<DWORD>(image.size());
+                if (!QueryFullProcessImageNameW(candidate.value, 0, image.data(), &length))
+                    throw win_error("Read new child image");
+                const auto actual = normalized_path(std::wstring(image.data(), length));
+                if (CompareStringOrdinal(actual.c_str(), -1, host_path.c_str(), -1, TRUE) == CSTR_EQUAL) {
+                    ++matching;
+                    verified_host.reset(std::exchange(candidate.value, nullptr));
+                }
+            }
+            if (matching != 1)
+                throw std::runtime_error("Experimental ConPTY requires exactly one matching new OpenConsole; fallback/ambiguous host rejected");
         }
         launch_lock.unlock();
     }

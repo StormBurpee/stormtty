@@ -106,13 +106,13 @@ jobs:
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
           base=[str(pathlib.Path('build/ink_session_tests.exe').resolve()),shutil.which('node'),str(pathlib.Path('tests/ink/fixture.mjs').resolve())]
           failures=[]
-          cases=['provider-missing-host','static-margin-probe','primary','fullscreen','compact-alt','host-close','transport-probe']
+          cases=['provider-missing-host','static-margin-probe','primary','fullscreen','compact-alt','host-close','transport-probe','provider-stress']
           for case in cases:
             args=base+[case]
             if case=='transport-probe': args.append(str(pathlib.Path('build/artifacts/ink-packaged-transport').resolve()))
             args+=['--packaged-provider',str(provider/'missing-host' if case=='provider-missing-host' else provider)]
             print('PACKAGED_CONSOLE_CASE='+case,flush=True)
-            result=subprocess.run(args,timeout=120)
+            result=subprocess.run(args,timeout=600 if case=='provider-stress' else 120)
             print('PACKAGED_CONSOLE_RESULT='+case+':'+str(result.returncode),flush=True)
             if result.returncode: failures.append(case)
           print('Packaged comparison failures: '+repr(failures),flush=True)

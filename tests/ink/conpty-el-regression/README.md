@@ -130,13 +130,41 @@ modification/deletion throughout use. It loads the absolute DLL with restricted
 DLL search flags, pairs all HPCON operations with that module, and verifies a new
 direct child's executable image is the expected OpenConsole before launching the
 fixture. No private HPCON structure layout is read. Our Process host creations
-are serialized during this check; another unrelated concurrent direct-child
-launch causes a fail-closed ambiguity error. This is deliberately an isolated
-qualification mechanism, not a general production concurrent-process discovery
-contract. A missing host is rejected before DLL execution or child creation.
+are serialized during this check. New children are matched by the exact expected
+OpenConsole image path, so unrelated Node clients launched by other panes are
+permitted. Zero or multiple matching new hosts fail closed, as do identity-query
+errors other than a child that already exited. This remains experimental; it
+does not establish a general identity contract for external components that
+concurrently launch the same OpenConsole image outside our creation lock. A missing host is rejected before DLL execution or child creation.
 
 A provider-directory argument with a nonexperimental provider is rejected.
 POSIX rejects Windows provider selection. `bundled_provider` is set only after
 host verification; advanced protocol qualification remains false. No signatures
 or Windows runtime behavior are claimed verified by the Linux cross-compilation
 checks. The signature gate and actual native executions must pass in Windows CI.
+
+
+### Repeated concurrent qualification
+
+Run `ink_session_tests NODE FIXTURE provider-stress --packaged-provider DIR`
+with a 600-second CI timeout. The same mode without provider selection is a
+portable POSIX control. It creates four concurrently live panes for each of
+12 rounds: primary, fullscreen, and two compact alternate. Each round includes
+an intentionally missing child executable followed by successful session launches,
+unique per-pane input, four coherent animation frames, overlapping shrink/grow
+requests, then mixed natural exit and host close with drain/reap checks.
+
+This totals 48 pane resize cycles, including **24 compact alternate cycles**;
+any checkpoint failure remains a failure, and all reachable pane outcomes are
+reported. This does not waive or disprove the separately captured upstream
+compact-resize race. Local Linux control completed 48/48 cycles with zero
+failures; full Windows GNU executable linking and strict provider/test compilation
+passed. Native packaged-provider concurrency qualification is pending CI.
+
+Before any eventual default switch, centralize package/version/archive and payload
+hashes in the dependency lock rather than independently updating C++ and PowerShell
+constants. Build packaging must use the same verified pair, retain official license
+metadata, check shipped hashes, and exercise missing/corrupt/wrong-architecture
+failures. Keep inbox an explicitly labeled fallback, not silent substitution.
+Default selection, broader OS/architecture qualification, and production package
+layout remain separate reviewed work; this diagnostic does not enable them.
