@@ -54,7 +54,10 @@ int child(std::string_view mode, std::string_view exit_signal = {}) {
 #else
         const auto identity=std::to_string(getpid());
 #endif
-        std::cout << "\x1b[31mREADY:" << identity << "\x1b[0m\r\n" << std::flush;
+        // PTY transport may split the prefix, PID, reset and newline across
+        // separate frames. Only the trailing marker establishes the complete
+        // baseline; seeing READY alone does not mean output has finished.
+        std::cout << "\x1b[31mREADY:" << identity << "\x1b[0m\r\nTHEME-FIXTURE-READY" << std::flush;
         std::string line; std::getline(std::cin,line);
         if(!line.empty()&&line.back()=='\r')line.pop_back();
         std::cout << "GOT:" << line << " PID:" << identity << "\r\n" << std::flush;
@@ -287,12 +290,13 @@ int main(int argc,char** argv) {
             ProcessOptions p; p.executable=executable; p.arguments={"--child","echo"};
             TerminalOptions t; t.size={80,24,8,16};
             auto session=Session::start(p,t,[wakes]{wakes->signal();});
-            check(await([&]{return frame_text(session->frame()).find("READY")!=std::string::npos;},wakes),"real child output did not reach frame");
+            check(await([&]{return frame_text(session->frame()).find("THEME-FIXTURE-READY")!=std::string::npos;},wakes),"complete theme fixture output did not reach frame");
             const auto original=session->frame();
             const auto initial_text=frame_text(original);
             const auto identity_start=initial_text.find("READY:")+6;
             const auto identity=initial_text.substr(identity_start,initial_text.find_first_of(" \r\n",identity_start)-identity_start);
             const auto sent_before=session->info().bytes_sent;
+            const auto received_before=session->info().bytes_received;
             const Color preview_fg{224,225,226,255}, preview_bg{16,17,18,255};
             check(session->set_default_colors(preview_fg,preview_bg)==SessionSendResult::accepted,"live theme not accepted");
             check(await([&]{auto f=session->frame();return f && f->foreground==preview_fg && f->background==preview_bg;},wakes),"live theme did not repaint existing session");
@@ -307,7 +311,14 @@ int main(int argc,char** argv) {
             check(session->set_default_colors(original->foreground,original->background)==SessionSendResult::accepted,"theme cancel not accepted");
             check(await([&]{auto f=session->frame();return f && f->generation>preview->generation && f->foreground==original->foreground && f->background==original->background;},wakes),"latest theme cancel was lost or reordered");
             check(session->info().bytes_sent==sent_before,"display-only update wrote PTY bytes");
-            check(frame_text(session->frame())==initial_text,"theme update changed terminal content");
+            const auto after_theme=session->frame();
+            const auto after_theme_text=frame_text(after_theme);
+            if(after_theme_text!=initial_text) {
+                std::cerr << "Theme content mismatch: received=" << received_before << "->" << session->info().bytes_received
+                    << " frame=" << original->generation << "->" << after_theme->generation
+                    << "\nInitial frame:\n" << initial_text << "After theme/cancel:\n" << after_theme_text;
+            }
+            check(after_theme_text==initial_text,"theme update changed terminal content");
             check(original->background!=preview->background && preview->background==preview_bg,"old theme snapshot mutated");
             bool rejected{};
             try { session->set_default_colors({1,2,3,1},preview_bg); } catch(const std::invalid_argument&) { rejected=true; }
