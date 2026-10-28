@@ -11,9 +11,11 @@ Build on macOS with the official SDK (no Ghostty or project toolchain required):
 mkdir -p build/artifacts
 xcrun --sdk macosx clang++ -std=c++17 -fobjc-arc -Wall -Wextra \
   -mmacosx-version-min=11.0 tools/macos-presentation-probe.mm \
-  -framework AppKit -framework Metal -framework QuartzCore -framework CoreGraphics \
+  -framework AppKit -framework Metal -framework MetalKit -framework QuartzCore -framework CoreGraphics \
   -o build/macos-presentation-probe
-./build/macos-presentation-probe > build/artifacts/macos-presentation-probe.log 2>&1
+./build/macos-presentation-probe --cametallayer > build/artifacts/cametallayer.log 2>&1
+# Run separately even when the first process returns nonzero:
+./build/macos-presentation-probe --metalkit > build/artifacts/metalkit.log 2>&1
 ```
 
 Use an **external 30-second process timeout**; retain stdout, stderr, exit code,
@@ -38,6 +40,27 @@ or hierarchy differences. The same zero-timestamp symptom in both removes PTY an
 terminal composition as necessary causes, but does **not** prove a hosted/headless
 limitation. Frame drops, session/display conditions and framework behavior remain
 possible; preserve the real macOS target and require further evidence.
+
+## Controlled view-lifecycle comparison
+
+No option (or `--cametallayer`) preserves the custom NSView/CAMetalLayer baseline.
+`--metalkit` instead uses an MTKView-owned drawable and render-pass descriptor.
+The MTKView is paused, has automatic display-triggered drawing disabled, and is
+explicitly drawn by the same 100-ms timer. Its delegate uses the shared rendering
+and observation code. Both paths retain identical opaque colors, direct clear/store,
+pixel format, single-sample rendering, asynchronous presentation policy, outstanding
+GPU limit and strict timestamp-plus-matching-GPU-completion result condition.
+
+The dedicated workflow executes each mode in a separate owned process on the same
+runner, even if the first fails or is inconclusive. `cametallayer/` and `metalkit/`
+each retain their own raw log and process metadata; `comparison.json` records both.
+Aggregate exit is 1 if either errors, otherwise 2 if either is inconclusive, and
+0 only if both pass. No result is substituted for production acceptance.
+
+MTKView success with baseline failure implicates custom view integration. Both
+returning zero timestamps would narrow the problem to shared presentation/session
+behavior, not establish that all hosted machines are unsupported. This comparison
+does not capture pixels or request any recording permissions.
 
 ## API rationale
 

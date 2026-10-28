@@ -2,6 +2,7 @@
 // See macos-presentation-probe.md for build instructions and evidence limits.
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
+#import <MetalKit/MetalKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <CoreGraphics/CoreGraphics.h>
 
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <memory>
 
@@ -35,21 +37,23 @@ using Clock = std::chrono::steady_clock;
 - (void)updateLayer {}
 @end
 
-@interface PresentationProbe : NSObject <NSApplicationDelegate> {
+@interface PresentationProbe : NSObject <NSApplicationDelegate, MTKViewDelegate> {
 @public
     int result;
-    bool finished;
+    bool finished, use_metalkit, requested_draw;
     unsigned submitted, unavailable;
     Clock::time_point started;
     std::shared_ptr<Evidence> evidence;
     NSWindow* window;
-    PresentationView* view;
+    NSView* view;
+    MTKView* metal_view;
     CAMetalLayer* metal_layer;
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     NSTimer* timer;
 }
 - (void)tick:(NSTimer*)sender;
+- (void)renderFrame;
 - (void)finish:(int)code reason:(const char*)reason;
 @end
 
@@ -111,8 +115,20 @@ using Clock = std::chrono::steady_clock;
         window.releasedWhenClosed = NO;
         window.title = @"StormTTY isolated presentation diagnostic";
         window.opaque = YES;
-        view = [[PresentationView alloc] initWithFrame:NSMakeRect(0, 0, 480, 320)];
-        view.wantsLayer = YES;
+        if (use_metalkit) {
+            metal_view = [[MTKView alloc] initWithFrame:NSMakeRect(0, 0, 480, 320) device:device];
+            metal_view.paused = YES;
+            metal_view.enableSetNeedsDisplay = NO;
+            metal_view.autoResizeDrawable = YES;
+            metal_view.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
+            metal_view.framebufferOnly = YES;
+            metal_view.sampleCount = 1;
+            metal_view.delegate = self;
+            view = metal_view;
+        } else {
+            view = [[PresentationView alloc] initWithFrame:NSMakeRect(0, 0, 480, 320)];
+            view.wantsLayer = YES;
+        }
         metal_layer = (CAMetalLayer*)view.layer;
         if (![metal_layer isKindOfClass:CAMetalLayer.class]) {
             [self finish:1 reason:"AppKit did not create a CAMetalLayer"]; return;
@@ -132,9 +148,11 @@ using Clock = std::chrono::steady_clock;
         [view layoutSubtreeIfNeeded];
         const NSRect pixels = [view convertRectToBacking:view.bounds];
         metal_layer.contentsScale = window.backingScaleFactor;
-        metal_layer.drawableSize = pixels.size;
-        std::printf("START os=%s device=%s observationSeconds=12 frameIntervalSeconds=0.1 "
+        if (use_metalkit) metal_view.drawableSize = pixels.size;
+        else metal_layer.drawableSize = pixels.size;
+        std::printf("START mode=%s os=%s device=%s observationSeconds=12 frameIntervalSeconds=0.1 "
                     "maximumOutstandingGPU=1 presentsWithTransaction=0\n",
+                    use_metalkit ? "metalkit" : "cametallayer",
                     NSProcessInfo.processInfo.operatingSystemVersionString.UTF8String,
                     device.name.UTF8String);
         std::fflush(stdout);
@@ -164,11 +182,33 @@ using Clock = std::chrono::steady_clock;
             [self finish:2 reason:"presentation evidence unavailable within observation window"]; return;
         }
         if (evidence->in_flight.load() || submitted == maximum_frames) return;
-        id<CAMetalDrawable> drawable = [metal_layer nextDrawable];
-        if (!drawable) { ++unavailable; return; }
+        if (use_metalkit) { requested_draw = true; [metal_view draw]; requested_draw = false; }
+        else [self renderFrame];
+    } @catch (NSException* exception) {
+        std::fprintf(stderr, "TIMER_EXCEPTION %s\n", exception.reason.UTF8String);
+        [self finish:1 reason:"AppKit timer exception"];
+    } }
+}
+
+- (void)mtkView:(MTKView*)sender drawableSizeWillChange:(CGSize)size {
+    (void)sender; (void)size;
+}
+
+- (void)drawInMTKView:(MTKView*)sender {
+    (void)sender;
+    // The same timer requests both modes; MTKView alone owns this drawable lifecycle.
+    if (requested_draw) [self renderFrame];
+}
+
+- (void)renderFrame {
+    if (finished || evidence->in_flight.load() || submitted == maximum_frames) return;
+    @autoreleasepool { @try {
+        MTLRenderPassDescriptor* pass = use_metalkit
+            ? metal_view.currentRenderPassDescriptor : [MTLRenderPassDescriptor renderPassDescriptor];
+        id<CAMetalDrawable> drawable = use_metalkit ? metal_view.currentDrawable : [metal_layer nextDrawable];
+        if (!drawable || !pass) { ++unavailable; return; }
         id<MTLCommandBuffer> command = [queue commandBuffer];
         if (!command) { [self finish:1 reason:"command buffer allocation failed"]; return; }
-        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = drawable.texture;
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -209,17 +249,23 @@ using Clock = std::chrono::steady_clock;
 @end
 
 int main(int argc, const char* argv[]) {
-    if (argc != 1) { std::fprintf(stderr, "Usage: %s (no options)\n", argv[0]); return 1; }
+    bool use_metalkit = false;
+    if (argc == 2 && std::strcmp(argv[1], "--metalkit") == 0) use_metalkit = true;
+    else if (argc != 1 && !(argc == 2 && std::strcmp(argv[1], "--cametallayer") == 0)) {
+        std::fprintf(stderr, "Usage: %s [--cametallayer|--metalkit]\n", argv[0]); return 1;
+    }
     @autoreleasepool { @try {
         try {
             [NSApplication sharedApplication];
             PresentationProbe* probe = [PresentationProbe new];
             probe->result = 1;
+            probe->use_metalkit = use_metalkit;
             probe->evidence = std::make_shared<Evidence>();
             NSApp.delegate = probe;
             [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
             [NSApp run];
             [probe->timer invalidate];
+            probe->metal_view.delegate = nil;
             [probe->window orderOut:nil];
             NSApp.delegate = nil;
             return probe->result;
