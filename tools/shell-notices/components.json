@@ -1,0 +1,202 @@
+{
+  "schema": 1,
+  "bundle_id": "zsh-msys2-x86_64-20261028-r1",
+  "review_basis": "Exact locked binary/source archives, embedded recipes and build manifests; preserves upstream terms, not a legal opinion or a host relicensing decision.",
+  "components": [
+    {
+      "package": "zsh",
+      "version": "5.9.2-1",
+      "binary_sha256": "9a134200a152d90a0f1820d6aa74c3369d8539c068b523852549d74b16739fa8",
+      "source": "zsh-5.9.2-1.src.tar.zst",
+      "license_review": "Zsh permissive core; GPL-2.0-or-later for shipped _darcs completion",
+      "notice_components": [
+        "zsh",
+        "msys2-runtime"
+      ],
+      "review_notes": "Core LICENCE expressly defers to per-file notices; _darcs exact source is included."
+    },
+    {
+      "package": "ncurses",
+      "version": "6.6-2",
+      "binary_sha256": "828c92f09b17f00d3b49362fcfa4affa58e5e50e238f290ea36eb7a690da3acb",
+      "source": "ncurses-6.6-2.src.tar.zst",
+      "license_review": "MIT-style ncurses license",
+      "notice_components": [
+        "ncurses"
+      ],
+      "review_notes": "COPYING and AUTHORS retained; terminal database and libraries unchanged."
+    },
+    {
+      "package": "gcc-libs",
+      "version": "16.2.0-1",
+      "binary_sha256": "50e1bbbb1b4186ba1ed8c08cdbb5c0a8c2343e4b5747bace24273e26fb148471",
+      "source": "gcc-16.2.0-1.src.tar.zst",
+      "license_review": "GPL-3.0-or-later with GCC Runtime Library Exception 3.1; LGPL-2.1-or-later for libquadmath",
+      "notice_components": [
+        "gcc"
+      ],
+      "review_notes": "Per-library distinction preserved; exception does not erase license duties on separately distributed runtime DLLs."
+    },
+    {
+      "package": "libpcre2_8",
+      "version": "10.49-1",
+      "binary_sha256": "2de42bf4656e3952a72809663e85899be76c7020e016687055ac0acd05145a3b",
+      "source": "pcre2-10.49-1.src.tar.zst",
+      "license_review": "BSD-3-Clause WITH PCRE2-exception; BSD-2-Clause SLJIT",
+      "notice_components": [
+        "pcre2"
+      ],
+      "review_notes": "Both PCRE2 LICENCE.md and embedded SLJIT license included."
+    },
+    {
+      "package": "libiconv",
+      "version": "1.19-1",
+      "binary_sha256": "0fa55ea2a6ccf97cf8c58b24b2615815e15e16e6e4e888091c263c2c83c5313d",
+      "source": "libiconv-1.19-1.src.tar.zst",
+      "license_review": "LGPL-2.1-or-later library and libcharset",
+      "notice_components": [
+        "libiconv"
+      ],
+      "review_notes": "COPYING.LIB and both author lists included; no iconv command is in this binary package."
+    },
+    {
+      "package": "msys2-runtime",
+      "version": "3.6.11-4",
+      "binary_sha256": "7b1c4b625483ceff9a87f2dfcf3659704dc3da655a0ad414ecb7d9175e7d3ba0",
+      "source": "msys2-runtime-3.6.11-4.src.tar.zst",
+      "license_review": "LGPL-3.0-or-later DLL with Cygwin linking exception; GPL-3.0-or-later utilities; Newlib/BSD notices",
+      "notice_components": [
+        "msys2-runtime",
+        "binutils"
+      ],
+      "review_notes": "Include Newlib aggregate notices, 484 exact source comment blocks, and binutils supplement. Dumper file header grants GPLv3+, but COPYING.dumper contains GPLv2: preserve both and record this upstream inconsistency."
+    },
+    {
+      "package": "bash",
+      "version": "5.3.20-2",
+      "binary_sha256": "0951e809c552dd7dd2835df1b2d590822187f14e717d809e942e4eb677d0adfd",
+      "source": "bash-5.3.20-2.src.tar.zst",
+      "license_review": "GPL-3.0-or-later; statically linked Readline GPL-3.0-or-later",
+      "notice_components": [
+        "bash",
+        "readline"
+      ],
+      "review_notes": "Exact external Readline 8.3.006-1 source supplement included; ncurses/libiconv/gettext sources already present."
+    },
+    {
+      "package": "coreutils",
+      "version": "8.32-5",
+      "binary_sha256": "62dfee1c39fd15f99c39802b35e82643bc14fffc16d6c76d4001caa385ec77e3",
+      "source": "coreutils-8.32-5.src.tar.zst",
+      "license_review": "GPL-3.0-or-later code; GFDL-1.3-or-later manuals",
+      "notice_components": [
+        "coreutils",
+        "documentation"
+      ],
+      "review_notes": "Upstream authors and copying text plus intact Info manuals."
+    },
+    {
+      "package": "gmp",
+      "version": "6.3.0-2",
+      "binary_sha256": "f84536138e618d47a1df2da83916cfebbd449f159ffad52f994a71060a41cf34",
+      "source": "gmp-6.3.0-2.src.tar.zst",
+      "license_review": "LGPL-3.0-or-later or GPL-2.0-or-later; GFDL-1.3-or-later manual",
+      "notice_components": [
+        "gmp",
+        "documentation"
+      ],
+      "review_notes": "Both upstream license alternatives preserved. GMP manual specifies front/back-cover texts, retained verbatim in Info and copied notices."
+    },
+    {
+      "package": "libintl",
+      "version": "0.22.5-1",
+      "binary_sha256": "336d66b9d95cf9c1804958f8e260762a3e83bf158ed5981f783bc772a31073cf",
+      "source": "gettext-0.22.5-1.src.tar.zst",
+      "license_review": "LGPL-2.1-or-later gettext-runtime/intl library",
+      "notice_components": [
+        "gettext"
+      ],
+      "review_notes": "Coarse package tag GPL is not a license conclusion for this DLL; exact intl/COPYING.LIB and AUTHORS included."
+    },
+    {
+      "package": "grep",
+      "version": "1~3.0-7",
+      "binary_sha256": "2909b3bbef8d33d66980339fb7bd2d3d9145bae0f04191e6671df39868aea427",
+      "source": "grep-1~3.0-7.src.tar.zst",
+      "license_review": "GPL-3.0-or-later code; GFDL-1.3-or-later manual",
+      "notice_components": [
+        "grep",
+        "documentation"
+      ],
+      "review_notes": "Original source and documentation copying terms retained."
+    },
+    {
+      "package": "libpcre",
+      "version": "8.45-5",
+      "binary_sha256": "b4dc2eb7795cbacaa683101d720fa67f536262497a1d89934a58f5dab8d17d17",
+      "source": "pcre-8.45-5.src.tar.zst",
+      "license_review": "BSD-3-Clause PCRE with separately licensed JIT notices",
+      "notice_components": [
+        "pcre"
+      ],
+      "review_notes": "Full LICENCE contains component notices; not inferred only from package BSD tag."
+    },
+    {
+      "package": "sed",
+      "version": "4.9-1",
+      "binary_sha256": "3748af28f69e946ec5a42e6670c9bbf6da7352dc93baaa537f69e99c5483b9fc",
+      "source": "sed-4.9-1.src.tar.zst",
+      "license_review": "GPL-3.0-or-later code; GFDL-1.3-or-later manual",
+      "notice_components": [
+        "sed",
+        "documentation"
+      ],
+      "review_notes": "Original source and documentation copying terms retained."
+    },
+    {
+      "package": "findutils",
+      "version": "4.11.0-2",
+      "binary_sha256": "f19d3c6b1b073d4c5759ae83f5639d11a5f0227b772f7d86d600db573d9d5d32",
+      "source": "findutils-4.11.0-2.src.tar.zst",
+      "license_review": "GPL-3.0-or-later code; GFDL-1.3-or-later manuals",
+      "notice_components": [
+        "findutils",
+        "documentation"
+      ],
+      "review_notes": "Both user and maintenance manuals remain intact."
+    },
+    {
+      "package": "less",
+      "version": "710-1",
+      "binary_sha256": "894a643ecd01861490e5767873d67b55cd5a2faf2c77b0b24a62dbba7bd038fd",
+      "source": "less-710-1.src.tar.zst",
+      "license_review": "Upstream Less License or GNU GPL; distribution package declares GPL-3.0-or-later",
+      "notice_components": [
+        "less"
+      ],
+      "review_notes": "Both COPYING and Less LICENSE plus copyright file preserved; no silent relicensing choice."
+    },
+    {
+      "package": "zlib",
+      "version": "1.3.2-1",
+      "binary_sha256": "a04aa79996c57f0db936be66cf94326d7e67e9cd8dbffe4cf6e97693d0a1d9ef",
+      "source": "zlib-1.3.2-1.src.tar.zst",
+      "license_review": "Zlib license",
+      "notice_components": [
+        "zlib"
+      ],
+      "review_notes": "Exact upstream copyright/permission/disclaimer preserved."
+    },
+    {
+      "package": "libzstd",
+      "version": "1.5.7-1",
+      "binary_sha256": "5e370b2e725a0a7e5ff58d84653c9a0cd5a10b9cfe930f2d949a28ad2a11c1f2",
+      "source": "zstd-1.5.7-1.src.tar.zst",
+      "license_review": "BSD-3-Clause or GPL-2.0-only upstream dual license",
+      "notice_components": [
+        "zstd"
+      ],
+      "review_notes": "Both LICENSE and COPYING preserved; package declares BSD."
+    }
+  ]
+}

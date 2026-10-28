@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "filename": "binutils-2.47-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/binutils-2.47-1.src.tar.zst",
+      "bytes": 29041002,
+      "sha256": "2cf54a4208a6683ca2793fb14eb6ca4b3ddec9474e60738c90050bb2ee359276",
+      "reason": "Static libbfd/libiberty in retained msys2-runtime dumper.exe",
+      "evidence": [
+        "msys2-runtime .BUILDINFO: installed = binutils-2.47-1-x86_64",
+        "Cygwin winsup/utils/Makefile.am: dumper_LDADD includes -lbfd; configure.ac adds -liberty"
+      ]
+    },
+    {
+      "filename": "readline-8.3.006-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/readline-8.3.006-1.src.tar.zst",
+      "bytes": 3357587,
+      "sha256": "9ddb3eb989f6ad7d696ce5a2d92322b33a20056b293e3c4fc4f6cc568a320640",
+      "reason": "External static GNU Readline in bash.exe/sh.exe",
+      "evidence": [
+        "bash PKGBUILD: --enable-static-link --with-installed-readline",
+        "bash .BUILDINFO: installed = libreadline-devel-8.3.006-1-x86_64"
+      ]
+    }
+  ]
+}
