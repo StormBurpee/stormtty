@@ -7,6 +7,17 @@ import subprocess
 import tempfile
 
 
+def decode_output(result):
+    """Keep reader threads binary; a charset mismatch is evidence, never success."""
+    try:
+        return result.stdout.decode('utf-8'), result.stderr.decode('utf-8')
+    except UnicodeDecodeError as error:
+        raise AssertionError(
+            f'Runtime output is not UTF-8: {error}; exit={result.returncode}; '
+            f'stdout_bytes={result.stdout!r}; stderr_bytes={result.stderr!r}'
+        ) from error
+
+
 def qualify(runtime):
     runtime = runtime.resolve(strict=True)
     shell = runtime / 'usr/bin/zsh.exe'
@@ -35,11 +46,16 @@ def qualify(runtime):
                 if value is None: env.pop(name, None)
                 else: env[name] = value
             env['STORMTTY_EMPTY_HOME'] = '1' if env.get('HOME') == '' else ''
-            result = subprocess.run([str(shell), '-d', '-i', '-c', command], cwd=project,
-                                    env=env, capture_output=True, encoding='utf-8', timeout=30)
-            if result.returncode or 'DOTFILE_TRIPWIRE' in result.stdout + result.stderr:
-                raise AssertionError(f'Zsh failed or read user dotfiles: {result.returncode}: {result.stdout}\n{result.stderr}')
-            return result.stdout
+            diagnostic = 'print -r -- "LOCALE=$LANG|$LC_ALL"; /usr/bin/locale charmap; '
+            result = subprocess.run([str(shell), '-d', '-i', '-c', diagnostic + command], cwd=project,
+                                    env=env, capture_output=True, timeout=30)
+            try:
+                stdout, stderr = decode_output(result)
+            except AssertionError as error:
+                raise AssertionError(f'case={ascii(changes)}: {error}') from error
+            if result.returncode or 'DOTFILE_TRIPWIRE' in stdout + stderr:
+                raise AssertionError(f'Zsh failed or read user dotfiles: {result.returncode}: {ascii(stdout)}\n{ascii(stderr)}')
+            return stdout
         def posix(path):
             value = path.as_posix()
             assert len(path.drive) == 2 and path.drive[1] == ':', 'drive test needs a local Windows workspace'

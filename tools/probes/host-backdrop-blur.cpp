@@ -13,6 +13,7 @@
 #include <windows.graphics.effects.interop.h>
 #include <windows.ui.composition.interop.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.Effects.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Composition.h>
@@ -30,7 +31,8 @@ namespace effect_abi = ABI::Windows::Graphics::Effects;
 using winrt::check_hresult;
 
 // Native effect metadata, not an ID2D1Effect instance or Win2D runtime object.
-struct Gaussian final : winrt::implements<Gaussian, wg::IGraphicsEffect,
+// make_self wraps implementations in a derived heap_implements; do not mark final.
+struct Gaussian : winrt::implements<Gaussian, wg::IGraphicsEffect,
     wg::IGraphicsEffectSource, effect_abi::IGraphicsEffectD2D1Interop> {
     winrt::hstring name{L"Blur"};
     wg::IGraphicsEffectSource source{nullptr};
