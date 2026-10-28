@@ -4,6 +4,7 @@
 #include "stormtty/qualification_input_evidence.hpp"
 #endif
 #include <chrono>
+#include <charconv>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -44,6 +45,34 @@ std::string screen(const std::shared_ptr<Session>& session) {
     }
     return value;
 }
+// Privacy-safe experimental result: a fixed code and bounded numeric fields only.
+// Never serialize exception text, command input, or screen contents here.
+struct ResizeSummary {
+    bool enabled{}, emitted{};
+    unsigned code{1}, phase{}, expected_cols{}, expected_rows{}, observed_cols{}, observed_rows{};
+    void observe(const std::string& frame, std::uint64_t sequence) {
+        observed_cols=observed_rows=0;
+        const auto marker="__STORMTTY_SIZE_ACK:"+std::to_string(sequence)+":";
+        const auto start=frame.rfind(marker);
+        if (start==std::string::npos) return;
+        const char* begin=frame.data()+start+marker.size();
+        const char* end=frame.data()+frame.size();
+        unsigned cols{}, rows{};
+        const auto x=std::from_chars(begin,end,cols);
+        if (x.ec!=std::errc{} || x.ptr==end || *x.ptr!='x') return;
+        const auto y=std::from_chars(x.ptr+1,end,rows);
+        if (y.ec!=std::errc{} || end-y.ptr<2 || y.ptr[0]!='_' || y.ptr[1]!='_' ||
+            cols<1 || rows<1 || cols>32767 || rows>32767) return;
+        observed_cols=cols; observed_rows=rows;
+    }
+    void emit() {
+        if (!enabled || emitted) return;
+        emitted=true;
+        std::cout << "RESIZE_CASE_SUMMARY code=" << code << " phase=" << phase
+            << " expected_cols=" << expected_cols << " expected_rows=" << expected_rows
+            << " observed_cols=" << observed_cols << " observed_rows=" << observed_rows << '\n';
+    }
+};
 template<class F> bool until(F predicate, std::chrono::milliseconds timeout = 10s) {
     const auto end = std::chrono::steady_clock::now() + timeout;
     do { if (predicate()) return true; std::this_thread::sleep_for(20ms); }
@@ -213,12 +242,18 @@ int main(int argc, char** argv) {
         return native_size(argc==3?std::string_view(argv[2]):std::string_view{});
     if (argc == 2 && std::string_view(argv[1]) == "--native-handles") return native_handles();
     unsigned resize_repeats=1;
-    bool repeats_set=false, trace_idle=false;
+    bool repeats_set=false, trace_idle=false, resize_one_shot=false, resize_summary=false;
     fs::path trace_directory;
     // Experiment options follow positional/provider arguments, in either order.
     while (argc>1) {
         const std::string_view last=argv[argc-1];
-        if (last=="--resize-trace-idle") {
+        if (last=="--resize-one-shot") {
+            if (resize_one_shot) { std::cerr << "duplicate --resize-one-shot\n"; return 2; }
+            resize_one_shot=true; --argc;
+        } else if (last=="--resize-summary") {
+            if (resize_summary) { std::cerr << "duplicate --resize-summary\n"; return 2; }
+            resize_summary=true; --argc;
+        } else if (last=="--resize-trace-idle") {
             if (trace_idle) { std::cerr << "duplicate --resize-trace-idle\n"; return 2; }
             trace_idle=true; --argc;
         } else if (argc>=3 && std::string_view(argv[argc-2])=="--resize-trace-directory") {
@@ -234,8 +269,9 @@ int main(int argc, char** argv) {
         } else break;
     }
     if (argc < 4 || argc > 6 || (argc==5 && std::string_view(argv[4])!="inbox") ||
-        (argc==6 && std::string_view(argv[4])!="--packaged-provider") || (trace_idle && (trace_directory.empty() || repeats_set))) {
-        std::cerr << "usage: bundled_shell_probe SHELL_ABSOLUTE FIXTURE_ABSOLUTE SCRATCH_DIR [inbox | --packaged-provider ABSOLUTE_DIRECTORY] [--resize-repeats 1..50] [--resize-trace-directory ABSOLUTE_EMPTY_DIRECTORY] [--resize-trace-idle]\n";
+        (argc==6 && std::string_view(argv[4])!="--packaged-provider") || (trace_idle && (trace_directory.empty() || repeats_set || resize_one_shot)) ||
+        (resize_one_shot && !repeats_set)) {
+        std::cerr << "usage: bundled_shell_probe SHELL_ABSOLUTE FIXTURE_ABSOLUTE SCRATCH_DIR [inbox | --packaged-provider ABSOLUTE_DIRECTORY] [--resize-repeats 1..50] [--resize-trace-directory ABSOLUTE_EMPTY_DIRECTORY] [--resize-trace-idle] [--resize-one-shot] [--resize-summary]\n";
         return 2;
     }
     if (!trace_directory.empty()) {
@@ -267,6 +303,7 @@ int main(int argc, char** argv) {
 #endif
     }
     std::cout << std::unitbuf;
+    ResizeSummary summary; summary.enabled=resize_summary;
     std::shared_ptr<Session> session;
     fs::path journal;
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
@@ -346,7 +383,7 @@ int main(int argc, char** argv) {
             std::chrono::steady_clock::now() - started).count() << '\n';
         require(screen(session).find("GLOBAL_DOTFILE_WAS_READ") == std::string::npos,
                 "managed profile sourced HOME/.zshrc");
-        if (!trace_idle) {
+        if (!trace_idle && !resize_one_shot) {
             prompt.send("stormtty_probe_tty"); expect(session, "__STORMTTY_TTY_OK__");
             prompt.send("stormtty_probe_native"); expect(session, "__STORMTTY_NATIVE_TTY_OK__");
             prompt.send("stormtty_probe_unicode 'caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83'");
@@ -359,9 +396,12 @@ int main(int argc, char** argv) {
         for (unsigned phase=0; phase<resize_repeats; ++phase) {
             const bool enlarged=phase%2==0;
             const std::string dimensions=enlarged?"111x35":"100x30";
+            summary.phase=phase+1; summary.expected_cols=enlarged?111:100;
+            summary.expected_rows=enlarged?35:30; summary.observed_cols=summary.observed_rows=0;
+            summary.code=3;
             std::cout << "[resize phase " << phase+1 << '/' << resize_repeats << "] target=" << dimensions << '\n';
-            if (!trace_idle) { prompt.send("stormtty_probe_journal_reset"); prompt.ready(0); }
-            else std::cout << "RESIZE_TRACE_IDLE prompt_sequence=" << prompt.sequence << " zle_initialized=1\n";
+            if (!trace_idle && !resize_one_shot) { prompt.send("stormtty_probe_journal_reset"); prompt.ready(0); }
+            else if (trace_idle) std::cout << "RESIZE_TRACE_IDLE prompt_sequence=" << prompt.sequence << " zle_initialized=1\n";
             bool trace_collected=false, trace_attempted=false;
             auto collect = [&] {
                 if (trace_directory.empty() || trace_collected) return;
@@ -374,29 +414,42 @@ int main(int argc, char** argv) {
                 prompt.ready(0);
             };
             try {
+                summary.code=2;
                 require(session->request_resize(enlarged?TerminalSize{111,35,8,16}:TerminalSize{100,30,8,16})
                         == SessionSendResult::accepted, "resize request rejected");
                 auto observe_size = [&] {
+                    summary.code=3;
+                    summary.observed_cols=summary.observed_rows=0;
                     const auto sequence=prompt.sequence;
                     prompt.send("stormtty_probe_size");
                     prompt.ready(0); // Any lost/altered command fails immediately, never retried.
                     const auto frame=screen(session);
+                    if (summary.enabled) summary.observe(frame,sequence);
                     return frame.find("__STORMTTY_SIZE:"+dimensions+"__") != std::string::npos &&
                         frame.find("__STORMTTY_SIZE_ACK:"+std::to_string(sequence)+":"+dimensions+"__") != std::string::npos;
                 };
-                const bool shell_resized = trace_idle ? observe_size() : until(observe_size);
+                const bool shell_resized = (trace_idle || resize_one_shot) ? observe_size() : until(observe_size);
+                summary.code=5;
                 collect(); // Before native helper, diagnostic commands, or teardown.
                 std::cout << "shell_resize_observed=" << shell_resized << '\n';
+                summary.code=4;
                 require(shell_resized, "shell did not observe terminal resize");
+                summary.code=6;
                 if (trace_idle) {
                     dump_process_diagnostics(session,"trace-idle-complete");
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
                     dump_input("trace-idle-complete");
 #endif
+                    summary.code=7;
                     session->request_close();
                     require(session->wait_closed(10s), "trace experiment cleanup did not close Session");
+                    summary.code=0; summary.emit();
                     std::cout << "PASS isolated idle-resize observation; NOT full bundled-shell qualification\n";
                     return 0;
+                }
+                if (resize_one_shot) {
+                    std::cout << "[resize phase " << phase+1 << "] PASS\n";
+                    continue; // No native jobs, journal commands or size-query polling.
                 }
                 // Independent native dimensions never substitute for shell evidence.
                 const auto native_sequence=prompt.sequence;
@@ -410,6 +463,7 @@ int main(int argc, char** argv) {
 #endif
                 std::cout << "[resize phase " << phase+1 << "] PASS\n";
             } catch (...) {
+                summary.emit(); // Before diagnostics can refresh shell state.
                 // Preserve evidence before flushing or running any child, which
                 // may redraw the terminal or incidentally refresh shell state.
                 std::cerr << "Original resize failure frame (before diagnostics):\n" << screen(session);
@@ -425,7 +479,7 @@ int main(int argc, char** argv) {
                     std::cerr << "Resize trace collection failed: " << error.what() << '\n';
                     throw; // Do not run contaminating diagnostics without evidence.
                 }
-                if (trace_idle) {
+                if (trace_idle || resize_one_shot) {
                     std::cerr << "Trace idle experiment: post-failure shell diagnostics suppressed\n";
                     throw;
                 }
@@ -450,6 +504,18 @@ int main(int argc, char** argv) {
                 throw;
             }
         }
+        if (resize_one_shot) {
+            summary.code=7;
+            session->request_close();
+            require(session->wait_closed(10s), "one-shot experiment cleanup did not close Session");
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+            dump_input("one-shot-complete");
+#endif
+            summary.code=0; summary.emit();
+            std::cout << "PASS isolated builtin-only repeated one-shot resize; NOT full bundled-shell qualification\n";
+            return 0;
+        }
+        summary.code=8;
         prompt.send("stormtty_probe_wait first"); expect(session, "__STORMTTY_WAITING:first__");
         key(session, Key::c, Modifier::control);
         prompt.ready(130);
@@ -482,8 +548,10 @@ int main(int argc, char** argv) {
 #else
         std::cout << "PASS POSIX probe mechanics only; NOT Windows bundled-shell qualification\n";
 #endif
+        summary.code=0; summary.emit();
         return 0;
     } catch (const std::exception& e) {
+        summary.emit();
         if (session) { std::cerr << "Failure frame:\n" << screen(session); session->request_close(); (void)session->wait_closed(10s); }
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
         dump_input("final-result");
