@@ -75,6 +75,24 @@ jobs:
       - name: Run real native tests
         id: native_tests
         run: ctest --test-dir build --output-on-failure --output-junit test-results.xml --parallel 1
+      - name: Compile isolated additional-blur experiment
+        id: blur_probe_build
+        if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
+        run: |
+          cmake -S . -B build -DSTORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE=ON
+          cmake --build build --target stormtty_host_backdrop_probe --parallel 2
+      - name: Verify experimental opaque fallback lifecycle
+        if: always() && runner.os == 'Windows' && steps.blur_probe_build.outcome == 'success'
+        shell: python
+        run: |
+          import pathlib,importlib.util,sys,json
+          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
+          result=runner.run_owned([str(pathlib.Path('build/stormtty_host_backdrop_probe.exe').resolve()),'--warp','--smoke'],timeout=30,output_dir=pathlib.Path("build/artifacts"))
+          print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
+          print("EXPERIMENTAL_OPAQUE_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+          print("WARP lifecycle only: not host backdrop or physical blur verification.",flush=True)
+          raise SystemExit(result.exit_code)
       - name: Diagnose Windows Ink transport boundary
         if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
         shell: python
