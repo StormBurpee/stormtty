@@ -198,10 +198,30 @@ int main() {
         shell.text("_qwalker="); shell.key(Key::t, control); shell.expect("QFZF_SELECT:");
         shell.text("walker_unique_file"); shell.key(Key::enter); shell.absent("QFZF_SELECT:"); shell.key(Key::enter);
         command("[[ $_qwalker == 'walker space é/nested 路径/walker_unique_file.txt' && -f $_qwalker ]] && print -r -- QWALKER$((70+2))", "QWALKER72");
-        phase = 13;
-        shell.key(Key::c, alt); shell.expect("QFZF_SELECT:"); shell.text("nested 路径"); shell.key(Key::enter); shell.absent("QFZF_SELECT:");
+        phase = 131;
+        shell.key(Key::c, alt); shell.expect("QFZF_SELECT:");
+        phase = 132;
+        shell.text("nested 路径"); shell.key(Key::enter); shell.absent("QFZF_SELECT:");
+        phase = 133;
+        // Numeric-only diagnostics distinguish a selection/path contract failure
+        // from a final prompt or process teardown failure. Never print frames.
+        const char* walker_contracts[] = {
+            "$PWD == $QUAL_EXPECT_CWD/'walker space é/nested 路径'",
+            "$PWD == $QUAL_EXPECT_CWD",
+            "$PWD == $QUAL_EXPECT_CWD/'walker space é'",
+            "$PWD == */'nested 路径'"
+        };
+        for (unsigned i = 0; i < 4; ++i) {
+            const auto marker = "QWDIAG" + std::to_string(i) + "_";
+            shell.command("if [[ " + std::string(walker_contracts[i]) + " ]]; then print -r -- " + marker + "$((0+1)); else print -r -- " + marker + "$((0+0)); fi");
+            check(until([&] { const auto value = screen(shell.session); return value.find(marker + "0") != std::string::npos || value.find(marker + "1") != std::string::npos; }));
+            std::cout << "SHELL_WALKER_CONTRACT index=" << i << " value=" << (screen(shell.session).find(marker + "1") != std::string::npos ? 1 : 0) << std::endl;
+        }
+        phase = 134;
         command("[[ $PWD == $QUAL_EXPECT_CWD/'walker space é/nested 路径' ]] && print -r -- QWALKDIR$((70+3))", "QWALKDIR73");
+        phase = 135;
         command("print -r -- QEND$((50+3))", "QEND53");
+        phase = 136;
         shell.finish();
         std::cout << "SHELL_NAVIGATION_RESULT code=0 phase=13 checks=" << checks << " cold_samples=1 cold_ms=" << cold_ms << " warm_samples=0 warm_ms=" << warm_ms << '\n';
         return 0;
