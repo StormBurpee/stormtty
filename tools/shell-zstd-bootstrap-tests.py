@@ -17,6 +17,9 @@ spec.loader.exec_module(zstd)
 
 class ZstdBootstrapTests(unittest.TestCase):
     def fixture(self, root, extra=()):
+        # macOS temporary paths commonly start with /var -> /private/var.
+        # Canonicalize our fixture, not the production non-reparse policy.
+        root = root.resolve(strict=True)
         lock = zstd.read_lock()
         cache = root / "cache"
         cache.mkdir()
@@ -74,18 +77,41 @@ class ZstdBootstrapTests(unittest.TestCase):
     def test_offline_missing_never_opens_network(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(zstd.urllib.request, "build_opener", side_effect=AssertionError):
             with self.assertRaisesRegex(RuntimeError, "Offline"):
-                zstd.provision(Path(tmp), True)
+                zstd.provision(Path(tmp).resolve(strict=True), True)
 
     def test_reject_unsafe_even_unselected_zip_paths(self):
         for name in ("../escape", "/absolute", "a\\b", "a:ads", "nul", "a/../b", "a/COM1.txt", "a/", "zstd-v1.5.7-win64/ZSTD.EXE"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 # a/ is a valid empty directory, but nonempty directory data/type is rejected.
                 info = zipfile.ZipInfo(name)
+                # ZipInfo.__init__ normalizes backslashes on Windows. Restore
+                # the raw name so both ZIP headers contain the hostile bytes.
+                info.filename = name
+                info.orig_filename = name
                 info.external_attr = stat.S_IFREG << 16
-                cache, path, _ = self.fixture(Path(tmp), [(info, b"bad")])
+                cache, path, lock = self.fixture(Path(tmp), [(info, b"bad")])
+                if "\\" in name:
+                    raw_zip = (cache / lock["archive"]["filename"]).read_bytes()
+                    self.assertEqual(raw_zip.count(name.encode("ascii")), 2)
                 with self.assertRaises(RuntimeError):
                     zstd.provision(cache, True, path)
                 self.assertFalse((cache / "tools/zstd-v1.5.7-win64").exists())
+
+    def test_original_zip_name_rejected_after_windows_normalization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = zipfile.ZipInfo("a/b")
+            info.filename = info.orig_filename = "a\\b"
+            cache, _, lock = self.fixture(Path(tmp), [(info, b"bad")])
+            archive = cache / lock["archive"]["filename"]
+            destination = cache / "output"
+            destination.mkdir()
+            with mock.patch.object(zipfile.os, "sep", "\\"):
+                with zipfile.ZipFile(archive) as bundle:
+                    entry = bundle.infolist()[-1]
+                    self.assertEqual(entry.filename, "a/b")
+                    self.assertEqual(entry.orig_filename, "a\\b")
+                with self.assertRaisesRegex(RuntimeError, "Unsafe tool archive path"):
+                    zstd.extract(archive, destination, lock)
 
     def test_symlink_zip_entry_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

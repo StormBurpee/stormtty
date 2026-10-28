@@ -142,6 +142,9 @@ def extract(archive, destination, lock):
         seen = set()
         by_name = {}
         for entry in entries:
+            # ZipInfo normalizes os.sep on Windows and truncates NULs. Validate
+            # the original central-directory name before trusting that alias.
+            safe_path(entry.orig_filename)
             safe_path(entry.filename)
             key = entry.filename.rstrip("/").casefold()
             kind = stat.S_IFMT(entry.external_attr >> 16)
