@@ -438,6 +438,11 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                     core.cancel_search(requested_search.load()); publish_search(core.search_snapshot());
                 }
                 writes.clear(); write_bytes = 0;
+                // Completed copy callbacks can own the last Session reference.
+                // Release this live-loop batch outside mutex before entering an
+                // indefinitely retained document; otherwise its closures keep
+                // Session alive and prevent destructor-triggered disposal.
+                batch.clear();
                 publish_process_result(*child_exit);
                 if (retain) retain_document(core); // Rechecks close_requested before any operation.
                 return;

@@ -41,7 +41,7 @@ template<class Predicate> bool await(Predicate predicate, const std::shared_ptr<
     }
     return true;
 }
-int child(std::string_view mode) {
+int child(std::string_view mode, std::string_view exit_signal = {}) {
 #ifdef _WIN32
     SetConsoleCP(CP_UTF8); SetConsoleOutputCP(CP_UTF8);
     DWORD output_mode{};
@@ -62,6 +62,16 @@ int child(std::string_view mode) {
     }
     if(mode=="flood") {
         for(std::uint64_t i=0;;++i) std::cout << "STREAM:" << i << " \x1b[32moutput\x1b[0m\r\n" << std::flush;
+    }
+    if(mode=="retained-transition") {
+        std::cout << "TRANSITION-READY\r\n" << std::flush;
+        const auto deadline=std::chrono::steady_clock::now()+10s;
+        while(!std::filesystem::exists(exit_signal)) {
+            if(std::chrono::steady_clock::now()>=deadline)return 3;
+            std::this_thread::sleep_for(5ms);
+        }
+        std::cout << "TRANSITION-FINAL\r\n" << std::flush;
+        return 0;
     }
     if(mode=="retained-history" || mode=="retained-bounded") {
 #ifdef _WIN32
@@ -160,6 +170,58 @@ void retained_document(const std::string& executable) {
     check(session->scroll(-1)==SessionSendResult::closed&&session->search({"needle"}).result==SessionSendResult::closed,"disposed document accepted commands");
     check(session->set_default_colors(foreground,background)==SessionSendResult::closed,"disposed document accepted theme");
 }
+void retained_transition_releases_completed_callbacks(const std::string& executable) {
+    // The child exits only after the actor is gated. Then an input rejection
+    // proves the exit callback arrived before the owner-capturing copy is queued.
+    // This places that copy in the final LIVE batch, not the retained loop.
+    struct Signal {
+        std::filesystem::path path;
+        bool created{};
+        ~Signal(){if(created){std::error_code error;std::filesystem::remove(path,error);}}
+    } signal{std::filesystem::current_path()/("stormtty-session-exit-"+
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".signal")};
+    check(!std::filesystem::exists(signal.path),"transition signal collision");
+    struct Gate {
+        std::mutex mutex;std::condition_variable cv;bool entered{},release{};
+        std::atomic<bool> copied{};
+        void open(){ {std::lock_guard lock(mutex);release=true;}cv.notify_all(); }
+    };
+    auto gate=std::make_shared<Gate>();
+    struct ReleaseGate {std::shared_ptr<Gate> gate;~ReleaseGate(){gate->open();}} release{gate};
+    ProcessOptions p;p.executable=executable;p.arguments={"--child","retained-transition",signal.path.string()};
+    auto wake=std::make_shared<WakeCounter>();
+    auto session=Session::start(p,{},[wake]{wake->signal();},SessionRetentionPolicy::retain_document);
+    check(await([&]{return frame_text(session->frame()).find("TRANSITION-READY")!=std::string::npos;},wake),"transition child not ready");
+    check(session->copy_selection([gate](std::string){
+        std::unique_lock lock(gate->mutex);gate->entered=true;gate->cv.notify_all();
+        gate->cv.wait(lock,[&]{return gate->release;});
+    })==SessionSendResult::accepted,"transition gate rejected");
+    {std::unique_lock lock(gate->mutex);check(gate->cv.wait_for(lock,5s,[&]{return gate->entered;}),"transition actor did not enter gate");}
+    check(!session->process_finished(),"transition actor already retained before gate");
+    signal.created=std::filesystem::create_directory(signal.path);
+    check(signal.created,"transition exit signal failed");
+    bool exited{};
+    // At most seven accepted probes: together with the final copy they fit the
+    // eight-command live batch. No probe can reach a child while actor is gated.
+    for(unsigned attempt=0;attempt<8;++attempt){
+        const auto result=session->focus(false);
+        if(result==SessionSendResult::closed){exited=true;break;}
+        check(result==SessionSendResult::accepted,"transition exit probe rejected unexpectedly");
+        if(attempt<7)std::this_thread::sleep_for(1s);
+    }
+    check(exited,"transport exit was not observed while actor was gated");
+    check(session->copy_selection([owned=session,gate](std::string){(void)owned;gate->copied=true;})==SessionSendResult::accepted,"transition owning callback rejected");
+    gate->open();
+    check(session->wait_for_process_exit(5s),"transition process result not published");
+    check(gate->copied.load(),"owning callback did not execute in final live batch");
+    check(frame_text(session->frame()).find("TRANSITION-FINAL")!=std::string::npos,"transition lost final bytes");
+    std::weak_ptr<Session> released=session;session.reset();
+    const auto deadline=std::chrono::steady_clock::now()+5s;
+    while(!released.expired()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(5ms);
+    const bool disposed=released.expired();
+    if(auto rescue=released.lock()){rescue->request_close();(void)rescue->wait_closed(5s);}
+    check(disposed,"completed live-batch callback retained the final Session owner indefinitely");
+}
 void retained_bounds_failure_and_destructor(const std::string& executable) {
     ProcessOptions p;p.executable=executable;p.arguments={"--child","retained-bounded"};
     TerminalOptions t;t.size={80,4,8,16};t.scrollback_lines=10;
@@ -217,7 +279,7 @@ void retained_bounds_failure_and_destructor(const std::string& executable) {
 }
 }
 int main(int argc,char** argv) {
-    if(argc==3 && std::string_view(argv[1])=="--child")return child(argv[2]);
+    if((argc==3 || argc==4) && std::string_view(argv[1])=="--child")return child(argv[2],argc==4?argv[3]:"");
     try {
         const auto executable=std::filesystem::absolute(argv[0]).string();
         {
@@ -290,6 +352,7 @@ int main(int argc,char** argv) {
         }
         retained_document(executable);
         retained_bounds_failure_and_destructor(executable);
+        retained_transition_releases_completed_callbacks(executable);
         std::cout << "Session: retained document read/search/display, bounded scrollback, final held output, idle/disposal; real child, input ordering, immutable frame, bounded queue, flood close, launch failure, immediate-close races passed\n";
         return 0;
     } catch(const std::exception& e){std::cerr << "FAIL: " << e.what() << '\n';return 1;}
