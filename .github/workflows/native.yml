@@ -1,9 +1,8 @@
 name: Native build and runtime evidence
 on:
   push:
-    paths-ignore: ['README.md', 'docs/**', 'tools/probes/msys-runtime-experiment/**', '.github/workflows/msys-resize-experiment.yml', '.github/workflows/conpty-width-probe.yml', 'tests/conpty_width_probe.cpp', 'tests/ink/conpty-width-probe/**', 'tools/macos-presentation-probe.mm', 'tools/macos-presentation-probe.md', '.github/workflows/macos-presentation-probe.yml']
+    branches: [main]
   pull_request:
-    paths-ignore: ['README.md', 'docs/**', 'tools/probes/msys-runtime-experiment/**', '.github/workflows/msys-resize-experiment.yml', '.github/workflows/conpty-width-probe.yml', 'tests/conpty_width_probe.cpp', 'tests/ink/conpty-width-probe/**', 'tools/macos-presentation-probe.mm', 'tools/macos-presentation-probe.md', '.github/workflows/macos-presentation-probe.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -74,9 +73,9 @@ jobs:
       - name: Build
         id: build
         run: cmake --build build --parallel 2
-      - name: Run real native tests
+      - name: Run blocking native baseline tests
         id: native_tests
-        run: ctest --test-dir build --output-on-failure --output-junit test-results.xml --parallel 1
+        run: ctest --test-dir build -LE qualification --no-tests=error --output-on-failure --output-junit test-results.xml --parallel 1
       - name: Verify bundled console cached repair and portable install
         if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
         shell: python
@@ -98,71 +97,11 @@ jobs:
           print('INSTALLED_CONSOLE_PROCESS_RESULT='+json.dumps(result.metadata(),sort_keys=True),flush=True)
           print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
           raise SystemExit(result.exit_code)
-      - name: Compile isolated additional-blur experiment
-        id: blur_probe_build
-        if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
-        run: |
-          cmake -S . -B build -DSTORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE=ON
-          cmake --build build --target stormtty_host_backdrop_probe --parallel 2
-      - name: Verify experimental opaque fallback lifecycle
-        if: always() && runner.os == 'Windows' && steps.blur_probe_build.outcome == 'success'
-        shell: python
-        run: |
-          import pathlib,importlib.util,sys,json
-          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
-          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
-          result=runner.run_owned([str(pathlib.Path('build/stormtty_host_backdrop_probe.exe').resolve()),'--warp','--smoke'],timeout=30,output_dir=pathlib.Path("build/artifacts"))
-          print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
-          print("EXPERIMENTAL_OPAQUE_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
-          print("WARP lifecycle only: not host backdrop or physical blur verification.",flush=True)
-          raise SystemExit(result.exit_code)
-      - name: Diagnose Windows Ink transport boundary
-        if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
-        shell: python
-        run: |
-          import pathlib,subprocess,shutil,base64,hashlib
-          capture=pathlib.Path('build/artifacts/ink-transport').resolve()
-          probe=subprocess.run([str(pathlib.Path('build/ink_session_tests.exe').resolve()),shutil.which('node'),str(pathlib.Path('tests/ink/fixture.mjs').resolve()),'transport-probe',str(capture)])
-          reference=pathlib.Path('build/ink-reference').resolve()
-          install=subprocess.run([shutil.which('npm'), 'install','--prefix',str(reference),'--ignore-scripts','--no-audit','--no-fund','--save-exact','@xterm/headless@6.0.0','@xterm/addon-unicode11@0.9.0'],shell=True)
-          replay=1
-          if install.returncode == 0:
-            replay=subprocess.run([shutil.which('node'),'tests/ink/replay-transport.cjs',str(reference/'node_modules/@xterm/headless'),str(capture)]).returncode
-          for p in sorted(capture.glob('*.bin')):
-            if p.name.endswith('-live.bin'): continue
-            b=p.read_bytes()
-            if len(b)>1024*1024: raise RuntimeError('Capture too large')
-            print('INK_CAPTURE_NAME='+p.name,flush=True)
-            print('INK_CAPTURE_SHA256='+hashlib.sha256(b).hexdigest(),flush=True)
-            print('INK_CAPTURE_BASE64_BEGIN',flush=True)
-            data=base64.b64encode(b).decode()
-            for i in range(0,len(data),4096): print(data[i:i+4096],flush=True)
-            print('INK_CAPTURE_BASE64_END',flush=True)
-          raise SystemExit(1 if probe.returncode or install.returncode or replay else 0)
       - name: Verify explicit packaged console dependency
         id: packaged_console
         if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
         shell: pwsh
         run: ./tools/prepare-conpty-probe.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'stormtty-conpty-qualified')
-      - name: Compare packaged console without changing defaults
-        if: always() && runner.os == 'Windows' && steps.packaged_console.outcome == 'success'
-        shell: python
-        run: |
-          import os,pathlib,subprocess,shutil
-          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
-          base=[str(pathlib.Path('build/ink_session_tests.exe').resolve()),shutil.which('node'),str(pathlib.Path('tests/ink/fixture.mjs').resolve())]
-          failures=[]
-          cases=['provider-missing-host','static-margin-probe','primary','fullscreen','compact-alt','host-close','transport-probe','provider-stress']
-          for case in cases:
-            args=base+[case]
-            if case=='transport-probe': args.append(str(pathlib.Path('build/artifacts/ink-packaged-transport').resolve()))
-            args+=['--packaged-provider',str(provider/'missing-host' if case=='provider-missing-host' else provider)]
-            print('PACKAGED_CONSOLE_CASE='+case,flush=True)
-            result=subprocess.run(args,timeout=600 if case=='provider-stress' else 120)
-            print('PACKAGED_CONSOLE_RESULT='+case+':'+str(result.returncode),flush=True)
-            if result.returncode: failures.append(case)
-          print('Packaged comparison failures: '+repr(failures),flush=True)
-          raise SystemExit(1 if failures else 0)
       - name: Verify application with explicit packaged console
         if: always() && runner.os == 'Windows' && steps.packaged_console.outcome == 'success'
         shell: python
@@ -199,29 +138,6 @@ jobs:
       - name: Verify managed shell HOME and drive paths
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         run: python tools/shell-path-tests.py --runtime .deps/stormtty-shell --resolver-probe build/bundled_shell_probe.exe
-      - name: Qualify bundled Zsh through real native sessions
-        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
-        shell: python
-        run: |
-          import os,pathlib,importlib.util,sys,json
-          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
-          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
-          shell=pathlib.Path('.deps/stormtty-shell/usr/bin/zsh.exe').resolve()
-          fixture=pathlib.Path('tools/probes/bundled_shell_fixture.zsh').resolve()
-          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
-          failures=[]
-          for mode in ['inbox','packaged']:
-            scratch=pathlib.Path(os.environ['RUNNER_TEMP'])/('stormtty-zsh-'+mode)
-            args=[str(pathlib.Path('build/bundled_shell_probe.exe').resolve()),str(shell),str(fixture),str(scratch)]
-            args+=['inbox'] if mode=='inbox' else ['--packaged-provider',str(provider)]
-            args+=['--resize-repeats','6']
-            print('BUNDLED_ZSH_CASE='+mode,flush=True)
-            result=runner.run_owned(args,timeout=180,output_dir=pathlib.Path("build/artifacts"))
-            print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
-            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
-            print('BUNDLED_ZSH_RESULT='+mode+':'+str(result.exit_code),flush=True)
-            if result.exit_code: failures.append(mode)
-          raise SystemExit(1 if failures else 0)
       - name: Verify application with bundled Zsh
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         shell: python

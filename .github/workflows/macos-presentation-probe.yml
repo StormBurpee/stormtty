@@ -1,7 +1,5 @@
 name: Isolated macOS presentation diagnostic
 on:
-  push:
-    branches: ['diagnostics/macos-present']
   workflow_dispatch:
 permissions:
   contents: read

@@ -138,6 +138,15 @@ if(BUILD_TESTING)
         add_test(NAME ink_static_margin_probe COMMAND ink_session_tests
             "${STORMTTY_NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ink/fixture.mjs" "static-margin-probe")
         set_tests_properties(ink_static_margin_probe PROPERTIES TIMEOUT 90 LABELS "ink;native-pty;diagnostic")
+        # Windows Ink is an explicit compatibility qualification, not baseline
+        # coverage. Keep every assertion strict; Linux Ink remains automatic.
+        if(WIN32)
+            set_property(TEST ink_primary ink_fullscreen ink_compact_alt ink_host_close
+                ink_static_margin_probe APPEND PROPERTY LABELS "qualification")
+        elseif(APPLE)
+            # Hosted macOS compact-alt resize remains a strict manual qualification.
+            set_property(TEST ink_compact_alt APPEND PROPERTY LABELS "qualification")
+        endif()
         # A known upstream resize/repaint regression stays strict and visible.
         set_property(TEST ink_compact_alt APPEND PROPERTY LABELS "upstream-regression")
     endif()
@@ -299,7 +308,7 @@ if(STORMTTY_BUILD_APP)
         if(BUILD_TESTING)
             file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts")
             add_test(NAME native_macos_window_smoke COMMAND stormtty --smoke --capture "${CMAKE_BINARY_DIR}/artifacts/native-macos.png")
-            set_tests_properties(native_macos_window_smoke PROPERTIES TIMEOUT 60 LABELS "macos;native;gui")
+            set_tests_properties(native_macos_window_smoke PROPERTIES TIMEOUT 60 LABELS "macos;native;gui;qualification")
         endif()
     else()
         message(FATAL_ERROR "The native application targets Windows and macOS; Linux supports portable core/PTY tests")

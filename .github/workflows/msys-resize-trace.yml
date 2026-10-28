@@ -1,8 +1,6 @@
 # Isolated source-build experiment; never replaces a shipped runtime.
 name: Private MSYS resize observation trace
 on:
-  push:
-    branches: ['experiment/msys-resize-trace']
   workflow_dispatch:
 permissions:
   contents: read

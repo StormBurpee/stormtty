@@ -1,8 +1,6 @@
 # Isolated source-build experiment; never replaces a shipped runtime.
 name: Private MSYS modern cursor candidate
 on:
-  push:
-    branches: ['experiment/msys-cursor-candidate']
   workflow_dispatch:
 permissions:
   contents: read

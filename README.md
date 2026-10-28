@@ -60,7 +60,8 @@ criteria](docs/acceptance-gates.md), not published benchmark wins.
 | **Linux** | Portable core, terminal adapter, process and session test host | Core/process/session tests pass locally. A Linux desktop application is not a current product target. |
 
 The [native workflow](.github/workflows/native.yml) separates Linux, Windows and
-macOS evidence. A cross-compiled executable is not a Windows runtime pass; a CI
+macOS evidence. Its automatic baseline and separate strict, manual compatibility
+qualification are documented in [CI coverage](docs/ci-coverage.md). A cross-compiled executable is not a Windows runtime pass; a CI
 frame capture is not a test of physical input, desktop composition or
 accessibility. Windows ARM64 and universal macOS packaging are not implied by an
 x64 or single-architecture build.

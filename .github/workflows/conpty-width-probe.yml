@@ -1,7 +1,5 @@
 name: Native ConPTY width accounting
 on:
-  push:
-    branches: ['diagnostics/conpty-width']
   workflow_dispatch:
 permissions:
   contents: read
