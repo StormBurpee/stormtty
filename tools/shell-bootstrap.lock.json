@@ -2,8 +2,8 @@
   "schema": 1,
   "bundle_id": "zsh-msys2-x86_64-20261028-r1",
   "platform": "windows-x86_64",
-  "qualification_only": true,
-  "default_activation_allowed": false,
+  "qualification_only": false,
+  "default_activation_allowed": true,
   "upstream_zsh": {
     "version": "5.9.2",
     "url": "https://www.zsh.org/pub/zsh-5.9.2.tar.xz",
@@ -335,5 +335,23 @@
         "libzstd"
       ]
     }
-  ]
+  ],
+  "public_redistribution_ready": false,
+  "public_source_availability_verified": false,
+  "native_qualification": {
+    "status": "passed",
+    "commit": "cab6eb52cf2f3d227abb4967ea812ab56883d9bf",
+    "workflow_run": "https://github.com/StormBurpee/stormtty/actions/runs/40650974545",
+    "providers": [
+      "windows_inbox",
+      "windows_packaged_experimental"
+    ],
+    "checks": [
+      "real Session Zsh TTY/Unicode/CWD/resize/Ctrl-C/job-control/exit probe on both providers",
+      "five managed Zsh app smoke modes"
+    ],
+    "scope": "Passed native Windows Zsh subset only. Overall Windows/macOS suites retain separate Ink/macOS-presentation failures; not a whole-workflow, physical UI, universal compatibility, or publication claim.",
+    "tree": "45e528127a26d1ef72021907798b884f553d42d5",
+    "workflow_job": "https://github.com/StormBurpee/stormtty/actions/runs/40650974545/job/122690698403"
+  }
 }

@@ -165,35 +165,52 @@ The [command registry](src/core/commands.cpp) defines the full set of actions an
 platform-specific bindings. Close and paste behavior still need native
 interaction testing; do not use the development build for irreplaceable work.
 
-### Try the managed Zsh runtime
+### Bundled Zsh on Windows
 
-This opt-in development profile uses upstream Zsh 5.9.2 with StormTTY's own
-startup preset: directory, exit-status and duration prompt; ZLE editing; and
-completion. It is not a Zsh fork. It leaves your existing shell dotfiles and HOME
-alone, and does not write history yet. The full extension/module system is not
-implemented.
+The Windows app build bundles upstream Zsh 5.9.2 with StormTTY's own startup
+preset: directory, exit-status and duration prompt; ZLE editing; and completion.
+It is not a Zsh fork. It leaves your existing shell dotfiles and HOME alone and
+does not write history yet. The full extension/module system is not implemented.
 
-After building, use PowerShell from the repository root. Runtime staging needs
-**Python 3.14+**; console-package signature verification needs the **.NET SDK**.
-Both destination directories must be new:
+**Build the `stormtty` target, then Run.** The first Windows app build fetches
+checksum-pinned dependencies into its private cache and stages `runtimes/zsh`
+beside the executable. It does not require a manual shell-download step or
+`--shell-runtime` launch arguments. Subsequent builds reuse the cache. Downloads
+happen at build time, never when opening a terminal, and no global PATH, shell
+installation or user dotfile is changed.
 
-```powershell
-python tools/shell-bootstrap.py --destination .deps/stormtty-shell --cache .cache/shell-bootstrap
-./tools/prepare-conpty-probe.ps1 -Destination .deps/conpty
-./build-msvc/stormtty.exe --shell-runtime "$PWD/.deps/stormtty-shell" --console-runtime "$PWD/.deps/conpty"
-```
+- **Fresh configuration:** managed Zsh is selected automatically.
+- **Existing saved configuration:** your shell choice wins. Open Settings → Shell,
+  choose **Zsh · managed**, and Save once. New tabs/panes use it; existing processes
+  keep running. Only a stable profile reference is saved, not an installation
+  directory or a copy of your PATH.
+- **Moving the app:** keep `runtimes/zsh` beside the executable. Rebuilding repairs
+  a missing staged runtime. If managed Zsh is selected but unavailable, the app
+  reports an error instead of silently running another shell. An unrelated saved
+  shell remains usable.
 
-The shell flag applies to this launch's tabs, panes and workspaces; it is not
-written into your saved configuration. Without the flags, existing defaults
-remain unchanged. The console runtime is the pinned Microsoft package, not a
-replacement for Windows system files, and a failed explicit selection does not
-silently fall back to another provider.
+Core-only and non-Windows builds do not fetch this Windows runtime. Downstream
+Windows builds can explicitly set `-DSTORMTTY_BUNDLE_ZSH=OFF`. An already staged
+runtime can be supplied with `-DSTORMTTY_DEVELOPER_SHELL_RUNTIME=<absolute-root>`;
+that is an advanced offline override, not a required setup step. No IDE-specific
+project files are needed.
 
-Native Windows app checks have exercised this combination. Deeper shell/job-control
-qualification is still in progress, and compact alternate-screen Ink layouts
-have a known resize-redraw race. This is not a supported release or a completed
-redistribution packet. See the [runtime staging guide](tools/shell-bootstrap.README.md)
-and [console compatibility evidence](tests/ink/conpty-el-regression/README.md).
+Native Windows CI has passed both inbox and packaged-console Zsh probes:
+interactive/native handles, Unicode and working directories, shell/native resize,
+Ctrl-C, suspend/background/foreground jobs, and exit status. All five explicit
+app-with-Zsh smoke scenarios also pass. This is runtime evidence, not physical
+keyboard/UI qualification. Compact alternate-screen Ink layouts still have a
+resize-redraw race; the full Windows suite is not green.
+
+The optional pinned Microsoft console backend remains a separate experiment,
+selected with `--console-runtime <absolute-directory>`; bundling Zsh does not
+replace Windows system files or silently enable that backend.
+
+The build includes upstream notices. Public redistribution also requires an
+accessible matching source download; the exact inventory and source generator
+are in the [distribution packet guide](tools/shell-notices/REVIEW.md). See the
+[runtime staging guide](tools/shell-bootstrap.README.md) for low-level tools and
+[console compatibility evidence](tests/ink/conpty-el-regression/README.md).
 
 ## Configuration
 
@@ -297,7 +314,7 @@ feature list.
 | Modern terminal and Ink workloads | Packaged Windows console fixes the verified right-margin defect | Compact alternate-screen resize race; broader graphics/protocol coverage |
 | Text input and accessibility | Incomplete | Full TSF/IME and UI Automation behavior, screen-reader and physical-input testing |
 | Settings, shortcuts and owned menus | Implemented; native Windows app checks pass | Physical interaction, accessibility and platform parity |
-| Managed Zsh | Explicit opt-in; native Windows app checks pass | Job control qualification, history, modules, default packaging and complete notices |
+| Managed Zsh | Windows app build bundles the runtime; native shell/job-control and explicit app checks pass | History, modules, public release packaging and physical interaction |
 | Find and cross-window tear-off | Core search implemented; UI/tear-off pending | User-facing implementation and native tests |
 | Performance and distribution | Pending | Recorded-hardware measurements, ConPTY provider qualification, packaging and complete notices |
 

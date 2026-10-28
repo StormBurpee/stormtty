@@ -25,6 +25,26 @@ struct ComApartment {
     HRESULT status = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     ~ComApartment() { if (SUCCEEDED(status)) CoUninitialize(); }
 };
+std::filesystem::path configured_shell_runtime() {
+#ifdef STORMTTY_HAS_BUNDLED_SHELL_RUNTIME
+    std::wstring module(32768,L'\0');
+    const DWORD count=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
+    if (!count || count>=module.size()) throw std::runtime_error("Could not locate the app-owned bundled shell runtime.");
+    module.resize(count);
+    return std::filesystem::path(module).parent_path()/L"runtimes"/L"zsh";
+#else
+    return {};
+#endif
+}
+void check_shell_runtime(const std::filesystem::path& root, bool configured) {
+    if (!root.empty() && (!std::filesystem::is_regular_file(root/L"usr"/L"bin"/L"zsh.exe") ||
+        !std::filesystem::is_regular_file(root/L"usr"/L"bin"/L"msys-2.0.dll") ||
+        !std::filesystem::is_regular_file(root/L"stormtty"/L"zsh"/L".zshrc") ||
+        (configured && !std::filesystem::is_regular_file(root/L"stormtty-shell-manifest.json"))))
+        throw std::runtime_error(configured?
+            "The app-owned bundled Zsh runtime is missing or incomplete. Close StormTTY and rebuild the stormtty target; keep runtimes/zsh beside StormTTY.exe when copying/installing. No fallback shell was launched.":
+            "The shell runtime needs usr/bin/zsh.exe, usr/bin/msys-2.0.dll and stormtty/zsh/.zshrc. Restage with shell-bootstrap.py. No fallback shell was launched.");
+}
 struct Arguments {
     int count{};
     LPWSTR* values = CommandLineToArgvW(GetCommandLineW(), &count);
@@ -90,19 +110,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                     "--shell-runtime opts this launch into staged upstream Zsh 5.9.2 with\n"
                     "StormTTY's managed preset (root/usr/bin/zsh.exe and root/stormtty/zsh/.zshrc).\n"
                     "It keeps HOME/project folders, writes no user dotfiles or history, and\n"
-                    "does not change the saved default shell. Smoke uses real Zsh, not cmd.\n\n"
+                    "does not change the saved default shell. Smoke uses real Zsh, not cmd.\n"
+                    "Windows app builds bundle managed Zsh and find\n"
+                    "runtimes/zsh beside the executable; existing saved shell choices win.\n\n"
                     "Ctrl+Shift+P opens commands.\nCtrl+Shift+T creates a tab.\n"
                     "Ctrl+Tab changes tabs.\nCtrl+Shift+V pastes.\nAlt+Space opens the system menu.";
                 if (smoke) { std::fprintf(stdout,"%.*s\n",static_cast<int>(help.size()),help.data()); return 0; }
                 return stormtty::show_startup_notice("StormTTY controls",help,stormtty::StartupNoticeKind::information)==0?0:1;
             } else throw std::runtime_error("Unknown or incomplete option. Use --help for supported options.");
         }
-        // Explicit startup validation precedes any HWND or session. Never probe
-        // runtime files from the UI/session factory or silently use a bare shell.
-        if (!options.shell_runtime_directory.empty() &&
-            (!std::filesystem::is_regular_file(options.shell_runtime_directory/L"usr"/L"bin"/L"zsh.exe") ||
-             !std::filesystem::is_regular_file(options.shell_runtime_directory/L"stormtty"/L"zsh"/L".zshrc")))
-            throw std::invalid_argument("The staged shell runtime must contain usr/bin/zsh.exe and StormTTY's stormtty/zsh/.zshrc preset. No fallback shell was launched.");
+        // Only builds including a validated runtime discover
+        // this fixed executable-relative directory. Never search cwd or PATH.
+        if (options.shell_runtime_directory.empty()) {
+            options.shell_runtime_directory=configured_shell_runtime();
+            options.shell_runtime_override=false;
+        }
+
         if (smoke_modes>1) throw std::invalid_argument("Choose only one native smoke scenario.");
         if (smoke && required) throw std::runtime_error("Smoke mode does not load user configuration or profile scripts.");
         if (!smoke && !options.capture_path.empty()) throw std::runtime_error("--capture is available only with explicit --smoke mode.");
@@ -115,6 +138,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             }
         }
         if (!config_path.empty()) { config_path=std::filesystem::absolute(config_path).lexically_normal(); options.config_path=config_path; }
+        bool config_loaded=false;
         if (!config_path.empty() && (required || std::filesystem::exists(config_path))) {
             auto loaded = stormtty::load_config(config_path, stormtty::Platform::windows);
             if (!loaded) {
@@ -122,8 +146,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 for (const auto& item : loaded.errors) error += "Line " + std::to_string(item.line) + ": " + item.message + "\n";
                 throw std::runtime_error(error);
             }
-            config = std::move(*loaded.config);
+            config = std::move(*loaded.config); config_loaded=true;
         }
+        if (!options.shell_runtime_directory.empty() && !options.shell_runtime_override) {
+            // Bundled Settings smoke starts with an old saved Cmd choice,
+            // then selects/saves the discovered managed profile through the UI.
+            stormtty::apply_developer_shell_default(config,config_loaded || options.smoke_settings);
+        }
+        try { check_shell_runtime(options.shell_runtime_directory,!options.shell_runtime_override); }
+        catch (const std::exception& error) {
+            if (options.shell_runtime_override || stormtty::has_managed_zsh_selection(config)) throw;
+            options.shell_runtime_error=error.what();
+        }
+        if (stormtty::has_managed_zsh_selection(config) && options.shell_runtime_directory.empty())
+            throw std::runtime_error("Your saved default is managed Zsh, but this build has no bundled shell runtime. Build with STORMTTY_BUNDLE_ZSH=ON or launch with --shell-runtime <absolute staged root>; no fallback shell was launched.");
         return stormtty::run_native_application(std::move(config),std::move(options));
     } catch (const std::exception& exception) {
         if (smoke) std::fprintf(stderr,"Native smoke startup error: %s\n",exception.what());

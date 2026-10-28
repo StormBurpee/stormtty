@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Stage exact official Windows Zsh packages, without installing or executing them.
 
-Windows: Python 3.14+ including compression.zstd. Older Python: pass an existing
-trusted zstd executable explicitly with --zstd. No pip/package-manager installs.
-This qualification-only tree MUST NOT be activated as the app default yet.
+Windows x64: Python 3.12+; automatically caches the pinned official zstd build
+tool when stdlib compression.zstd is unavailable. No pip/global installs.
+Public redistribution additionally requires matching notices/source delivery.
 """
 from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import re
 import shutil
 import subprocess
@@ -54,9 +56,11 @@ def portable_path(name: str) -> PurePosixPath:
 def read_lock(path: Path) -> dict:
     lock = json.loads(path.read_text(encoding="utf-8"))
     if (lock.get("schema") != 1 or lock.get("platform") != "windows-x86_64"
-            or lock.get("qualification_only") is not True
-            or lock.get("default_activation_allowed") is not False):
-        raise RuntimeError("Unsupported or non-qualification shell lock")
+            or lock.get("qualification_only") is not False
+            or lock.get("default_activation_allowed") is not True
+            or lock.get("public_redistribution_ready") is not False
+            or lock.get("native_qualification", {}).get("status") != "passed"):
+        raise RuntimeError("Unsupported or unqualified shell lock")
     portable_path(lock["bundle_id"])
     filenames: set[str] = set()
     for item in lock["packages"] + lock["sources"]:
@@ -130,6 +134,27 @@ class LimitedReader:
         if self.bytes_read > MAX_TAR_BYTES:
             raise RuntimeError("Decompressed package exceeds the tar byte limit")
         return block
+
+
+def stdlib_zstd_available():
+    try:
+        from compression import zstd  # noqa: F401 - availability only
+        return True
+    except ImportError:
+        return False
+
+
+def select_decompressor(explicit, cache, offline):
+    if explicit or stdlib_zstd_available():
+        return explicit
+    if sys.platform == "win32" and platform.machine().lower() in ("amd64", "x86_64"):
+        path = Path(__file__).with_name("shell-zstd-bootstrap.py")
+        spec = importlib.util.spec_from_file_location("stormtty_shell_zstd_bootstrap", path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        return str(helper.provision(cache, offline))
+    raise RuntimeError("This host needs Python 3.14+ compression.zstd or --zstd /absolute/trusted/zstd; "
+                       "automatic pinned build-tool provisioning supports Windows x64")
 
 
 @contextmanager
@@ -257,8 +282,9 @@ def write_notice_packet(destination: Path, lock: dict, lock_hash: str, sources: 
     text = ["StormTTY Zsh private runtime - QUALIFICATION ONLY", "",
             "This is a collection of independent upstream programs, not a renamed Zsh fork.",
             "All upstream files/notices are retained. No package install script was executed.",
-            "Do not ship as a default yet: native qualification and distribution-specific notice",
-            "review remain required. The package license tags below are not a per-file license audit.",
+            "The pinned runtime has passed native Windows qualification for build-default use.",
+            "Public distribution still requires the reviewed notice overlay and matching source delivery.",
+            "Package license tags below are not a substitute for the reviewed per-component packet.",
             "", "Required release work:",
             "- Preserve Zsh's actual permissive license; its _darcs completion is GPL-2.0-or-later.",
             "- Preserve runtime COPYING/CYGWIN_LICENSE, LGPL text, GCC runtime exception and",
@@ -277,7 +303,10 @@ def write_notice_packet(destination: Path, lock: dict, lock_hash: str, sources: 
     (notices / "source-manifest.json").write_text(json.dumps(lock["sources"], indent=2) + "\n", encoding="utf-8")
     (notices / "shell-bootstrap.lock.json").write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
     manifest = {"schema": 1, "bundle_id": lock["bundle_id"], "platform": lock["platform"],
-                "qualification_only": True, "default_activation_allowed": False,
+                "qualification_only": lock["qualification_only"],
+                "default_activation_allowed": lock["default_activation_allowed"],
+                "native_qualification": lock["native_qualification"],
+                "public_redistribution_ready": False, "public_source_availability_verified": False,
                 "release_notices_complete": False, "source_archives_verified_in_cache": sources,
                 "lock_sha256": lock_hash, "shell": "usr/bin/zsh.exe", "managed_zdotdir": "stormtty/zsh",
                 "files": sorted((x for x in records.values() if not x["directory"]), key=lambda x: x["path"])}
@@ -300,6 +329,7 @@ def stage(args) -> Path:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(f"pid={os.getpid()}\n")
+        zstd = select_decompressor(args.zstd, cache, args.offline)
         archives = [(package, download(package, cache, args.offline)) for package in lock["packages"]]
         if args.sources:
             for source in lock["sources"]:
@@ -311,7 +341,7 @@ def stage(args) -> Path:
             budget = {"entries": 0, "bytes": 0}
             for package, archive in archives:
                 print(f"Extracting {package['name']} {package['version']}", flush=True)
-                with open_package(archive, args.zstd) as bundle:
+                with open_package(archive, zstd) as bundle:
                     extract_package(bundle, root, package["name"], records, budget)
             for name in ("usr/bin/zsh.exe", "usr/bin/msys-2.0.dll", "usr/bin/sleep.exe"):
                 if not (root / name).is_file():
@@ -327,7 +357,7 @@ def stage(args) -> Path:
                 raise RuntimeError("Destination appeared while staging; refusing overwrite")
             root.rename(destination)
         print(f"Staged {destination / 'usr/bin/zsh.exe'}", flush=True)
-        print("QUALIFICATION ONLY: native test and complete redistribution notices gate default activation.", flush=True)
+        print("Build-default qualified. Public distribution requires the notice overlay and matching source delivery.", flush=True)
         return destination
     finally:
         guard.unlink(missing_ok=True)
@@ -340,7 +370,7 @@ def main() -> int:
     parser.add_argument("--lock", type=Path, default=LOCK)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--sources", action="store_true", help="also download/verify complete source archives into cache")
-    parser.add_argument("--zstd", help="explicit trusted decompressor for Python older than 3.14")
+    parser.add_argument("--zstd", help="explicit trusted decompressor override; Windows x64 auto-provisions when needed")
     try:
         stage(parser.parse_args())
         return 0

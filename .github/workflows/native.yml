@@ -54,10 +54,14 @@ jobs:
           path: .deps/ghostty-native
           key: ${{ steps.engine_cache.outputs.cache-primary-key }}
       - name: Check bootstrap boundary tests
-        run: python -m unittest discover -s tools -p 'bootstrap_test*.py' -v
+        run: |
+          python -m unittest discover -s tools -p 'bootstrap_test*.py' -v
+          python tools/shell-notices-tests.py
+          python tools/stage-developer-shell-tests.py
+          python tools/shell-zstd-bootstrap-tests.py
       - name: Configure native Windows application
         if: runner.os == 'Windows'
-        run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=cl -DSTORMTTY_TEST_SHELL_PROBE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=ON
+        run: cmake -S . -B build -G Ninja "-DPython3_EXECUTABLE=${{ env.pythonLocation }}/python.exe" -DCMAKE_CXX_COMPILER=cl -DSTORMTTY_TEST_SHELL_PROBE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=ON
       - name: Configure portable core and native POSIX transport
         if: runner.os == 'Linux'
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=OFF -DSTORMTTY_TEST_INK=ON
@@ -190,6 +194,36 @@ jobs:
               print((error.stdout or b'')[-65536:].decode('utf-8',errors='replace'),flush=True)
               code=124
             print('BUNDLED_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
+            if code: failures.append(mode)
+          raise SystemExit(1 if failures else 0)
+      - name: Build with app-owned developer Zsh runtime
+        id: developer_shell_build
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        shell: python
+        run: |
+          import pathlib,subprocess
+          runtime=pathlib.Path('.deps/stormtty-shell').resolve()
+          subprocess.run(['cmake','-S','.','-B','build','-DSTORMTTY_DEVELOPER_SHELL_RUNTIME='+str(runtime)],check=True,timeout=240)
+          subprocess.run(['cmake','--build','build','--target','stormtty','--parallel','2'],check=True,timeout=360)
+      - name: Verify app-owned Zsh without shell launch flag
+        if: always() && runner.os == 'Windows' && steps.developer_shell_build.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,subprocess
+          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
+          failures=[]
+          for mode in ['smoke','smoke-layout','smoke-modal','smoke-projects','smoke-settings']:
+            capture=pathlib.Path('build/artifacts')/('native-developer-zsh-'+mode+'.png')
+            args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--'+mode,'--console-runtime',str(provider),'--capture',str(capture.resolve())]
+            print('DEVELOPER_ZSH_APPLICATION_CASE='+mode,flush=True)
+            try:
+              result=subprocess.run(args,timeout=90,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+              print(result.stdout[-65536:].decode('utf-8',errors='replace'),flush=True)
+              code=result.returncode
+            except subprocess.TimeoutExpired as error:
+              print((error.stdout or b'')[-65536:].decode('utf-8',errors='replace'),flush=True)
+              code=124
+            print('DEVELOPER_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
             if code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
       - name: Collect targeted macOS GUI failure evidence

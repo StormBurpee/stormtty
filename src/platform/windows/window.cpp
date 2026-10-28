@@ -206,10 +206,10 @@ void enforce_custom_frame_style(HWND window, bool diagnostics) {
 class NativeWindow final {
 public:
     explicit NativeWindow(Config config, NativeRunOptions options) : config_(std::move(config)), options_(std::move(options)), wake_(std::make_shared<WakeState>()) {
-        if (!options_.shell_runtime_directory.empty()) {
+        if (!options_.shell_runtime_directory.empty() && options_.shell_runtime_error.empty()) {
             const auto& root=options_.shell_runtime_directory;
             Profile managed;
-            managed.id="stormtty-managed-zsh"; managed.label="Zsh · managed";
+            managed.id=managed_zsh_profile_id; managed.label="Zsh · managed";
             managed.executable=narrow((root/L"usr"/L"bin"/L"zsh.exe").wstring());
             managed.arguments={"-d","-i"}; // Skip optional global rc files; actual interactive Zsh.
             std::string child_path=narrow((root/L"usr"/L"bin").wstring());
@@ -227,6 +227,7 @@ public:
                 {"LANG","C.UTF-8"},{"MSYSTEM","MSYS"},{"PATH",std::move(child_path)}};
             managed_shell_profile_=std::move(managed);
         }
+        if (!options_.shell_runtime_error.empty()) notice_="Managed Zsh unavailable. Close StormTTY and rebuild to restore runtimes/zsh. Your saved shell is unchanged.";
         std::string directory;
         for (const auto& profile:config_.profiles) if (profile.id==config_.default_profile) { directory=profile.working_directory; break; }
         if (directory.empty()) directory=narrow(std::filesystem::current_path().wstring());
@@ -288,7 +289,8 @@ private:
     Session* active_session() const;
     Session* session_for(PaneId) const;
     SessionId new_session();
-    const std::string& session_profile_id() const { return managed_shell_profile_?managed_shell_profile_->id:config_.default_profile; }
+    bool using_managed_shell() const { return managed_shell_profile_ && (options_.shell_runtime_override || has_managed_zsh_selection(config_)); }
+    const std::string& session_profile_id() const { return using_managed_shell()?managed_shell_profile_->id:config_.default_profile; }
     void new_tab();
     void split(Direction);
     void close_pane(PaneId, bool approved = false);
@@ -333,7 +335,7 @@ private:
     }
     Config config_;
     NativeRunOptions options_;
-    std::optional<Profile> managed_shell_profile_; // Per-launch only, never serialized into user Config.
+    std::optional<Profile> managed_shell_profile_; // Resolved launch profile; only a stable marker is ever saved.
     SettingsPanel settings_panel_{Platform::windows};
     std::thread settings_worker_;
     bool settings_job_{}, settings_open_requested_{};
@@ -344,6 +346,7 @@ private:
     ContextMenu context_menu_;
     std::map<std::string,std::function<void()>> menu_actions_;
     std::set<SessionId> smoke_commands_sent_;
+    std::set<SessionId> smoke_managed_sessions_; // Actual launch profile, not the mutable Settings default.
     std::map<SessionId,std::shared_ptr<Session>> smoke_sessions_; // Includes retired/disposable actors for provider assertions.
     bool smoke_marker_presented_{}, smoke_finished_{};
     int exit_code_{};
@@ -434,7 +437,7 @@ void NativeWindow::create() {
     if (options_.smoke_test) {
         smoke_started_at_=GetTickCount64();
         std::fprintf(stderr,"Native CI smoke startup: settings=%d managed_zsh=%d packaged_console=%d\n",
-            options_.smoke_settings,managed_shell_profile_.has_value(),!options_.console_runtime_directory.empty());
+            options_.smoke_settings,using_managed_shell(),!options_.console_runtime_directory.empty());
     }
     hwnd_ = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, L"StormTTY.NativeWindow", L"StormTTY", WS_OVERLAPPEDWINDOW & ~WS_CAPTION,
                            CW_USEDEFAULT, CW_USEDEFAULT, 1100, 720, nullptr, nullptr, GetModuleHandleW(nullptr), this);
@@ -693,13 +696,15 @@ SessionId NativeWindow::new_session() {
     // Empty opt-in preserves ProcessOptions' platform-default/system provider.
     // This single factory covers tabs, splits, new projects and smoke actors;
     // Settings never persists or changes the per-launch provider selection.
-    const Profile* selected=managed_shell_profile_?&*managed_shell_profile_:nullptr;
+    if (has_managed_zsh_selection(config_) && !managed_shell_profile_)
+        throw std::runtime_error("Managed Zsh is selected but no app-owned runtime is available. Build with STORMTTY_BUNDLE_ZSH=ON or use --shell-runtime; no fallback was launched.");
+    const Profile* selected=using_managed_shell()?&*managed_shell_profile_:nullptr;
     if (!selected) for (const auto& profile:config_.profiles) if (profile.id==config_.default_profile) { selected=&profile; break; }
     if (selected) {
         process.executable=selected->executable; process.arguments=selected->arguments; process.working_directory=selected->working_directory;
         for (const auto& [name,value]:selected->environment) process.environment.push_back({name,value});
     }
-    if (managed_shell_profile_) {
+    if (using_managed_shell()) {
         // Child environment only. HOME is deliberately inherited unchanged;
         // existing user startup hooks must not override this managed preset.
         for (const char* name:{"MSYS","ENV","BASH_ENV"}) process.environment.push_back({name,std::nullopt});
@@ -710,7 +715,7 @@ SessionId NativeWindow::new_session() {
     // absolute and are validated by the process transport.
     std::string alias=process.executable;
     for (auto& character:alias) if (character>='A' && character<='Z') character=static_cast<char>(character-'A'+'a');
-    if (!managed_shell_profile_ && (options_.smoke_test || alias.empty() || alias=="cmd.exe" || alias=="cmd")) {
+    if (!using_managed_shell() && (options_.smoke_test || alias.empty() || alias=="cmd.exe" || alias=="cmd")) {
         std::array<wchar_t, MAX_PATH + 1> directory{};
         const UINT length = GetSystemDirectoryW(directory.data(), static_cast<UINT>(directory.size()));
         if (!length || length >= directory.size()) throw std::runtime_error("Could not discover the Windows system shell.");
@@ -727,7 +732,7 @@ SessionId NativeWindow::new_session() {
     const SessionId id{next_session_++};
     std::weak_ptr<WakeState> weak = wake_;
     auto session = Session::start(std::move(process), terminal, [weak] { if (auto state = weak.lock()) state->wake(); });
-    if (options_.smoke_test) smoke_sessions_.emplace(id,session);
+    if (options_.smoke_test) { smoke_sessions_.emplace(id,session); if (using_managed_shell()) smoke_managed_sessions_.insert(id); }
     sessions_.emplace(id, std::move(session));
     return id;
 }
@@ -1069,6 +1074,7 @@ void NativeWindow::settings_completed() {
         cancel_drag(); context_menu_.cancel(); menu_actions_.clear(); palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false; text_input_.reset();
         palette_transition_=ChromeTransition{}; closing_palette_primitives_.clear(); closing_palette_texts_.clear();
         if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
+        if (managed_shell_profile_) completion->shells.profiles.push_back(managed_zsh_profile_reference());
         if (settings_binding_.empty()) settings_panel_.open(config_,completion->shells.profiles);
         else settings_panel_.open_for_binding(config_,settings_binding_,completion->shells.profiles);
         settings_panel_.resize({width_,height_}); context_menu_.resize({width_,height_}); settings_binding_.clear(); notice_.clear();
@@ -1085,7 +1091,7 @@ void NativeWindow::settings_completed() {
             try { preview_settings(completion->candidate); }
             catch (const std::exception& error) { apply_error=error.what(); }
             config_=std::move(completion->candidate);
-            notice_=apply_error.empty()?(managed_shell_profile_?
+            notice_=apply_error.empty()?(managed_shell_profile_ && options_.shell_runtime_override?
                 "Settings saved. --shell-runtime keeps managed Zsh for this launch; the saved shell applies without that override.":
                 "Settings saved. Your default shell applies to new tabs and panes."):
                 "Settings saved, but presentation could not update. Restart to apply: "+apply_error;
@@ -2077,6 +2083,18 @@ void NativeWindow::smoke_progress(bool presented) {
             if (!settings_panel_.is_open() || !settings_panel_.capturing_shortcut()) { smoke_finish("Shortcut editor did not capture its selected palette action."); return; }
             settings_panel_.key({{"F8",CommandModifier::control|CommandModifier::shift},false,false,true}); settings_input_changed();
             if (settings_panel_.capturing_shortcut() || config_.bindings!=smoke_settings_original_.bindings || sessions_.size()!=1) { smoke_finish("Shortcut capture executed an action or applied before Save."); return; }
+            if (managed_shell_profile_ && !options_.shell_runtime_override) {
+                const auto activate=[&](std::string_view control) {
+                    for (unsigned i=0;i<256 && settings_panel_.focused_control()!=control;++i)
+                        settings_panel_.key({{"TAB",CommandModifier::none}});
+                    if (settings_panel_.focused_control()!=control) return false;
+                    settings_panel_.key({{"ENTER",CommandModifier::none}}); settings_input_changed(); return true;
+                };
+                if (using_managed_shell() || !activate("nav.shell") || !activate("shell:stormtty-managed-zsh") ||
+                    !has_managed_zsh_selection(settings_panel_.draft()) || using_managed_shell()) {
+                    smoke_finish("Configured Settings did not offer managed Zsh while preserving the old shell before Save."); return;
+                }
+            }
             settings_panel_.key({{"ENTER",CommandModifier::control},false,false,true}); settings_input_changed();
             if (!settings_panel_.saving() || !settings_job_) { smoke_finish("Settings Save did not enter nonblocking pending state."); return; }
             message(WM_CLOSE,0,0);
@@ -2090,6 +2108,20 @@ void NativeWindow::smoke_progress(bool presented) {
             if (std::none_of(config_.bindings.begin(),config_.bindings.end(),[&](const auto& b){return b.command=="pane.split_right" && b.chord==expected;}) ||
                 sessions_.size()!=1 || sessions_.begin()->second!=smoke_settings_actor_ || workspace().state().panes.size()!=1) {
                 smoke_finish("Saved shortcut or original actor identity was not retained."); return;
+            }
+            if (managed_shell_profile_ && !options_.shell_runtime_override) {
+                const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
+                if (!saved || !has_managed_zsh_selection(*saved.config) || serialize_config(*saved.config,Platform::windows)!=serialize_config(config_,Platform::windows) ||
+                    smoke_managed_sessions_.contains(sessions_.begin()->first)) {
+                    smoke_finish("Managed shell reference did not persist or original Cmd actor was replaced."); return;
+                }
+                new_tab();
+                const auto* pane=workspace().pane(workspace().active_pane());
+                if (sessions_.size()!=2 || !pane || !smoke_managed_sessions_.contains(pane->session) ||
+                    std::none_of(sessions_.begin(),sessions_.end(),[&](const auto& entry){return entry.second==smoke_settings_actor_;})) {
+                    smoke_finish("Saved managed shell did not launch a new Zsh tab while retaining the original Cmd actor."); return;
+                }
+                std::fprintf(stderr,"Bundled shell Settings smoke: legacy Cmd preserved; managed reference saved/reparsed; new real Zsh actor selected without CLI or restarting old actor.\n");
             }
             smoke_settings_stage(5);
         }
@@ -2147,7 +2179,7 @@ void NativeWindow::smoke_progress(bool presented) {
         if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; }
         if (!smoke_commands_sent_.contains(id) && info.state==SessionState::running && info.bytes_received) {
             smoke_commands_sent_.insert(id);
-            const std::string command=managed_shell_profile_?
+            const std::string command=smoke_managed_sessions_.contains(id)?
                 "[[ $ZSH_VERSION == 5.9.2 && ${STORMTTY_MANAGED_ZSH-} == 1 ]] && print -r -- " + std::string(smoke_marker) + "; exit $?":
                 "echo " + std::string(smoke_marker) + " & exit /b 0";
             submit([session,command] { return session->text(command); },command.size());
@@ -2200,7 +2232,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
-        if (managed_shell_profile_) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
+        if (using_managed_shell()) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
         if (options_.smoke_settings) std::fprintf(stderr,"Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, preview rollback, custom system menu/outside-click routing, explicit atomic shortcut Save, original live actor retained. Not physical UI/accessibility QA.\n");
         if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts, original live actor identity across activation/retirement, hidden real output, scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");

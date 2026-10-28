@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "platform": "windows-x86_64",
+  "version": "1.5.7",
+  "build_tool_only": true,
+  "provenance": {
+    "release": "https://github.com/facebook/zstd/releases/tag/v1.5.7",
+    "github_asset_id": 233456224,
+    "checked_utc": "2026-10-28",
+    "trust_basis": "Official upstream HTTPS release asset inspected and SHA-256 pinned; no upstream detached signature or checksum sidecar is published for this Windows ZIP. The GitHub asset API digest is null.",
+    "pe_imports": [
+      "KERNEL32.dll",
+      "msvcrt.dll"
+    ]
+  },
+  "archive": {
+    "filename": "zstd-v1.5.7-win64.zip",
+    "url": "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-v1.5.7-win64.zip",
+    "bytes": 1747181,
+    "sha256": "acb4e8111511749dc7a3ebedca9b04190e37a17afeb73f55d4425dbf0b90fad9"
+  },
+  "members": [
+    {
+      "member": "zstd-v1.5.7-win64/zstd.exe",
+      "target": "zstd.exe",
+      "bytes": 1601409,
+      "sha256": "8076aae03feac7c66b319579e82172eed168deed2a3f25e5e2d3c60f55e84111"
+    },
+    {
+      "member": "zstd-v1.5.7-win64/README.md",
+      "target": "README.md",
+      "bytes": 2956,
+      "sha256": "48a9e1287c1c0921909b6306e96abd1a5d733b4a53fc1c3e346d05701cedff33"
+    }
+  ],
+  "notices": [
+    {
+      "source": "shell-notices/texts/zstd/LICENSE",
+      "target": "LICENSE",
+      "bytes": 1549,
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+    },
+    {
+      "source": "shell-notices/texts/zstd/COPYING",
+      "target": "COPYING",
+      "bytes": 18091,
+      "sha256": "f9c375a1be4a41f7b70301dd83c91cb89e41567478859b77eef375a52d782505"
+    }
+  ]
+}

@@ -9,6 +9,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("shell_bootstrap", Path(__file__).with_name("shell-bootstrap.py"))
 shell = importlib.util.module_from_spec(spec)
@@ -38,7 +39,9 @@ class ShellBootstrapTests(unittest.TestCase):
         lock = shell.read_lock(shell.LOCK)
         self.assertEqual(len(lock["packages"]), 17)
         self.assertEqual(len(lock["sources"]), 17)
-        self.assertFalse(lock["default_activation_allowed"])
+        self.assertTrue(lock["default_activation_allowed"])
+        self.assertFalse(lock["public_redistribution_ready"])
+        self.assertEqual(lock["native_qualification"]["status"], "passed")
         self.assertEqual(sum(p["bytes"] for p in lock["packages"]), 15190478)
 
     def test_reject_windows_aliases_and_traversal(self):
@@ -132,6 +135,33 @@ class ShellBootstrapTests(unittest.TestCase):
                 self.extract([("usr/bin/large", b"xx", tarfile.REGTYPE)], Path(tmp))
         finally:
             shell.MAX_MEMBER_BYTES = old
+
+    def test_explicit_decoder_never_downloads(self):
+        with mock.patch.object(shell, "stdlib_zstd_available", side_effect=AssertionError):
+            self.assertEqual(shell.select_decompressor("/trusted/zstd", Path("cache"), True), "/trusted/zstd")
+
+    def test_stdlib_decoder_never_downloads(self):
+        with mock.patch.object(shell, "stdlib_zstd_available", return_value=True):
+            self.assertIsNone(shell.select_decompressor(None, Path("cache"), True))
+
+    def test_unsupported_host_decoder_is_actionable(self):
+        with mock.patch.object(shell, "stdlib_zstd_available", return_value=False), \
+                mock.patch.object(shell.sys, "platform", "linux"):
+            with self.assertRaisesRegex(RuntimeError, "--zstd"):
+                shell.select_decompressor(None, Path("cache"), True)
+
+    def test_windows_auto_decoder_uses_private_helper(self):
+        helper = mock.Mock()
+        helper.provision.return_value = Path("cache/tools/zstd.exe")
+        with mock.patch.object(shell, "stdlib_zstd_available", return_value=False), \
+                mock.patch.object(shell.sys, "platform", "win32"), \
+                mock.patch.object(shell.platform, "machine", return_value="AMD64"), \
+                mock.patch.object(shell.importlib.util, "module_from_spec", return_value=helper), \
+                mock.patch.object(shell.importlib.util, "spec_from_file_location") as spec:
+            result = shell.select_decompressor(None, Path("cache"), True)
+            self.assertEqual(result, str(Path("cache/tools/zstd.exe")))
+            helper.provision.assert_called_once_with(Path("cache"), True)
+            spec.return_value.loader.exec_module.assert_called_once_with(helper)
 
 
 if __name__ == "__main__":

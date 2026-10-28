@@ -154,7 +154,8 @@ def emit(args):
                 "Do not execute install/build recipes on the user's machine. No bit-reproducible rebuild\n"
                 "claim is made. General-purpose compiler/toolchain code is not reclassified as application\n"
                 "source; the GCC Runtime Library Exception and original notices are preserved.\n\n"
-                "stormtty-packaging/ contains the source staging/preset/notice scripts actually used.\n"
+                "stormtty-packaging/ preserves the repository layout of the actual staging/preset/notice\n"
+                "scripts, pinned build-tool bootstrap, app assembly helper and controlling CMake files.\n"
                 "Their inclusion does not change first-party application licensing. Original package\n"
                 "license/copyright/exception terms control their respective files, not the aggregate.\n\n"
                 "Source distribution is intended to accompany the exact binary download (GPLv3 6(d));\n"
@@ -168,9 +169,17 @@ def emit(args):
                     archive_file(archive, "sources/" + source["filename"], path, source["sha256"])
                 for name, path, checksum in sorted(evidence):
                     archive_file(archive, "build-evidence/" + name, path, checksum)
-                for filename in ("shell-bootstrap.py", "shell-bootstrap.lock.json", "shell-bootstrap-tests.py",
-                                 "shell-bootstrap.README.md", "shell-preset.zsh", "shell-notices.py"):
-                    archive_file(archive, "stormtty-packaging/" + filename, TOOLS / filename)
+                recipes = ["tools/" + name for name in (
+                    "shell-bootstrap.py", "shell-bootstrap.lock.json", "shell-bootstrap-tests.py",
+                    "shell-bootstrap.README.md", "shell-preset.zsh", "shell-notices.py", "shell-notices-tests.py",
+                    "shell-zstd-bootstrap.py", "shell-zstd-bootstrap.lock.json", "shell-zstd-bootstrap-tests.py",
+                    "prepare-bundled-shell.py", "stage-developer-shell.py", "stage-developer-shell-tests.py")]
+                recipes += ["CMakeLists.txt", "cmake/StormTTYDeveloperShell.cmake"]
+                for name in sorted(recipes):
+                    archive_file(archive, "stormtty-packaging/" + name, TOOLS.parent / name)
+                for path in sorted(ASSETS.rglob("*")):
+                    if path.is_file():
+                        archive_file(archive, "stormtty-packaging/tools/shell-notices/" + path.relative_to(ASSETS).as_posix(), path)
                 for path in sorted(notices.rglob("*")):
                     if path.is_file():
                         archive_file(archive, "notices/" + path.relative_to(notices).as_posix(), path)

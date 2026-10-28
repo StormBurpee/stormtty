@@ -1,4 +1,5 @@
 #include "stormtty/native_window.hpp"
+#include "stormtty/settings_panel.hpp"
 #include <cstdlib>
 #include <iostream>
 
@@ -112,5 +113,43 @@ int main() {
     require(input.feed(0xd800).empty(), "second surrogate start");
     require(input.feed(0xd83d)=="\xef\xbf\xbd", "consecutive high surrogate recovery");
     require(input.feed(0xde80)=="\xf0\x9f\x9a\x80", "new high surrogate still pairs");
-    std::cout << "window geometry and UTF-16 tests passed\n";
+    // Developer runtime selection uses stable references, never machine paths,
+    // and an old saved default from an Appearance save remains authoritative.
+    auto saved_cmd=default_config(Platform::windows);
+    const auto original_cmd=saved_cmd;
+    apply_developer_shell_default(saved_cmd,true);
+    require(saved_cmd==original_cmd && !has_managed_zsh_selection(saved_cmd),"saved Cmd precedence");
+    auto custom=saved_cmd; custom.profiles.front().executable="C:/Git/bin/bash.exe";
+    const auto original_custom=custom; apply_developer_shell_default(custom,true);
+    require(custom==original_custom,"saved custom shell precedence");
+    auto fresh=default_config(Platform::windows); apply_developer_shell_default(fresh,false);
+    require(has_managed_zsh_selection(fresh),"fresh configured launch selects managed reference");
+    const auto once=fresh; apply_developer_shell_default(fresh,false);
+    require(fresh==once,"managed default helper is idempotent");
+    const auto encoded=serialize_config(fresh,Platform::windows);
+    const auto decoded=parse_config(encoded,Platform::windows);
+    require(decoded && serialize_config(*decoded.config,Platform::windows)==encoded && has_managed_zsh_selection(*decoded.config),"managed reference persists and resolves on next launch");
+    const auto managed=managed_zsh_profile_reference();
+    require(managed.arguments.empty() && managed.environment.empty() && managed.working_directory.empty(),"saved reference contains no installation path, inherited PATH or user environment");
+    SettingsPanel settings; settings.open(saved_cmd,std::span<const Profile>(&managed,1));
+    const auto activate=[&](std::string_view id) {
+        for (unsigned i=0;i<256 && settings.focused_control()!=id;++i) settings.key({{"TAB"}});
+        require(settings.focused_control()==id,"managed Settings control keyboard-reachable");
+        settings.key({{"ENTER"}});
+    };
+    require(settings.draft()==saved_cmd && !settings.dirty(),"discovery never changes existing selection");
+    activate("nav.shell"); activate("shell:stormtty-managed-zsh");
+    require(has_managed_zsh_selection(settings.draft()) && settings.original()==saved_cmd,"managed shell selection drafts without mutating old config");
+    const auto preview=settings.take_action();
+    require(preview && preview->kind==SettingsActionKind::preview,"selection emits reversible draft, not persistence");
+    settings.key({{"ENTER",CommandModifier::control}});
+    const auto save=settings.take_action();
+    require(save && save->kind==SettingsActionKind::save && settings.saving(),"managed choice requires explicit Save");
+    const auto saved_reference=parse_config(serialize_config(save->config,Platform::windows),Platform::windows);
+    require(saved_reference && has_managed_zsh_selection(*saved_reference.config),"Settings saved reference roundtrip");
+    settings.persistence_result(true);
+    settings.open(*saved_reference.config,std::span<const Profile>(&managed,1));
+    require(has_managed_zsh_selection(settings.draft()) && !settings.dirty(),"next Settings open retains managed choice");
+    settings.cancel();
+    std::cout << "window geometry, input and managed shell profile tests passed\n";
 }
