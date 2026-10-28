@@ -27,8 +27,8 @@ public:
         const bool changed=!same_view || cursor_!=f->cursor;
         if (changed) {
             const int delta=int(f->cursor.column)-int(cursor_.column);
-            const bool small=same_view && cursor_.visible && cursor_.row==f->cursor.row && cursor_.shape==f->cursor.shape && delta>0 && delta<=2;
-            moving_=small && echoed && armed_ && now>=input_at_ && now-input_at_<=150;
+            const bool small_cursor_step=same_view && cursor_.visible && cursor_.row==f->cursor.row && cursor_.shape==f->cursor.shape && delta>0 && delta<=2;
+            moving_=small_cursor_step && echoed && armed_ && now>=input_at_ && now-input_at_<=150;
             start_=now; armed_=false;
         }
         if (!pane.cursor_on) moving_=false; // Blink hides presentation, not the cursor baseline.

@@ -1,4 +1,9 @@
+#include "stormtty/renderer.hpp"
+#include <algorithm>
+// Match the Windows SDK rpcndr.h macro visible to the native window host.
+#define small char
 #include "stormtty/cursor_motion.hpp"
+#undef small
 #include <stdexcept>
 #include <iostream>
 using namespace stormtty;
