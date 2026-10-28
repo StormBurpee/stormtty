@@ -33,6 +33,7 @@ struct RendererOptions {
     FontOptions font{};
     float background_opacity{1.0f}; // Only default backgrounds; text stays opaque.
     bool composition{true}; // Premultiplied DirectComposition, opaque HWND fallback.
+    bool smoke_teardown_diagnostics{}; // Explicit native smoke only; no normal-launch logging.
     bool force_warp{}; // Deterministic software device for native Windows CI.
     std::size_t shape_cache_bytes{16u * 1024u * 1024u};
     std::size_t image_cache_bytes{64u * 1024u * 1024u};
@@ -45,6 +46,7 @@ struct RenderPane {
     bool focused{true};
     bool cursor_on{true}; // Scheduler owns blink deadlines; no renderer polling.
     bool text_blink_on{true};
+    float cursor_reveal{1}; // Destination-cell presentation only; 1 is fully settled.
 };
 // Complete surfaces paint bottom-to-top, never all shapes followed by all
 // window text. Within one surface, shapes retain insertion order and labels
@@ -81,6 +83,7 @@ struct ChromeText {
     std::string family{"Segoe UI Variable Text"};
     ChromeTextAlignment alignment{ChromeTextAlignment::leading}; // Per label, never terminal cells.
     ChromeZOrder z{};
+    bool wrap{}; // Owned multiline notices only; other chrome stays single-line.
     bool operator==(const ChromeText&) const = default;
 };
 struct WindowScene {
@@ -145,6 +148,10 @@ public:
     void set_font(FontOptions font);
     void set_background_opacity(float opacity);
     CellMetrics metrics() const noexcept;
+#ifdef _WIN32
+    // Actual DirectWrite chrome-font bounds in pixels, using the label's wrapping.
+    PixelRect measure_chrome_text(const ChromeText& label) const;
+#endif
     RenderResult render(const WindowScene& scene);
     // Borrowed Win32 HANDLE, invalidated on device recovery/destruction.
     // Add it to the shell's message/work wait set; never CloseHandle it.

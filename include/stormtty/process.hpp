@@ -12,10 +12,14 @@
 #include <vector>
 
 namespace stormtty {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+namespace qualification { class InputEvidence; }
+#endif
 
 struct ProcessGridSize {
     std::uint16_t columns{80};
     std::uint16_t rows{24};
+    bool operator==(const ProcessGridSize&) const = default;
 };
 
 struct ProcessEnvironmentEntry {
@@ -29,6 +33,10 @@ enum class ProcessState { starting, running, close_requested, draining, exited, 
 enum class ProcessSendResult { accepted, would_block, closed, too_large };
 
 struct ProcessOptions {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+    // Isolated synthetic-fixture build only; absent from the shipped ABI.
+    std::shared_ptr<qualification::InputEvidence> qualification_input_evidence;
+#endif
     // UTF-8. executable must be an absolute path. arguments excludes argv[0].
     // No shell interpolation is performed. For a shell command, launch that shell
     // explicitly. Environment inherits the parent, then applies these overrides.
@@ -39,8 +47,9 @@ struct ProcessOptions {
     ProcessGridSize grid;
     std::size_t input_capacity_bytes{1024 * 1024};
     ProcessProvider provider{ProcessProvider::platform_default};
-    // Explicit isolated qualification only; never selected by default. Requires
-    // the pinned, signature-verified official x64 package in an absolute directory.
+    // Explicit bundled preview or diagnostic override; never selected by default.
+    // Requires the pinned, signature-verified official package in an absolute
+    // directory on native AMD64 Windows (not x64 emulation on ARM64).
     std::string provider_directory;
 };
 
@@ -51,6 +60,19 @@ struct ProcessExit {
     std::string error;
 };
 
+// Windows controller observations, not terminal/output-stream synchronization.
+// Generation zero is the launch grid. Each accepted resize gets a new generation;
+// coalescing can skip intermediate generations. Applied advances only after the
+// native call succeeds. It does NOT mean a shell has observed the new size or
+// that all subsequent output was produced at that size. Counters saturate.
+struct WindowsProcessControlDiagnostics {
+    std::uint64_t requested_resize_generation{}, applied_resize_generation{};
+    ProcessGridSize requested_grid;
+    std::optional<ProcessGridSize> applied_grid; // Empty until CreatePseudoConsole succeeds.
+    std::uint64_t wait_calls{}, control_wakes{}, child_exit_wakes{};
+    std::uint64_t resize_calls{}, resize_failures{};
+};
+
 struct ProcessDiagnostics {
     std::string provider;
     std::string detail;
@@ -58,6 +80,9 @@ struct ProcessDiagnostics {
     // Transport/graphics support is NOT inferred merely from provider selection.
     bool advanced_protocols_verified{};
     std::size_t queued_input_bytes{};
+    // Present only for the Windows event-driven controller. POSIX keeps its
+    // existing implementation and reports nullopt, never fabricated zero data.
+    std::optional<WindowsProcessControlDiagnostics> windows_control{};
 };
 
 struct ProcessCallbacks {
@@ -76,9 +101,9 @@ struct ProcessCallbacks {
 
 class Process final {
 public:
-    // Returns immediately; all OS creation and cleanup runs off the caller thread.
-    // Launch failures are reported through exited, not synchronously. Allocation
-    // or worker-creation failure can throw before a Process has been returned.
+    // Returns immediately; child/PTY creation and cleanup run off the caller thread.
+    // Launch failures are reported through exited, not synchronously. Allocation,
+    // control-event or worker creation can throw before a Process is returned.
     static std::unique_ptr<Process> start(ProcessOptions, ProcessCallbacks);
     ~Process(); // Requests close; never joins a worker or blocks on OS cleanup.
     Process(const Process&) = delete;

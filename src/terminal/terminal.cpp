@@ -214,7 +214,8 @@ struct TerminalCore::Impl {
     std::exception_ptr callback_failure;
     FramePtr frame;
     std::uint64_t frame_generation{}, row_generation{};
-    bool held{};
+    bool held{}, output_finished{};
+    CommandSnapshot command;
     Clock::time_point hold_started{}, animation_origin{Clock::now()}, last_tick{animation_origin};
     std::optional<Clock::time_point> animation_deadline;
     std::uint64_t content_revision{1}, search_request_id{}, search_fed_revision{}, search_work{}, search_update{}, search_generation{};
@@ -289,6 +290,8 @@ struct TerminalCore::Impl {
         set(GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ, reinterpret_cast<const void*>(on_clipboard_read));
         set(GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(on_clipboard_write));
         set(GHOSTTY_TERMINAL_OPT_RENDER_HOLD, reinterpret_cast<const void*>(on_hold));
+        set(GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, reinterpret_cast<const void*>(on_semantic_prompt));
+        set(GHOSTTY_TERMINAL_OPT_RESET, reinterpret_cast<const void*>(on_reset));
         // The pinned renderer only refreshes fg/bg when BOTH engine defaults
         // exist. Materialize unspecified defaults from its initial colors so a
         // one-sided theme still renders and answers OSC queries consistently.
@@ -336,6 +339,32 @@ struct TerminalCore::Impl {
             throw std::runtime_error("terminal effect queue budget exhausted; session must stop, not drop protocol replies");
         effect_bytes += bytes;
         effects.push_back(std::move(effect));
+    }
+    void interrupt_command() noexcept {
+        if (command.phase == CommandPhase::running) command.phase = CommandPhase::interrupted;
+    }
+    static void on_reset(GhosttyTerminal, void* data) noexcept {
+        static_cast<Impl*>(data)->interrupt_command();
+    }
+    static void on_semantic_prompt(GhosttyTerminal, void* data,
+                                   const GhosttyTerminalSemanticPrompt* event) noexcept {
+        auto& self = *static_cast<Impl*>(data);
+        if (self.output_finished || !event) return;
+        auto& state = self.command;
+        // Copy scalar values synchronously; never inspect/copy command or error.
+        // A/B can redraw or appear at startup, so neither can end a command.
+        if (event->kind == GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START) {
+            if (state.phase == CommandPhase::running) return; // Duplicate C.
+            // Saturation disables further observation rather than wrapping IDs.
+            if (state.command_generation == UINT64_MAX) return;
+            ++state.command_generation;
+            state.phase = CommandPhase::running;
+        } else if (event->kind == GHOSTTY_SEMANTIC_PROMPT_COMMAND_END &&
+                   state.phase == CommandPhase::running) {
+            state.phase = CommandPhase::completed;
+            state.completed_generation = state.command_generation;
+            state.last_exit_code = event->has_exit_code ? std::optional<std::int32_t>(event->exit_code) : std::nullopt;
+        }
     }
     static void on_write(GhosttyTerminal, void* data, const std::uint8_t* bytes, std::size_t length) noexcept {
         auto& self = *static_cast<Impl*>(data);
@@ -422,6 +451,7 @@ struct TerminalCore::Impl {
         return result; // Borrowed only inside this actor operation, never published.
     }
     void tick(Clock::time_point now) {
+        if (output_finished) return;
         now = std::max(now, last_tick); last_tick = now;
         if (held && now >= hold_started + options.render_hold_timeout) {
             GhosttyTerminalModeConfig config{GHOSTTY_MODE_SYNC_OUTPUT, false};
@@ -658,6 +688,7 @@ void TerminalCore::feed(std::string_view bytes) {
 }
 void TerminalCore::feed(std::span<const std::uint8_t> bytes) {
     impl_->check_thread();
+    if (impl_->output_finished) throw std::invalid_argument("terminal output stream has finished");
     const PngBudgetScope png_scope(impl_->options.image_budget_bytes);
     if (!bytes.empty()) {
         ++impl_->content_revision;
@@ -802,6 +833,23 @@ void TerminalCore::scroll_to_bottom() {
     impl_->check_thread();
     GhosttyTerminalScrollViewport scroll{}; scroll.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM;
     ghostty_terminal_scroll_viewport(impl_->terminal, scroll);
+}
+CommandSnapshot TerminalCore::command_snapshot() const {
+    impl_->check_thread();
+    return impl_->command;
+}
+void TerminalCore::finish_output() {
+    impl_->check_thread();
+    if (impl_->output_finished) return;
+    if (impl_->held) {
+        GhosttyTerminalModeConfig config{GHOSTTY_MODE_SYNC_OUTPUT, false};
+        impl_->set(GHOSTTY_TERMINAL_OPT_MODE, &config);
+        impl_->held = false;
+    }
+    impl_->tick(Clock::now());
+    impl_->output_finished = true;
+    impl_->interrupt_command();
+    impl_->animation_deadline.reset();
 }
 FramePtr TerminalCore::snapshot(Clock::time_point now) {
     impl_->check_thread(); impl_->tick(now);

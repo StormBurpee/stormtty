@@ -6,6 +6,17 @@ using namespace stormtty;
 int main() { return run_core_tests("config", [] {
     for (const auto platform : {Platform::windows, Platform::macos}) {
         auto defaults = default_config(platform); CHECK(validate_config(defaults, platform));
+        CHECK(defaults.windows_console_backend == WindowsConsoleBackend::system);
+        auto bundled = defaults; bundled.windows_console_backend = WindowsConsoleBackend::bundled_preview;
+        const auto bundled_text = serialize_config(bundled, platform);
+        CHECK(bundled_text.find("windows_console_backend = \"bundled\"") != std::string::npos);
+        auto bundled_roundtrip = parse_config(bundled_text, platform);
+        CHECK(bundled_roundtrip && bundled_roundtrip.config->windows_console_backend == WindowsConsoleBackend::bundled_preview);
+        CHECK(parse_config("version = 1\n[terminal]\nwindows_console_backend = \"system\"", platform));
+        for (const auto invalid : {"\"auto\"", "\"bundled_preview\"", "true", "1", "\"C:\\\\build\""})
+            CHECK(!parse_config(std::string("version = 1\n[terminal]\nwindows_console_backend = ")+invalid, platform));
+        bundled.windows_console_backend = static_cast<WindowsConsoleBackend>(99);
+        CHECK(!validate_config(bundled, platform));
         auto simple = parse_config("version = 1\n", platform); CHECK(simple); CHECK(*simple.config == defaults);
         auto roundtrip = parse_config(serialize_config(defaults, platform), platform); CHECK(roundtrip);
         CHECK(serialize_config(*roundtrip.config, platform) == serialize_config(defaults, platform));

@@ -8,3 +8,6 @@ tools/shell-notices/texts/** -text
 # Lock/recipe bytes identify a runtime consistently across developer platforms.
 tools/*bootstrap*.json text eol=lf
 tools/shell-notices/*.json text eol=lf
+
+# Hash-pinned native replay fixture: preserve LF and all VT bytes.
+tests/ink/conpty-width-probe/*.bin -text

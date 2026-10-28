@@ -27,7 +27,7 @@ class StagingTests(unittest.TestCase):
         for name in stager.REQUIRED:
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(self.preset.read_bytes() if name.endswith(".zshrc") else b"fixture payload")
+            path.write_bytes((Path(stager.__file__).with_name(stager.CONFIG[name])).read_bytes() if name in stager.CONFIG else self.preset.read_bytes() if name.endswith(".zshrc") else b"fixture payload")
             records.append({"path":name, "bytes":path.stat().st_size, "sha256":stager.digest(path)})
         self.manifest = {"schema":1,"bundle_id":"fixture","platform":"windows-x86_64",
                          "qualification_only":True,"default_activation_allowed":False,
@@ -66,6 +66,31 @@ class StagingTests(unittest.TestCase):
     def test_stale_preset(self):
         self.preset.write_text("updated")
         with self.assertRaisesRegex(RuntimeError,"stale"): self.validate()
+
+    def test_missing_or_stale_runtime_config(self):
+        for name in stager.CONFIG:
+            path = self.root / name
+            before = path.read_bytes()
+            path.unlink()
+            with self.assertRaises(OSError): self.validate()
+            path.write_bytes(b"stale configuration")
+            record = next(r for r in self.manifest["files"] if r["path"] == name)
+            record.update(bytes=path.stat().st_size, sha256=stager.digest(path))
+            self.write_manifest()
+            with self.assertRaisesRegex(RuntimeError, "configuration is stale"): self.validate()
+            path.write_bytes(before)
+            record.update(bytes=path.stat().st_size, sha256=stager.digest(path))
+            self.write_manifest()
+
+    def test_repair_missing_runtime_config(self):
+        target=self.base/"target";stamp=self.base/"stamp"
+        args=["stage", "--source",str(self.root),"--lock",str(self.lock),"--preset",str(self.preset),
+              "--destination",str(target),"--stamp",str(stamp),"--repair-if-needed"]
+        with patch("sys.argv",args): self.assertEqual(stager.main(),0)
+        for name in stager.CONFIG:
+            (target/name).unlink()
+            with patch("sys.argv",args): self.assertEqual(stager.main(),0)
+            self.assertEqual((target/name).read_bytes(), (self.root/name).read_bytes())
 
     def test_unlisted_file(self):
         (self.root/"usr/bin/extra.exe").write_bytes(b"unexpected")

@@ -1,0 +1,249 @@
+# Private native MSYS resize experiment (not a release)
+
+## Scope and approval boundary
+
+Only the WINDOW_BUFFER_SIZE_EVENT reader path is changed. Independent review
+accepted this as a narrow experiment, **not** a complete runtime fix. The mouse
+call to send_winch_maybe still has a related stale-snapshot risk; do not claim it
+is fixed. Production runtime, lock and activation settings are untouched.
+
+The patch retires the processed prefix under the existing input lock, then
+calls the existing signal helper and returns without discarding twice. Signal
+handler lock release/reacquire behavior is unchanged. If dimensions are
+unchanged, returning the prior state preserves already-buffered input.
+
+Each build requires and records at least 6 GiB free disk space. After securing the
+copied DLL, original archive, recipe and full source diff, build.sh removes only
+its own generated `OUTPUT/msys2-runtime` source/build tree. This prevents the
+control tree from consuming space needed for the patched build. No broad runner
+cleanup is performed.
+
+No active build/runner/system DLL is ever replaced. Source/package output and
+experimental private copies stay in newly created directories. **All modified
+binaries/packages remain ephemeral inside the CI job. Upload logs, checksums,
+recipe and patch provenance only; do not upload the candidate DLL/package.**
+This is not a public runtime distribution or release/source-offer approval.
+
+## Authoritative pinned inputs
+
+- Source archive: https://repo.msys2.org/msys/sources/msys2-runtime-3.6.11-4.src.tar.zst
+- Archive bytes: 128907415
+- Archive SHA256: `4b178dfb5b77bce293706dcfabea673b77d8da061a4725bdf4cd94f17533c204`
+- Archived PKGBUILD SHA256: `3fc783146515f8882e2c1ec57c3d9029294141acf7a8edf68244bb386214d84a`
+- Packaged runtime identity: `00eb8435b1c498e9211c7a7cee01584d76bd5f21`
+- Archive base tag: `cygwin-3.6.11`, commit `867eb7748e6e5a0e8430ce9f46af27b4b1e8f204`.
+- After all **43** official packaging patches, console.cc Git blob:
+  `a7cdbed500c6235e21f41fe9d0be5075a8c471f1`
+- Original console.cc SHA256: `535bd5f650122192e34e9835e33e72efd35aeecb093439716be6b770cd977d33`
+- Patched console.cc SHA256: `cb902a91a09038e8fcd60bfb2b13ef13819ce6a9b3ae42d95980d7c4b5bc2cce`
+
+The subtree .gitattributes forces LF on Windows so patch/source hashes remain stable.
+
+The verified archive contains the Git source, recipe and packaging patches;
+`makepkg --holdver` prevents updating it from the network. Original licenses,
+source archive, official recipe, compiler inventory and full applied source diff
+are retained beside each build. The experimental patch modifies GPL-covered
+upstream source; preserve the upstream licensing and provenance.
+
+## Build dependencies and reproducibility limit
+
+Use a dedicated native **MSYS x86_64**, not UCRT64/MINGW64, build environment.
+Install standard official MSYS2 `base-devel`, the official `zstd` CLI (used by tar), `texinfo` (makeinfo), plus the recipe's makedepends:
+
+```text
+autotools cocom docbook-xsl gcc gettext-devel git libzstd-devel
+libiconv-devel mingw-w64-cross-crt mingw-w64-cross-gcc
+mingw-w64-cross-zlib perl xmlto zlib-devel
+```
+
+The original binary's .BUILDINFO records GCC 15.3.0-1, binutils 2.47-1,
+make 4.4.1-3, makepkg 6.1.0, cross-GCC 16.2.0-1, cocom 0.996-6,
+autotools 2026.08.04-1, docbook-xsl 1.79.2-3, gettext-devel 0.22.5-1,
+libiconv-devel 1.19-1, libzstd-devel 1.5.7-1, perl 5.42.3-3,
+xmlto 0.0.29-2 and zlib-devel 1.3.2-1. Full transitive versions are in the
+original package's .BUILDINFO. Do not pretend a latest-package install reproduces
+that toolchain or the upstream DLL bit-for-bit.
+
+For this controlled experiment, build **control and patched** with one identical
+installed toolchain and no updates between them. Both inventories must match
+exactly. Store package versions, `/etc/makepkg.conf`, compiler versions, full
+source diff and DLL hashes. If exact replay is needed later, archive/signature-
+verify those official dependency packages in an isolated toolchain cache before
+its snapshot expires. Setup-action SHA and toolchain snapshot are explicit
+workflow inputs, not silently selected by these scripts.
+
+## Native CI sequence
+
+1. Build the fixed StormTTY probe once, with the independent
+   qualification-only bounded input recorder. Build the normal application for
+   the link/artifact isolation check, and run qualification_input_evidence_tests. Stage one untouched official
+   private Zsh bundle using the existing locked bootstrap. Download the pinned
+   runtime source archive and verify it (build.sh independently verifies again).
+2. In the dedicated MSYS build shell, with dependencies already installed:
+
+```sh
+bash tools/probes/msys-runtime-experiment/build.sh \
+  /absolute/msys2-runtime-3.6.11-4.src.tar.zst /absolute/new/control-build control
+bash tools/probes/msys-runtime-experiment/build.sh \
+  /absolute/msys2-runtime-3.6.11-4.src.tar.zst /absolute/new/patched-build patched
+cmp /absolute/new/control-build/provenance/pacman-before.txt \
+    /absolute/new/patched-build/provenance/pacman-before.txt
+```
+
+Each uses the official prepare/build/package functions. It does not install the
+result. `makepkg` failures remain failures; no skipped checksum or test stages.
+Use separate logs and a workflow timeout (suggest 90 minutes for the build job;
+actual native build duration has not yet been measured). No Linux cross-build
+is represented as native validation.
+
+3. From Windows Python, stage only new experimental private copies:
+
+```text
+python tools/probes/msys-runtime-experiment/stage.py BASE_BUNDLE CONTROL_BUILD NEW_CONTROL_BUNDLE
+python tools/probes/msys-runtime-experiment/stage.py BASE_BUNDLE PATCHED_BUILD NEW_PATCHED_BUNDLE
+```
+
+The stager verifies base hashes, source/patch provenance, DLL hash and stable
+build inventory; marks copies qualification-only/unverified; removes inherited
+qualification claims. Old notices are retained, not claimed sufficient for a
+new release. The normal application activation gate is intentionally not relaxed.
+
+4. Run the identical immutable probe/fixture against official, rebuilt-control,
+   and patched bundles, both providers, three prespecified rounds:
+
+```text
+python tools/probes/msys-runtime-experiment/compare.py --probe ABS_PROBE_EXE --fixture ABS_FIXTURE_ZSH --original BASE_BUNDLE --control NEW_CONTROL_BUNDLE --patched NEW_PATCHED_BUNDLE --provider ABS_QUALIFIED_CONPTY_DIRECTORY --output NEW_EVIDENCE_DIRECTORY --rounds 3
+```
+
+Every case requests **50** alternating phases. The existing strict first failure
+stops that case; the next independent case still runs. There are no corrective
+signals, delays, suppressed failures or retries conditional on failure. The overall gate also rejects missing input-evidence markers without rewriting
+the process exit status. Each case
+has a 180-second owned-process limit plus bounded reap, 18 cases total (54 minutes
+plus reap worst case). The runner does not claim descendant cleanup; normal
+Process ownership closes its own process group/job. Retain results.json, all
+case logs and any input trace. A timeout or failed control stays visible and
+makes compare.py nonzero. No missing case is counted as a pass.
+
+5. Upload **only** comparison/build logs, hashes, provenance text/recipe/patch,
+   and source identity/URL. Do not glob the build directories into an artifact:
+   they contain experimental DLLs/packages. Do not publish release artifacts.
+
+## Acceptance and unresolved risks
+
+First comparison tests this specific race hypothesis. Input-pipe evidence must
+establish the complete command was actually written, not merely accepted by
+Session. Distinguish terminal reply/CPR interleaving from MSYS consumption and
+record any trace truncation. Packaged passes do not prove that provider immune.
+
+Before any production proposal, expand native coverage: preceding buffered keys,
+unchanged-size and consecutive resize events, select(len=0), VMIN>1, SIGWINCH
+handlers that read or longjmp, mouse+resize, controls/NOFLSH, Unicode/repeat input,
+job control and existing managed-shell/native suites. The resize-only patch does
+not resolve every input record ownership path or stale mouse snapshot.
+
+Local validation: full archive/recipe identity and official43-patch reconstruction,
+candidate apply check, three race-model tests, six staging safety tests, Bash
+syntax and Python compilation. **No experimental DLL has been built or run here**;
+native build and runtime results must be recorded by the dedicated CI job.
+
+
+## Compiler dialect correction after first native source build
+
+Run40705457308 stopped before comparison: the new toolchain supplied GCC16.2.0;
+its default C++20 mode rejected existing dcrt0.cc volatile increment/decrement
+expressions under the upstream `-Werror`. The original .BUILDINFO used GCC15.3.0.
+[GCC16 release notes](https://gcc.gnu.org/gcc-16/changes.html) explicitly document
+the default transition from GNU++17 to GNU++20.
+
+Both experimental variants now use the same explicit `CXX='g++ -std=gnu++17'`
+through the generated makepkg configuration. The official recipe overwrites
+CXXFLAGS, so setting only those flags would not reliably select the dialect.
+No source/recipe checksum or warning policy is relaxed. Preflight checks require
+`__cplusplus=201703L` and compile volatile ++/-- under `-Wall -Wextra -Werror`;
+compiler-mode.txt is hash-bound into staging/comparison provenance, and generated
+Makefile CXX settings are retained. The existing full compiler inventory remains
+required. This is still GCC16 with explicit C++17, not historical GCC15 replay.
+
+The first build also reported missing makeinfo. The workflow explicitly installs
+the official texinfo package; build preflight records its path/version rather
+than waiting for a later documentation failure. Native success still must be
+established by the next controlled run.
+
+### Private GCC15 compatibility boundary
+
+Run40709807032 reached a second **control compile** failure (`spawn.cc:341`,
+`-Werror=unused-but-set-variable`) even in GNU++17. It did not test the resize
+patch. Rather than suppress warnings or alter runtime source, `toolchain.sh`
+extracts the official `gcc` and `gcc-libs`15.3.0-1 packages into a new private
+prefix, matching the compiler version in the original runtime `.BUILDINFO`.
+The current installed GCC, runtime and package database are not downgraded.
+Only compiler-child processes receive the private DLL directory in PATH;
+the ordinary build tools and MinGW cross compiler keep their normal environment.
+
+Both package bytes and the corresponding official source archive are SHA256
+pinned in the script, and their adjacent official signatures must pass
+`pacman-key --verify` using the installed official keyring before extraction.
+The locally verified signer was `5F944B027F7FE2091985AA2EFA11531AA0AA7F57`.
+Source: <https://repo.msys2.org/msys/sources/gcc-15.3.0-1.src.tar.zst>.
+All upstream licenses remain in the extracted private prefix. Source/packages
+stay ephemeral within the job; uploads contain only logs/provenance, not binaries.
+
+Relocation is **not assumed to work**: before either expensive runtime build,
+require compiler version15.3.0, private CRT/libgcc paths, GCC15 C++ headers,
+and successful strict C/C++ compile/link/run smoke tests. Record search/header/
+link paths and signature results. Both builds must retain identical compiler
+package provenance and dialect hashes. System headers/binutils remain the
+same-run installed dependencies, so this is not full historical reproducibility.
+Native relocation and the actual source build still require CI verification.
+
+Run40713958103 failed the pacman-key wrapper's non-root permission precheck,
+before cryptographic verification. To preserve trust without changing locking
+policy, the verifier now copies only public keyring and trustdb bytes into a
+new job-private directory (source/copy hashes and cmp recorded), disables auto
+key retrieval, and invokes GnuPG directly. No system edits, key generation,
+imports, permission changes, trust expansion, or `lock-never` override occur.
+
+[Official pacman-key source](https://github.com/msys2/msys2-pacman/blob/master/scripts/pacman-key.sh.in)
+`verify_sig` requires GnuPG TRUST_FULLY/ULTIMATE. Our direct verifier retains
+that requirement and additionally requires GnuPG process success, exactly one
+GOODSIG and VALIDSIG from the exact expected signing key, and rejects expired,
+revoked, bad or error states. Missing/ambiguous evidence fails closed.
+`test-signature-status.sh` deterministically checks positive and negative status
+fixtures before native preflight. No native compiler success is implied.
+
+### Common utility-only compatibility patch
+
+Run40720429559 passed native signature/trust and relocated GCC15 smoke gates,
+and compiled/linked `new-msys-2.0.dll`, but the full control package build then
+failed in MinGW `cygcheck` utilities: updated MinGW headers return const pointers
+for string searches on const inputs. Original `.BUILDINFO` used headers14.r147;
+the job installed14.r501. The four affected locals are read-only queries.
+`0000-utils-const-compat.patch` adds `const` to those locals only, with no casts,
+permissive flags, warning suppression, skipped targets or changed tests.
+
+Both control and resize-patched variants apply this identical common utility
+patch after the exact43 official packaging patches. Original utility blobs and
+before/after source files are retained; patch hash is checked at staging and
+must match between variants. It does not modify runtime DLL source. The sole
+runtime behavior difference remains `0001-retire-resize-before-signal.patch`.
+The original archive/recipe/hash checks are unchanged. A linked DLL alone is
+not a completed package or runtime qualification result.
+
+Run40724747130 compiled the first three corrected sites, then exposed the same
+const mismatch at `strace.cc:235`: its `p` is declared separately at line231 and
+assigned a search result later. The common patch now also makes that read-only
+cursor const. Review covered the entire `make_command_line` cursor loop: it only
+advances/reads the input; writes go to the separate line buffer. Audited remaining
+MinGW string-search callsites including later assignments and path-testsuite;
+other strace search targets are mutable buffers or const-compatible receivers.
+No additional speculative changes were made.
+
+Both builds also use common `MAKEFLAGS=-j2 -k` diagnostics: collect independent
+compile failures in a single build instead of stopping at the first utility.
+GNU make's nonzero failure status remains fatal to makepkg/build.sh; no install,
+stage or comparison is attempted on build failure. This is not warning suppression
+or an ignore-errors setting. The audit included60 narrow/memory search callsites
+across all MinGW utility source, including later assignments; no wide-search
+calls were present. Successful compilation of the prior corrected files is
+native evidence; review of remaining sites is not a replacement for compiling.

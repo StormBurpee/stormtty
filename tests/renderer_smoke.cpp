@@ -1,5 +1,7 @@
 // Native Windows runtime test. Cross-compiling this file is NOT a passing test.
 #include "stormtty/renderer.hpp"
+#include "stormtty/cursor_motion.hpp"
+#include <fstream>
 #include "chrome_layer_raster.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -8,6 +10,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <wincodec.h>
 #include <d3d11.h>
 #include <dxgi1_3.h>
 #include <dcomp.h>
@@ -63,6 +66,52 @@ template<class T> struct ProbeCom {
     ProbeCom(const ProbeCom&)=delete;
     ProbeCom& operator=(const ProbeCom&)=delete;
 };
+void save_motion_png(const std::filesystem::path& path,const std::vector<std::uint8_t>& rgba,UINT width,UINT height) {
+    auto check=[](HRESULT hr){require(SUCCEEDED(hr),"Motion PNG encoding failed");};
+    ProbeCom<IWICImagingFactory> factory; ProbeCom<IWICStream> stream;
+    ProbeCom<IWICBitmapEncoder> encoder; ProbeCom<IWICBitmapFrameEncode> frame;
+    check(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory.value)));
+    check(factory.value->CreateStream(&stream.value)); check(stream.value->InitializeFromFilename(path.c_str(),GENERIC_WRITE));
+    check(factory.value->CreateEncoder(GUID_ContainerFormatPng,nullptr,&encoder.value));
+    check(encoder.value->Initialize(stream.value,WICBitmapEncoderNoCache));
+    check(encoder.value->CreateNewFrame(&frame.value,nullptr)); check(frame.value->Initialize(nullptr));
+    check(frame.value->SetSize(width,height)); auto format=GUID_WICPixelFormat32bppRGBA;
+    check(frame.value->SetPixelFormat(&format)); require(IsEqualGUID(format,GUID_WICPixelFormat32bppRGBA),"Motion PNG format changed");
+    check(frame.value->WritePixels(height,width*4,static_cast<UINT>(rgba.size()),const_cast<BYTE*>(rgba.data())));
+    check(frame.value->Commit()); check(encoder.value->Commit());
+}
+void cursor_motion_raster_test() {
+    RendererOptions options; options.force_warp=true; options.font.family="Consolas";
+    Renderer renderer(nullptr,options); renderer.resize(480,96);
+    const auto metrics=renderer.metrics();
+    auto f=std::make_shared<RenderFrame>(); f->columns=40; f->rows=3; f->cell_width=metrics.width; f->cell_height=metrics.height;
+    f->background={23,25,29,255}; f->foreground={230,235,242,255}; f->cursor.visible=true; f->cursor.color={180,210,250,255};
+    auto row=std::make_shared<FrameRow>(); row->cells.resize(40);
+    const std::string text="stormtty > beautiful typing";
+    for (size_t i=0;i<row->cells.size();++i) { auto& c=row->cells[i]; c.grapheme=i<text.size()?text.substr(i,1):" "; c.foreground=f->foreground; c.background=f->background; }
+    f->lines.push_back(row); f->cursor.column=15;
+    WindowScene scene; scene.panes.push_back({1,{8,20,464,76},f}); CursorMotion motion;
+    motion.observe(scene.panes[0],100,true); motion.input(110); ++row->generation; f->cursor.column=16;
+    wchar_t executable[32768]{}; require(GetModuleFileNameW(nullptr,executable,32768)>0,"Motion capture executable path missing");
+    const auto directory=std::filesystem::path(executable).parent_path()/L"artifacts";
+    std::filesystem::create_directories(directory);
+    std::vector<std::vector<std::uint8_t>> captures;
+    const std::array<std::uint64_t,7> times{120,134,148,162,176,190,205};
+    const std::array<const wchar_t*,7> names{L"typing-initial-000ms.png",L"typing-intermediate-014ms.png",L"typing-intermediate-028ms.png",L"typing-intermediate-042ms.png",L"typing-intermediate-056ms.png",L"typing-intermediate-070ms.png",L"typing-settled-085ms.png"};
+    for (size_t i=0;i<times.size();++i) {
+        scene.panes[0].cursor_reveal=motion.observe(scene.panes[0],times[i],true);
+        require(renderer.render(scene)==RenderResult::presented,"Cursor presentation damage was not rendered");
+        captures.push_back(renderer.read_pixels()); save_motion_png(directory/names[i],captures.back(),480,96);
+        scene.force_redraw=true; renderer.render(scene);
+        require(renderer.read_pixels()==captures.back(),"Intermediate cursor damage differs from full redraw");
+        scene.force_redraw=false;
+    }
+    require(captures[0]!=captures[2] && captures[2]!=captures.back(),"Cursor settle did not produce distinct native frames");
+    scene.panes[0].cursor_reveal=1; require(renderer.render(scene)==RenderResult::unchanged,"Settled cursor keeps rendering at idle");
+    // Incremental damage must be identical to a fresh full render, including inverse glyphs.
+    scene.force_redraw=true; renderer.render(scene); require(renderer.read_pixels()==captures.back(),"Cursor damage left stale inverse glyph pixels");
+    std::cout<<"Cursor motion captures: initial 0ms, intermediate 28ms, settled 85ms; input-gated destination reveal, WARP native pixels\n";
+}
 void direct_composition_probe(bool initial_no_redirection, bool waitable, D3D_DRIVER_TYPE driver) {
     // Failure-only diagnostic, independent of Renderer and its dynamic style
     // guard. The enclosing HostWindow keeps this class registered. Each probe
@@ -487,6 +536,29 @@ void cache_pressure_test() {
     require(renderer.stats().image_uploads==2 && renderer.stats().image_cache_bytes<=8,"image eviction budget failed");
     require(renderer.stats().shape_cache_bytes<=512,"shape cache budget failed");
 }
+void chrome_notice_measurement_test() {
+    RendererOptions options; options.force_warp=true;
+    Renderer renderer(nullptr,options); renderer.resize(800,600,96);
+    ChromeText label; label.text="build · Command finished"; label.size_dip=12; label.wrap=true; label.rect={0,0,536,500};
+    const auto compact=renderer.measure_chrome_text(label);
+    require(compact.width>100 && compact.width<220 && compact.height>0 && compact.height<24,"short notice uses real chrome-font measurement");
+    label.text="A long process diagnostic must remain readable and wrap within the active workspace rather than spanning the navigation rail. ";
+    label.text+=label.text; label.rect.width=160;
+    const auto wrapped=renderer.measure_chrome_text(label);
+    require(wrapped.height>compact.height*2 && wrapped.width<=161,"long notice wraps to measured width");
+    WindowScene scene; scene.texts.push_back(label); renderer.render(scene);
+    const auto pixels=renderer.read_pixels(); unsigned ink_rows{};
+    for(unsigned y=0;y<500;++y) {
+        bool ink{};
+        for(unsigned x=0;x<160;++x) if(!colors_near(pixel(pixels,800,x,y),scene.background,16)) { ink=true; break; }
+        if(ink)++ink_rows;
+        require(colors_near(pixel(pixels,800,180,y),scene.background),"wrapped notice escaped its text clip");
+    }
+    require(ink_rows>2*compact.height,"wrapped notice did not rasterize multiple readable lines");
+    renderer.resize(1200,900,144); label.text="build · Command finished"; label.rect.width=804;
+    const auto scaled=renderer.measure_chrome_text(label);
+    require(std::abs(scaled.width/1.5f-compact.width)<1 && std::abs(scaled.height/1.5f-compact.height)<1,"notice measurement respects DPI");
+}
 void rejected_image_test() {
     RendererOptions options;options.force_warp=true;options.image_cache_bytes=4;
     Renderer renderer(nullptr,options);renderer.resize(64,48);
@@ -506,7 +578,8 @@ int main() {
         std::filesystem::current_path(std::filesystem::temp_directory_path());
         RendererOptions layer_options;layer_options.force_warp=true;layer_options.font.family="Consolas";
         stormtty::test::chrome_layer_raster_tests(layer_options);
-        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();
+        cursor_motion_raster_test();
+        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();chrome_notice_measurement_test();
         std::cout<<"PASS Windows WARP renderer: HWND/DComp style lifecycle and fallback, private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
         return 0;
     } catch(const std::exception& error) { std::cerr<<"FAIL renderer smoke: "<<error.what()<<'\n';return 1; }

@@ -17,17 +17,18 @@ Include `stormtty/project_workspaces.hpp` and link `stormtty_workspace`.
 | Operation | Behavior |
 | --- | --- |
 | `create(metadata, workspace = {})` | Append an empty or supplied existing `Workspace`; preserve its local IDs, tab names and session associations. The first project activates automatically. Later creates preserve the current selection. Return the new project ID. |
-| `entries()`, `find(id)`, `active()` | Read-only ordered project records: `id`, `metadata`, `workspace`. No accidental mutable project IDs or metadata. |
+| `entries()`, `find(id)`, `active()` | Read-only ordered project records: `id`, `metadata`, `workspace`, `parked_sessions`. No accidental mutable project IDs or metadata. |
 | `workspace(id)`, `active_workspace()` | Mutable/const pointers to the existing model, so native hosts retain their current tab/split operations. Null when absent. |
 | `activate(id)` | Change only the selected project. All hidden workspaces remain owned and unchanged. |
 | `rename(id, name)`, `update_metadata(id, metadata)` | Validate and update explicit project metadata; never modify live sessions. |
-| `session_ids(id)` | Sorted nonzero bound IDs for a removal preview; empty for an absent project. Use `find` if absence must be distinguished from an unbound workspace. |
-| `all_session_ids()`, `contains_session(id)` | Include **every** project, not just the visible one. The first returns a sorted union; zero is never a live association. |
+| `session_ids(id)` | Sorted nonzero pane-bound and parked IDs for a removal preview; empty for an absent project. Use `find` if absence must be distinguished from an unbound workspace. |
+| `all_session_ids()`, `contains_session(id)` | Include **every** project and parked entry, not just visible panes. The first returns a sorted union; zero is never a live association. |
 | `remove(id)` | Return `RemovedProjectWorkspace {project, sessions}` containing the entire detached model and its current affected IDs. No implicit close or process destruction. |
 | `validate()` | Check project selection, IDs, metadata, every nested Workspace, and session uniqueness within the catalog. |
 
 References and pointers into a catalog may be invalidated by `create` or
-`remove`. Retain IDs and reacquire records, not long-lived references. Catalogs
+`remove`; placement transfers also invalidate references into the affected
+project (including panes and parked entries). Retain IDs and reacquire records, not long-lived references. Catalogs
 are intentionally noncopyable and nonmovable: copying must not duplicate their
 identities, and assignment must not silently overwrite an owned set of session
 associations. Detached results can be moved normally.
@@ -82,6 +83,61 @@ command replay, or session resurrection. Importing a detached Workspace through
 `create` issues a fresh project ID; it is not restoration of its previous host
 identity. Existing Workspace metadata serialization remains unchanged and still
 restores unbound panes only.
+
+## Parked placement (portable prerequisite)
+
+A nonzero SessionId belongs to exactly one pane **or** one parked entry in
+exactly one project. A parked entry contains only its SessionId, profile and
+display title; the host still owns the existing actor and terminal document.
+It is a placement, not a claim that a process is running, busy, ready or exited.
+
+- `park(ProjectPaneReference)` atomically removes a pane and adds its session
+  association to that project's `parked_sessions`. Unbound panes cannot be
+  parked. Parking the final pane leaves a valid empty Workspace **and preserves
+  its project**, selection and ownership. The bound is 256 parked entries per
+  project, independent of the existing Workspace limits.
+- `reattach_to_new_tab(ProjectSessionReference)` returns a new TabId.
+  `reattach_to_split(source, ProjectPaneReference target, direction, fraction)`
+  returns a new PaneId; target must belong to the same project.
+  Both retain the exact SessionId/profile/title, remove its parked entry, and
+  allocate fresh placement IDs. Neither launches, replays, or activates a
+  hidden project. Invalid references, direction/fraction, capacity/depth
+  failure and invalid catalog ownership leave all state and ID counters intact.
+- `discard_parked(ProjectSessionReference)` explicitly removes ownership and
+  returns the association for authorized host retirement. It never destroys a
+  process or automatically removes an empty project.
+- `session_ids`, `all_session_ids`, `contains_session` and `remove` all include
+  parked ownership. Removed projects retain their parked entries in the result.
+  Importing only `.workspace` through `create` is **not** a transfer of the
+  detached project's parked entries; callers must handle those explicitly.
+
+Existing mutable Workspace access is preserved. It must not bind an already
+parked SessionId (including in the same project). `validate` detects this;
+placement transfer APIs reject a catalog with such a violation rather than
+partially repairing it.
+
+### Deliberate native integration required
+
+This change does not wire a footer or change existing pane-close UI policy.
+Before exposing park/reattach in a host:
+
+1. Change retirement from pane-only counting to catalog ownership enumeration,
+   including parked entries, before calling any parking operation.
+2. Do not route parking through a native close-pane handler that auto-removes
+   the final project. Call `park` directly and present the empty project with
+   its parked strip and an explicit new-pane action.
+3. Reattach by binding the returned placement to the **existing** host actor/
+   document. Do not run normal new-shell launch code or replay input. Handle
+   resize, focus, and view-cache invalidation explicitly after successful commit.
+4. Continue draining output for parked sessions under existing bounded queues.
+   Derive process-exited/activity/attention indicators from real host evidence;
+   parking itself is not a ready notification or process-state transition.
+5. Include parked sessions in project-close authorization and recheck ownership
+   after reentrant confirmation. Discard/close is distinct from park.
+6. Do not serialize parked IDs, actors, output or commands. No catalog/parked
+   persistence was added. Existing Workspace serialization still restores only
+   unbound pane metadata, omitting parked entries entirely. It cannot resurrect
+   the live background work after application exit.
 
 ## Honest metadata and navigation
 
@@ -158,6 +214,10 @@ into the portable task/split model.
   deterministic selection fallback and final-project removal.
 - Malformed/control-character/oversize metadata, duplicate session imports,
   host binding invariant detection, project count limits and unbound panes.
+- Park/reattach identity and display metadata, final-pane project preservation,
+  hidden-project isolation, stale/unbound/cross-project rejection, duplicate
+  ownership rejection, parked/tab capacity and post-allocation depth rollback,
+  explicit discard, complete project close, and metadata-only serialization.
 - A deterministic 1,500-operation trace checking validity, session retention,
   selection, failed-operation atomicity and never-reused project IDs.
 
@@ -166,9 +226,33 @@ The tests can run without a terminal adapter, renderer or process backend:
 ```sh
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -Iinclude \
   tests/project_workspaces_tests.cpp src/core/project_workspaces.cpp \
-  src/core/workspace.cpp -o project_workspaces_tests
+  src/core/workspace.cpp src/core/workspace_serialization.cpp -o project_workspaces_tests
 ./project_workspaces_tests
 ```
 
 Portable test success is not Windows or macOS runtime, UI, accessibility,
 terminal-session performance or native renderer verification.
+
+### Windows background footer
+
+The pane menu and command palette expose **Move to background**. This detaches
+only placement: the same session actor continues consuming PTY output. The
+active project's footer exposes restore chips and an overflow menu; right-click
+a chip for Restore or styled, Cancel-default Close confirmation. Restoring
+creates a tab around the existing session, presents its latest frame and resizes
+the retained document. Parking the last pane leaves the project open with a
+**New terminal** affordance. No process is restarted or command replayed.
+
+Footer status describes the terminal process, not a foreground job: **running**
+does not mean busy, and **exit N** means only that the process exited with that
+code. Exit/failure transitions produce a project-named in-window notice above
+the footer. No command-ready, Git or service state is inferred. Parked ownership
+is memory-only and is not serialized as recoverable live processes.
+
+The Windows host explicitly opts into retained terminal documents. Input and
+close-confirmation liveness use `process_finished()`; actor-disposal cleanup
+still uses `closed()`/`wait_closed()`. The native project smoke exercises final
+pane parking, cancellation, project isolation, real output while parked, and
+same-actor restoration after exit. The native modal smoke confirms background
+closure and waits for disposal. These require Windows execution; cross-building
+by itself does not verify native behavior or physical pointer/IME/accessibility.

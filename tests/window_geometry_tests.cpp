@@ -9,6 +9,33 @@ namespace { void require(bool condition, const char* message) {
 } }
 int main() {
     using namespace stormtty;
+    for (double width : {0., 24., 120., 300., 640., 1100.}) for (std::size_t count : {0u,1u,4u,256u}) {
+        const auto footer=layout_background_footer({0,700,width,26},count);
+        double right=0;
+        for (const auto& chip:footer.chips) {
+            require(chip.x>=right && chip.x+chip.width<=width && chip.y>=700 && chip.y+chip.height<=726,"background chips bounded and disjoint"); right=chip.x+chip.width;
+        }
+        if (count>footer.chips.size() && width>0) require(footer.overflow.width>0 && footer.overflow.x>=right && footer.overflow.x+footer.overflow.width<=width,"background overflow reachable without overlap");
+        if (!count) require(footer.chips.empty() && !footer.overflow.width,"empty footer has no filler");
+    }
+    require(layout_background_footer({0,700,1100,0},4).chips.empty(),"focus mode hides background geometry");
+    const auto compact_notice=layout_notice({184,104,860,590},140,16);
+    require(compact_notice.panel==Rect{196,646,164,36},"short notice is compact, workspace-local, and above footer");
+    require(compact_notice.text==Rect{208,656,140,16},"notice retains 12px horizontal and 10px vertical padding");
+    const auto long_notice=layout_notice({184,104,860,590},536,120);
+    require(long_notice.panel.width==560 && long_notice.panel.height==140,"wrapped errors expand within a bounded readable width");
+    for(double width:{0.,12.,24.,44.,120.,300.,640.,1100.}) for(double height:{0.,12.,24.,36.,80.,590.}) {
+        const Rect viewport{184,104,width,height};
+        for(const auto measured:std::array<Point,3>{{{140,16},{2000,2000},{0,0}}}) {
+            const auto notice=layout_notice(viewport,measured.x,measured.y);
+            require(notice.panel.x>=viewport.x && notice.panel.y>=viewport.y &&
+                notice.panel.x+notice.panel.width<=viewport.x+width && notice.panel.y+notice.panel.height<=viewport.y+height,
+                "notice stays inside narrow/short viewport without covering footer or rail");
+            require(notice.text.x>=notice.panel.x && notice.text.y>=notice.panel.y && notice.text.width>=0 && notice.text.height>=0 &&
+                notice.text.x+notice.text.width<=notice.panel.x+notice.panel.width && notice.text.y+notice.text.height<=notice.panel.y+notice.panel.height,
+                "notice text remains clipped to owned panel");
+        }
+    }
     AppearanceConfig appearance;appearance.backdrop=BackdropPreference::automatic;
     auto material=window_material_policy(appearance,true,false,false,true);
     require(material.system_backdrop==3 && material.opacity<1,"Auto requests behind-window Acrylic, not wallpaper-only Mica");
@@ -126,6 +153,22 @@ int main() {
     require(!transition.active(300) && transition.value(300)==1, "reduced motion commits immediately without timer");
     transition.target(0,400,120); transition.finish();
     require(!transition.active(401) && transition.value(401)==0, "minimize/accessibility finishes timer work");
+    ChromeTransition outgoing(1), incoming;
+    outgoing.target(0,1000,120); incoming.target(1,1000,120);
+    const auto handoff=incoming.value(1040);
+    require(handoff>0 && handoff<1 && std::abs(outgoing.value(1040)+handoff-1)<1e-9,
+            "selection handoff retains complementary outgoing and incoming emphasis");
+    incoming.target(1,1040,120);
+    require(incoming.value(1040)==handoff && !incoming.active(1120),
+            "unrelated chrome changes never restart the selection deadline");
+    incoming.target(0,1040,120); outgoing.target(1,1040,120);
+    require(incoming.value(1040)==handoff && std::abs(outgoing.value(1040)+handoff-1)<1e-9,
+            "rapid selection reversal continues from the displayed emphasis");
+    require(incoming.value(1160)==0 && outgoing.value(1160)==1 && !outgoing.active(1160),
+            "reversed handoff reaches rest with no idle timer");
+    incoming.target(1,1200,100); incoming.finish();
+    require(incoming.value(1201)==1 && !incoming.active(1201),
+            "OS reduced motion during reveal settles the owned surface immediately");
     CursorBlinkClock blink;
     blink.configure(true,500,1000);
     require(blink.visible() && !blink.tick(1499),"caret starts with a complete visible interval");

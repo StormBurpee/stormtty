@@ -12,6 +12,7 @@
 #include <d2d1_3.h>
 #include <dwrite_3.h>
 #include <dcomp.h>
+#include "smoke_teardown_trace.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -34,7 +35,14 @@ public:
     Com& operator=(const Com& o) { if (this != &o) { Com copy(o); swap(copy); } return *this; }
     Com(Com&& o) noexcept : p_(std::exchange(o.p_, nullptr)) {}
     Com& operator=(Com&& o) noexcept { if (this != &o) { reset(); p_ = std::exchange(o.p_, nullptr); } return *this; }
-    void reset() noexcept { if (auto* p = std::exchange(p_, nullptr)) p->Release(); }
+    const char* teardown_label{}; // Enabled only at explicit smoke destruction.
+    void reset() noexcept {
+        if (auto* p = std::exchange(p_, nullptr)) {
+            windows::smoke_teardown_trace(teardown_label!=nullptr,teardown_label," begin");
+            p->Release();
+            windows::smoke_teardown_trace(teardown_label!=nullptr,teardown_label," end");
+        }
+    }
     void swap(Com& o) noexcept { std::swap(p_, o.p_); }
     T* get() const noexcept { return p_; }
     T* operator->() const noexcept { return p_; }
@@ -48,7 +56,12 @@ private:
 };
 struct Apartment {
     HRESULT hr{CoInitializeEx(nullptr, COINIT_MULTITHREADED)};
-    ~Apartment() { if (SUCCEEDED(hr)) CoUninitialize(); }
+    bool smoke{};
+    ~Apartment() {
+        windows::smoke_teardown_trace(smoke,"renderer apartment unwind begin");
+        if (SUCCEEDED(hr)) CoUninitialize();
+        windows::smoke_teardown_trace(smoke,"renderer apartment unwind end");
+    }
 };
 struct NativeHandle {
     HANDLE value{};
@@ -442,7 +455,32 @@ struct Renderer::Impl {
         create_device();
         measure_font();
     }
-    ~Impl() { release_gpu(); }
+    bool tracing_teardown{};
+    ~Impl() {
+        tracing_teardown=options.smoke_teardown_diagnostics;
+        apartment.smoke=tracing_teardown;
+        if (tracing_teardown) {
+#define TRACE_RELEASE(member) member.teardown_label="renderer " #member " Release"
+            TRACE_RELEASE(device); TRACE_RELEASE(immediate); TRACE_RELEASE(swapchain);
+            TRACE_RELEASE(swapchain2); TRACE_RELEASE(composition); TRACE_RELEASE(composition_target);
+            TRACE_RELEASE(composition_visual); TRACE_RELEASE(d2d_factory); TRACE_RELEASE(d2d_device);
+            TRACE_RELEASE(dc); TRACE_RELEASE(dc4); TRACE_RELEASE(write_factory); TRACE_RELEASE(write4);
+            TRACE_RELEASE(terminal_format); TRACE_RELEASE(typography); TRACE_RELEASE(bundled_fonts);
+            TRACE_RELEASE(canvas_texture); TRACE_RELEASE(alpha_staging); TRACE_RELEASE(canvas); TRACE_RELEASE(brush);
+#undef TRACE_RELEASE
+        }
+        windows::smoke_teardown_trace(tracing_teardown,"renderer release_gpu begin");
+        release_gpu();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer release_gpu end; implicit cache/font members begin");
+    }
+    void clear_and_flush() noexcept {
+        if (!immediate) return;
+        windows::smoke_teardown_trace(tracing_teardown,"renderer ClearState begin");
+        immediate->ClearState();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer ClearState end; Flush begin");
+        immediate->Flush();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer Flush end");
+    }
     static void validate_font(const FontOptions& font) {
         if (font.family.empty() || font.family.size() > 256 || font.locale.size() > 85 ||
             !std::isfinite(font.size_dip) || font.size_dip < 4 || font.size_dip > 128)
@@ -450,18 +488,32 @@ struct Renderer::Impl {
     }
     void release_swapchain() noexcept {
         composition_visual.reset(); composition_target.reset(); composition.reset();
-        latency.reset(); swapchain2.reset(); swapchain.reset();
-        if(immediate) { immediate->ClearState(); immediate->Flush(); }
+        windows::smoke_teardown_trace(tracing_teardown,"renderer latency handle close begin");
+        latency.reset();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer latency handle close end");
+        swapchain2.reset(); swapchain.reset();
+        clear_and_flush();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer opaque HWND destruction begin");
         opaque_window.reset();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer opaque HWND destruction end");
         counters.composition = false;
     }
     void release_gpu() noexcept {
+        windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null begin");
         if (dc) dc->SetTarget(nullptr);
-        alpha_staging.reset(); canvas.reset(); canvas_texture.reset(); brush.reset(); images.clear();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null end");
+        alpha_staging.reset(); canvas.reset(); canvas_texture.reset(); brush.reset();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer image cache clear begin");
+        images.clear();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer image cache clear end");
         counters.image_cache_bytes = 0;
-        release_swapchain();
+        // Drop D2D's device-dependent owners before the single deferred-release
+        // drain in release_swapchain(). Keep that helper's ClearState/Flush for
+        // standalone swapchain replacement too; do not drain twice around D2D
+        // destruction. This ordering is a teardown candidate, not proof that a
+        // previously observed WARP ClearState stall has been resolved.
         dc4.reset(); dc.reset(); d2d_device.reset();
-        if (immediate) { immediate->ClearState(); immediate->Flush(); }
+        release_swapchain();
         immediate.reset(); device.reset();
     }
     void create_device() {
@@ -957,6 +1009,11 @@ struct Renderer::Impl {
         const auto shape = pane.focused ? cursor.shape : CursorShape::hollow_block;
         if (shape == CursorShape::bar) bounds.width = thickness*2;
         if (shape == CursorShape::underline) { bounds.y += bounds.height-thickness*2; bounds.height = thickness*2; }
+        const auto reveal=std::clamp(pane.cursor_reveal,0.0f,1.0f);
+        if (pane.focused && shape != CursorShape::hollow_block) {
+            if (shape == CursorShape::bar) { const auto inset=bounds.height*(1-reveal); bounds.y+=inset; bounds.height-=inset; }
+            else bounds.width*=reveal;
+        }
         if (shape == CursorShape::hollow_block) {
             brush->SetColor(color(cursor.color));
             const D2D1_RECT_F outline{bounds.x+thickness*.5f,bounds.y+thickness*.5f,
@@ -1044,7 +1101,7 @@ struct Renderer::Impl {
                     DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*dpi/96,L"en-US",format.put()),"Create chrome font");
                 check(format->SetTextAlignment(label.alignment==ChromeTextAlignment::center?DWRITE_TEXT_ALIGNMENT_CENTER:
                     label.alignment==ChromeTextAlignment::trailing?DWRITE_TEXT_ALIGNMENT_TRAILING:DWRITE_TEXT_ALIGNMENT_LEADING),"Set chrome alignment");
-                check(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP),"Set chrome no-wrap");
+                check(format->SetWordWrapping(label.wrap?DWRITE_WORD_WRAPPING_WRAP:DWRITE_WORD_WRAPPING_NO_WRAP),"Set chrome wrapping");
                 check(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER),"Center chrome baseline");
                 // DirectWrite owns grapheme/cluster-safe end truncation and the real
                 // omission glyph; never shorten UTF-8 strings or clip a partial glyph.
@@ -1120,7 +1177,7 @@ struct Renderer::Impl {
                         add(intersect(now.content,{now.content.x,now.content.y+float(r*ch),now.content.width,float(ch)}));
                 }
             }
-            if (!same_cursor(a.cursor,b.cursor) || now.cursor_on!=before.cursor_on || now.focused!=before.focused) {
+            if (!same_cursor(a.cursor,b.cursor) || now.cursor_on!=before.cursor_on || now.focused!=before.focused || now.cursor_reveal!=before.cursor_reveal) {
                 add(cursor_rect(before)); add(cursor_rect(now));
             }
         }
@@ -1185,7 +1242,12 @@ struct Renderer::Impl {
 };
 
 Renderer::Renderer(void* window,RendererOptions options) : impl_(std::make_unique<Impl>(window,std::move(options))) {}
-Renderer::~Renderer() = default;
+Renderer::~Renderer() {
+    const bool smoke=impl_ && impl_->options.smoke_teardown_diagnostics;
+    windows::smoke_teardown_trace(smoke,"renderer destructor begin");
+    impl_.reset();
+    windows::smoke_teardown_trace(smoke,"renderer destructor end");
+}
 Renderer::Renderer(Renderer&&) noexcept = default;
 Renderer& Renderer::operator=(Renderer&&) noexcept = default;
 void Renderer::resize(std::uint32_t width,std::uint32_t height,float dpi) {
@@ -1258,6 +1320,23 @@ std::optional<RendererAlphaProbe> Renderer::poll_alpha_probe() {
         for(UINT x=0;x<p.alpha_width;++x) {const auto alpha=bytes[x*4+3];result.minimum=std::min(result.minimum,alpha);result.maximum=std::max(result.maximum,alpha);}
     }
     p.immediate->Unmap(p.alpha_staging.get(),0);p.alpha_staging.reset();return result;
+}
+PixelRect Renderer::measure_chrome_text(const ChromeText& label) const {
+    if (label.text.empty() || label.text.size()>32768 || label.family.empty() || label.family.size()>256 ||
+        !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256 ||
+        !std::isfinite(label.rect.width) || !std::isfinite(label.rect.height) ||
+        label.rect.width<=0 || label.rect.height<=0) return {};
+    const auto text=utf16(label.text),family=utf16(label.family);
+    Com<IDWriteTextFormat> format;
+    check(impl_->write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*impl_->dpi/96,L"en-US",format.put()),"Measure chrome font");
+    check(format->SetWordWrapping(label.wrap?DWRITE_WORD_WRAPPING_WRAP:DWRITE_WORD_WRAPPING_NO_WRAP),"Measure chrome wrapping");
+    Com<IDWriteTextLayout> layout;
+    check(impl_->write_factory->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format.get(),
+        label.rect.width,label.rect.height,layout.put()),"Measure chrome layout");
+    DWRITE_TEXT_METRICS metrics{};
+    check(layout->GetMetrics(&metrics),"Read chrome metrics");
+    return {0,0,metrics.widthIncludingTrailingWhitespace,metrics.height};
 }
 std::vector<std::uint8_t> Renderer::read_pixels() {
     auto& p=*impl_;if(!p.canvas_texture) return {};

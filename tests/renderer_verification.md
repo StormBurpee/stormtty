@@ -298,3 +298,32 @@ real overlapping context-menu panels and submenu dismissal, and settled/fading
 palette-label alpha. Core `context_menu_tests` separately validates stable layer
 ordering and retention of underlying labels. Compiling these native fixtures on
 Linux is compile coverage only, never native runtime or desktop visual proof.
+
+### Windows typing settle
+
+Default block, bar and underline cursors use an 85 ms cubic ease-out reveal
+**within the destination cell**, not a translated cursor or animated terminal
+text. A short printable input must first be accepted by the session; a forward
+one/two-cell, same-row cursor change and changed row generation then qualify the
+response. This is a conservative presentation heuristic, not proof that specific
+PTY bytes echo that input. Terminal text and input delivery are immediate. Large jumps, alternate
+screen, selection, focus loss, resize, IME and reduced-motion settings snap. The
+finite host timer stops when settled; output without eligible input does not
+start it. macOS currently keeps its existing static cursor presentation.
+
+`cursor_motion_tests` is portable policy evidence. Windows `renderer_smoke`
+writes seven actual WARP readbacks to `artifacts/typing-*.png` beside the test
+executable at 0, 14, 28, 42, 56, 70 and 85 ms. These are deterministic sampled
+presentation times, not measured hardware frame cadence. Incremental and full
+redraws must match at every sample (including the inverse glyph under a block),
+and the settled frame must return `unchanged`. Native CI execution and human
+hardware feel remain separate gates from cross-compilation.
+
+The ordinary Windows `--smoke` also exercises the HWND bridge: terminal
+click/release, `WM_CHAR`, actual PTY `x` echo/cursor advance, host-generated
+settle, timer shutdown, another input and reduced-motion cancellation. It
+backspaces the test input before the existing controlled shell-exit command.
+When OS/user reduced motion is already active, this explicitly reports the
+active-settle path unavailable and verifies echo/no animation instead; it never
+overrides OS policy to manufacture a pass. The normal smoke deadline bounds a
+missing real echo. These checks require native execution, not just compilation.

@@ -2,6 +2,10 @@
 # Clean managed profile only. Existing-user-configuration profiles preserve theirs.
 [[ -o interactive ]] || return
 [[ -n ${STORMTTY_SESSION_ID-} ]] || return
+# The host distinguishes absent HOME from an explicit empty value before the
+# MSYS2 Windows-path import. Do not substitute a home or rewrite explicit paths.
+[[ ${STORMTTY_EMPTY_HOME-} == 1 ]] && export HOME=''
+unset STORMTTY_EMPTY_HOME
 # Prevent app bootstrap variables from reinjecting into unrelated descendant shells.
 typeset +x ZDOTDIR STORMTTY_SESSION_ID
 unsetopt PROMPT_SUBST BEEP
@@ -18,13 +22,23 @@ zstyle ':completion:*' menu select
 zstyle ':completion:*:composer:*' fetch-packages no
 zmodload zsh/datetime
 typeset -gF _stormtty_started=0
-typeset -gi _stormtty_exit=0
-_stormtty_preexec() { _stormtty_started=$EPOCHREALTIME }
+typeset -gi _stormtty_exit=0 _stormtty_command_active=0
+_stormtty_preexec() {
+  _stormtty_started=$EPOCHREALTIME
+  _stormtty_command_active=1
+  # Scalar lifecycle only: never emit command text or history.
+  printf '\e]133;C\a'
+}
 _stormtty_precmd() {
   local previous=$?
   local detail=''
   local -F elapsed=0
   _stormtty_exit=$previous
+  # Prompt return ends the foreground command, not any background jobs it spawned.
+  if (( _stormtty_command_active )); then
+    printf '\e]133;D;%d\a' "$previous"
+    _stormtty_command_active=0
+  fi
   if (( _stormtty_started > 0 )); then
     (( elapsed = EPOCHREALTIME - _stormtty_started ))
     if (( elapsed >= 1 )); then
@@ -33,11 +47,12 @@ _stormtty_precmd() {
   fi
   _stormtty_started=0
   # %~ is handled by Zsh itself; untrusted path/branch data is never eval'd.
-  PROMPT='%F{blue}%~%f'
+  PROMPT=$'%{\e]133;A\a%}''%F{blue}%~%f'
   if (( previous != 0 )); then
     PROMPT+=" %F{red}exit:${previous}%f"
   fi
   PROMPT+="%F{242}${detail}%f"$'\n''%F{blue}>%f '
+  PROMPT+=$'%{\e]133;B\a%}'
   return $previous
 }
 add-zsh-hook preexec _stormtty_preexec

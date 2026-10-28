@@ -16,7 +16,12 @@ MAX_FILES = 100_000
 MAX_BYTES = 256 * 1024 * 1024
 MANIFEST = "stormtty-shell-manifest.json"
 RECEIPT = "stormtty-developer-runtime.json"
-REQUIRED = ("usr/bin/zsh.exe", "usr/bin/msys-2.0.dll", "stormtty/zsh/.zshrc")
+REQUIRED = ("usr/bin/zsh.exe", "usr/bin/msys-2.0.dll", "stormtty/zsh/.zshrc", "etc/fstab", "etc/nsswitch.conf")
+
+CONFIG = {"etc/fstab": "shell-runtime.fstab", "etc/nsswitch.conf": "shell-runtime.nsswitch.conf"}
+
+def validation_inputs(lock, preset):
+    return [digest(lock), digest(preset), digest(Path(__file__))] + [digest(Path(__file__).with_name(name)) for name in CONFIG.values()]
 
 
 def digest(path):
@@ -119,6 +124,9 @@ def validate(source, lock_path, preset):
         if name.casefold() not in names: raise RuntimeError(f"Required runtime file is absent: {name}")
     if digest(source / REQUIRED[2]) != digest(preset):
         raise RuntimeError("Managed preset is stale; stage a fresh runtime with the current shell-bootstrap.py")
+    for name, asset in CONFIG.items():
+        if digest(source / name) != digest(Path(__file__).with_name(asset)):
+            raise RuntimeError("Managed runtime configuration is stale; stage a fresh runtime with shell-bootstrap.py")
     # Snapshot expected hashes before copy; a source changed between validation
     # and staging must fail rather than validating against its new bytes.
     for path in files:
@@ -127,7 +135,7 @@ def validate(source, lock_path, preset):
         if source / notice not in files: raise RuntimeError(f"Runtime notice is missing: {notice}")
     return expected, {"schema": 1, "bundle_id": manifest["bundle_id"], "manifest_sha256": digest(source / MANIFEST),
                            "build_owned_runtime": True, "release_qualified": False, "source_snapshot": snapshot,
-                           "validation_inputs": [digest(lock_path), digest(preset), digest(Path(__file__))]}
+                           "validation_inputs": validation_inputs(lock_path, preset)}
 
 
 def stage(source, destination, files, receipt):
@@ -182,7 +190,7 @@ def main():
             if not args.destination or not args.stamp: raise RuntimeError("Repair requires destination and stamp")
             if args.stamp.is_file() and all((args.destination / p).is_file() for p in (*REQUIRED, MANIFEST, RECEIPT)):
                 receipt = load(args.destination / RECEIPT)
-                if receipt.get("build_owned_runtime") is True and receipt.get("validation_inputs") == [digest(args.lock), digest(args.preset), digest(Path(__file__))] and receipt.get("source_snapshot") == inventory(args.source):
+                if receipt.get("build_owned_runtime") is True and receipt.get("validation_inputs") == validation_inputs(args.lock, args.preset) and receipt.get("source_snapshot") == inventory(args.source):
                     return 0
         files, receipt = validate(args.source, args.lock, args.preset)
         if args.destination: stage(args.source, args.destination, files, receipt)

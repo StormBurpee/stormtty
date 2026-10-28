@@ -31,10 +31,20 @@ struct ProjectWorkspaceMetadata {
     auto operator<=>(const ProjectWorkspaceMetadata&) const = default;
 };
 
+// Placement only: parking says nothing about running, exited, busy or ready.
+// Display metadata is retained, but no command, process handle or output.
+struct ParkedSession {
+    SessionId session;
+    std::string profile;
+    std::string title;
+    auto operator<=>(const ParkedSession&) const = default;
+};
+
 struct ProjectWorkspace {
     ProjectWorkspaceId id;
     ProjectWorkspaceMetadata metadata;
     Workspace workspace;
+    std::vector<ParkedSession> parked_sessions;
 };
 
 struct RemovedProjectWorkspace {
@@ -48,11 +58,12 @@ struct RemovedProjectWorkspace {
 // Hiding/activating projects preserves every Workspace and session association.
 // Host owns session lifetime and must allocate SessionIds uniquely within this
 // catalog. Mutable Workspace access retains the existing transactional API;
-// callers must not bind an ID already used by another project (validate detects
+// callers must not bind an ID already parked or used by another project (validate detects
 // violations). Independent catalogs may use independent host session registries.
 class ProjectWorkspaceCatalog {
 public:
     static constexpr std::size_t maximum_projects = 256;
+    static constexpr std::size_t maximum_parked_sessions = 256; // per project
     static constexpr std::size_t maximum_name_bytes = 256;
     static constexpr std::size_t maximum_directory_bytes = 32768;
     static constexpr std::size_t maximum_environment_bytes = 256;
@@ -91,9 +102,23 @@ public:
     // Removing the last row leaves a valid empty catalog; no implicit window exit.
     [[nodiscard]] Result<RemovedProjectWorkspace> remove(ProjectWorkspaceId);
 
+    // Transactional placement transfers. Session identity is unchanged; pane,
+    // tab and node IDs are fresh on reattachment. No launch/replay/termination.
+    // Parking the last pane preserves the project (with an empty Workspace).
+    // Reattachment is same-project only and does not activate a hidden project.
+    // Failures preserve all state, including Workspace ID counters.
+    Result<SessionId> park(ProjectPaneReference);
+    Result<TabId> reattach_to_new_tab(ProjectSessionReference);
+    Result<PaneId> reattach_to_split(ProjectSessionReference, ProjectPaneReference target,
+                                     Direction, double fraction = 0.5);
+    // Host must obtain close authorization first. Removing placement ownership
+    // does not terminate a process; returned association is for host retirement.
+    [[nodiscard]] Result<ParkedSession> discard_parked(ProjectSessionReference);
+
     Status validate() const;
 
 private:
+    ProjectWorkspace* mutable_project(ProjectWorkspaceId) noexcept;
     std::vector<ProjectWorkspace> entries_;
     ProjectWorkspaceId active_;
 };

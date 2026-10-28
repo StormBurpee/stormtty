@@ -123,6 +123,8 @@ Status validate_config(const Config& c, Platform platform) {
         return Status::failure("Invalid reduced motion preference");
     if (c.font.family.empty() || !plain_text(c.font.family, 256) || !std::isfinite(c.font.size_dip) || c.font.size_dip < 6 || c.font.size_dip > 72)
         return Status::failure("Font requires a family and size_dip between 6 and 72");
+    if (c.windows_console_backend != WindowsConsoleBackend::system && c.windows_console_backend != WindowsConsoleBackend::bundled_preview)
+        return Status::failure("Invalid Windows console backend");
     if (c.scrollback_lines > 1000000) return Status::failure("scrollback_lines must be between 0 and 1000000");
     if (c.profiles.empty() || c.profiles.size() > 64) return Status::failure("Configuration requires between 1 and 64 profiles");
     std::set<std::string> ids;
@@ -245,7 +247,15 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
             }
         } else if (section == "font") {
             string_field("family", config.font.family); number_field("size_dip", config.font.size_dip, 6, 72, false); bool_field("ligatures", config.font.ligatures);
-        } else if (section == "terminal") number_field("scrollback_lines", config.scrollback_lines, 0, 1000000, true);
+        } else if (section == "terminal") {
+            number_field("scrollback_lines", config.scrollback_lines, 0, 1000000, true);
+            if (key == "windows_console_backend") {
+                handled = true; const auto* text_value = std::get_if<std::string>(&*value);
+                if (text_value && *text_value == "system") config.windows_console_backend = WindowsConsoleBackend::system;
+                else if (text_value && *text_value == "bundled") config.windows_console_backend = WindowsConsoleBackend::bundled_preview;
+                else error(line_number, equal + 2, "windows_console_backend must be system or bundled");
+            }
+        }
         else if (section == "bindings" || section == "bindings.windows" || section == "bindings.macos") {
             handled = true;
             if (!find_command(key)) { error(line_number, 1, "Unknown command ID: " + key); continue; }
@@ -319,7 +329,8 @@ std::string serialize_config(const Config& config, Platform platform) {
         << "\nbackdrop = " << quote(config.appearance.backdrop == BackdropPreference::automatic ? "auto" : config.appearance.backdrop == BackdropPreference::mica ? "mica" : config.appearance.backdrop == BackdropPreference::acrylic ? "acrylic" : "none")
         << "\nreduced_motion = " << quote(config.appearance.reduced_motion == ReducedMotionPreference::system ? "system" : config.appearance.reduced_motion == ReducedMotionPreference::enabled ? "enabled" : "disabled")
         << "\n\n[font]\nfamily = " << quote(config.font.family) << "\nsize_dip = " << config.font.size_dip
-        << "\nligatures = " << (config.font.ligatures ? "true" : "false") << "\n\n[terminal]\nscrollback_lines = " << config.scrollback_lines << '\n';
+        << "\nligatures = " << (config.font.ligatures ? "true" : "false") << "\n\n[terminal]\nscrollback_lines = " << config.scrollback_lines
+        << "\nwindows_console_backend = " << quote(config.windows_console_backend == WindowsConsoleBackend::bundled_preview ? "bundled" : "system") << '\n';
     for (const auto& profile : config.profiles) {
         out << "\n[profile." << profile.id << "]\nlabel = " << quote(profile.label) << "\nexecutable = " << quote(profile.executable)
             << "\narguments = [";
@@ -367,6 +378,7 @@ size_dip = 15
 ligatures = false
 [terminal]
 scrollback_lines = 10000 # 0..1000000
+windows_console_backend = "system" # Windows: system or bundled (preview); new sessions only
 [profile.default]
 label = "PowerShell"
 executable = "pwsh.exe"

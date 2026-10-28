@@ -196,7 +196,7 @@ def emit(args):
                     archive_file(archive, "build-evidence/" + name, path, checksum)
                 recipes = ["tools/" + name for name in (
                     "shell-bootstrap.py", "shell-bootstrap.lock.json", "shell-bootstrap-tests.py",
-                    "shell-bootstrap.README.md", "shell-preset.zsh", "shell-notices.py", "shell-notices-tests.py",
+                    "shell-bootstrap.README.md", "shell-preset.zsh", "shell-runtime.fstab", "shell-runtime.nsswitch.conf", "shell-path-tests.py", "shell-notices.py", "shell-notices-tests.py",
                     "shell-zstd-bootstrap.py", "shell-zstd-bootstrap.lock.json", "shell-zstd-bootstrap-tests.py",
                     "prepare-bundled-shell.py", "stage-developer-shell.py", "stage-developer-shell-tests.py")]
                 recipes += ["CMakeLists.txt", "cmake/StormTTYDeveloperShell.cmake"]

@@ -1,0 +1,16 @@
+--- a/winsup/cygwin/fhandler/console.cc
++++ b/winsup/cygwin/fhandler/console.cc
+@@ -1188,10 +1188,11 @@
+ void
+ fhandler_console::set_cursor_maybe ()
+ {
+-  con.fillin (get_output_handle ());
+-  /* Nothing to do for xterm compatible mode. */
++  /* Nothing to do for xterm compatible mode.  Do not refresh the shared
++     resize baseline on this no-op path before send_winch_maybe sees it. */
+   if (wincap.has_con_24bit_colors () && !con_is_legacy)
+     return;
++  con.fillin (get_output_handle ());
+   if (con.dwLastCursorPosition.X != con.b.dwCursorPosition.X ||
+       con.dwLastCursorPosition.Y != con.b.dwCursorPosition.Y)
+     {

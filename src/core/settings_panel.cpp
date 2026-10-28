@@ -116,6 +116,14 @@ void SettingsPanel::set_material_status(std::string status) {
     if(material_status_==status) return;
     material_status_=std::move(status);++generation_;
 }
+void SettingsPanel::set_console_backend_status(bool available, std::string status) {
+    status=bounded_message(std::move(status));
+    if (bundled_console_available_==available && console_backend_status_==status) return;
+    bundled_console_available_=available; console_backend_status_=std::move(status);
+    ++generation_; rebuild_layout();
+    // If availability changed while focused, leave a usable recovery control.
+    if (!available && focus_=="console.bundled") focus_control("console.system");
+}
 void SettingsPanel::rebuild_layout() {
     layout_={};
     const double margin=viewport_.width<600?8:24;
@@ -146,7 +154,7 @@ void SettingsPanel::rebuild_layout() {
     }
     layout_.content={content_x,content_y,content_w,std::max(0.0,layout_.footer.y-content_y-16)};
     document_height_=section_==SettingsSection::appearance?448.0:
-        section_==SettingsSection::shell?profiles_.size()*72.0:72.0+command_registry().size()*60.0;
+        section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
     const double top=content_y-scroll_, right=content_x+content_w;
     if (section_==SettingsSection::appearance) {
@@ -169,8 +177,14 @@ void SettingsPanel::rebuild_layout() {
         }
         add("appearance.motion",{right-cw,top+406,cw,34},true);
     } else if (section_==SettingsSection::shell) {
+        const double offset=platform_==Platform::windows?142.0:0.0;
+        if (platform_==Platform::windows) {
+            const double half=std::max(0.0,(content_w-8)/2);
+            add("console.system",{content_x,top+48,half,34},true);
+            add("console.bundled",{content_x+half+8,top+48,half,34},true,bundled_console_available_);
+        }
         for (std::size_t i=0;i<profiles_.size();++i)
-            add("shell:"+profiles_[i].id,{content_x,top+i*72,content_w,62},true);
+            add("shell:"+profiles_[i].id,{content_x,top+offset+i*72,content_w,62},true);
     } else {
         layout_.preview={content_x,top,content_w,54};
         std::size_t i=0;
@@ -236,6 +250,10 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     } else if (id.starts_with("appearance.backdrop.")) {
         const auto value=id.substr(std::string_view("appearance.backdrop.").size());
         draft_.appearance.backdrop=value=="auto"?BackdropPreference::automatic:value=="none"?BackdropPreference::none:value=="mica"?BackdropPreference::mica:BackdropPreference::acrylic;
+    } else if (id=="console.system" && platform_==Platform::windows) {
+        draft_.windows_console_backend=WindowsConsoleBackend::system;
+    } else if (id=="console.bundled" && platform_==Platform::windows && bundled_console_available_) {
+        draft_.windows_console_backend=WindowsConsoleBackend::bundled_preview;
     } else if (id.starts_with("shell:")) {
         const auto profile_id=id.substr(6);
         const auto found=std::find_if(profiles_.begin(),profiles_.end(),[&](const auto& p){return p.id==profile_id;});
@@ -319,6 +337,9 @@ bool SettingsPanel::key(const KeyEvent& event) {
             const auto current=std::find(ids.begin(),ids.end(),focus_);
             const int index=current==ids.end()?0:static_cast<int>(current-ids.begin());
             const auto id=ids[static_cast<std::size_t>((index+direction+3)%3)];
+            focus_control(id); activate(id);
+        } else if (focus_.starts_with("console.")) {
+            const auto id=focus_=="console.system" && bundled_console_available_?"console.bundled":"console.system";
             focus_control(id); activate(id);
         } else if (focus_.starts_with("shell:") || focus_.starts_with("binding:")) {
             const std::string prefix=focus_.starts_with("shell:")?"shell:":"binding:";
@@ -513,8 +534,8 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         label({c->bounds.x+offset,c->bounds.y,std::max(0.0,c->bounds.width-offset-8),c->bounds.height},std::string(title),selected?ink:muted,13,selected);
     }
     const auto& content=layout_.content;
-    const std::string title=section_==SettingsSection::appearance?"Appearance":section_==SettingsSection::shell?"Default shell":"Keyboard shortcuts";
-    const std::string subtitle=section_==SettingsSection::appearance?"Font, transparency and motion.":section_==SettingsSection::shell?"Choose the shell for new tabs and panes.":"Assign shortcuts to terminal actions.";
+    const std::string title=section_==SettingsSection::appearance?"Appearance":section_==SettingsSection::shell?(platform_==Platform::windows?"Shell and console":"Default shell"):"Keyboard shortcuts";
+    const std::string subtitle=section_==SettingsSection::appearance?"Font, transparency and motion.":section_==SettingsSection::shell?"For new tabs and panes":"Assign shortcuts to terminal actions.";
     label({content.x,content.y-61,content.width,28},title,ink,21,true);
     label({content.x,content.y-31,content.width,20},subtitle,muted,12);
     const double top=content.y-scroll_, right=content.x+content.width;
@@ -562,6 +583,15 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         const std::string motion=draft_.appearance.reduced_motion==ReducedMotionPreference::system?"Follow system":draft_.appearance.reduced_motion==ReducedMotionPreference::enabled?"Always reduce":"Allow motion";
         button("appearance.motion",motion+"   ›");
     } else if (section_==SettingsSection::shell) {
+        if (platform_==Platform::windows) {
+            row_labels(0,"Console backend","Existing sessions keep their backend.",content.width);
+            button("console.system","System",draft_.windows_console_backend==WindowsConsoleBackend::system);
+            button("console.bundled","Bundled (preview)",draft_.windows_console_backend==WindowsConsoleBackend::bundled_preview);
+            // The host supplies one status line with version/qualification or recovery details.
+            label({content.x,top+88,content.width,18},console_backend_status_.empty()?
+                (bundled_console_available_?"Preview · native AMD64 · resize unqualified":"Bundled runtime unavailable. Select System to recover."):console_backend_status_,subdued,11,false,true);
+            label({content.x,top+118,content.width,20},"Default shell",ink,13,true,true);
+        }
         for (const auto& profile:profiles_) {
             const auto* c=find_control(layout_,"shell:"+profile.id);if (!c || !c->visible) continue;
             const auto r=c->bounds;const bool selected=draft_.default_profile==profile.id;

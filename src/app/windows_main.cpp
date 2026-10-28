@@ -15,6 +15,7 @@
 #include <objbase.h>
 #include "stormtty/native_window.hpp"
 #include "../platform/windows/startup_notice.hpp"
+#include "../platform/windows/smoke_teardown_trace.hpp"
 #include <filesystem>
 #include <cstdio>
 #include <stdexcept>
@@ -23,7 +24,12 @@
 namespace {
 struct ComApartment {
     HRESULT status = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    ~ComApartment() { if (SUCCEEDED(status)) CoUninitialize(); }
+    bool smoke{};
+    ~ComApartment() {
+        stormtty::windows::smoke_teardown_trace(smoke,"UI CoUninitialize begin");
+        if (SUCCEEDED(status)) CoUninitialize();
+        stormtty::windows::smoke_teardown_trace(smoke,"UI CoUninitialize end");
+    }
 };
 std::filesystem::path configured_shell_runtime() {
 #ifdef STORMTTY_HAS_BUNDLED_SHELL_RUNTIME
@@ -40,10 +46,12 @@ void check_shell_runtime(const std::filesystem::path& root, bool configured) {
     if (!root.empty() && (!std::filesystem::is_regular_file(root/L"usr"/L"bin"/L"zsh.exe") ||
         !std::filesystem::is_regular_file(root/L"usr"/L"bin"/L"msys-2.0.dll") ||
         !std::filesystem::is_regular_file(root/L"stormtty"/L"zsh"/L".zshrc") ||
+        !std::filesystem::is_regular_file(root/L"etc"/L"fstab") ||
+        !std::filesystem::is_regular_file(root/L"etc"/L"nsswitch.conf") ||
         (configured && !std::filesystem::is_regular_file(root/L"stormtty-shell-manifest.json"))))
         throw std::runtime_error(configured?
             "The app-owned bundled Zsh runtime is missing or incomplete. Close StormTTY and rebuild the stormtty target; keep runtimes/zsh beside StormTTY.exe when copying/installing. No fallback shell was launched.":
-            "The shell runtime needs usr/bin/zsh.exe, usr/bin/msys-2.0.dll and stormtty/zsh/.zshrc. Restage with shell-bootstrap.py. No fallback shell was launched.");
+            "The shell runtime needs usr/bin/zsh.exe, usr/bin/msys-2.0.dll, stormtty/zsh/.zshrc, etc/fstab and etc/nsswitch.conf. Restage with shell-bootstrap.py. No fallback shell was launched.");
 }
 struct Arguments {
     int count{};
@@ -54,16 +62,18 @@ struct Arguments {
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     bool smoke=false;
+    stormtty::windows::SmokeTeardownEnd completed{false,"wWinMain locals destroyed; returning to CRT"};
     try {
         Arguments args;
         if (!args.values) throw std::runtime_error("Could not read command-line arguments.");
         for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-settings") smoke=true;
+        completed.enabled=smoke;
         stormtty::NativeRunOptions options; options.smoke_test=smoke;
         // Must precede creation of any HWND, including startup error dialogs.
         // ERROR_ACCESS_DENIED means the executable manifest already set it.
         if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) && GetLastError() != ERROR_ACCESS_DENIED)
             throw std::runtime_error("Per-monitor-v2 DPI awareness requires Windows 10 version 1703 or newer.");
-        ComApartment apartment;
+        ComApartment apartment; apartment.smoke=smoke;
         if (FAILED(apartment.status)) throw std::runtime_error("Could not initialize the UI COM apartment.");
         auto config = stormtty::default_config(stormtty::Platform::windows);
         std::filesystem::path config_path;
@@ -106,7 +116,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                     "--console-runtime explicitly opts this launch into the pinned experimental\n"
                     "Microsoft ConPTY runtime (1.25.260930003). No system fallback on failure.\n"
                     "It can also be combined with any verification mode above.\n"
-                    "Without it, Windows system ConPTY remains the default.\n\n"
+                    "Without it, Settings selects System (default) or Bundled (preview) for new sessions.\n"
+                    "The bundle is private to the app; no launch-time downloads or system changes.\n\n"
                     "--shell-runtime opts this launch into staged upstream Zsh 5.9.2 with\n"
                     "StormTTY's managed preset (root/usr/bin/zsh.exe and root/stormtty/zsh/.zshrc).\n"
                     "It keeps HOME/project folders, writes no user dotfiles or history, and\n"
@@ -160,7 +171,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
         if (stormtty::has_managed_zsh_selection(config) && options.shell_runtime_directory.empty())
             throw std::runtime_error("Your saved default is managed Zsh, but this build has no bundled shell runtime. Build with STORMTTY_BUNDLE_ZSH=ON or launch with --shell-runtime <absolute staged root>; no fallback shell was launched.");
-        return stormtty::run_native_application(std::move(config),std::move(options));
+        const int result=stormtty::run_native_application(std::move(config),std::move(options));
+        stormtty::windows::smoke_teardown_trace(smoke,"native application returned to wWinMain");
+        return result;
     } catch (const std::exception& exception) {
         if (smoke) std::fprintf(stderr,"Native smoke startup error: %s\n",exception.what());
         else (void)stormtty::show_startup_notice("StormTTY startup error",exception.what(),stormtty::StartupNoticeKind::error);

@@ -1,0 +1,118 @@
+name: Native ConPTY width accounting
+on:
+  push:
+    branches: ['diagnostics/conpty-width']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: conpty-width-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  capture:
+    if: github.ref == 'refs/heads/diagnostics/conpty-width'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Initialize native compiler
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Restore pinned terminal engine
+        id: engine
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Build missing pinned engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Build isolated width probe
+        shell: pwsh
+        run: |
+          cmake -S . -B build-width -G Ninja -DCMAKE_CXX_COMPILER=cl -DSTORMTTY_TEST_CONPTY_WIDTH_PROBE=ON -DSTORMTTY_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DSTORMTTY_GHOSTTY_ROOT=$env:GITHUB_WORKSPACE/.deps/ghostty-native"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-width --target conpty_width_probe --parallel 2
+          exit $LASTEXITCODE
+      - name: Record OS and provider candidates
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path build-width/artifacts | Out-Null
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object ProductName,DisplayVersion,CurrentBuild,UBR,BuildLabEx | ConvertTo-Json | Set-Content -Encoding utf8 build-width/artifacts/windows-version.json
+          node -p 'JSON.stringify(process.versions)' | Set-Content -Encoding utf8 build-width/artifacts/node-versions.json
+          $candidate = Join-Path $env:windir 'System32/conhost.exe'
+          @{
+            scope = 'System32 candidate metadata, not proof of spawned inbox host image'
+            path = $candidate
+            version = (Get-Item $candidate).VersionInfo.FileVersion
+            sha256 = (Get-FileHash $candidate -Algorithm SHA256).Hash
+          } | ConvertTo-Json | Set-Content -Encoding utf8 build-width/artifacts/inbox-candidate.json
+          ./tools/prepare-conpty-probe.ps1 -Destination "$env:RUNNER_TEMP/stormtty-width-provider"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash "$env:RUNNER_TEMP/stormtty-width-provider/conpty.dll","$env:RUNNER_TEMP/stormtty-width-provider/OpenConsole.exe" -Algorithm SHA256 | Select-Object Path,Hash | ConvertTo-Json | Set-Content -Encoding utf8 build-width/artifacts/packaged-hashes.json
+      - name: Capture both provider write routes
+        shell: python
+        run: |
+          import pathlib,os,sys,importlib.util,json
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
+          root=pathlib.Path('build-width/artifacts').resolve()
+          failures=[]
+          for mode in ('inbox','packaged'):
+            args=[str(pathlib.Path('build-width/conpty_width_probe.exe').resolve()),str(root/mode)]
+            if mode=='packaged':args+=['--packaged-provider',str(pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-width-provider')]
+            result=runner.run_owned(args,timeout=150,output_dir=root)
+            print('WIDTH_PROCESS_RESULT='+json.dumps({'provider':mode,**result.metadata()},sort_keys=True),flush=True)
+            print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+            if result.exit_code:failures.append(mode)
+          raise SystemExit(1 if failures else 0)
+      - name: Validate and replay the exact initial Ink frame
+        shell: python
+        run: |
+          import pathlib,os,sys,subprocess,importlib.util,json
+          root=pathlib.Path('build-width/artifacts').resolve()
+          exe=pathlib.Path('build-width/conpty_width_probe.exe').resolve()
+          fixture=pathlib.Path('tests/ink/conpty-width-probe/first-frame-56.bin').resolve()
+          subprocess.run([sys.executable,'tests/ink/conpty-width-probe/verify-first-frame.py',str(exe),str(fixture),str(root/'fixture-validation')],check=True,timeout=120)
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
+          failures=[]
+          for mode in ('inbox','packaged'):
+            args=[str(exe),'--first-frame',str(fixture),str(root/('first-frame-'+mode))]
+            if mode=='packaged':args+=['--packaged-provider',str(pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-width-provider')]
+            result=runner.run_owned(args,timeout=60,output_dir=root)
+            print('FIRST_FRAME_PROCESS_RESULT='+json.dumps({'provider':mode,**result.metadata()},sort_keys=True),flush=True)
+            print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+            if result.exit_code:failures.append(mode)
+          raise SystemExit(1 if failures else 0)
+      - name: Record bounded controlled evidence in logs
+        if: always()
+        shell: python
+        run: |
+          import pathlib,hashlib,base64,json
+          root=pathlib.Path('build-width/artifacts')
+          for path in sorted(root.rglob('*')):
+            if not path.is_file() or path.suffix not in ('.json','.tsv','.txt','.bin'):continue
+            data=path.read_bytes()
+            print('CONPTY_WIDTH_FILE='+json.dumps({'path':path.relative_to(root).as_posix(),'size':len(data),'sha256':hashlib.sha256(data).hexdigest()}),flush=True)
+            if len(data)>131072:
+              print('Full file retained in artifact; inline evidence size limit exceeded.',flush=True);continue
+            encoded=base64.b64encode(data).decode('ascii')
+            print('CONPTY_WIDTH_BASE64_BEGIN',flush=True)
+            for i in range(0,len(encoded),4096):print(encoded[i:i+4096],flush=True)
+            print('CONPTY_WIDTH_BASE64_END',flush=True)
+      - name: Preserve controlled width evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: conpty-width-${{ github.sha }}
+          if-no-files-found: warn
+          path: build-width/artifacts/

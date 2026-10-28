@@ -1,5 +1,6 @@
 #include "stormtty/process.hpp"
 #include "stormtty/terminal.hpp"
+#include "../src/platform/windows/process_control.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -130,7 +132,7 @@ int child_main(int argc, char** argv) {
         std::puts("READY");
         for (;;) {
             const int c = std::getchar();
-            if (c == EOF || c == 'x') return 0;
+            if (c == EOF || c == 'x') { std::puts("RESIZE-FINAL-TAIL"); return 0; }
             const auto [columns, rows] = child_size(); std::printf("SIZE:%u:%u\n", columns, rows);
         }
     }
@@ -404,11 +406,158 @@ void idle_writer_shutdown_stress(const std::string& executable, unsigned rounds)
         }
     }
 }
+void control_bookkeeping_tests() {
+    // Portable bookkeeping only: this does not exercise a failing native call.
+    // Never induce native allocation failure with enormous grids or expose an
+    // invalid HPCON/test-only failure switch through the public process API.
+    stormtty::WindowsProcessControlDiagnostics state;
+    require(!state.applied_grid, "uncreated console has an applied grid");
+    state.applied_grid = stormtty::ProcessGridSize{80,24};
+    state.requested_grid = {100,30}; state.requested_resize_generation = 7;
+    stormtty::windows::detail::record_resize_result(state, 7, {100,30}, false);
+    require(state.resize_failures == 1 && state.applied_resize_generation == 0 &&
+            state.applied_grid == stormtty::ProcessGridSize{80,24}, "failed resize changed applied state");
+    stormtty::windows::detail::record_resize_result(state, 7, {100,30}, true);
+    require(state.applied_resize_generation == 7 && state.applied_grid == state.requested_grid,
+            "successful coalesced resize did not advance applied state");
+    state.requested_resize_generation=8; state.requested_grid={110,35};
+    stormtty::windows::detail::record_resize_result(state, 7, {100,30}, true);
+    require(state.requested_resize_generation==8 && state.requested_grid==stormtty::ProcessGridSize{110,35} &&
+            state.applied_resize_generation==7 && state.applied_grid==stormtty::ProcessGridSize{100,30},
+            "older native completion acknowledged or erased a newer request");
+    stormtty::windows::detail::record_resize_result(state, 8, {110,35}, false);
+    require(state.resize_failures==2 && state.applied_resize_generation==7 &&
+            state.applied_grid==stormtty::ProcessGridSize{100,30}, "failed newer resize replaced successful applied state");
+    state.control_wakes = std::numeric_limits<std::uint64_t>::max();
+    stormtty::windows::detail::count(state.control_wakes);
+    require(state.control_wakes == std::numeric_limits<std::uint64_t>::max(), "diagnostic counter wrapped");
+}
+#ifdef _WIN32
+stormtty::WindowsProcessControlDiagnostics control_state(const Process& process) {
+    const auto state = process.diagnostics().windows_control;
+    require(state.has_value(), "Windows control diagnostics are unavailable");
+    return *state;
+}
+void print_control(std::ostream& out, const stormtty::WindowsProcessControlDiagnostics& d) {
+    out << "requested=" << d.requested_resize_generation << ':' << d.requested_grid.columns << 'x' << d.requested_grid.rows
+        << " applied=" << d.applied_resize_generation << ':';
+    if (d.applied_grid) out << d.applied_grid->columns << 'x' << d.applied_grid->rows; else out << "uncreated";
+    out << " waits=" << d.wait_calls << " control_wakes=" << d.control_wakes << " exit_wakes=" << d.child_exit_wakes
+        << " resize_calls=" << d.resize_calls << " resize_failures=" << d.resize_failures << '\n';
+}
+template<class Predicate> void await_control(const Process& process, Predicate predicate, const char* error) {
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    do {
+        if (predicate(control_state(process))) return;
+        require(process.state() != ProcessState::failed && process.state() != ProcessState::exited,
+                "process exited before controller checkpoint");
+        std::this_thread::sleep_for(1ms); // Bounded test observation, not production polling.
+    } while (std::chrono::steady_clock::now() < deadline);
+    std::cerr << "Controller checkpoint timed out: "; print_control(std::cerr,control_state(process));
+    throw std::runtime_error(error);
+}
+void event_driven_control_tests(const std::string& executable) {
+    const auto options = [&](const char* mode) { ProcessOptions o; o.executable=executable; o.arguments={mode}; return o; };
+    {
+        Session session(options("--child-resize"));
+        require(session.capture->contains("READY"), "idle controller child not ready");
+        await_control(*session.process, [](const auto& d) { return d.wait_calls > 0; }, "controller did not enter wait");
+        const auto before = control_state(*session.process);
+        require(before.requested_resize_generation == 0 && before.applied_resize_generation == 0 &&
+                before.applied_grid == before.requested_grid, "initial controller geometry is not the launch grid");
+        std::this_thread::sleep_for(200ms);
+        const auto idle = control_state(*session.process);
+        require(idle.wait_calls == before.wait_calls && idle.control_wakes == before.control_wakes &&
+                idle.child_exit_wakes == before.child_exit_wakes, "idle controller woke periodically without work");
+
+        require(!session.process->request_resize({0,24}), "invalid resize accepted");
+        require(control_state(*session.process).requested_resize_generation == 0,
+                "rejected resize advanced its generation");
+        // Repeated request/apply/repark transitions exercise signalling on both
+        // sides of wait entry; timeouts catch work lost by an explicit reset race.
+        for (unsigned generation = 1; generation <= 32; ++generation) {
+            const stormtty::ProcessGridSize grid{static_cast<std::uint16_t>(80+generation),30};
+            session.capture->set_grid(grid);
+            require(session.process->request_resize(grid), "sequential control resize rejected");
+            await_control(*session.process, [&](const auto& d) {
+                return d.applied_resize_generation == generation && d.applied_grid == grid;
+            }, "request/apply/repark lost a resize");
+            if (generation % 2) std::this_thread::yield(); else std::this_thread::sleep_for(1ms);
+        }
+        std::atomic<unsigned> accepted{};
+        {
+            std::vector<std::jthread> producers;
+            for (unsigned producer=0; producer<4; ++producer) producers.emplace_back([&,producer] {
+                for (unsigned i=0; i<64; ++i) {
+                    if (session.process->request_resize({static_cast<std::uint16_t>(80+(i+producer)%40),30})) ++accepted;
+                    if (i%4==0) std::this_thread::yield();
+                }
+            });
+        } // Join every producer before sending the unambiguous newest request.
+        require(accepted == 256, "concurrent control resize rejected");
+        const stormtty::ProcessGridSize final_grid{120,40};
+        session.capture->set_grid(final_grid);
+        require(session.process->request_resize(final_grid), "final controller resize rejected");
+        constexpr std::uint64_t final_generation = 32+256+1;
+        await_control(*session.process, [&](const auto& d) {
+            return d.requested_resize_generation == final_generation && d.applied_resize_generation == final_generation &&
+                   d.requested_grid == final_grid && d.applied_grid == final_grid;
+        }, "latest resize generation did not converge");
+        // The applied generation proves only the native call. Ask the real child
+        // separately; no ACK is treated as an output boundary or shell evidence.
+        bool observed=false;
+        for (unsigned attempt=0;attempt<50 && !observed;++attempt) {
+            send(*session.process,"q"); observed=session.capture->contains("SIZE:120:40",50ms);
+        }
+        require(observed, "child did not observe the final native grid");
+        send(*session.process,"x");
+        const auto result=session.finish();
+        require(result.error.empty() && result.exit_code==0, "resize controller natural exit failed");
+        require(session.capture->contains("RESIZE-FINAL-TAIL",0ms), "resize controller lost final output");
+        const auto final=control_state(*session.process);
+        require(final.child_exit_wakes==1 && final.resize_failures==0 && final.resize_calls>0 && final.resize_calls<=final_generation &&
+                final.wait_calls==final.control_wakes+final.child_exit_wakes,
+                "controller final counters are inconsistent");
+        require(!session.process->request_resize({90,30}) &&
+                control_state(*session.process).requested_resize_generation==final_generation,
+                "post-exit resize changed controller diagnostics");
+        std::cout << "Native controller convergence: "; print_control(std::cout,final);
+    }
+    for (unsigned round=0; round<4; ++round) for (const bool flood : {false,true}) {
+        Session session(options(flood ? "--child-flood-forever" : "--child-resize"),flood);
+        require(session.capture->contains(flood ? "FLOOD-LIVE" : "READY"), "resize/close child not ready");
+        std::atomic<bool> started{};
+        std::jthread producer([&] {
+            for (unsigned i=0; i<256; ++i) {
+                const bool accepted=session.process->request_resize({static_cast<std::uint16_t>(80+i%40),30});
+                started.store(true);
+                if (!accepted) break;
+                std::this_thread::yield();
+            }
+        });
+        const auto ready_deadline=std::chrono::steady_clock::now()+5s;
+        while (!started.load() && std::chrono::steady_clock::now()<ready_deadline) std::this_thread::sleep_for(1ms);
+        require(started.load(), "resize producer did not start");
+        const auto start=std::chrono::steady_clock::now();
+        session.process->request_close();
+        require(std::chrono::steady_clock::now()-start<100ms, "close during resize blocked caller");
+        producer.join();
+        const auto result=session.finish();
+        require(result.close_requested && result.error.empty(), "close during resize/flood failed");
+        const auto final=control_state(*session.process);
+        require(final.applied_resize_generation<=final.requested_resize_generation && final.resize_failures==0,
+                "close during resize corrupted generation state");
+    }
+    std::cout << "PASS: Windows event-driven controller idle, resize generations, signal/repark stress, resize/flood close and final drain\n";
+}
+#endif
 void run_tests(const std::string& executable) {
+    control_bookkeeping_tests();
     semantic_capture_tests();
     idle_writer_shutdown_stress(executable, 8);
     const auto options = [&](std::string mode) { ProcessOptions o; o.executable = executable; o.arguments = {std::move(mode)}; return o; };
 #ifdef _WIN32
+    event_driven_control_tests(executable);
     {
         // Regression for native CTest/CI launches: bInheritHandles=FALSE alone
         // must not leave the child's stdio pointing at the parent's redirected
@@ -435,6 +584,9 @@ void run_tests(const std::string& executable) {
         require(s.process->try_send("x") == ProcessSendResult::closed, "input accepted after exit");
         require(!s.process->request_resize({90, 30}), "resize accepted after exit");
         require(!s.process->diagnostics().advanced_protocols_verified, "unqualified protocol claim");
+#ifndef _WIN32
+        require(!s.process->diagnostics().windows_control, "POSIX fabricated Windows control diagnostics");
+#endif
     }
     {
         auto o = options("--child-args");
@@ -561,6 +713,14 @@ int main(int argc, char** argv) {
         const auto executable = executable_path(argv[0]);
         if (argc > 1 && std::string_view(argv[1]) == "--idle-writer-stress")
             idle_writer_shutdown_stress(executable, 64); // 512 launches; opt-in longer run.
+        else if (argc > 1 && std::string_view(argv[1]) == "--event-control-tests") {
+            control_bookkeeping_tests();
+#ifdef _WIN32
+            event_driven_control_tests(executable);
+#else
+            throw std::runtime_error("--event-control-tests requires native Windows ConPTY; not a portable pass");
+#endif
+        }
         else run_tests(executable);
 #ifdef _WIN32
         std::cout << "PASS: native Windows system ConPTY process lifecycle tests (not graphics/Ink/physical UI qualification)\n";

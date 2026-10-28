@@ -1,9 +1,9 @@
 name: Native build and runtime evidence
 on:
   push:
-    paths-ignore: ['README.md', 'docs/**']
+    paths-ignore: ['README.md', 'docs/**', 'tools/probes/msys-runtime-experiment/**', '.github/workflows/msys-resize-experiment.yml', '.github/workflows/conpty-width-probe.yml', 'tests/conpty_width_probe.cpp', 'tests/ink/conpty-width-probe/**', 'tools/macos-presentation-probe.mm', 'tools/macos-presentation-probe.md', '.github/workflows/macos-presentation-probe.yml']
   pull_request:
-    paths-ignore: ['README.md', 'docs/**']
+    paths-ignore: ['README.md', 'docs/**', 'tools/probes/msys-runtime-experiment/**', '.github/workflows/msys-resize-experiment.yml', '.github/workflows/conpty-width-probe.yml', 'tests/conpty_width_probe.cpp', 'tests/ink/conpty-width-probe/**', 'tools/macos-presentation-probe.mm', 'tools/macos-presentation-probe.md', '.github/workflows/macos-presentation-probe.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,6 +19,8 @@ jobs:
         os: [ubuntu-24.04, windows-2025, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    env:
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -75,6 +77,45 @@ jobs:
       - name: Run real native tests
         id: native_tests
         run: ctest --test-dir build --output-on-failure --output-junit test-results.xml --parallel 1
+      - name: Verify bundled console cached repair and portable install
+        if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
+        shell: python
+        run: |
+          import pathlib,subprocess,sys,importlib.util,json
+          subprocess.run(['cmake','-S','.','-B','build','-DSTORMTTY_CONPTY_OFFLINE=ON'],check=True,timeout=120)
+          subprocess.run(['cmake','--build','build','--target','stormtty','--parallel','2'],check=True,timeout=180)
+          runtime=pathlib.Path('build/runtimes/conpty/1.25.260930003/x64').resolve()
+          # Delete only a generated private payload; the owned receipt enables cached repair.
+          (runtime/'OpenConsole.exe').unlink()
+          subprocess.run(['cmake','--build','build','--target','stormtty','--parallel','2'],check=True,timeout=180)
+          subprocess.run([sys.executable,'tools/prepare-bundled-conpty.py','--destination',str(runtime),'--cache',str(pathlib.Path('.cache/conpty').resolve()),'--verify-only'],check=True,timeout=90)
+          install=pathlib.Path('build/portable console é').resolve()
+          subprocess.run(['cmake','--install','build','--prefix',str(install)],check=True,timeout=240)
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
+          capture=pathlib.Path('build/artifacts/native-console-installed-settings.png').resolve()
+          result=runner.run_owned([str(install/'stormtty.exe'),'--smoke-settings','--capture',str(capture)],timeout=90,output_dir=capture.parent)
+          print('INSTALLED_CONSOLE_PROCESS_RESULT='+json.dumps(result.metadata(),sort_keys=True),flush=True)
+          print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+          raise SystemExit(result.exit_code)
+      - name: Compile isolated additional-blur experiment
+        id: blur_probe_build
+        if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
+        run: |
+          cmake -S . -B build -DSTORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE=ON
+          cmake --build build --target stormtty_host_backdrop_probe --parallel 2
+      - name: Verify experimental opaque fallback lifecycle
+        if: always() && runner.os == 'Windows' && steps.blur_probe_build.outcome == 'success'
+        shell: python
+        run: |
+          import pathlib,importlib.util,sys,json
+          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
+          result=runner.run_owned([str(pathlib.Path('build/stormtty_host_backdrop_probe.exe').resolve()),'--warp','--smoke'],timeout=30,output_dir=pathlib.Path("build/artifacts"))
+          print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
+          print("EXPERIMENTAL_OPAQUE_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+          print("WARP lifecycle only: not host backdrop or physical blur verification.",flush=True)
+          raise SystemExit(result.exit_code)
       - name: Diagnose Windows Ink transport boundary
         if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
         shell: python
@@ -136,8 +177,8 @@ jobs:
             args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--'+mode,'--console-runtime',str(provider),'--capture',str(capture.resolve())]
             print('PACKAGED_APPLICATION_CASE='+mode,flush=True)
             result=runner.run_owned(args,timeout=60,output_dir=pathlib.Path("build/artifacts"))
-            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
             print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
             code=result.exit_code
             print('PACKAGED_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
             if code: failures.append(mode)
@@ -155,11 +196,16 @@ jobs:
         id: staged_shell
         if: always() && runner.os == 'Windows' && steps.shell_safety.outcome == 'success'
         run: python tools/shell-bootstrap.py --destination .deps/stormtty-shell --cache .cache/shell-bootstrap
+      - name: Verify managed shell HOME and drive paths
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        run: python tools/shell-path-tests.py --runtime .deps/stormtty-shell --resolver-probe build/bundled_shell_probe.exe
       - name: Qualify bundled Zsh through real native sessions
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         shell: python
         run: |
-          import os,pathlib,subprocess
+          import os,pathlib,importlib.util,sys,json
+          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
           shell=pathlib.Path('.deps/stormtty-shell/usr/bin/zsh.exe').resolve()
           fixture=pathlib.Path('tools/probes/bundled_shell_fixture.zsh').resolve()
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
@@ -168,10 +214,13 @@ jobs:
             scratch=pathlib.Path(os.environ['RUNNER_TEMP'])/('stormtty-zsh-'+mode)
             args=[str(pathlib.Path('build/bundled_shell_probe.exe').resolve()),str(shell),str(fixture),str(scratch)]
             args+=['inbox'] if mode=='inbox' else ['--packaged-provider',str(provider)]
+            args+=['--resize-repeats','6']
             print('BUNDLED_ZSH_CASE='+mode,flush=True)
-            result=subprocess.run(args,timeout=120)
-            print('BUNDLED_ZSH_RESULT='+mode+':'+str(result.returncode),flush=True)
-            if result.returncode: failures.append(mode)
+            result=runner.run_owned(args,timeout=180,output_dir=pathlib.Path("build/artifacts"))
+            print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
+            print('BUNDLED_ZSH_RESULT='+mode+':'+str(result.exit_code),flush=True)
+            if result.exit_code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
       - name: Verify application with bundled Zsh
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
@@ -188,8 +237,8 @@ jobs:
             args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--'+mode,'--console-runtime',str(provider),'--shell-runtime',str(runtime),'--capture',str(capture.resolve())]
             print('BUNDLED_ZSH_APPLICATION_CASE='+mode,flush=True)
             result=runner.run_owned(args,timeout=60,output_dir=pathlib.Path("build/artifacts"))
-            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
             print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
             code=result.exit_code
             print('BUNDLED_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
             if code: failures.append(mode)
@@ -217,11 +266,34 @@ jobs:
             args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--'+mode,'--console-runtime',str(provider),'--capture',str(capture.resolve())]
             print('DEVELOPER_ZSH_APPLICATION_CASE='+mode,flush=True)
             result=runner.run_owned(args,timeout=90,output_dir=pathlib.Path("build/artifacts"))
-            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
             print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
             code=result.exit_code
             print('DEVELOPER_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
             if code: failures.append(mode)
+          raise SystemExit(1 if failures else 0)
+      - name: Repeat owned Windows settings teardown
+        if: always() && runner.os == 'Windows' && steps.developer_shell_build.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,importlib.util,sys,json
+          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
+          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
+          runtime=pathlib.Path('.deps/stormtty-shell').resolve()
+          failures=[]
+          for mode,count in [('explicit',10),('default',3)]:
+            for index in range(count):
+              name='teardown-'+mode+'-'+str(index+1)
+              capture=pathlib.Path('build/artifacts')/(name+'.png')
+              args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--smoke-settings','--console-runtime',str(provider),'--capture',str(capture.resolve())]
+              if mode=='explicit': args+=['--shell-runtime',str(runtime)]
+              print('TEARDOWN_CASE='+name,flush=True)
+              result=runner.run_owned(args,timeout=30,output_dir=pathlib.Path('build/artifacts'))
+              print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+              print('TEARDOWN_RESULT='+json.dumps({'case':name,**result.metadata()},sort_keys=True),flush=True)
+              if result.exit_code: failures.append(name)
+          print('TEARDOWN_FAILURES='+json.dumps(failures),flush=True)
           raise SystemExit(1 if failures else 0)
       - name: Collect targeted macOS GUI failure evidence
         if: always() && runner.os == 'macOS' && steps.build.outcome == 'success' && steps.native_tests.outcome == 'failure'
@@ -231,7 +303,7 @@ jobs:
         shell: python
         run: |
           import pathlib,base64,hashlib
-          for name in ('native-window.png', 'native-layout.png', 'native-modal.png', 'native-projects.png', 'native-settings.png'):
+          for name in ('native-window.png', 'native-layout.png', 'native-modal.png', 'native-projects.png', 'native-settings.png', 'native-settings-console.png', 'native-console-installed-settings-console.png'):
             p=pathlib.Path('build/artifacts')/name
             print('STORMTTY_NATIVE_FRAME_NAME='+name)
             if p.exists():

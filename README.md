@@ -65,6 +65,16 @@ frame capture is not a test of physical input, desktop composition or
 accessibility. Windows ARM64 and universal macOS packaging are not implied by an
 x64 or single-architecture build.
 
+### Windows console backend preview
+
+Windows AMD64 app builds privately bundle pinned Microsoft ConPTY
+`1.25.260930003`; **System is still the default**. In Settings → Shell, choose
+**Bundled (preview)** and Save to use it for new tabs and panes. Existing sessions
+are never restarted. Switch back to System the same way. No launch flags,
+system installation, global PATH changes or launch-time downloads are required.
+The compact-alt resize regression remains unresolved; this is not a full Ink or
+graphics compatibility claim. See [bundling, recovery and verification](docs/bundled-console.md).
+
 ## Build from source
 
 Run these commands from the repository root. You need **Python 3.10+**, **Git**,
@@ -138,8 +148,9 @@ Dependency revisions and archive hashes live in
 
 ## Using the Windows host
 
-The development host starts Command Prompt by default. Profiles can select a
-different shell; StormTTY does not replace or emulate the shell itself.
+Fresh Windows app builds start managed Zsh by default. Existing saved shell
+choices are preserved, and Settings can select another installed shell.
+StormTTY hosts the shell; its terminal engine does not interpret shell commands.
 
 | Action | Default shortcut |
 | --- | --- |
@@ -157,11 +168,20 @@ unavailable actions with a reason. Select an action and press **Alt+Enter** to
 assign and save its shortcut. Conflicts and OS-reserved shortcuts are rejected. Terminal keys such as `Alt+]`
 require **Use shortcut** confirmation before they can override shell input.
 
+Choose **Move to background** in the pane menu or command palette to park a
+terminal in its workspace's footer without restarting its process. Click its
+footer chip to restore it; right-click for actions, including confirmed close.
+The overflow menu holds additional background terminals. Parking the last pane
+leaves **New terminal** available. Exit indicators report the terminal process's
+exit code—not command readiness or service health. Background sessions are not
+restored after restarting StormTTY.
+
 **Settings** includes Graphite, Instrument and Daylight themes, live appearance
 previews, font controls, shell selection and shortcut editing. Cancel restores
 the original palette; Save persists it. Existing terminal applications keep
-their own OSC color overrides and explicit ANSI/RGB colors. Exited sessions
-retain their final frame. Close confirmations, context menus and settings share the
+their own OSC color overrides and explicit ANSI/RGB colors. The Windows host
+retains bounded terminal output after process exit for scrolling, selection,
+copying and resize until the terminal is closed. Close confirmations, context menus and settings share the
 app's renderer-owned interface. Find-in-terminal has a tested core search service,
 but its user-facing command is not enabled yet.
 
@@ -199,12 +219,15 @@ runtime can be supplied with `-DSTORMTTY_DEVELOPER_SHELL_RUNTIME=<absolute-root>
 that is an advanced offline override, not a required setup step. No IDE-specific
 project files are needed.
 
-Native Windows CI has passed both inbox and packaged-console Zsh probes:
-interactive/native handles, Unicode and working directories, shell/native resize,
-Ctrl-C, suspend/background/foreground jobs, and exit status. All five explicit
-app-with-Zsh smoke scenarios also pass. This is runtime evidence, not physical
-keyboard/UI qualification. Compact alternate-screen Ink layouts still have a
-resize-redraw race; the full Windows suite is not green.
+Native Windows CI has exercised both inbox and packaged-console Zsh probes:
+interactive/native handles, Unicode and working directories, Ctrl-C,
+suspend/background/foreground jobs, and exit status. App-with-Zsh smoke checks
+pass, including normal launches without a shell-runtime flag. Resize qualification
+remains intermittent: the native console can report the new grid while Zsh still
+reports the previous dimensions, and an input-loss case has also been observed.
+Compact alternate-screen Ink layouts retain a separate resize-redraw failure.
+The full Windows suite is not green; passing CI smoke checks are not physical
+keyboard/UI qualification.
 
 The optional pinned Microsoft console backend remains a separate experiment,
 selected with `--console-runtime <absolute-directory>`; bundling Zsh does not

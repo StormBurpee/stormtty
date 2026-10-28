@@ -1,0 +1,22 @@
+--- a/winsup/cygwin/fhandler/console.cc
++++ b/winsup/cygwin/fhandler/console.cc
+@@ -1832,12 +1832,13 @@
+ 	  break;
+ 
+ 	case WINDOW_BUFFER_SIZE_EVENT:
+-	  if (send_winch_maybe ())
+-	    {
+-	      stat = input_winch;
+-	      goto out;
+-	    }
+-	  /* fall through */
++	  /* Retire the peeked records while input_mutex still protects
++	     their indices.  send_winch_maybe() releases that mutex around
++	     signal delivery; another reader or the master thread may then
++	     consume the resize record.  Do not discard it a second time
++	     after reacquiring the mutex, which could consume a new key. */
++	  discard_key_events (i + 1);
++	  return send_winch_maybe () ? input_winch : stat;
+ 	default:
+ 	  continue;
+ 	}

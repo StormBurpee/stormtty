@@ -38,13 +38,14 @@ Status validate_metadata(const ProjectWorkspaceMetadata& metadata) {
     return {};
 }
 
-std::vector<SessionId> sessions_in(const Workspace& workspace) {
+std::vector<SessionId> sessions_in(const ProjectWorkspace& project) {
     std::vector<SessionId> sessions;
-    sessions.reserve(workspace.state().panes.size());
-    for (const auto& [id, pane] : workspace.state().panes) {
+    sessions.reserve(project.workspace.state().panes.size() + project.parked_sessions.size());
+    for (const auto& [id, pane] : project.workspace.state().panes) {
         (void)id;
         if (pane.session) sessions.push_back(pane.session);
     }
+    for (const auto& parked : project.parked_sessions) sessions.push_back(parked.session);
     std::sort(sessions.begin(), sessions.end());
     return sessions;
 }
@@ -77,7 +78,7 @@ Result<ProjectWorkspaceId> ProjectWorkspaceCatalog::create(ProjectWorkspaceMetad
     }
     const auto id = allocate_project_id();
     if (!id) return {{}, "Project workspace ID space exhausted"};
-    entries_.push_back({id, std::move(metadata), std::move(workspace)});
+    entries_.push_back({id, std::move(metadata), std::move(workspace), {}});
     if (!active_) active_ = id;
     return {id, {}};
 }
@@ -107,7 +108,7 @@ Status ProjectWorkspaceCatalog::update_metadata(ProjectWorkspaceId id, ProjectWo
 
 std::vector<SessionId> ProjectWorkspaceCatalog::session_ids(ProjectWorkspaceId id) const {
     const auto* project = find(id);
-    return project ? sessions_in(project->workspace) : std::vector<SessionId>{};
+    return project ? sessions_in(*project) : std::vector<SessionId>{};
 }
 
 std::vector<SessionId> ProjectWorkspaceCatalog::all_session_ids() const {
@@ -117,17 +118,21 @@ std::vector<SessionId> ProjectWorkspaceCatalog::all_session_ids() const {
             (void)id;
             if (pane.session) sessions.insert(pane.session);
         }
+        for (const auto& parked : project.parked_sessions) sessions.insert(parked.session);
     }
     return {sessions.begin(), sessions.end()};
 }
 
 bool ProjectWorkspaceCatalog::contains_session(SessionId session) const noexcept {
     if (!session) return false;
-    for (const auto& project : entries_)
+    for (const auto& project : entries_) {
         for (const auto& [id, pane] : project.workspace.state().panes) {
             (void)id;
             if (pane.session == session) return true;
         }
+        for (const auto& parked : project.parked_sessions)
+            if (parked.session == session) return true;
+    }
     return false;
 }
 
@@ -136,12 +141,83 @@ Result<RemovedProjectWorkspace> ProjectWorkspaceCatalog::remove(ProjectWorkspace
         [id](const ProjectWorkspace& project) { return project.id == id; });
     if (it == entries_.end()) return {{}, "Project workspace no longer exists"};
     // Allocate the report before mutating catalog state.
-    auto sessions = sessions_in(it->workspace);
+    auto sessions = sessions_in(*it);
     const auto index = static_cast<std::size_t>(it - entries_.begin());
     RemovedProjectWorkspace removed{std::move(*it), std::move(sessions)};
     entries_.erase(it);
     if (active_ == id)
         active_ = entries_.empty() ? ProjectWorkspaceId{} : entries_[std::min(index, entries_.size() - 1)].id;
+    return {std::move(removed), {}};
+}
+
+ProjectWorkspace* ProjectWorkspaceCatalog::mutable_project(ProjectWorkspaceId id) noexcept {
+    const auto it = std::find_if(entries_.begin(), entries_.end(),
+        [id](const ProjectWorkspace& project) { return project.id == id; });
+    return it == entries_.end() ? nullptr : &*it;
+}
+
+Result<SessionId> ProjectWorkspaceCatalog::park(ProjectPaneReference source) {
+    if (auto status = validate(); !status) return {{}, std::move(status.error)};
+    auto* project = mutable_project(source.project);
+    if (!project) return {{}, "Project workspace no longer exists"};
+    const auto* pane = project->workspace.pane(source.local);
+    if (!pane || !pane->session) return {{}, "Pane has no session to park"};
+    if (project->parked_sessions.size() >= maximum_parked_sessions)
+        return {{}, "Parked session limit exceeded"};
+    const auto session = pane->session;
+    auto staged = *project;
+    staged.parked_sessions.push_back({session, pane->profile, pane->title});
+    if (auto status = staged.workspace.close_pane(source.local); !status)
+        return {{}, std::move(status.error)};
+    *project = std::move(staged);
+    return {session, {}};
+}
+
+Result<TabId> ProjectWorkspaceCatalog::reattach_to_new_tab(ProjectSessionReference source) {
+    if (auto status = validate(); !status) return {{}, std::move(status.error)};
+    auto* project = mutable_project(source.project);
+    if (!project) return {{}, "Project workspace no longer exists"};
+    auto staged = *project;
+    const auto parked = std::find_if(staged.parked_sessions.begin(), staged.parked_sessions.end(),
+        [&](const ParkedSession& entry) { return entry.session == source.local; });
+    if (parked == staged.parked_sessions.end()) return {{}, "Parked session no longer exists"};
+    auto result = staged.workspace.create_tab(parked->session, parked->profile);
+    if (!result) return result;
+    if (auto status = staged.workspace.set_pane_title(staged.workspace.active_pane(), parked->title); !status)
+        return {{}, std::move(status.error)};
+    staged.parked_sessions.erase(parked);
+    *project = std::move(staged);
+    return result;
+}
+
+Result<PaneId> ProjectWorkspaceCatalog::reattach_to_split(ProjectSessionReference source,
+        ProjectPaneReference target, Direction direction, double fraction) {
+    if (auto status = validate(); !status) return {{}, std::move(status.error)};
+    if (source.project != target.project) return {{}, "Cannot reattach across project workspaces"};
+    auto* project = mutable_project(source.project);
+    if (!project) return {{}, "Project workspace no longer exists"};
+    auto staged = *project;
+    const auto parked = std::find_if(staged.parked_sessions.begin(), staged.parked_sessions.end(),
+        [&](const ParkedSession& entry) { return entry.session == source.local; });
+    if (parked == staged.parked_sessions.end()) return {{}, "Parked session no longer exists"};
+    auto result = staged.workspace.split(target.local, direction, parked->session, parked->profile, fraction);
+    if (!result) return result;
+    if (auto status = staged.workspace.set_pane_title(*result.value, parked->title); !status)
+        return {{}, std::move(status.error)};
+    staged.parked_sessions.erase(parked);
+    *project = std::move(staged);
+    return result;
+}
+
+Result<ParkedSession> ProjectWorkspaceCatalog::discard_parked(ProjectSessionReference source) {
+    if (auto status = validate(); !status) return {{}, std::move(status.error)};
+    auto* project = mutable_project(source.project);
+    if (!project) return {{}, "Project workspace no longer exists"};
+    const auto parked = std::find_if(project->parked_sessions.begin(), project->parked_sessions.end(),
+        [&](const ParkedSession& entry) { return entry.session == source.local; });
+    if (parked == project->parked_sessions.end()) return {{}, "Parked session no longer exists"};
+    auto removed = *parked;
+    project->parked_sessions.erase(parked);
     return {std::move(removed), {}};
 }
 
@@ -157,6 +233,12 @@ Status ProjectWorkspaceCatalog::validate() const {
             return Status::failure("Invalid or duplicate project workspace ID");
         if (auto status = validate_metadata(project.metadata); !status) return status;
         if (auto status = project.workspace.validate(); !status) return status;
+        if (project.parked_sessions.size() > maximum_parked_sessions)
+            return Status::failure("Parked session limit exceeded");
+        for (const auto& parked : project.parked_sessions)
+            if (!parked.session || !sessions.insert(parked.session).second)
+                return Status::failure("Invalid or duplicate parked session");
+
         for (const auto& [id, pane] : project.workspace.state().panes) {
             (void)id;
             if (pane.session && !sessions.insert(pane.session).second)

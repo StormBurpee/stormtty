@@ -1,4 +1,8 @@
 #include "stormtty/process.hpp"
+#include "process_control.hpp"
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+#include "stormtty/qualification_input_evidence.hpp"
+#endif
 
 #if defined(_WIN32)
 #ifndef _WIN32_WINNT
@@ -34,6 +38,7 @@
 namespace stormtty {
 namespace {
 using namespace std::chrono_literals;
+using windows::detail::count;
 struct LaunchCancelled {};
 struct Handle {
     HANDLE value{};
@@ -160,7 +165,11 @@ void verify_pinned_file(const std::wstring& path, const char* expected, Handle& 
     // Deny modification/deletion until the module and its host have closed.
     lock.reset(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (lock.value == INVALID_HANDLE_VALUE) throw win_error("Open pinned ConPTY file");
+    if (lock.value == INVALID_HANDLE_VALUE) {
+        const auto diagnostic=win_error("Open pinned ConPTY file");
+        throw std::runtime_error(std::string(diagnostic.what())+
+            ". Bundled console runtime is missing or inaccessible. Restore runtimes/conpty beside StormTTY, or select System in Settings. No fallback was launched.");
+    }
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(lock.value, &info)) throw win_error("Inspect pinned ConPTY file");
     if (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
@@ -187,7 +196,7 @@ void verify_pinned_file(const std::wstring& path, const char* expected, Handle& 
     constexpr char hex[] = "0123456789abcdef";
     std::string actual;
     for (auto c : digest) { actual += hex[c >> 4]; actual += hex[c & 15]; }
-    if (actual != expected) throw std::runtime_error("Pinned ConPTY SHA256 mismatch");
+    if (actual != expected) throw std::runtime_error("Bundled console runtime SHA256 mismatch. Restore the pinned bundle, or select System in Settings. No fallback was launched.");
 }
 struct Provider {
     using Create = HRESULT (WINAPI*)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
@@ -208,6 +217,10 @@ struct Provider {
 #if !defined(_M_X64) && !defined(__x86_64__)
             throw std::runtime_error("Experimental pinned ConPTY package is x64-only");
 #endif
+            SYSTEM_INFO native{};
+            GetNativeSystemInfo(&native);
+            if (native.wProcessorArchitecture != PROCESSOR_ARCHITECTURE_AMD64)
+                throw std::runtime_error("Bundled ConPTY preview requires native AMD64 Windows; ARM64/emulation is not qualified. Select System in Settings.");
             auto directory = widen(options.provider_directory);
             if (!absolute_path(directory) || directory.starts_with(L"\\\\"))
                 throw std::invalid_argument("Packaged ConPTY requires an absolute local drive directory");
@@ -293,16 +306,24 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
     mutable std::condition_variable changed;
     std::deque<std::string> input;
     std::size_t queued{};
-    std::optional<ProcessGridSize> resize;
+    struct ResizeRequest { ProcessGridSize grid; std::uint64_t generation; };
+    std::optional<ResizeRequest> resize;
     bool done{};
     std::string failure;
     ProcessDiagnostics diagnostic{"Windows ConPTY (not started)", "Provider selection pending", false, false, 0};
-    Handle input_write, output_read;
+    Handle input_write, output_read, control;
     // Duplicated real Windows thread handles, not implementation-specific
     // std::thread::native_handle values. Kept until after workers are joined.
     Handle reader_cancel, writer_cancel;
 
-    Impl(ProcessOptions o, ProcessCallbacks c) : options(std::move(o)), callbacks(std::move(c)) {}
+    Impl(ProcessOptions o, ProcessCallbacks c) : options(std::move(o)), callbacks(std::move(c)) {
+        // Auto-reset, initially nonsignalled, and owned until all workers release
+        // Impl. No worker/caller can reset or close a handle another wait uses.
+        control.reset(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+        if (!control.value) throw win_error("CreateEvent(ConPTY control)");
+        diagnostic.windows_control.emplace();
+        diagnostic.windows_control->requested_grid = options.grid;
+    }
     // Every flag read by a changed.wait predicate must be published while
     // holding this mutex. Atomic storage alone does not prevent a notification
     // falling between a predicate check and the wait's unlock-and-sleep step.
@@ -314,6 +335,7 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
     void close() noexcept {
         cancel_output_requested.store(true);
         publish_flag(closing);
+        SetEvent(control.value);
         auto p = phase.load();
         while (p == ProcessState::starting || p == ProcessState::running)
             if (phase.compare_exchange_weak(p, ProcessState::close_requested)) break;
@@ -356,6 +378,9 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
         publish_flag(reader_done);
     }
     void write_loop() noexcept {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        std::uint64_t message_sequence = 0;
+#endif
         if (!register_cancel_handle(writer_cancel)) { publish_flag(writer_done); return; }
         try {
             while (!closing.load()) {
@@ -366,11 +391,25 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
                     if (closing.load()) break;
                     bytes = std::move(input.front()); input.pop_front();
                 }
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                ++message_sequence;
+#endif
                 std::size_t offset = 0;
                 while (offset < bytes.size() && !closing.load()) {
                     DWORD count = 0;
                     const auto amount = static_cast<DWORD>(std::min<std::size_t>(bytes.size() - offset, 64 * 1024));
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                    const BOOL succeeded = WriteFile(input_write.value, bytes.data() + offset, amount, &count, nullptr);
+                    const DWORD write_error = succeeded ? ERROR_SUCCESS : GetLastError();
+                    if (options.qualification_input_evidence)
+                        options.qualification_input_evidence->completed_write(message_sequence, offset,
+                            {bytes.data() + offset, amount}, succeeded != FALSE, count, write_error);
+                    // Preserve the original error branch's last-error observation.
+                    if (!succeeded) SetLastError(write_error);
+                    if (!succeeded) {
+#else
                     if (!WriteFile(input_write.value, bytes.data() + offset, amount, &count, nullptr)) {
+#endif
                         if (!closing.load() && GetLastError() != ERROR_BROKEN_PIPE) fail("WriteFile(ConPTY input) failed");
                         goto finished;
                     }
@@ -470,6 +509,7 @@ finished:
                     HRESULT hr = provider.create({static_cast<SHORT>(options.grid.columns), static_cast<SHORT>(options.grid.rows)},
                                                  input_read.value, output_write.value, 0, &console.value);
                     if (FAILED(hr)) throw win_error("CreatePseudoConsole", static_cast<DWORD>(hr));
+                    { std::lock_guard lock(mutex); diagnostic.windows_control->applied_grid = options.grid; }
                     provider.verify_host();
                     if (provider.packaged) {
                         std::lock_guard lock(mutex);
@@ -517,15 +557,33 @@ finished:
                     writer = std::thread([this] { write_loop(); });
                     auto expected = ProcessState::starting;
                     phase.compare_exchange_strong(expected, ProcessState::running);
+                    const HANDLE events[]{process.value, control.value};
                     for (;;) {
-                        DWORD wait = WaitForSingleObject(process.value, 20);
-                        if (wait == WAIT_OBJECT_0) break;
-                        if (wait == WAIT_FAILED) throw win_error("WaitForSingleObject(child)");
-                        if (closing.load()) { requested = true; break; }
-                        std::optional<ProcessGridSize> next;
-                        { std::lock_guard lock(mutex); next = std::exchange(resize, std::nullopt); }
+                        { std::lock_guard lock(mutex); count(diagnostic.windows_control->wait_calls); }
+                        // Child exit takes precedence if both handles are ready.
+                        // No periodic polling while running; teardown below keeps
+                        // its separate, finite drain/cancellation deadlines.
+                        const DWORD wait = WaitForMultipleObjects(2, events, FALSE, INFINITE);
+                        if (wait == WAIT_FAILED) throw win_error("WaitForMultipleObjects(child/control)");
+                        std::optional<ResizeRequest> next;
+                        {
+                            std::lock_guard lock(mutex);
+                            if (wait == WAIT_OBJECT_0) {
+                                count(diagnostic.windows_control->child_exit_wakes); break;
+                            }
+                            if (wait != WAIT_OBJECT_0 + 1) throw std::runtime_error("Unexpected ConPTY controller wait result");
+                            count(diagnostic.windows_control->control_wakes);
+                            if (closing.load()) { requested = true; break; }
+                            next = std::exchange(resize, std::nullopt);
+                            if (next) count(diagnostic.windows_control->resize_calls);
+                        }
                         if (next) {
-                            hr = provider.resize(console.value, {static_cast<SHORT>(next->columns), static_cast<SHORT>(next->rows)});
+                            hr = provider.resize(console.value, {static_cast<SHORT>(next->grid.columns), static_cast<SHORT>(next->grid.rows)});
+                            {
+                                std::lock_guard lock(mutex);
+                                windows::detail::record_resize_result(*diagnostic.windows_control,
+                                    next->generation, next->grid, SUCCEEDED(hr));
+                            }
                             if (FAILED(hr)) throw win_error("ResizePseudoConsole", static_cast<DWORD>(hr));
                         }
                     }
@@ -601,9 +659,23 @@ ProcessSendResult Process::try_send(std::string_view bytes) {
 }
 bool Process::request_resize(ProcessGridSize size) {
     if (!valid_grid(size)) return false;
-    std::lock_guard lock(impl_->mutex);
-    if (impl_->closing.load() || impl_->done) return false;
-    impl_->resize = size; impl_->changed.notify_all(); return true;
+    {
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->closing.load() || impl_->done) return false;
+        auto& state = *impl_->diagnostic.windows_control;
+        // Never wrap a generation and falsely acknowledge a newer request.
+        if (state.requested_resize_generation == std::numeric_limits<std::uint64_t>::max()) return false;
+        ++state.requested_resize_generation; state.requested_grid = size;
+        impl_->resize = Impl::ResizeRequest{size, state.requested_resize_generation};
+    }
+    // Publish first, signal second, both without native calls under the mutex.
+    // An auto-reset event retains a signal until a wait consumes it. If requests
+    // coalesce before that wait, the newest grid remains in resize. If a producer
+    // publishes while the controller applies an older resize, its signal remains
+    // for the next wait. A delayed signal can cause a harmless empty wake, but
+    // cannot erase newer work: there is no explicit ResetEvent race.
+    SetEvent(impl_->control.value);
+    return true;
 }
 void Process::request_close() noexcept { impl_->close(); }
 ProcessState Process::state() const noexcept { return impl_->phase.load(); }
