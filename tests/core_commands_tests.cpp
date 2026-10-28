@@ -7,6 +7,14 @@ using namespace stormtty;
 int main() { return run_core_tests("commands", [] {
     std::set<std::string_view> ids;
     for (const auto& c : command_registry()) { CHECK(ids.insert(c.id).second); CHECK(!c.label.empty()); CHECK(find_command(c.id) == &c); }
+    CommandContext background{1,1};
+    CHECK(!command_availability("pane.background",background).enabled);
+    background.supports_background_sessions=true;
+    CHECK(command_availability("pane.background",background).enabled);
+    background.parked_sessions=256;
+    CHECK(!command_availability("pane.background",background).enabled);
+    background.parked_sessions=0; background.panes=0;
+    CHECK(!command_availability("pane.background",background).enabled);
     CommandContext projects;
     for (const auto* id : {"workspace.new","workspace.next","workspace.previous","workspace.close","workspace.toggle_navigation","window.focus_mode"}) {
         CHECK(!command_availability(id,projects).enabled); CHECK(!command_availability(id,projects).reason.empty());

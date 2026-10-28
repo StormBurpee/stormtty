@@ -12,6 +12,7 @@
 #include <d2d1_3.h>
 #include <dwrite_3.h>
 #include <dcomp.h>
+#include "smoke_teardown_trace.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -34,7 +35,14 @@ public:
     Com& operator=(const Com& o) { if (this != &o) { Com copy(o); swap(copy); } return *this; }
     Com(Com&& o) noexcept : p_(std::exchange(o.p_, nullptr)) {}
     Com& operator=(Com&& o) noexcept { if (this != &o) { reset(); p_ = std::exchange(o.p_, nullptr); } return *this; }
-    void reset() noexcept { if (auto* p = std::exchange(p_, nullptr)) p->Release(); }
+    const char* teardown_label{}; // Enabled only at explicit smoke destruction.
+    void reset() noexcept {
+        if (auto* p = std::exchange(p_, nullptr)) {
+            windows::smoke_teardown_trace(teardown_label!=nullptr,teardown_label," begin");
+            p->Release();
+            windows::smoke_teardown_trace(teardown_label!=nullptr,teardown_label," end");
+        }
+    }
     void swap(Com& o) noexcept { std::swap(p_, o.p_); }
     T* get() const noexcept { return p_; }
     T* operator->() const noexcept { return p_; }
@@ -48,7 +56,12 @@ private:
 };
 struct Apartment {
     HRESULT hr{CoInitializeEx(nullptr, COINIT_MULTITHREADED)};
-    ~Apartment() { if (SUCCEEDED(hr)) CoUninitialize(); }
+    bool smoke{};
+    ~Apartment() {
+        windows::smoke_teardown_trace(smoke,"renderer apartment unwind begin");
+        if (SUCCEEDED(hr)) CoUninitialize();
+        windows::smoke_teardown_trace(smoke,"renderer apartment unwind end");
+    }
 };
 struct NativeHandle {
     HANDLE value{};
@@ -442,7 +455,32 @@ struct Renderer::Impl {
         create_device();
         measure_font();
     }
-    ~Impl() { release_gpu(); }
+    bool tracing_teardown{};
+    ~Impl() {
+        tracing_teardown=options.smoke_teardown_diagnostics;
+        apartment.smoke=tracing_teardown;
+        if (tracing_teardown) {
+#define TRACE_RELEASE(member) member.teardown_label="renderer " #member " Release"
+            TRACE_RELEASE(device); TRACE_RELEASE(immediate); TRACE_RELEASE(swapchain);
+            TRACE_RELEASE(swapchain2); TRACE_RELEASE(composition); TRACE_RELEASE(composition_target);
+            TRACE_RELEASE(composition_visual); TRACE_RELEASE(d2d_factory); TRACE_RELEASE(d2d_device);
+            TRACE_RELEASE(dc); TRACE_RELEASE(dc4); TRACE_RELEASE(write_factory); TRACE_RELEASE(write4);
+            TRACE_RELEASE(terminal_format); TRACE_RELEASE(typography); TRACE_RELEASE(bundled_fonts);
+            TRACE_RELEASE(canvas_texture); TRACE_RELEASE(alpha_staging); TRACE_RELEASE(canvas); TRACE_RELEASE(brush);
+#undef TRACE_RELEASE
+        }
+        windows::smoke_teardown_trace(tracing_teardown,"renderer release_gpu begin");
+        release_gpu();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer release_gpu end; implicit cache/font members begin");
+    }
+    void clear_and_flush() noexcept {
+        if (!immediate) return;
+        windows::smoke_teardown_trace(tracing_teardown,"renderer ClearState begin");
+        immediate->ClearState();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer ClearState end; Flush begin");
+        immediate->Flush();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer Flush end");
+    }
     static void validate_font(const FontOptions& font) {
         if (font.family.empty() || font.family.size() > 256 || font.locale.size() > 85 ||
             !std::isfinite(font.size_dip) || font.size_dip < 4 || font.size_dip > 128)
@@ -450,18 +488,28 @@ struct Renderer::Impl {
     }
     void release_swapchain() noexcept {
         composition_visual.reset(); composition_target.reset(); composition.reset();
-        latency.reset(); swapchain2.reset(); swapchain.reset();
-        if(immediate) { immediate->ClearState(); immediate->Flush(); }
+        windows::smoke_teardown_trace(tracing_teardown,"renderer latency handle close begin");
+        latency.reset();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer latency handle close end");
+        swapchain2.reset(); swapchain.reset();
+        clear_and_flush();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer opaque HWND destruction begin");
         opaque_window.reset();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer opaque HWND destruction end");
         counters.composition = false;
     }
     void release_gpu() noexcept {
+        windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null begin");
         if (dc) dc->SetTarget(nullptr);
-        alpha_staging.reset(); canvas.reset(); canvas_texture.reset(); brush.reset(); images.clear();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null end");
+        alpha_staging.reset(); canvas.reset(); canvas_texture.reset(); brush.reset();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer image cache clear begin");
+        images.clear();
+        windows::smoke_teardown_trace(tracing_teardown,"renderer image cache clear end");
         counters.image_cache_bytes = 0;
         release_swapchain();
         dc4.reset(); dc.reset(); d2d_device.reset();
-        if (immediate) { immediate->ClearState(); immediate->Flush(); }
+        clear_and_flush();
         immediate.reset(); device.reset();
     }
     void create_device() {
@@ -1185,7 +1233,12 @@ struct Renderer::Impl {
 };
 
 Renderer::Renderer(void* window,RendererOptions options) : impl_(std::make_unique<Impl>(window,std::move(options))) {}
-Renderer::~Renderer() = default;
+Renderer::~Renderer() {
+    const bool smoke=impl_ && impl_->options.smoke_teardown_diagnostics;
+    windows::smoke_teardown_trace(smoke,"renderer destructor begin");
+    impl_.reset();
+    windows::smoke_teardown_trace(smoke,"renderer destructor end");
+}
 Renderer::Renderer(Renderer&&) noexcept = default;
 Renderer& Renderer::operator=(Renderer&&) noexcept = default;
 void Renderer::resize(std::uint32_t width,std::uint32_t height,float dpi) {

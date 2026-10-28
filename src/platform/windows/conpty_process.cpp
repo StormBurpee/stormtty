@@ -1,4 +1,5 @@
 #include "stormtty/process.hpp"
+#include "process_control.hpp"
 
 #if defined(_WIN32)
 #ifndef _WIN32_WINNT
@@ -34,6 +35,7 @@
 namespace stormtty {
 namespace {
 using namespace std::chrono_literals;
+using windows::detail::count;
 struct LaunchCancelled {};
 struct Handle {
     HANDLE value{};
@@ -293,16 +295,24 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
     mutable std::condition_variable changed;
     std::deque<std::string> input;
     std::size_t queued{};
-    std::optional<ProcessGridSize> resize;
+    struct ResizeRequest { ProcessGridSize grid; std::uint64_t generation; };
+    std::optional<ResizeRequest> resize;
     bool done{};
     std::string failure;
     ProcessDiagnostics diagnostic{"Windows ConPTY (not started)", "Provider selection pending", false, false, 0};
-    Handle input_write, output_read;
+    Handle input_write, output_read, control;
     // Duplicated real Windows thread handles, not implementation-specific
     // std::thread::native_handle values. Kept until after workers are joined.
     Handle reader_cancel, writer_cancel;
 
-    Impl(ProcessOptions o, ProcessCallbacks c) : options(std::move(o)), callbacks(std::move(c)) {}
+    Impl(ProcessOptions o, ProcessCallbacks c) : options(std::move(o)), callbacks(std::move(c)) {
+        // Auto-reset, initially nonsignalled, and owned until all workers release
+        // Impl. No worker/caller can reset or close a handle another wait uses.
+        control.reset(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+        if (!control.value) throw win_error("CreateEvent(ConPTY control)");
+        diagnostic.windows_control.emplace();
+        diagnostic.windows_control->requested_grid = options.grid;
+    }
     // Every flag read by a changed.wait predicate must be published while
     // holding this mutex. Atomic storage alone does not prevent a notification
     // falling between a predicate check and the wait's unlock-and-sleep step.
@@ -314,6 +324,7 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
     void close() noexcept {
         cancel_output_requested.store(true);
         publish_flag(closing);
+        SetEvent(control.value);
         auto p = phase.load();
         while (p == ProcessState::starting || p == ProcessState::running)
             if (phase.compare_exchange_weak(p, ProcessState::close_requested)) break;
@@ -470,6 +481,7 @@ finished:
                     HRESULT hr = provider.create({static_cast<SHORT>(options.grid.columns), static_cast<SHORT>(options.grid.rows)},
                                                  input_read.value, output_write.value, 0, &console.value);
                     if (FAILED(hr)) throw win_error("CreatePseudoConsole", static_cast<DWORD>(hr));
+                    { std::lock_guard lock(mutex); diagnostic.windows_control->applied_grid = options.grid; }
                     provider.verify_host();
                     if (provider.packaged) {
                         std::lock_guard lock(mutex);
@@ -517,15 +529,33 @@ finished:
                     writer = std::thread([this] { write_loop(); });
                     auto expected = ProcessState::starting;
                     phase.compare_exchange_strong(expected, ProcessState::running);
+                    const HANDLE events[]{process.value, control.value};
                     for (;;) {
-                        DWORD wait = WaitForSingleObject(process.value, 20);
-                        if (wait == WAIT_OBJECT_0) break;
-                        if (wait == WAIT_FAILED) throw win_error("WaitForSingleObject(child)");
-                        if (closing.load()) { requested = true; break; }
-                        std::optional<ProcessGridSize> next;
-                        { std::lock_guard lock(mutex); next = std::exchange(resize, std::nullopt); }
+                        { std::lock_guard lock(mutex); count(diagnostic.windows_control->wait_calls); }
+                        // Child exit takes precedence if both handles are ready.
+                        // No periodic polling while running; teardown below keeps
+                        // its separate, finite drain/cancellation deadlines.
+                        const DWORD wait = WaitForMultipleObjects(2, events, FALSE, INFINITE);
+                        if (wait == WAIT_FAILED) throw win_error("WaitForMultipleObjects(child/control)");
+                        std::optional<ResizeRequest> next;
+                        {
+                            std::lock_guard lock(mutex);
+                            if (wait == WAIT_OBJECT_0) {
+                                count(diagnostic.windows_control->child_exit_wakes); break;
+                            }
+                            if (wait != WAIT_OBJECT_0 + 1) throw std::runtime_error("Unexpected ConPTY controller wait result");
+                            count(diagnostic.windows_control->control_wakes);
+                            if (closing.load()) { requested = true; break; }
+                            next = std::exchange(resize, std::nullopt);
+                            if (next) count(diagnostic.windows_control->resize_calls);
+                        }
                         if (next) {
-                            hr = provider.resize(console.value, {static_cast<SHORT>(next->columns), static_cast<SHORT>(next->rows)});
+                            hr = provider.resize(console.value, {static_cast<SHORT>(next->grid.columns), static_cast<SHORT>(next->grid.rows)});
+                            {
+                                std::lock_guard lock(mutex);
+                                windows::detail::record_resize_result(*diagnostic.windows_control,
+                                    next->generation, next->grid, SUCCEEDED(hr));
+                            }
                             if (FAILED(hr)) throw win_error("ResizePseudoConsole", static_cast<DWORD>(hr));
                         }
                     }
@@ -601,9 +631,23 @@ ProcessSendResult Process::try_send(std::string_view bytes) {
 }
 bool Process::request_resize(ProcessGridSize size) {
     if (!valid_grid(size)) return false;
-    std::lock_guard lock(impl_->mutex);
-    if (impl_->closing.load() || impl_->done) return false;
-    impl_->resize = size; impl_->changed.notify_all(); return true;
+    {
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->closing.load() || impl_->done) return false;
+        auto& state = *impl_->diagnostic.windows_control;
+        // Never wrap a generation and falsely acknowledge a newer request.
+        if (state.requested_resize_generation == std::numeric_limits<std::uint64_t>::max()) return false;
+        ++state.requested_resize_generation; state.requested_grid = size;
+        impl_->resize = Impl::ResizeRequest{size, state.requested_resize_generation};
+    }
+    // Publish first, signal second, both without native calls under the mutex.
+    // An auto-reset event retains a signal until a wait consumes it. If requests
+    // coalesce before that wait, the newest grid remains in resize. If a producer
+    // publishes while the controller applies an older resize, its signal remains
+    // for the next wait. A delayed signal can cause a harmless empty wake, but
+    // cannot erase newer work: there is no explicit ResetEvent race.
+    SetEvent(impl_->control.value);
+    return true;
 }
 void Process::request_close() noexcept { impl_->close(); }
 ProcessState Process::state() const noexcept { return impl_->phase.load(); }

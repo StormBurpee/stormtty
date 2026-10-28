@@ -170,6 +170,11 @@ public:
     std::string selection_text(std::size_t max_bytes = 16u * 1024u * 1024u);
     void scroll_viewport(std::int64_t rows);
     void scroll_to_bottom();
+    // Irreversibly finish the output stream: release a pending synchronized
+    // update and freeze image animations. Display/selection/search/resize remain
+    // available, feed rejects later bytes, and next_deadline becomes empty.
+    // Idempotent and actor-only; does not destroy scrollback or published frames.
+    void finish_output();
     // Tick animations/hold timeout and build only on demand, not per input byte.
     FramePtr snapshot(Clock::time_point now = Clock::now());
     // Wake at this deadline (or next input), never idle-poll animations.

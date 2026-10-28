@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <map>
+#include <limits>
 #include <random>
 #include <set>
 #include <type_traits>
@@ -20,6 +21,7 @@ struct ProjectSnapshot {
     ProjectWorkspaceId id;
     ProjectWorkspaceMetadata metadata;
     WorkspaceState workspace;
+    std::vector<ParkedSession> parked;
     bool operator==(const ProjectSnapshot&) const = default;
 };
 struct CatalogSnapshot {
@@ -30,7 +32,7 @@ struct CatalogSnapshot {
 CatalogSnapshot snapshot(const ProjectWorkspaceCatalog& catalog) {
     CatalogSnapshot result{catalog.active_id(), {}};
     for (const auto& project : catalog.entries())
-        result.entries.push_back({project.id, project.metadata, project.workspace.state()});
+        result.entries.push_back({project.id, project.metadata, project.workspace.state(), project.parked_sessions});
     return result;
 }
 ProjectWorkspaceId create(ProjectWorkspaceCatalog& catalog, std::string name, Workspace workspace = {}) {
@@ -219,6 +221,121 @@ void bounds_and_unbound_workspaces() {
     CHECK(catalog.create({"Available again", {}, {}})); CHECK(catalog.validate());
 }
 
+void parked_ownership_and_identity() {
+    ProjectWorkspaceCatalog catalog;
+    Workspace source;
+    CHECK(source.create_tab({41}, "shell-profile"));
+    const auto old_pane = source.active_pane();
+    CHECK(source.set_pane_title(old_pane, "Build output"));
+    const auto a = create(catalog, "One", source);
+    const auto b = create(catalog, "Two", populated(100));
+    const auto b_before = catalog.workspace(b)->state();
+    CHECK(catalog.activate(b));
+    const auto sessions = catalog.all_session_ids();
+    CHECK(catalog.park({a, old_pane}).value == std::optional<SessionId>{{41}});
+    CHECK(catalog.active_id() == b);
+    CHECK(catalog.find(a)); CHECK(catalog.workspace(a)->state().tabs.empty());
+    CHECK(catalog.workspace(a)->validate()); CHECK(catalog.validate());
+    CHECK(catalog.find(a)->parked_sessions == std::vector<ParkedSession>({{{41}, "shell-profile", "Build output"}}));
+    CHECK(catalog.all_session_ids() == sessions); CHECK(catalog.contains_session({41}));
+    CHECK(catalog.session_ids(a) == std::vector<SessionId>({{41}}));
+    const auto before = snapshot(catalog);
+    CHECK(!catalog.park({a, old_pane})); CHECK(snapshot(catalog) == before);
+    CHECK(!catalog.park({{}, old_pane})); CHECK(snapshot(catalog) == before);
+    CHECK(!catalog.reattach_to_new_tab({b, {41}})); CHECK(snapshot(catalog) == before);
+    CHECK(!catalog.reattach_to_new_tab({a, {}})); CHECK(snapshot(catalog) == before);
+    CHECK(!catalog.reattach_to_split({a, {41}}, {b, catalog.workspace(b)->active_pane()}, Direction::right));
+    CHECK(snapshot(catalog) == before);
+    CHECK(!catalog.reattach_to_split({a, {41}}, {a, old_pane}, Direction::right));
+    CHECK(snapshot(catalog) == before);
+    Workspace duplicate; CHECK(duplicate.create_tab({41}));
+    CHECK(!catalog.create({"Duplicate", {}, {}}, duplicate)); CHECK(snapshot(catalog) == before);
+
+    auto restored = catalog.reattach_to_new_tab({a, {41}}); CHECK(restored);
+    const auto new_pane = catalog.workspace(a)->active_pane();
+    CHECK(new_pane != old_pane);
+    const auto* pane = catalog.workspace(a)->pane(new_pane);
+    CHECK(pane->session == SessionId{41}); CHECK(pane->profile == "shell-profile"); CHECK(pane->title == "Build output");
+    CHECK(catalog.find(a)->parked_sessions.empty()); CHECK(catalog.all_session_ids() == sessions);
+    CHECK(catalog.workspace(b)->state() == b_before); CHECK(catalog.active_id() == b);
+
+    CHECK(catalog.workspace(a)->split(new_pane, Direction::down, {42}));
+    const auto target = catalog.workspace(a)->active_pane();
+    CHECK(catalog.park({a, new_pane}));
+    auto failure = snapshot(catalog);
+    CHECK(!catalog.reattach_to_split({a, {41}}, {a, target}, Direction::right, 0));
+    CHECK(snapshot(catalog) == failure);
+    CHECK(!catalog.reattach_to_split({a, {41}}, {a, target}, static_cast<Direction>(999)));
+    CHECK(snapshot(catalog) == failure);
+    CHECK(!catalog.reattach_to_split({a, {41}}, {a, target}, Direction::down, std::numeric_limits<double>::quiet_NaN()));
+    CHECK(snapshot(catalog) == failure);
+    // Legacy mutable access may violate catalog ownership; transfers reject it.
+    CHECK(catalog.workspace(a)->bind_session(target, {41})); CHECK(!catalog.validate());
+    failure = snapshot(catalog);
+    CHECK(!catalog.reattach_to_new_tab({a, {41}})); CHECK(!catalog.park({a, target}));
+    CHECK(!catalog.discard_parked({a, {41}})); CHECK(snapshot(catalog) == failure);
+    CHECK(catalog.workspace(a)->bind_session(target, {42})); CHECK(catalog.validate());
+    auto split = catalog.reattach_to_split({a, {41}}, {a, target}, Direction::left, 0.3);
+    CHECK(split); CHECK(catalog.workspace(a)->pane(*split.value)->session == SessionId{41});
+    CHECK(catalog.workspace(a)->pane(*split.value)->title == "Build output");
+    CHECK(catalog.park({a, *split.value}));
+    const auto serialized = serialize_workspace(*catalog.workspace(a));
+    auto metadata_only = deserialize_workspace(serialized); CHECK(metadata_only);
+    CHECK(metadata_only.value->state().panes.size() == 1);
+    CHECK(!metadata_only.value->pane(metadata_only.value->active_pane())->session);
+    failure = snapshot(catalog);
+    CHECK(!catalog.discard_parked({b, {41}})); CHECK(!catalog.discard_parked({a, {42}}));
+    CHECK(snapshot(catalog) == failure);
+    auto discarded = catalog.discard_parked({a, {41}}); CHECK(discarded);
+    CHECK(discarded.value->session == SessionId{41}); CHECK(!catalog.contains_session({41}));
+    CHECK(catalog.park({a, target}));
+    CHECK(catalog.active_id() == b); CHECK(catalog.find(a));
+    const auto preview = catalog.session_ids(a);
+    auto removed = catalog.remove(a); CHECK(removed);
+    CHECK(removed.value->sessions == preview); CHECK(preview == std::vector<SessionId>({{42}}));
+    CHECK(removed.value->project.workspace.state().panes.empty());
+    CHECK(removed.value->project.parked_sessions.size() == 1); CHECK(!catalog.contains_session({42}));
+    CHECK(catalog.validate());
+}
+
+void parked_bounds_and_rollback() {
+    ProjectWorkspaceCatalog catalog;
+    const auto id = create(catalog, "Capacity");
+    for (std::size_t i = 0; i < ProjectWorkspaceCatalog::maximum_parked_sessions; ++i) {
+        CHECK(catalog.workspace(id)->create_tab({i + 1}));
+        CHECK(catalog.park({id, catalog.workspace(id)->active_pane()}));
+    }
+    CHECK(catalog.workspace(id)->create_tab({10000}));
+    const auto before = snapshot(catalog);
+    CHECK(!catalog.park({id, catalog.workspace(id)->active_pane()}));
+    CHECK(snapshot(catalog) == before); CHECK(catalog.validate());
+    CHECK(catalog.discard_parked({id, {1}}));
+    CHECK(catalog.park({id, catalog.workspace(id)->active_pane()}));
+    CHECK(catalog.workspace(id)->create_tab()); // Unbound is not a parked session.
+    const auto unbound = snapshot(catalog);
+    CHECK(!catalog.park({id, catalog.workspace(id)->active_pane()}));
+    CHECK(snapshot(catalog) == unbound);
+    // At the tab limit a reattach fails without consuming parked ownership/IDs.
+    for (std::size_t i = 1; i < Workspace::maximum_tabs; ++i) CHECK(catalog.workspace(id)->create_tab());
+    const auto full = snapshot(catalog);
+    CHECK(!catalog.reattach_to_new_tab({id, {2}})); CHECK(snapshot(catalog) == full);
+    CHECK(catalog.reattach_to_split({id, {2}}, {id, catalog.workspace(id)->active_pane()}, Direction::right));
+    CHECK(catalog.validate());
+    // A split that exceeds maximum tree depth is rejected after staged ID allocation.
+    auto target = catalog.workspace(id)->active_pane();
+    while (true) {
+        auto next = catalog.workspace(id)->split(target, Direction::right);
+        if (!next) break;
+        target = *next.value;
+    }
+    const auto deep = snapshot(catalog);
+    CHECK(!catalog.reattach_to_split({id, {3}}, {id, target}, Direction::right));
+    CHECK(snapshot(catalog) == deep);
+    auto removed = catalog.remove(id); CHECK(removed);
+    CHECK(removed.value->sessions.size() == ProjectWorkspaceCatalog::maximum_parked_sessions);
+    CHECK(catalog.entries().empty()); CHECK(catalog.validate());
+}
+
 void operation_trace() {
     ProjectWorkspaceCatalog catalog;
     std::mt19937 rng(0x50724f6a);
@@ -287,5 +404,6 @@ int main() {
     return run_core_tests("project_workspaces", [] {
         lifecycle_and_hidden_sessions(); identity_domains(); deliberate_removal();
         failures_are_transactional(); bounds_and_unbound_workspaces(); operation_trace();
+        parked_ownership_and_identity(); parked_bounds_and_rollback();
     });
 }

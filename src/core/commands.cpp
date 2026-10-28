@@ -25,6 +25,7 @@ constexpr std::array commands{
     Command{"tab.move_right", "Move tab right", "Reorder without restarting sessions"},
     Command{"pane.split_right", "Split right", "Create a session to the right of the current pane"},
     Command{"pane.split_down", "Split below", "Create a session below the current pane"},
+    Command{"pane.background", "Move to background", "Keep this terminal process and output in the workspace footer"},
     Command{"pane.close", "Close pane", "Close the current pane; host confirms running processes"},
     Command{"pane.focus_left", "Focus pane left", "Move focus spatially to the pane on the left"},
     Command{"pane.focus_right", "Focus pane right", "Move focus spatially to the pane on the right"},
@@ -89,6 +90,7 @@ CommandAvailability command_availability(std::string_view id, const CommandConte
     if (id == "tab.new") return {c.tabs < Workspace::maximum_tabs, c.tabs < Workspace::maximum_tabs ? "" : "Tab limit reached"};
     if (id == "app.command_palette" || id == "settings.open" || id == "window.fullscreen") return {true, {}};
     if (!c.tabs || !c.panes) return {false, "No active terminal pane"};
+    if (id == "pane.background") return {c.supports_background_sessions && c.parked_sessions<ProjectWorkspaceCatalog::maximum_parked_sessions, !c.supports_background_sessions ? "Background sessions are not implemented by this host" : c.parked_sessions>=ProjectWorkspaceCatalog::maximum_parked_sessions ? "Background session limit reached" : ""};
     if (id == "edit.copy") return {c.has_selection, c.has_selection ? "" : "Select terminal text first"};
     if (id == "edit.paste") return {c.clipboard_has_text && c.session_running,
         !c.session_running ? "Session is not running" : (!c.clipboard_has_text ? "Clipboard has no text" : "")};

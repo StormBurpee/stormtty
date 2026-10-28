@@ -413,6 +413,31 @@ void image_animation() {
     CHECK(next->images[0].pixels->bytes != first->images[0].pixels->bytes);
     t.feed("\x1b_Ga=a,i=2,s=1,q=2\x1b\\"); (void)t.snapshot(); CHECK(!t.next_deadline());
 }
+void finished_output_document() {
+    TerminalCore t(small());
+    t.feed("before\x1b[?2026h\r\x1b[2Kfinal\x1b[");
+    CHECK(t.render_held()); CHECK(line(t.snapshot(),0)=="before");
+    t.finish_output(); t.finish_output();
+    CHECK(!t.render_held()); CHECK(!t.next_deadline());
+    const auto final=t.snapshot(); CHECK(line(final,0)=="final");
+    CHECK(line(t.snapshot(TerminalCore::Clock::now()+std::chrono::hours(1)),0)=="final");
+    bool rejected{}; try{t.feed("mnot delivered");}catch(const std::invalid_argument&){rejected=true;}
+    CHECK(rejected); CHECK(line(t.snapshot(),0)=="final");
+    t.resize({30,5,8,16}); t.select(0,0,4,0,false); CHECK(t.selection_text()=="final");
+    t.set_default_colors({210,211,212,255},{10,11,12,255});
+    CHECK(t.snapshot()->background==(Color{10,11,12,255})); CHECK(line(final,0)=="final");
+    TerminalCore animation(small());
+    animation.feed("\x1b_Ga=T,f=32,i=2,s=1,v=1,q=2;/wAA/w==\x1b\\"
+                   "\x1b_Ga=f,f=32,i=2,s=1,v=1,z=40,q=2;AAD//w==\x1b\\"
+                   "\x1b_Ga=a,i=2,r=1,z=30,q=2\x1b\\"
+                   "\x1b_Ga=a,i=2,s=3,q=2\x1b\\");
+    (void)animation.snapshot(); CHECK(animation.next_deadline());
+    animation.finish_output(); const auto frozen=animation.snapshot(); CHECK(!animation.next_deadline());
+    const auto later=animation.snapshot(TerminalCore::Clock::now()+std::chrono::hours(1));
+    CHECK(frozen->images.size()==1&&later->images.size()==1);
+    CHECK(frozen->images[0].pixels->generation==later->images[0].pixels->generation);
+    CHECK(frozen->images[0].pixels->bytes==later->images[0].pixels->bytes);
+}
 void graphics_security() {
     TerminalOptions options = small(); options.image_budget_bytes = 0; TerminalCore disabled(options);
     disabled.feed("\x1b_Ga=T,f=32,i=42,s=1,v=1,q=2;/wAA/w==\x1b\\"); CHECK(disabled.snapshot()->images.empty());
@@ -449,6 +474,7 @@ int main() {
         {"owned selection state", selection}, {"scrollback viewport", scrollback}, {"configured scrollback line bound", configured_scrollback_lines}, {"clipboard denied and copied", clipboard_denied},
         {"owned image pixels and generation", image_ownership_generation}, {"Unicode image placeholders", unicode_image_placeholders},
         {"resolved relative image placement", relative_image_placement}, {"PNG hook rejection/preflight", png_hook_rejection_and_preflight}, {"image animation deadlines", image_animation},
+        {"finished output retains a frozen readable document", finished_output_document},
         {"graphics security defaults", graphics_security}, {"explicit effect budget failure", queue_budget_failure_is_explicit},
         {"actor thread confinement", thread_confinement}
     };
