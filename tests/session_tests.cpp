@@ -48,6 +48,13 @@ int child(std::string_view mode, std::string_view exit_signal = {}) {
     if (GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &output_mode))
         SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), output_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 #endif
+    if(mode=="command-complete" || mode=="command-interrupted") {
+        std::cout << "\x1b]133;A\a\x1b]133;B\a\x1b]133;D;0\a\x1b]133;C\a";
+        if(mode=="command-complete") std::cout << "\x1b]133;D;19\a";
+        std::cout << std::flush;
+        std::string input; std::getline(std::cin,input);
+        return 7;
+    }
     if(mode=="echo") {
 #ifdef _WIN32
         const auto identity=std::to_string(GetCurrentProcessId());
@@ -98,6 +105,43 @@ struct CloseSession {
     std::shared_ptr<Session> session;
     ~CloseSession() { session->request_close(); (void)session->wait_closed(5s); }
 };
+void command_lifecycle(const std::string& executable) {
+    for (const auto mode : {"command-complete", "command-interrupted", "command-failure"}) {
+        auto wake=std::make_shared<WakeCounter>();
+        const bool complete=std::string_view(mode)=="command-complete";
+        const bool failure=std::string_view(mode)=="command-failure";
+        ProcessOptions p; p.executable=executable;
+        p.arguments={"--child",complete?"command-complete":"command-interrupted"};
+        auto session=Session::start(p,{},[wake]{wake->signal();},SessionRetentionPolicy::retain_document);
+        CloseSession close{session};
+        check(await([&]{return session->info().command.phase==
+            (complete?CommandPhase::completed:CommandPhase::running);},wake),"command metadata not published");
+        const auto observed=session->info().command;
+        check(observed.command_generation==1,"startup markers invented a command");
+        check(!session->process_finished()&&!session->info().exit_code,"command end confused with process exit");
+        check(observed.completed_generation==(complete?1u:0u),"completion generation incorrect");
+        check(observed.last_exit_code==(complete?std::optional<std::int32_t>(19):std::nullopt),"command status incorrect");
+        if (failure) {
+            // Existing actor callback harness: a non-invalid_argument exception
+            // reaches fail(), which must interrupt metadata before reaping.
+            check(session->copy_selection([](std::string){throw std::runtime_error("command actor failure fixture");})
+                ==SessionSendResult::accepted,"failure fixture callback rejected");
+            check(session->wait_closed(5s),"failed command actor did not reap/close");
+            check(session->info().state==SessionState::failed,"actor failure not reported");
+        } else {
+            KeyInput enter; enter.key=Key::enter;
+            check(session->key(enter)==SessionSendResult::accepted,"command child exit input rejected");
+            check(session->wait_for_process_exit(5s),"command child did not exit");
+            check(session->info().exit_code==7,"shell process exit status lost");
+        }
+        const auto final=session->info().command;
+        check(final.phase==(complete?CommandPhase::completed:CommandPhase::interrupted),"EOF/failure left command running");
+        check(final.command_generation==observed.command_generation&&final.completed_generation==observed.completed_generation,
+            "EOF/failure invented command completion");
+        check(final.last_exit_code==observed.last_exit_code,"EOF/failure invented command exit status");
+        check(observed.phase==(complete?CommandPhase::completed:CommandPhase::running),"owned command snapshot mutated");
+    }
+}
 void retained_document(const std::string& executable) {
     auto wake=std::make_shared<WakeCounter>();
     ProcessOptions p; p.executable=executable; p.arguments={"--child","retained-history"};
@@ -361,10 +405,11 @@ int main(int argc,char** argv) {
             auto session=Session::start(p,{});session->request_close();
             check(session->wait_closed(5s),"immediate close race hung");
         }
+        command_lifecycle(executable);
         retained_document(executable);
         retained_bounds_failure_and_destructor(executable);
         retained_transition_releases_completed_callbacks(executable);
-        std::cout << "Session: retained document read/search/display, bounded scrollback, final held output, idle/disposal; real child, input ordering, immutable frame, bounded queue, flood close, launch failure, immediate-close races passed\n";
+        std::cout << "Session: command completion independent of process, EOF/failure interruption; retained document read/search/display, bounded scrollback, final held output, idle/disposal; real child, input ordering, immutable frame, bounded queue, flood close, launch failure, immediate-close races passed\n";
         return 0;
     } catch(const std::exception& e){std::cerr << "FAIL: " << e.what() << '\n';return 1;}
 }

@@ -184,6 +184,8 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
         {
             std::lock_guard lock(mutex);
             information.state = SessionState::failed;
+            if (information.command.phase == CommandPhase::running)
+                information.command.phase = CommandPhase::interrupted;
             information.error = std::move(reason);
             close_requested = true;
             child = process;
@@ -345,6 +347,14 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             writes.push_back({std::move(bytes), 0});
         };
         auto effects = [&] {
+            const auto command = core.command_snapshot();
+            bool command_changed{};
+            {
+                std::lock_guard lock(mutex);
+                command_changed = information.command != command;
+                information.command = command;
+            }
+            if (command_changed) notify();
             for (auto& effect : core.take_effects()) {
                 if (effect.kind == EffectKind::write_pty) { append(std::move(effect.text)); continue; }
                 std::lock_guard lock(mutex);

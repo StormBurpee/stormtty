@@ -22,6 +22,7 @@ struct SessionInfo {
     std::string title, working_directory, error;
     std::optional<std::uint32_t> exit_code;
     std::uint64_t bytes_received{}, bytes_sent{};
+    CommandSnapshot command; // Independent observed shell command, not process status.
 };
 // Thread-safe host facade. TerminalCore is owned by a dedicated actor; no VT
 // method runs on the UI or PTY reader thread. Destruction/close never joins UI.
