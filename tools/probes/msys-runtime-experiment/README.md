@@ -196,3 +196,18 @@ link paths and signature results. Both builds must retain identical compiler
 package provenance and dialect hashes. System headers/binutils remain the
 same-run installed dependencies, so this is not full historical reproducibility.
 Native relocation and the actual source build still require CI verification.
+
+Run40713958103 failed the pacman-key wrapper's non-root permission precheck,
+before cryptographic verification. To preserve trust without changing locking
+policy, the verifier now copies only public keyring and trustdb bytes into a
+new job-private directory (source/copy hashes and cmp recorded), disables auto
+key retrieval, and invokes GnuPG directly. No system edits, key generation,
+imports, permission changes, trust expansion, or `lock-never` override occur.
+
+[Official pacman-key source](https://github.com/msys2/msys2-pacman/blob/master/scripts/pacman-key.sh.in)
+`verify_sig` requires GnuPG TRUST_FULLY/ULTIMATE. Our direct verifier retains
+that requirement and additionally requires GnuPG process success, exactly one
+GOODSIG and VALIDSIG from the exact expected signing key, and rejects expired,
+revoked, bad or error states. Missing/ambiguous evidence fails closed.
+`test-signature-status.sh` deterministically checks positive and negative status
+fixtures before native preflight. No native compiler success is implied.

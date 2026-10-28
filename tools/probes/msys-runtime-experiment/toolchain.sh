@@ -3,15 +3,39 @@
 set -euo pipefail
 [[ $# == 1 && ${MSYSTEM:-} == MSYS ]] || exit 2
 root=$(realpath -m "$1")
+here=$(cd -- "$(dirname -- "$0")" && pwd)
+bash "$here/test-signature-status.sh"
 [[ ! -e $root ]] || exit 2
 mkdir -p "$root/downloads" "$root/prefix" "$root/wrappers" "$root/provenance"
+# The runner's readable public trust store can fail pacman-key's non-root
+# wrapper precheck. Clone only public verification state; no system edits,
+# secret keys, new signing keys, trust overrides, or signature bypasses.
+keyring=$(pacman-conf gpgdir)
+mkdir -m 700 "$root/keyring"
+cp "$keyring/pubring.gpg" "$keyring/trustdb.gpg" "$root/keyring/"
+# Some GnuPG installations retain the public keys in a keybox instead.
+if [[ -f $keyring/pubring.kbx ]]; then cp "$keyring/pubring.kbx" "$root/keyring/"; fi
+printf 'no-auto-key-retrieve\n' > "$root/keyring/gpg.conf"
+{ printf 'Public verifier source: %s\n' "$keyring"
+  pacman -Q msys2-keyring gnupg pacman
+  for file in pubring.gpg trustdb.gpg pubring.kbx; do
+    [[ -f $root/keyring/$file ]] || continue
+    cmp "$keyring/$file" "$root/keyring/$file"
+    sha256sum "$keyring/$file" "$root/keyring/$file"
+  done
+  sha256sum "$root/keyring/gpg.conf"
+} > "$root/provenance/verification-keyring.txt"
 cd "$root/downloads"
 while read -r hash name directory; do
   url="https://repo.msys2.org/msys/$directory/$name"
   curl --fail --location "$url" -o "$name"
   curl --fail --location "$url.sig" -o "$name.sig"
   echo "$hash  $name" | sha256sum -c -
-  pacman-key --verify "$name.sig" "$name" 2>&1 | tee "$root/provenance/$name.signature.txt"
+  # Same full/ultimate trust requirement as pacman-key, with explicit signer,
+  # process-success and expiry/revocation/error checks. No wrapper lock override.
+  status="$root/provenance/$name.status.txt"
+  gpg --homedir "$root/keyring" --batch --status-fd 1 --verify "$name.sig" "$name" > "$status" 2> "$root/provenance/$name.signature.txt"
+  awk -f "$here/signature-status.awk" "$status"
   printf '%s  %s\n' "$hash" "$url" >> "$root/provenance/compiler-packages.txt"
   if [[ $directory == x86_64 ]]; then
     # Only usr contents, preserving both packages' licenses. No active runtime DLL.
