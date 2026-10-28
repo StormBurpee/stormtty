@@ -134,6 +134,32 @@ inline ProjectNavigationLayout layout_project_navigation(double width, double he
     return result;
 }
 
+// Compact, bounded footer placements. Overflow always remains reachable; the
+// host supplies project-qualified identities and owns actions, not geometry.
+struct BackgroundFooterLayout {
+    Rect label, overflow;
+    std::vector<Rect> chips;
+};
+inline BackgroundFooterLayout layout_background_footer(Rect footer, std::size_t count) {
+    BackgroundFooterLayout result;
+    if (footer.width<=0 || footer.height<=0 || !count) return result;
+    const double inset=std::min(6.0,footer.width/2);
+    const double available=std::max(0.0,footer.width-inset*2);
+    const double heading=available>=300?100:0;
+    result.label={footer.x+inset,footer.y+3,heading,std::max(0.0,footer.height-6)};
+    double x=footer.x+inset+heading;
+    const double room=std::max(0.0,available-heading);
+    const auto capacity=static_cast<std::size_t>(std::floor(room/184));
+    const auto visible=std::min(count,capacity);
+    const bool overflow=visible<count;
+    const auto shown=overflow && visible && room-visible*184<56?visible-1:visible;
+    for (std::size_t i=0;i<shown;++i) {
+        result.chips.push_back({x,footer.y+3,180,std::max(0.0,footer.height-6)}); x+=184;
+    }
+    if (shown<count) result.overflow={x,footer.y+3,std::max(0.0,footer.x+footer.width-inset-x),std::max(0.0,footer.height-6)};
+    return result;
+}
+
 // Diagnostic sample belongs to empty left padding, not terminal cells, headers,
 // sidebar material, or overlays. No sample is safer than an occluded sample.
 inline std::optional<Rect> material_probe_patch(Rect pane, Rect content, std::span<const Rect> occluders={}) {

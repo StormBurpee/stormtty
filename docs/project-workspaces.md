@@ -232,3 +232,27 @@ g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -Iinclude \
 
 Portable test success is not Windows or macOS runtime, UI, accessibility,
 terminal-session performance or native renderer verification.
+
+### Windows background footer
+
+The pane menu and command palette expose **Move to background**. This detaches
+only placement: the same session actor continues consuming PTY output. The
+active project's footer exposes restore chips and an overflow menu; right-click
+a chip for Restore or styled, Cancel-default Close confirmation. Restoring
+creates a tab around the existing session, presents its latest frame and resizes
+the retained document. Parking the last pane leaves the project open with a
+**New terminal** affordance. No process is restarted or command replayed.
+
+Footer status describes the terminal process, not a foreground job: **running**
+does not mean busy, and **exit N** means only that the process exited with that
+code. Exit/failure transitions produce a project-named in-window notice above
+the footer. No command-ready, Git or service state is inferred. Parked ownership
+is memory-only and is not serialized as recoverable live processes.
+
+The Windows host explicitly opts into retained terminal documents. Input and
+close-confirmation liveness use `process_finished()`; actor-disposal cleanup
+still uses `closed()`/`wait_closed()`. The native project smoke exercises final
+pane parking, cancellation, project isolation, real output while parked, and
+same-actor restoration after exit. The native modal smoke confirms background
+closure and waits for disposal. These require Windows execution; cross-building
+by itself does not verify native behavior or physical pointer/IME/accessibility.

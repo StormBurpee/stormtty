@@ -9,6 +9,16 @@ namespace { void require(bool condition, const char* message) {
 } }
 int main() {
     using namespace stormtty;
+    for (double width : {0., 24., 120., 300., 640., 1100.}) for (std::size_t count : {0u,1u,4u,256u}) {
+        const auto footer=layout_background_footer({0,700,width,26},count);
+        double right=0;
+        for (const auto& chip:footer.chips) {
+            require(chip.x>=right && chip.x+chip.width<=width && chip.y>=700 && chip.y+chip.height<=726,"background chips bounded and disjoint"); right=chip.x+chip.width;
+        }
+        if (count>footer.chips.size() && width>0) require(footer.overflow.width>0 && footer.overflow.x>=right && footer.overflow.x+footer.overflow.width<=width,"background overflow reachable without overlap");
+        if (!count) require(footer.chips.empty() && !footer.overflow.width,"empty footer has no filler");
+    }
+    require(layout_background_footer({0,700,1100,0},4).chips.empty(),"focus mode hides background geometry");
     AppearanceConfig appearance;appearance.backdrop=BackdropPreference::automatic;
     auto material=window_material_policy(appearance,true,false,false,true);
     require(material.system_backdrop==3 && material.opacity<1,"Auto requests behind-window Acrylic, not wallpaper-only Mica");

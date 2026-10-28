@@ -311,6 +311,13 @@ private:
     void new_tab();
     void split(Direction);
     void close_pane(PaneId, bool approved = false);
+    void park_pane(PaneId);
+    void restore_parked(ProjectSessionReference);
+    void close_parked(ProjectSessionReference, bool approved = false);
+    void background_menu(Point, std::optional<SessionId> = {});
+    std::string background_title(const ParkedSession&, bool status = true) const;
+    BackgroundFooterLayout background_layout() const { return layout_background_footer(navigation_.footer,projects_.active()->parked_sessions.size()); }
+    Rect empty_terminal_button() const { const auto r=workspace_viewport(); return {r.x+std::max(0.0,(r.width-156)/2),r.y+std::max(0.0,(r.height-36)/2),std::min(156.0,r.width),std::min(36.0,r.height)}; }
     void close_tab(TabId, bool approved = false);
     void show_modal(std::string title, std::vector<std::string> body, std::string confirm, std::function<void()> action, bool destructive = true);
     void answer_modal(ModalDecision);
@@ -372,7 +379,9 @@ private:
     bool smoke_settings_file_owned_{};
     Config smoke_settings_original_;
     std::shared_ptr<Session> smoke_settings_actor_;
-    bool smoke_projects_live_verified_{}, smoke_chrome_verified_{}, smoke_tab_drag_verified_{};
+    bool smoke_projects_live_verified_{}, smoke_background_restored_{}, smoke_chrome_verified_{}, smoke_tab_drag_verified_{};
+    SessionId smoke_parked_session_{};
+    std::uint64_t smoke_parked_bytes_{};
     ProjectWorkspaceId smoke_primary_project_{}, smoke_secondary_project_{};
     std::map<SessionId,std::shared_ptr<Session>> smoke_project_actors_;
     std::shared_ptr<Session> smoke_disposable_;
@@ -396,6 +405,7 @@ private:
     std::map<SessionId, std::shared_ptr<Session>> sessions_;
     std::map<SessionId, TerminalSize> sizes_;
     std::map<SessionId, SessionState> session_states_;
+    std::map<SessionId, std::string> background_labels_;
     SessionId focused_session_{};
     std::uint64_t next_session_{1};
     std::shared_ptr<WakeState> wake_;
@@ -668,7 +678,7 @@ void NativeWindow::begin_material_probe(const WindowScene& rendered) {
     if(!material_probe_requested_ || material_probe_running_ || !renderer_ || minimized_ || in_size_move_ || settings_pending_ ||
         overlay_open() || modal_ || palette_open_ || rename_open_ || palette_transition_.value(GetTickCount64())>0 || drag_!=Drag::none) return;
     std::vector<Rect> occluders;
-    if(!notice_.empty())occluders.push_back({12,std::max(44.0,height_-56),std::max(0.0,width_-24),44});
+    if(!notice_.empty())occluders.push_back({12,std::max(44.0,navigation_.footer.y-56),std::max(0.0,width_-24),44});
     std::optional<Rect> patch;SessionId sampled;
     // Prefer the active pane; if it has no uncovered padding, don't silently
     // call another pane's cell flags the active grid.
@@ -892,7 +902,7 @@ SessionId NativeWindow::new_session() {
     terminal.default_background=color_hex(config_.theme.background,{23,25,29,255});
     const SessionId id{next_session_++};
     std::weak_ptr<WakeState> weak = wake_;
-    auto session = Session::start(std::move(process), terminal, [weak] { if (auto state = weak.lock()) state->wake(); });
+    auto session = Session::start(std::move(process), terminal, [weak] { if (auto state = weak.lock()) state->wake(); }, SessionRetentionPolicy::retain_document);
     if (options_.smoke_test) { smoke_sessions_.emplace(id,session); if (using_managed_shell()) smoke_managed_sessions_.insert(id); }
     sessions_.emplace(id, std::move(session));
     return id;
@@ -914,7 +924,7 @@ void NativeWindow::split(Direction direction) {
 void NativeWindow::retire_unused_sessions() {
     for (auto iterator = sessions_.begin(); iterator != sessions_.end();) {
         const bool used = projects_.contains_session(iterator->first);
-        if (!used) { iterator->second->request_close(); sizes_.erase(iterator->first); session_states_.erase(iterator->first); iterator = sessions_.erase(iterator); }
+        if (!used) { iterator->second->request_close(); sizes_.erase(iterator->first); session_states_.erase(iterator->first); background_labels_.erase(iterator->first); iterator = sessions_.erase(iterator); }
         else ++iterator;
     }
 }
@@ -939,10 +949,80 @@ void NativeWindow::answer_modal(ModalDecision decision) {
     if (action) action();
     if (hwnd_) { changed(); caret_schedule(); }
 }
+std::string NativeWindow::background_title(const ParkedSession& parked, bool status) const {
+    std::string title=parked.title.empty()?parked.profile:parked.title;
+    if (auto found=sessions_.find(parked.session); found!=sessions_.end()) {
+        const auto info=found->second->info();
+        if (!info.title.empty()) title=info.title;
+        title.erase(std::remove_if(title.begin(),title.end(),[](unsigned char c){return c<0x20 || c==0x7f;}),title.end());
+        if (title.empty()) title="Terminal";
+        // Keep UTF-8 intact; DirectWrite clips bounded actor titles.
+        if (!status) return title;
+        if (info.exit_code) title+=" · exit "+std::to_string(*info.exit_code);
+        else if (info.state==SessionState::failed) title+=" · failed";
+        else if (info.state==SessionState::closing) title+=" · closing";
+        else if (info.state==SessionState::starting) title+=" · starting";
+        else title+=" · running";
+    }
+    return title;
+}
+void NativeWindow::park_pane(PaneId pane) {
+    if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
+    cancel_drag();
+    const auto result=projects_.park({projects_.active_id(),pane});
+    if (!result) { show_error(result.error); return; }
+    reset_project_view(); // Clear IME, selection and renderer-local placement state.
+}
+void NativeWindow::restore_parked(ProjectSessionReference target) {
+    if (target.project!=projects_.active_id() || !sessions_.contains(target.local)) { show_error("The background target changed; nothing was restored."); return; }
+    const auto result=projects_.reattach_to_new_tab(target);
+    if (!result) { show_error(result.error); return; }
+    notice_.clear();
+    sizes_.erase(target.local); // Reattach always resizes and presents the actor's latest frame.
+    reset_project_view();
+}
+void NativeWindow::close_parked(ProjectSessionReference target, bool approved) {
+    const auto* project=projects_.find(target.project);
+    if (!project || target.project!=projects_.active_id() || !sessions_.contains(target.local) ||
+        std::none_of(project->parked_sessions.begin(),project->parked_sessions.end(),[&](const auto& item){return item.session==target.local;})) {
+        show_error("The background target changed; nothing was closed."); return;
+    }
+    if (!approved) {
+        show_modal("Close background terminal?",{"Its process may still be running.","Closing discards this terminal and its retained output."},"Close terminal",[this,target]{close_parked(target,true);}); return;
+    }
+    const auto removed=projects_.discard_parked(target);
+    if (!removed) { show_error(removed.error); return; }
+    retire_unused_sessions(); changed(true);
+}
+void NativeWindow::background_menu(Point point, std::optional<SessionId> only) {
+    std::vector<ContextMenuItem> items;
+    std::map<std::string,std::function<void()>> actions;
+    for (const auto& parked:projects_.active()->parked_sessions) {
+        if (only && parked.session!=*only) continue;
+        const ProjectSessionReference target{projects_.active_id(),parked.session};
+        const auto id="background."+std::to_string(parked.session.value);
+        ContextMenuItem restore; restore.id=id+".restore"; restore.label="Restore terminal";
+        restore.enabled=workspace().state().tabs.size()<Workspace::maximum_tabs;
+        restore.disabled_reason="Tab limit reached";
+        ContextMenuItem close; close.id=id+".close"; close.label="Close terminal…"; close.destructive=true;
+        actions[restore.id]=[this,target]{restore_parked(target);}; actions[close.id]=[this,target]{close_parked(target);};
+        if (only) { items.push_back(std::move(restore)); items.push_back(std::move(close)); }
+        else {
+            // One node per entry keeps all 256 supported sessions reachable
+            // within the shared menu's 512-node bound.
+            ContextMenuItem entry; entry.id=id; entry.label=background_title(parked); items.push_back(std::move(entry));
+            actions[id]=[this,target,point] {
+                if (projects_.active_id()!=target.project) { show_error("The background target changed; nothing was changed."); return; }
+                background_menu(point,target.local);
+            };
+        }
+    }
+    open_menu(std::move(items),point,std::move(actions));
+}
 void NativeWindow::close_pane(PaneId pane, bool approved) {
     if (!workspace().pane(pane)) return;
     auto* session = session_for(pane);
-    if (!approved && session && !session->closed()) {
+    if (!approved && session && !session->process_finished()) {
         const ProjectPaneReference target{projects_.active_id(),pane};
         const auto session_id=workspace().pane(pane)->session;
         show_modal("Close this pane?",{"Programs may still be running.","Closing can discard unsaved work."},"Close pane",[this,target,session_id]{
@@ -952,13 +1032,13 @@ void NativeWindow::close_pane(PaneId pane, bool approved) {
         }); return;
     }
     workspace().close_pane(pane); retire_unused_sessions();
-    if (workspace().state().tabs.empty()) { close_project(projects_.active_id()); return; }
+    if (workspace().state().tabs.empty() && projects_.active()->parked_sessions.empty()) { close_project(projects_.active_id()); return; }
     changed(true);
 }
 void NativeWindow::close_tab(TabId tab, bool approved) {
     if (!workspace().tab(tab)) return;
     bool live = false;
-    for (auto pane : workspace().pane_order(tab)) if (auto* session = session_for(pane); session && !session->closed()) live = true;
+    for (auto pane : workspace().pane_order(tab)) if (auto* session = session_for(pane); session && !session->process_finished()) live = true;
     if (!approved && live) {
         const ProjectTabReference target{projects_.active_id(),tab};
         std::vector<SessionId> expected;
@@ -971,7 +1051,7 @@ void NativeWindow::close_tab(TabId tab, bool approved) {
         }); return;
     }
     workspace().close_tab(tab); retire_unused_sessions();
-    if (workspace().state().tabs.empty()) { close_project(projects_.active_id()); return; }
+    if (workspace().state().tabs.empty() && projects_.active()->parked_sessions.empty()) { close_project(projects_.active_id()); return; }
     changed(true);
 }
 void NativeWindow::sync_focus() {
@@ -1000,6 +1080,18 @@ void NativeWindow::update_sessions() {
         if (!info.title.empty() && pane.title!=info.title) titles.push_back({project.id,pane_id,info.title});
         if (project.id==projects_.active_id() && !info.error.empty() && notice_!=info.error) { notice_=info.error; ++chrome_generation_; }
         if (!session_states_.contains(pane.session) || session_states_[pane.session]!=info.state) { session_states_[pane.session]=info.state; state_changed=true; ++chrome_generation_; }
+    }
+    for (const auto& project:projects_.entries()) for (const auto& parked:project.parked_sessions) {
+        auto found=sessions_.find(parked.session); if (found==sessions_.end()) continue;
+        const auto info=found->second->info();
+        const auto title=background_title(parked);
+        if (background_labels_[parked.session]!=title) { background_labels_[parked.session]=title; state_changed=true; ++chrome_generation_; }
+        if (!session_states_.contains(parked.session) || session_states_[parked.session]!=info.state) {
+            session_states_[parked.session]=info.state; state_changed=true; ++chrome_generation_;
+            const std::string destination=project.id==projects_.active_id()?" Restore it from the footer to inspect output.":" Switch to this workspace and restore it from its footer to inspect output.";
+            if (info.exit_code) notice_=project.metadata.name+" · Background terminal exited ("+std::to_string(*info.exit_code)+")."+destination;
+            else if (info.state==SessionState::failed) notice_=project.metadata.name+" · Background terminal failed."+destination;
+        }
     }
     for (auto& title:titles) { projects_.workspace(title.project)->set_pane_title(title.pane,std::move(title.title)); ++chrome_generation_; }
     std::optional<std::string> clipboard,error;
@@ -1066,7 +1158,7 @@ void NativeWindow::choose_project_folder() {
 void NativeWindow::close_project(ProjectWorkspaceId id, bool approved) {
     if (!projects_.find(id)) return;
     bool live=false;
-    for (const auto session:projects_.session_ids(id)) if (sessions_.contains(session) && !sessions_.at(session)->closed()) live=true;
+    for (const auto session:projects_.session_ids(id)) if (sessions_.contains(session) && !sessions_.at(session)->process_finished()) live=true;
     if (!approved && live) {
         const auto expected=projects_.session_ids(id);
         show_modal("Close this workspace?",{"Its sessions may have running programs.","Closing can discard unsaved work."},"Close workspace",[this,id,expected]{
@@ -1108,7 +1200,7 @@ std::string NativeWindow::pane_title(PaneId id, bool full) const {
     result.erase(std::remove_if(result.begin(), result.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; }), result.end());
     // The model bounds untrusted titles. DirectWrite performs visual ellipsis;
     // do not byte-truncate UTF-8 or mutate the session title for presentation.
-    if (auto* session = session_for(id); session && session->closed()) result += " · exited";
+    if (auto* session = session_for(id); session && session->process_finished()) result += " · exited";
     return result;
 }
 std::string NativeWindow::tab_title(TabId id, bool full) const {
@@ -1136,6 +1228,9 @@ void NativeWindow::refresh_tooltips() {
     for (const auto& row:navigation_.projects) if (const auto* project=projects_.find(row.project)) add(row.bounds,project->metadata.name+"\n"+project->metadata.working_directory);
     add(navigation_.toggle,navigation_.expanded?"Collapse workspaces":width_<640?"Navigation stays compact in narrow windows":"Expand workspaces");
     add(navigation_.settings,"Settings · Ctrl+,"); add(navigation_.new_project,"New workspace… Choose a folder"); add(navigation_.context,context_label_); add(navigation_.focus,"Focus mode: hide navigation, directory context and footer");
+    const auto footer=background_layout();
+    for (std::size_t i=0;i<footer.chips.size();++i) add(footer.chips[i],background_title(projects_.active()->parked_sessions[i])+"\nClick to restore · Right-click for actions");
+    add(footer.overflow,"All background terminals");
     add(chrome_.new_tab,"New tab · Ctrl+Shift+T"); add(chrome_.palette,"Commands · Ctrl+Shift+P"); add(chrome_.menu,"StormTTY menu");
 }
 double NativeWindow::hover_amount(std::uint64_t id) const {
@@ -1309,6 +1404,7 @@ void NativeWindow::settings_input_changed() {
 }
 CommandContext NativeWindow::command_context() const {
     CommandContext context;
+    context.supports_background_sessions=true; context.parked_sessions=projects_.active()->parked_sessions.size();
     context.supports_project_workspaces=true; context.project_workspaces=projects_.entries().size(); context.supports_focus_mode=true;
     context.tabs = workspace().state().tabs.size();
     context.total_panes = workspace().state().panes.size();
@@ -1316,7 +1412,7 @@ CommandContext NativeWindow::command_context() const {
     context.clipboard_has_text = IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE;
     if (const auto* tab = workspace().tab(workspace().active_tab())) context.zoomed = tab->zoomed_pane.has_value();
     if (auto* session = active_session()) {
-        context.session_running = !session->closed();
+        context.session_running = !session->process_finished();
         if (auto frame = session->frame()) for (const auto& row : frame->lines) if (row && row->selection) { context.has_selection = true; break; }
     }
     return context;
@@ -1369,6 +1465,7 @@ void NativeWindow::dispatch(std::string_view command) {
     }
     if (command == "tab.new") { new_tab(); return; }
     if (command == "tab.close") { close_tab(tab); return; }
+    if (command == "pane.background") { park_pane(pane); return; }
     if (command == "pane.close") { close_pane(pane); return; }
     if (command == "pane.split_right") { split(Direction::right); return; }
     if (command == "pane.split_down") { split(Direction::down); return; }
@@ -1576,6 +1673,23 @@ WindowScene NativeWindow::scene() {
         Color footer=chrome; if (backdrop_) footer.a=230;
         rectangle(navigation_.footer,footer,0,{},0,true);
         rectangle({0,navigation_.footer.y,width_,1/scale_},seam);
+        if (!projects_.active()->parked_sessions.empty()) {
+            const auto footer_layout=background_layout();
+            label(footer_layout.label,"Background",secondary,11);
+            for (std::size_t i=0;i<footer_layout.chips.size();++i) {
+                const auto bounds=footer_layout.chips[i]; const auto& parked=projects_.active()->parked_sessions[i];
+                rectangle(bounds,raised,4);
+                const auto found=sessions_.find(parked.session);
+                const auto info=found!=sessions_.end()?found->second->info():SessionInfo{};
+                const std::string status=info.exit_code?"exit "+std::to_string(*info.exit_code):info.state==SessionState::failed?"failed":info.state==SessionState::starting?"starting":info.state==SessionState::closing?"closing":"running";
+                label({bounds.x+6,bounds.y,std::max(0.0,bounds.width-78),bounds.height},background_title(parked,false),text,11);
+                label({bounds.x+bounds.width-70,bounds.y,64,bounds.height},status,info.exit_code?accent:secondary,10,false,ChromeTextAlignment::trailing);
+            }
+            if (footer_layout.overflow.width>0) {
+                rectangle(footer_layout.overflow,raised,4);
+                label(footer_layout.overflow,"+"+std::to_string(projects_.active()->parked_sessions.size()-footer_layout.chips.size())+" more",secondary,11,false,ChromeTextAlignment::center);
+            }
+        } else {
         std::string profile="Terminal";
         if (const auto* pane=workspace().pane(workspace().active_pane())) {
             profile=pane->profile;
@@ -1594,6 +1708,11 @@ WindowScene NativeWindow::scene() {
             else if (info.state==SessionState::closing) summary+="  ·  closing";
         }
         label({std::max(12.0,width_-count_width-12),navigation_.footer.y+3,std::min(count_width,std::max(0.0,width_-24)),20},summary,secondary,11,false,ChromeTextAlignment::trailing);
+        }
+    }
+    if (workspace().state().tabs.empty()) {
+        const auto bounds=empty_terminal_button(); rectangle(bounds,raised,5);
+        label(bounds,"+ New terminal",text,13,false,ChromeTextAlignment::center);
     }
     z={ChromeLayer::transient};
     if (drop_preview_) {
@@ -1621,8 +1740,8 @@ WindowScene NativeWindow::scene() {
     }
     z={ChromeLayer::toast};
     if (!notice_.empty()) {
-        rectangle({12,std::max(44.0,height_-56),std::max(0.0,width_-24),44},raised,6);
-        label({24,std::max(49.0,height_-51),std::max(0.0,width_-64),34},notice_,text,12);
+        rectangle({12,std::max(44.0,navigation_.footer.y-56),std::max(0.0,width_-24),44},raised,6);
+        label({24,std::max(49.0,navigation_.footer.y-51),std::max(0.0,width_-64),34},notice_,text,12);
     }
     z={ChromeLayer::palette}; // Cached closing primitives/text retain this same surface.
     const auto palette_primitive_start=result.primitives.size(), palette_text_start=result.texts.size();
@@ -1900,7 +2019,7 @@ void NativeWindow::paste() {
     if (!pane || !sessions_.contains(pane->session)) return;
     auto session=sessions_.at(pane->session); const auto size=text.size();
     auto send=[this,session,text=std::move(text),unsafe,size] {
-        if (session->closed()) { show_error("The paste destination has closed; nothing was sent."); return; }
+        if (session->process_finished()) { show_error("The paste destination has closed; nothing was sent."); return; }
         submit([session,text,unsafe] { return session->paste(text,unsafe); },size);
     };
     if (unsafe) show_modal("Review paste",{"This paste contains multiple lines","or terminal control characters.","It may execute shell commands."},"Paste anyway",std::move(send),false);
@@ -1977,6 +2096,11 @@ void NativeWindow::system_menu(Point anchor,bool keyboard) {
 }
 void NativeWindow::popup_menu(Point point,bool pane_actions) {
     if (modal_ || settings_input_blocked() || settings_loading()) return;
+    if (navigation_.footer.contains(point) && !projects_.active()->parked_sessions.empty()) {
+        const auto footer=background_layout();
+        for (std::size_t i=0;i<footer.chips.size();++i) if (footer.chips[i].contains(point)) { background_menu(point,projects_.active()->parked_sessions[i].session); return; }
+        background_menu(point); return;
+    }
     const auto context=command_context();
     const auto project=projects_.active_id(); const auto pane=workspace().active_pane(); const auto tab=workspace().active_tab();
     const auto* model=workspace().pane(pane); const auto session=model?model->session:SessionId{};
@@ -1989,7 +2113,7 @@ void NativeWindow::popup_menu(Point point,bool pane_actions) {
         for (const auto& binding:config_.bindings) if (binding.command==id) { item.shortcut=format_key_chord(binding.chord,Platform::windows); break; }
         actions[item.id]=[this,id=std::string(id),project,pane,tab,session] {
             const auto* current=projects_.workspace(project); const auto* target=current?current->pane(pane):nullptr;
-            if (!current || projects_.active_id()!=project || current->active_tab()!=tab || current->active_pane()!=pane || !target || target->session!=session) {
+            if (!current || projects_.active_id()!=project || current->active_tab()!=tab || current->active_pane()!=pane || (session ? (!target || target->session!=session) : target!=nullptr)) {
                 show_error("The menu target changed; nothing was changed."); return;
             }
             dispatch(id);
@@ -2003,13 +2127,13 @@ void NativeWindow::popup_menu(Point point,bool pane_actions) {
     };
     std::vector<ContextMenuItem> items;
     if (pane_actions) {
-        for (auto command:{"edit.copy","edit.paste","pane.split_right","pane.split_down","pane.zoom","pane.new_tab","pane.swap","pane.move_to_tab"}) items.push_back(command_item(command));
+        for (auto command:{"edit.copy","edit.paste","pane.split_right","pane.split_down","pane.zoom","pane.new_tab","pane.background","pane.swap","pane.move_to_tab"}) items.push_back(command_item(command));
         items.push_back(ContextMenuItem::separator()); items.push_back(command_item("pane.close"));
     } else {
         items.push_back(command_item("tab.new"));
         items.push_back(group("group.workspace","Workspaces",{"workspace.new","workspace.next","workspace.previous","workspace.toggle_navigation","workspace.close"}));
         items.push_back(group("group.tab","Task tabs",{"tab.rename","tab.next","tab.previous","tab.move_left","tab.move_right","tab.close"}));
-        items.push_back(group("group.pane","Panes",{"pane.split_right","pane.split_down","pane.zoom","pane.new_tab","pane.swap","pane.move_to_tab","pane.close"}));
+        items.push_back(group("group.pane","Panes",{"pane.split_right","pane.split_down","pane.zoom","pane.new_tab","pane.background","pane.swap","pane.move_to_tab","pane.close"}));
         items.push_back(ContextMenuItem::separator());
         for (auto command:{"app.command_palette","settings.open","window.focus_mode","window.fullscreen"}) items.push_back(command_item(command));
     }
@@ -2049,6 +2173,15 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
     if (navigation_.settings.contains(point)) { dispatch("settings.open"); return; }
     if (navigation_.focus.contains(point)) { dispatch("window.focus_mode"); return; }
     for (const auto& row:navigation_.projects) if (row.bounds.contains(point)) { activate_project(row.project); return; }
+    if (navigation_.footer.contains(point)) {
+        const auto footer=background_layout();
+        for (std::size_t i=0;i<footer.chips.size();++i) if (footer.chips[i].contains(point)) {
+            restore_parked({projects_.active_id(),projects_.active()->parked_sessions[i].session}); return;
+        }
+        if (footer.overflow.contains(point)) background_menu(point);
+        return;
+    }
+    if (workspace().state().tabs.empty() && empty_terminal_button().contains(point)) { new_tab(); return; }
     if (navigation_.rail.contains(point) || navigation_.context.contains(point) || navigation_.footer.contains(point)) return;
     for (const auto& tab:chrome_.tabs) if (tab.bounds.contains(point)) {
         if (chrome_.compact) {
@@ -2440,8 +2573,9 @@ void NativeWindow::smoke_progress(bool presented) {
             close_pane(original); key.wParam=VK_RETURN; key_message(key);
             if (modal_ || !workspace().pane(original)) { smoke_finish("Default Enter did not cancel destructive close."); return; }
             new_tab(); const auto disposable=workspace().pane(workspace().active_pane())->session;
-            smoke_disposable_=sessions_.at(disposable); close_tab(workspace().active_tab());
-            if (!modal_) { smoke_finish("Disposable tab did not show styled close confirmation."); return; }
+            smoke_disposable_=sessions_.at(disposable); park_pane(workspace().active_pane());
+            close_parked({projects_.active_id(),disposable});
+            if (!modal_) { smoke_finish("Disposable background terminal did not show styled close confirmation."); return; }
             smoke_modal_stage_=1; return;
         }
         if (smoke_modal_stage_==1 && presented) {
@@ -2452,7 +2586,7 @@ void NativeWindow::smoke_progress(bool presented) {
             if (!options_.console_runtime_directory.empty() && !diagnostic.bundled_provider) return;
             try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
             modal_focus_.select(ModalDecision::confirm); answer_modal(modal_focus_.activate());
-            if (modal_ || workspace().state().tabs.size()!=1 || sessions_.size()!=1) { smoke_finish("Explicit modal close did not retire only its tab."); return; }
+            if (modal_ || workspace().state().tabs.size()!=1 || sessions_.size()!=1) { smoke_finish("Explicit modal close did not retire only its background terminal."); return; }
             smoke_modal_stage_=2;
         } else return;
     }
@@ -2471,6 +2605,22 @@ void NativeWindow::smoke_progress(bool presented) {
         dispatch("workspace.previous"); retire_unused_sessions();
         if (projects_.active_id()!=smoke_primary_project_) { smoke_finish("Keyboard/palette workspace command did not restore the previous project."); return; }
         if (sessions_.size()!=2 || !projects_.validate()) { smoke_finish("Hidden live actors were retired or workspace IDs collided."); return; }
+        smoke_parked_session_=workspace().pane(workspace().active_pane())->session;
+        const auto actor=sessions_.at(smoke_parked_session_); smoke_parked_bytes_=actor->info().bytes_received;
+        dispatch("pane.background"); retire_unused_sessions();
+        if (!workspace().state().tabs.empty() || projects_.active()->parked_sessions.size()!=1 || focused_session_ ||
+            sessions_.at(smoke_parked_session_)!=actor || actor->process_finished() || !projects_.validate()) {
+            smoke_finish("Parking the final pane did not retain the original live actor in an empty workspace."); return;
+        }
+        close_parked({smoke_primary_project_,smoke_parked_session_});
+        if (!modal_ || modal_focus_.activate()!=ModalDecision::cancel) { smoke_finish("Background close did not show Cancel-default styled confirmation."); return; }
+        answer_modal(ModalDecision::cancel);
+        if (!sessions_.contains(smoke_parked_session_) || projects_.active()->parked_sessions.size()!=1) { smoke_finish("Canceled background close changed ownership."); return; }
+        activate_project(smoke_secondary_project_);
+        if (!projects_.active()->parked_sessions.empty()) { smoke_finish("Background footer leaked across projects."); return; }
+        restore_parked({smoke_primary_project_,smoke_parked_session_});
+        if (!projects_.find(smoke_primary_project_)->workspace.state().tabs.empty()) { smoke_finish("Cross-project restore accepted a stale target."); return; }
+        notice_.clear();
         smoke_projects_live_verified_=true;
     }
     if (options_.smoke_layout && !smoke_tab_drag_verified_) {
@@ -2484,6 +2634,12 @@ void NativeWindow::smoke_progress(bool presented) {
             smoke_finish("Workspace task drag did not reorder in its new band without changing actors."); return;
         }
         workspace().reorder_tab(first.tab,0); activate(original); changed(true); smoke_tab_drag_verified_=true;
+        // Capture the actual background footer, not ordinary tabs named as if
+        // they were parked. Preserve the accepted foreground split geometry.
+        while (workspace().state().tabs.size()>1) park_pane(workspace().state().tabs.back().active_pane);
+        if (projects_.active()->parked_sessions.size()!=2 || sessions_.size()!=actor_count || layout_.panes.size()!=3) {
+            smoke_finish("Layout smoke did not retain its real background actors and foreground splits."); return;
+        }
     }
     bool all_closed=true;
     for (const auto& [id,session]:sessions_) {
@@ -2498,11 +2654,23 @@ void NativeWindow::smoke_progress(bool presented) {
             KeyInput enter; enter.key=Key::enter;
             submit([session,enter] { return session->key(enter); });
         }
-        if (!session->closed()) all_closed=false;
+        if (!session->process_finished()) all_closed=false;
         else if (!info.exit_code || *info.exit_code!=0) { smoke_finish("Controlled smoke shell did not exit successfully."); return; }
     }
     if (presented && smoke_frame_ready() && !motion_timer_active_) smoke_marker_presented_=true;
     if (all_closed) {
+        if (options_.smoke_projects && !smoke_background_restored_) {
+            const auto actor=sessions_.at(smoke_parked_session_);
+            if (actor!=smoke_project_actors_.at(smoke_parked_session_) || actor->info().bytes_received<=smoke_parked_bytes_ || !frame_has_smoke_marker(actor->frame()) || actor->closed()) {
+                smoke_finish("Parked actor lost identity, live output, final frame or retained document."); return;
+            }
+            activate_project(smoke_primary_project_);
+            restore_parked({smoke_primary_project_,smoke_parked_session_});
+            if (!active_session() || active_session()!=actor.get() || !projects_.active()->parked_sessions.empty() || layout_.panes.empty()) {
+                smoke_finish("Restore did not reattach the same exited actor and latest frame."); return;
+            }
+            notice_.clear(); smoke_background_restored_=true; smoke_marker_presented_=false; changed(true); return;
+        }
         if (!smoke_frame_ready()) { smoke_finish("Controlled smoke shell exited without its expected output marker."); return; }
         if (smoke_marker_presented_ && renderer_->stats().presents) {
             if(material_probe_requested_ || material_probe_running_)return;
@@ -2548,7 +2716,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
         if (using_managed_shell()) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
         if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, theme/font preview rollback, custom system menu/outside-click routing, confirmed Alt+], 25% opacity, two atomic Save/reopen cycles, original live actor retained. Not physical UI/accessibility QA.\n",stderr);
-        if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts, original live actor identity across activation/retirement, hidden real output, scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
+        if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts; final-pane parking, canceled background close, cross-project isolation, live parked output and same retained actor restored after exit; scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
         if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());
     } else std::fprintf(stderr,"Native CI smoke failed: %.*s Settings stage=%u elapsed_ms=%llu job_pending=%d saving=%d\n",
@@ -2852,7 +3020,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (settings_loading()) { settings_open_requested_=false; settings_binding_.clear(); notice_.clear(); caret_schedule(true); changed(); return 0; }
         if (context_menu_.is_open()) { context_menu_.cancel(); menu_input_changed(); }
         if (settings_input_blocked()) { settings_panel_.cancel(); settings_input_changed(); return 0; }
-        const bool live=std::any_of(sessions_.begin(),sessions_.end(),[](const auto& pair) { return !pair.second->closed(); });
+        const bool live=std::any_of(sessions_.begin(),sessions_.end(),[](const auto& pair) { return !pair.second->process_finished(); });
         if (modal_) { answer_modal(ModalDecision::cancel); return 0; }
         if (!live) DestroyWindow(hwnd_);
         else show_modal("Close StormTTY?",{"Its sessions may have running programs.","Closing can discard unsaved work."},"Close window",[this]{if (hwnd_) DestroyWindow(hwnd_);});
