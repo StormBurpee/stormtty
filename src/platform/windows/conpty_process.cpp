@@ -181,14 +181,21 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
     Handle reader_cancel, writer_cancel;
 
     Impl(ProcessOptions o, ProcessCallbacks c) : options(std::move(o)), callbacks(std::move(c)) {}
+    // Every flag read by a changed.wait predicate must be published while
+    // holding this mutex. Atomic storage alone does not prevent a notification
+    // falling between a predicate check and the wait's unlock-and-sleep step.
+    // Keep callbacks, stop requests and joins outside this short critical section.
+    void publish_flag(std::atomic<bool>& flag) noexcept {
+        { std::lock_guard lock(mutex); flag.store(true); }
+        changed.notify_all();
+    }
     void close() noexcept {
         cancel_output_requested.store(true);
-        closing.store(true);
+        publish_flag(closing);
         auto p = phase.load();
         while (p == ProcessState::starting || p == ProcessState::running)
             if (phase.compare_exchange_weak(p, ProcessState::close_requested)) break;
         // stop-token callbacks can run inline: keep them off the UI/caller.
-        changed.notify_all();
     }
     void fail(std::string message) noexcept {
         try { std::lock_guard lock(mutex); if (failure.empty()) failure = std::move(message); } catch (...) {}
@@ -203,7 +210,7 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
         changed.notify_all(); return true;
     }
     void read_loop() noexcept {
-        if (!register_cancel_handle(reader_cancel)) { reader_done.store(true); changed.notify_all(); return; }
+        if (!register_cancel_handle(reader_cancel)) { publish_flag(reader_done); return; }
         std::array<char, 64 * 1024> buffer{};
         bool discard_after_callback_failure = false;
         while (!stop_reader.load()) {
@@ -224,10 +231,10 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
                 }
             }
         }
-        reader_done.store(true); changed.notify_all();
+        publish_flag(reader_done);
     }
     void write_loop() noexcept {
-        if (!register_cancel_handle(writer_cancel)) { writer_done.store(true); changed.notify_all(); return; }
+        if (!register_cancel_handle(writer_cancel)) { publish_flag(writer_done); return; }
         try {
             while (!closing.load()) {
                 std::string bytes;
@@ -252,7 +259,7 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
             }
         } catch (...) { fail("ConPTY writer failed"); }
 finished:
-        writer_done.store(true); changed.notify_all();
+        publish_flag(writer_done);
     }
     void cancel_and_join(std::thread& thread, Handle& cancel, const std::atomic<bool>& finished) noexcept {
         if (!thread.joinable()) return;
@@ -276,7 +283,7 @@ finished:
             // even if a normal child exit races a blocked downstream consumer.
             closer = std::thread([&console, &complete, hpc, this] {
                 console.provider.close(hpc);
-                complete.store(true); changed.notify_all();
+                publish_flag(complete);
             });
             console.value = nullptr; // transferred only after thread creation
         } catch (...) {
@@ -400,7 +407,7 @@ finished:
             requested = requested || closing.load();
             if (requested) output_stop.request_stop();
             phase.store(ProcessState::draining);
-            closing.store(true); changed.notify_all();
+            publish_flag(closing);
             cancel_and_join(writer, writer_cancel, writer_done);
             input_write.reset();
             input_read.reset(); output_write.reset();

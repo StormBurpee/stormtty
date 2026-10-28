@@ -14,6 +14,7 @@
 #include <map>
 #include <limits>
 #include <stdexcept>
+#include <sstream>
 #include <tuple>
 #include <utility>
 
@@ -80,7 +81,11 @@ struct ImageKey {
     auto operator<=>(const ImageKey&) const = default;
 };
 struct CachedImage { id<MTLTexture> texture;std::size_t bytes{};std::uint64_t used{}; };
-struct Presentation {std::mutex mutex;std::condition_variable changed;std::uint64_t serial{};};
+struct Presentation {
+    std::mutex mutex;std::condition_variable changed;
+    std::uint64_t serial{},submitted{},scheduled{},completed{},callbacks{},zero_time_callbacks{};
+    double last_time{};bool gpu_error{};std::string surface;
+};
 struct PaneStamp {
     std::uint64_t id{},generation{},images{};PixelRect content;bool focused{},cursor{},blink{};
     bool operator==(const PaneStamp&) const = default;
@@ -148,6 +153,10 @@ struct Renderer::Impl {
             layer.framebufferOnly=NO;layer.opaque=NO;layer.maximumDrawableCount=3;
             layer.allowsNextDrawableTimeout=YES;layer.displaySyncEnabled=YES;
             CfOwner<CGColorSpaceRef> color(CGColorSpaceCreateWithName(kCGColorSpaceSRGB));layer.colorspace=color.get();
+            // Layer-hosting NSViews do not promise AppKit-managed layer geometry.
+            // A valid drawable with a zero-size/unattached layer can execute on
+            // the GPU but never acquire an onscreen presentedTime.
+            layer.frame=view.bounds;
             view.layer=layer;view.wantsLayer=YES;
         }
         statistics.composition=true;statistics.color_fonts=true;
@@ -180,7 +189,7 @@ struct Renderer::Impl {
         if(!std::isfinite(new_dpi)||new_dpi<48||new_dpi>768)throw std::invalid_argument("Invalid renderer DPI");
         if(w>16384||h>16384||std::uint64_t(w)*h*4>max_surface_bytes)throw std::invalid_argument("Metal window surface exceeds 128 MiB budget");
         if(new_dpi!=dpi){dpi=new_dpi;measure();}
-        if(layer)layer.contentsScale=dpi/96.;
+        if(layer){layer.contentsScale=dpi/96.;if(view)layer.frame=view.bounds;}
         if(width==w&&height==h&&target)return;
         width=w;height=h;target=nil;have_previous=false;
         if(layer){layer.contentsScale=dpi/96.;layer.drawableSize=CGSizeMake(w,h);}
@@ -371,6 +380,12 @@ struct Renderer::Impl {
             id<CAMetalDrawable> drawable=layer?[layer nextDrawable]:nil;
             if(layer&&!drawable)return RenderResult::busy;
             ++serial;transient=0;
+            if(layer){std::ostringstream details;const auto frame=layer.frame,bounds=layer.bounds;
+                details<<"attached="<<(layer.superlayer!=nil)<<" hidden="<<bool(layer.hidden)
+                    <<" opacity="<<layer.opacity<<" frame="<<frame.origin.x<<','<<frame.origin.y<<','<<frame.size.width<<','<<frame.size.height
+                    <<" bounds="<<bounds.origin.x<<','<<bounds.origin.y<<','<<bounds.size.width<<','<<bounds.size.height
+                    <<" drawable="<<layer.drawableSize.width<<'x'<<layer.drawableSize.height<<" scale="<<layer.contentsScale;
+                std::lock_guard lock(presented->mutex);presented->submitted=serial;presented->surface=details.str();}
             id<MTLCommandBuffer> command=[queue commandBuffer];check(command!=nil,"Cannot create Metal command buffer");
             auto pass=[MTLRenderPassDescriptor renderPassDescriptor];pass.colorAttachments[0].texture=target;
             pass.colorAttachments[0].loadAction=MTLLoadActionClear;pass.colorAttachments[0].storeAction=MTLStoreActionStore;
@@ -469,12 +484,22 @@ struct Renderer::Impl {
             }
             [encoder endEncoding];
             if(drawable){auto presentation=presented;const auto frame_serial=serial;
-                [drawable addPresentedHandler:^(id<MTLDrawable> shown){if(shown.presentedTime<=0)return;{std::lock_guard lock(presentation->mutex);presentation->serial=std::max(presentation->serial,frame_serial);}presentation->changed.notify_all();}];
+                [drawable addPresentedHandler:^(id<MTLDrawable> shown){
+                    {std::lock_guard lock(presentation->mutex);++presentation->callbacks;presentation->last_time=shown.presentedTime;
+                        if(shown.presentedTime>0)presentation->serial=std::max(presentation->serial,frame_serial);
+                        else ++presentation->zero_time_callbacks;}
+                    presentation->changed.notify_all();
+                }];
+                [command addScheduledHandler:^(id<MTLCommandBuffer> scheduled){(void)scheduled;std::lock_guard lock(presentation->mutex);presentation->scheduled=std::max(presentation->scheduled,frame_serial);}];
                 id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];
                 [blit copyFromTexture:target sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(width,height,1)
                     toTexture:drawable.texture destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];[blit endEncoding];[command presentDrawable:drawable];}
-            auto count=in_flight;auto failure=gpu_failed;count->fetch_add(1);
-            [command addCompletedHandler:^(id<MTLCommandBuffer> buffer){if(buffer.status==MTLCommandBufferStatusError)failure->store(true);count->fetch_sub(1);}];
+            auto count=in_flight;auto failure=gpu_failed;auto presentation=presented;const auto frame_serial=serial;count->fetch_add(1);
+            [command addCompletedHandler:^(id<MTLCommandBuffer> buffer){
+                const bool failed=buffer.status==MTLCommandBufferStatusError;if(failed)failure->store(true);count->fetch_sub(1);
+                {std::lock_guard lock(presentation->mutex);presentation->completed=std::max(presentation->completed,frame_serial);presentation->gpu_error|=failed;}
+                presentation->changed.notify_all();
+            }];
             [command commit];++statistics.presents;previous=std::move(stamps);chrome_generation=scene.chrome_generation;previous_background=scene.background;have_previous=true;
             return RenderResult::presented;
         }
@@ -503,8 +528,15 @@ std::vector<std::uint8_t> Renderer::read_pixels(){
     [blit copyFromTexture:impl_->target sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(impl_->width,impl_->height,1)
         toBuffer:buffer destinationOffset:0 destinationBytesPerRow:stride destinationBytesPerImage:stride*impl_->height];if(!shared)[blit synchronizeResource:buffer];[blit endEncoding];[command commit];[command waitUntilCompleted];
     check(command.status==MTLCommandBufferStatusCompleted,"Metal readback failed");
-    if(impl_->layer){std::unique_lock lock(impl_->presented->mutex);
-        check(impl_->presented->changed.wait_for(lock,std::chrono::seconds(3),[&]{return impl_->presented->serial>=impl_->serial;}),"Metal drawable was not observed presented onscreen");}
+    if(impl_->layer){std::unique_lock lock(impl_->presented->mutex);auto& observed=*impl_->presented;
+        const bool signalled=observed.changed.wait_for(lock,std::chrono::seconds(3),[&]{return observed.serial>=impl_->serial||observed.gpu_error;});
+        if(!signalled||observed.gpu_error||observed.serial<impl_->serial){std::ostringstream error;
+            error<<"Metal drawable was not observed presented onscreen: requested="<<impl_->serial<<" submitted="<<observed.submitted
+                <<" scheduled="<<observed.scheduled<<" completed="<<observed.completed<<" presented="<<observed.serial
+                <<" callbacks="<<observed.callbacks<<" zeroTimeCallbacks="<<observed.zero_time_callbacks<<" lastPresentedTime="<<observed.last_time
+                <<" gpuError="<<observed.gpu_error<<" layer{"<<observed.surface<<'}';
+            throw std::runtime_error(error.str());}
+    }
     std::vector<std::uint8_t> rgba(std::size_t(impl_->width)*impl_->height*4);auto source=static_cast<const std::uint8_t*>(buffer.contents);
     for(std::uint32_t y=0;y<impl_->height;++y)for(std::uint32_t x=0;x<impl_->width;++x){const auto s=std::size_t(y)*stride+x*4,d=(std::size_t(y)*impl_->width+x)*4;
         const unsigned a=source[s+3];rgba[d+3]=static_cast<std::uint8_t>(a);

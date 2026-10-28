@@ -22,10 +22,11 @@ Evidence as of 2026-10-28:
 | Linux integration, actual POSIX PTY | Passed with GCC 14.2, Node 24.22.1, pinned libghostty-vt `46e9dc9a927b2e7e7cba79e6902c176127dbdf2c`, `CI=true` inherited |
 | C++ test warnings | Built with `-Wall -Wextra -Wpedantic -Werror` |
 | Integrated Linux regression suite | All 8 CTest suites passed with `STORMTTY_TEST_INK=ON`; the Ink suite then passed 10 consecutive repeat-until-fail runs |
+| Coherent-checkpoint revision | Passed 5 consecutive Linux runs; a scratch copy of the real Ink app with deliberately wrong borders failed after 12s with 147 incomplete and 0 coherent observed frames |
 | Reproducible fixture install | `npm ci --ignore-scripts --no-audit --no-fund` passed using npm 11.9.0 |
 | Non-TTY negative check | `npm test --prefix tests/ink` passed: piped CI invocation fails rather than renders a fallback |
-| Native Windows ConPTY and MSVC | Not run in the Linux implementation environment; native CI required |
-| Native macOS POSIX PTY | Not run in the Linux implementation environment; native CI required |
+| Native Windows ConPTY and MSVC | CI commit `c7f4a7a`, run `40622096276`: Ink failed an immediate live-box alignment assertion. Revised coherent-checkpoint waits/diagnostics need native rerun; Windows Ink is not yet a pass |
+| Native macOS POSIX PTY | CI commit `c7f4a7a`: this Ink suite passed in 3.70s on Node 22. An unrelated native-window presentation failure is outside this test's scope |
 | CI Node version | CI uses Node 22; local Node 24 results are not a Node 22 pass |
 | Physical native window, fonts, animation smoothness | Not established by these headless Session tests |
 
@@ -67,6 +68,33 @@ made deterministic with `FORCE_COLOR=3`; inherited `NO_COLOR`, `INK_SCREEN_READE
 and `NODE_OPTIONS` are removed for the child. This verifies rendering of styled
 output, not automatic color detection. Ink generates the control sequences;
 the fixture does not draw raw ANSI frames or special-case StormTTY.
+
+### Coherent checkpoints, not assumed pipe-frame atomicity
+
+Each startup, input, selection, animation, and resize checkpoint waits for a
+complete live box **and** its requested state within 12 seconds. The same strict
+border, Unicode, style, mode, and alternate-screen cleanliness checks apply to
+every candidate. Only coherent frames count toward animation progression.
+Distinct observed incomplete generations are counted and reported by scenario
+and phase; no unchanged frame is repeatedly counted. Stable invalid output or
+an incomplete redraw that never finishes fails the checkpoint rather than
+being skipped or treated as success.
+
+Failure diagnostics include provider/advanced-protocol status, frame generation,
+geometry, the failing border row/column and cell UTF-8/span, and bounded owned
+cell snapshots (at most 32 rows, 120 columns, and 8 KiB per snapshot). No general
+PTY transcript or environment variables are captured. Final post-exit state is
+still checked after process/actor closure, when no repaint remains in flight.
+
+This fixes a test sequencing assumption: a text substring could appear before
+the remainder of a translated ConPTY repaint, and the old test then immediately
+asserted full-box geometry. Microsoft's pseudoconsole documentation describes
+UTF-8 pipe communication and an internal console buffer; it does not promise
+that each read is an atomic application frame. Microsoft's later synchronized-
+output implementation is not evidence that the selected **inbox** ConPTY has
+equivalent passthrough semantics. `advanced_protocols_verified` remains false.
+Whether the original Windows failure was transient or persistent still requires
+the native rerun with these phase diagnostics; a Linux pass does not decide it.
 
 ### Observed resize caveat
 
@@ -148,6 +176,8 @@ claiming native visual acceptance.
 - [Pinned Ink resize implementation](https://github.com/vadimdemedes/ink/blob/v8.0.0/src/ink.tsx)
 - [React 19.3.1 release](https://github.com/react/react/releases/tag/v19.3.1)
 - [Official xterm.js reference implementation](https://github.com/xtermjs/xterm.js)
+- [Microsoft pseudoconsole session communication](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session)
+- [Microsoft synchronized-output implementation](https://github.com/microsoft/terminal/pull/18826)
 
 The official npm registry was also queried before installation. The package
 lockfile was produced by npm, not reconstructed manually from documentation.

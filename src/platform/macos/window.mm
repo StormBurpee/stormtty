@@ -4,6 +4,7 @@
 #include "platform.hpp"
 #include "input.hpp"
 #import <AppKit/AppKit.h>
+#import <QuartzCore/CATransaction.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -14,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -101,7 +103,8 @@ public:
     std::uint64_t next_session{1},chrome{1};
     double scale{1};std::uint32_t pixel_width{},pixel_height{};
     bool closing{},finished{},close_authorized{},confirming_close{},reduce_motion{},cursor_on{true},blink_scheduled{},retry_scheduled{};
-    bool smoke_input{},smoke_seen{},smoke_presented{},smoke_capture_pending{};
+    bool smoke_input{},smoke_seen{},smoke_presented{},smoke_capture_pending{},smoke_force_present{};
+    std::chrono::steady_clock::time_point smoke_present_deadline{};
     int exit_code{};std::atomic<bool> wake_queued{false};
     NodeId dragged_divider;PaneId selection_pane;std::uint16_t selection_x{},selection_y{};
     std::string message;std::uint64_t accessibility_generation{};
@@ -135,10 +138,13 @@ public:
         backdrop.state=NSVisualEffectStateFollowsWindowActiveState;backdrop.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
         window.contentView=backdrop;
         view=[[STTerminalView alloc] initWithFrame:backdrop.bounds];view->host=weak_from_this();view->marked=[NSMutableAttributedString new];
-        view->markedSelection=NSMakeRange(0,0);view.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[backdrop addSubview:view];
+        view->markedSelection=NSMakeRange(0,0);view.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
         RendererOptions rendering;rendering.font={config.font.family,"en-US",float(config.font.size_dip),config.font.ligatures};
         rendering.background_opacity=static_cast<float>(config.appearance.background_opacity);
+        // Establish layer hosting before AppKit can implicitly layer-back this
+        // view through its parent hierarchy.
         renderer=std::make_unique<Renderer>((__bridge void*)view,rendering);
+        [backdrop addSubview:view];
         chrome_view=[[STChromeView alloc] initWithFrame:NSMakeRect(0,0,1000,38)];
         tab_accessory=[NSTitlebarAccessoryViewController new];tab_accessory.layoutAttribute=NSLayoutAttributeRight;tab_accessory.view=chrome_view;
         [window addTitlebarAccessoryViewController:tab_accessory];
@@ -152,7 +158,7 @@ public:
             name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
         appearance();create_tab();[window center];[window makeKeyAndOrderFront:nil];[window makeFirstResponder:view];
         [NSApp activateIgnoringOtherApps:YES];resize();
-        if(options.smoke_test){const auto weak=weak_from_this();dispatch_after(dispatch_time(DISPATCH_TIME_NOW,15*NSEC_PER_SEC),dispatch_get_main_queue(),^{
+        if(options.smoke_test){smoke_present_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(12);const auto weak=weak_from_this();dispatch_after(dispatch_time(DISPATCH_TIME_NOW,15*NSEC_PER_SEC),dispatch_get_main_queue(),^{
             if(auto h=weak.lock();h&&!h->finished&&!h->closing&&!h->smoke_capture_pending)h->fail("macOS smoke timed out before process/frame/present/exit evidence");});}
     }
     void make_menu() {
@@ -474,7 +480,7 @@ public:
             if(title.empty()){auto pane=workspace.pane(tab.active_pane);if(pane){auto found=sessions.find(pane->session);if(found!=sessions.end())title=plain_title(found->second->info().title);}}
             if(title.empty())title="Terminal";if(utf8(tab_buttons[i].title)!=title){titles_changed=true;break;}}
         if(titles_changed)tabs();
-        WindowScene scene;scene.background=color(config.theme.background,{23,25,29,255});scene.chrome_generation=chrome;
+        WindowScene scene;scene.force_redraw=smoke_force_present;scene.background=color(config.theme.background,{23,25,29,255});scene.chrome_generation=chrome;
         const auto accent=color(config.theme.accent,{167,196,210,255});bool blinks=false;
         for(const auto& placement:layout.panes){auto found=sessions.find(placement.session);if(found==sessions.end())continue;
             auto frame=found->second->frame();if(!frame)continue;const auto& bounds=placement.bounds;
@@ -494,7 +500,7 @@ public:
         if(!message.empty())scene.texts.push_back({{float(16*scale),float(pixel_height-22*scale),float(pixel_width-32*scale),float(18*scale)},message,{222,192,146,255},11});
         auto result=renderer->render(scene);
         if(result==RenderResult::busy&&!retry_scheduled){retry_scheduled=true;auto weak=weak_from_this();dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC/60),dispatch_get_main_queue(),^{if(auto h=weak.lock()){h->retry_scheduled=false;h->wake();}});}
-        if(result==RenderResult::presented){if(auto s=active()){auto frame=s->frame();if(frame&&frame->generation!=accessibility_generation){accessibility_generation=frame->generation;NSAccessibilityPostNotification(view,NSAccessibilityValueChangedNotification);}}
+        if(result==RenderResult::presented){smoke_force_present=false;if(auto s=active()){auto frame=s->frame();if(frame&&frame->generation!=accessibility_generation){accessibility_generation=frame->generation;NSAccessibilityPostNotification(view,NSAccessibilityValueChangedNotification);}}
             if(smoke_seen)smoke_presented=true;}
         if(!reduce_motion&&blinks&&window.keyWindow&&(window.occlusionState&NSWindowOcclusionStateVisible)&&!blink_scheduled){blink_scheduled=true;auto weak=weak_from_this();dispatch_after(dispatch_time(DISPATCH_TIME_NOW,600*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
             if(auto h=weak.lock()){h->blink_scheduled=false;if(!h->closing){h->cursor_on=!h->cursor_on;h->wake();}}});}
@@ -503,13 +509,39 @@ public:
             // Readback waits for the actual Metal command buffer only on a
             // background thread, never in an AppKit callback. Renderer remains
             // single-owner: UI is now quiesced and ownership is handed off once.
-            auto self=shared_from_this();std::shared_ptr<Renderer> capture_renderer(std::move(renderer));
+            // Give the real main run loop a committed, attached layer before
+            // asking a background worker to observe its presentation callback.
+            [view layoutSubtreeIfNeeded];[window displayIfNeeded];[CATransaction flush];
+            const auto screen=window.screen;NSNumber* screen_number=screen.deviceDescription[@"NSScreenNumber"];
+            const auto display=static_cast<CGDirectDisplayID>(screen_number.unsignedIntValue);
+            std::ostringstream context;
+            context<<"windowVisible="<<bool([window isVisible])<<" key="<<bool([window isKeyWindow])<<" appActive="<<bool([NSApp isActive])
+                <<" miniaturized="<<bool([window isMiniaturized])<<" occlusion="<<static_cast<unsigned long long>(window.occlusionState)
+                <<" viewHidden="<<bool([view isHiddenOrHasHiddenAncestor])<<" screens="<<NSScreen.screens.count
+                <<" hasWindowScreen="<<(screen!=nil)<<" displayOnline="<<(screen?CGDisplayIsOnline(display):0)
+                <<" displayActive="<<(screen?CGDisplayIsActive(display):0)<<" windowFrame="<<utf8(NSStringFromRect(window.frame))
+                <<" viewBounds="<<utf8(NSStringFromRect(view.bounds));
+            const auto visibility=context.str();std::fprintf(stdout,"macOS smoke presentation context: %s\n",visibility.c_str());std::fflush(stdout);
+            auto self=shared_from_this();auto capture_renderer=std::make_shared<std::unique_ptr<Renderer>>(std::move(renderer));
             const auto capture_width=pixel_width,capture_height=pixel_height;
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
-                @autoreleasepool { try {auto pixels=capture_renderer->read_pixels();if(pixels.empty())throw std::runtime_error("Smoke Metal framebuffer is empty");
+                @autoreleasepool { try {auto pixels=(*capture_renderer)->read_pixels();if(pixels.empty())throw std::runtime_error("Smoke Metal framebuffer is empty");
                     if(!self->options.capture_path.empty())write_macos_capture(self->options.capture_path,pixels,capture_width,capture_height);
                     dispatch_async(dispatch_get_main_queue(),^{self->guard([&]{std::fprintf(stdout,"PASS macOS AppKit + POSIX PTY + Session + TerminalCore + CoreText + Metal framebuffer + exit\n");self->begin_close(true);});});
-                }catch(const std::exception& e){const auto error=std::string(e.what());dispatch_async(dispatch_get_main_queue(),^{self->fail(error);});} }
+                }catch(const std::exception& e){const auto error=std::string(e.what());
+                    dispatch_async(dispatch_get_main_queue(),^{self->guard([&]{
+                        // Dropped first drawables do not establish a displayed
+                        // frame. Restore sole renderer ownership on the UI and
+                        // request another real present within the observation
+                        // deadline; never accept a zero timestamp or fake/skip.
+                        if(error.starts_with("Metal drawable was not observed presented onscreen")&&std::chrono::steady_clock::now()<self->smoke_present_deadline&&!self->closing){
+                            std::fprintf(stderr,"macOS smoke re-presentation after observer timeout: %s; %s\n",error.c_str(),visibility.c_str());
+                            self->renderer=std::move(*capture_renderer);self->smoke_capture_pending=false;self->smoke_presented=false;self->smoke_force_present=true;
+                            [self->window orderFront:nil];[self->window displayIfNeeded];[CATransaction flush];
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(),^{self->wake();});
+                        }else self->fail(error+"; "+visibility);
+                    });});
+                } }
             });
         }
     }

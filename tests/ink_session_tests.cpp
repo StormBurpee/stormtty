@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -37,6 +38,40 @@ std::string frame_text(const FramePtr& frame) {
     std::string text;
     if (frame) for (const auto& row : frame->lines) text += row_text(*row) + '\n';
     return text;
+}
+
+std::string cell_description(const Cell& cell) {
+    constexpr char hex[] = "0123456789ABCDEF";
+    std::string text = "utf8=";
+    for (std::size_t i = 0; i < std::min<std::size_t>(cell.grapheme.size(), 16); ++i) {
+        const auto byte = static_cast<unsigned char>(cell.grapheme[i]);
+        text += hex[byte >> 4]; text += hex[byte & 15];
+    }
+    if (cell.grapheme.size() > 16) text += "...";
+    return text + " span=" + std::to_string(cell.span);
+}
+
+// Only this fixture's owned VT cells are logged, never environment variables or
+// arbitrary PTY history. Bound both geometry and text even on a broken frame.
+std::string frame_diagnostic(const FramePtr& frame) {
+    if (!frame) return "<no published frame>\n";
+    std::string out = "generation=" + std::to_string(frame->generation) + " size=" +
+        std::to_string(frame->columns) + "x" + std::to_string(frame->rows) +
+        " alternate=" + std::to_string(frame->alternate_screen) + "\n";
+    for (std::size_t row = 0; row < std::min<std::size_t>(frame->lines.size(), 32); ++row) {
+        out += std::to_string(row) + ": ";
+        const auto& cells = frame->lines[row]->cells;
+        for (std::size_t column = 0; column < std::min<std::size_t>(cells.size(), 120); ++column) {
+            if (cells[column].span == 0) continue;
+            if (cells[column].grapheme.empty()) { out += ' '; continue; }
+            const auto& grapheme = cells[column].grapheme;
+            const auto control = std::any_of(grapheme.begin(), grapheme.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; });
+            out += control ? "<control>" : grapheme.substr(0, 16);
+        }
+        out += '\n';
+        if (out.size() >= 8192) { out.resize(8192); out += "\n<truncated>\n"; break; }
+    }
+    return out;
 }
 
 std::size_t occurrences(std::string_view haystack, std::string_view needle) {
@@ -108,8 +143,11 @@ class FixtureSession {
 public:
     std::shared_ptr<WakeCounter> wake = std::make_shared<WakeCounter>();
     std::shared_ptr<Session> session;
+    const std::string scenario;
+    const bool expected_alternate;
 
-    FixtureSession(const std::string& node, const std::string& fixture, bool alternate) {
+    FixtureSession(const std::string& node, const std::string& fixture, bool alternate)
+        : scenario(alternate ? "alternate/incremental" : "primary/default"), expected_alternate(alternate) {
         ProcessOptions process;
         process.executable = node;
         process.arguments = {fixture};
@@ -142,16 +180,52 @@ public:
     template<class Predicate>
     FramePtr await(Predicate predicate, std::string_view description, std::chrono::milliseconds timeout = 12s) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
+        std::optional<std::uint64_t> last_generation;
+        std::size_t observed_frames = 0, incomplete_frames = 0, coherent_frames = 0;
+        FramePtr last_incomplete;
+        std::string last_problem;
         for (;;) {
             std::uint64_t observed;
             { std::lock_guard lock(wake->mutex); observed = wake->generation; }
             const auto frame = session->frame();
-            if (frame && predicate(frame)) return frame;
+            if (frame && last_generation != frame->generation) {
+                last_generation = frame->generation;
+                ++observed_frames;
+                bool coherent = false;
+                try {
+                    check_live_frame(frame);
+                    check(frame->alternate_screen == expected_alternate, "Ink is not in the requested screen mode");
+                    coherent = true;
+                } catch (const std::runtime_error& error) {
+                    // A pipe read / ConPTY repaint is not a frame transaction.
+                    // Keep all semantic assertions, but allow the next owned
+                    // snapshot to finish a redraw. Persistent damage times out.
+                    ++incomplete_frames;
+                    last_incomplete = frame;
+                    last_problem = error.what();
+                }
+                if (coherent) {
+                    ++coherent_frames;
+                    if (predicate(frame)) {
+                        std::cout << "Ink checkpoint [" << scenario << "] " << description
+                            << ": observed=" << observed_frames << " coherent=" << coherent_frames
+                            << " incomplete=" << incomplete_frames;
+                        if (incomplete_frames) std::cout << " last_incomplete=" << last_problem;
+                        std::cout << '\n';
+                        return frame;
+                    }
+                }
+            }
             if (session->closed() || std::chrono::steady_clock::now() >= deadline) {
                 const auto info = session->info();
-                throw std::runtime_error(std::string(description) + "\nprovider: " + session->diagnostics().provider +
+                const auto diagnostic = session->diagnostics();
+                throw std::runtime_error("phase [" + scenario + "] " + std::string(description) +
+                    "\nobserved_frames=" + std::to_string(observed_frames) + " coherent_frames=" + std::to_string(coherent_frames) +
+                    " incomplete_frames=" + std::to_string(incomplete_frames) + " last_incomplete=" + last_problem +
+                    "\nprovider: " + diagnostic.provider + " advanced_protocols_verified=" + std::to_string(diagnostic.advanced_protocols_verified) +
                     "\nstate: " + std::to_string(static_cast<int>(info.state)) + " error: " + info.error +
-                    "\nlast visible frame:\n" + frame_text(frame));
+                    "\nlast visible frame:\n" + frame_diagnostic(frame) +
+                    (last_incomplete && last_incomplete != frame ? "\nlast incomplete frame:\n" + frame_diagnostic(last_incomplete) : ""));
             }
             std::unique_lock lock(wake->mutex);
             wake->cv.wait_until(lock, deadline, [&] { return wake->generation != observed; });
@@ -160,7 +234,7 @@ public:
 
     FramePtr text(std::string_view expected) {
         return await([&](const FramePtr& frame) { return frame_text(frame).find(expected) != std::string::npos; },
-            std::string("Missing visible text: ") + std::string(expected));
+            std::string("visible text: ") + std::string(expected));
     }
 
     void key(Key key) {
@@ -182,7 +256,7 @@ public:
             return (!frame->alternate_screen || outside_rows(frame, *box) == 0) &&
                 live.find(label) != std::string::npos && live.find(marker) != std::string::npos &&
                 occurrences(live, "❯") == 1;
-        }, "Ink keyboard selection did not move its visible marker");
+        }, std::string("keyboard selection: ") + std::string(choice));
     }
 
     void resize(std::uint16_t columns, std::uint16_t rows) {
@@ -191,8 +265,7 @@ public:
         const auto frame = await([&](const FramePtr& current) {
             return current->columns == columns && current->rows == rows &&
                 frame_text(current).find(expected) != std::string::npos;
-        }, "PTY resize did not reach Ink useWindowSize and the visible VT frame");
-        check_live_frame(frame);
+        }, std::string("PTY resize and coherent box: ") + expected);
         if (!frame->alternate_screen) {
             const auto historical = outside_rows(frame, *active_box(frame));
             if (historical) std::cout << "NOTE: primary-screen resize retained " << historical
@@ -201,6 +274,9 @@ public:
     }
 
     static void check_live_frame(const FramePtr& frame) {
+        check(frame && frame->columns > 0 && frame->rows > 0, "No nonempty frame geometry");
+        check(frame->lines.size() == frame->rows, "Frame row count disagrees with geometry");
+        for (const auto& row : frame->lines) check(row && row->cells.size() == frame->columns, "Frame cell count disagrees with geometry");
         const auto text = frame_text(frame);
         check(occurrences(text, "StormTTY Ink Workbench") == 1, "Ink redraw left missing/duplicate title rows");
         check(occurrences(text, "Animation:") == 1, "Ink redraw left missing/duplicate animation rows");
@@ -214,8 +290,13 @@ public:
         check(frame->lines[box->top]->cells[width - 1].grapheme == "╮" &&
             frame->lines[box->bottom]->cells[width - 1].grapheme == "╯", "Ink responsive border width is wrong");
         for (std::size_t row = box->top + 1; row < box->bottom; ++row) {
-            check(frame->lines[row]->cells.front().grapheme == "│" &&
-                frame->lines[row]->cells[width - 1].grapheme == "│", "Ink live box border alignment is wrong");
+            const auto& left = frame->lines[row]->cells.front();
+            const auto& right = frame->lines[row]->cells[width - 1];
+            if (left.grapheme != "│" || right.grapheme != "│") {
+                throw std::runtime_error("Ink live box border alignment is wrong: row=" + std::to_string(row) +
+                    " expected_columns=0," + std::to_string(width - 1) + " left(" + cell_description(left) +
+                    ") right(" + cell_description(right) + ")");
+            }
         }
         check(!frame->alternate_screen || outside_rows(frame, *box) == 0,
             "Ink alternate screen contains residual rows outside its live box");
@@ -246,15 +327,14 @@ public:
                 generations.insert(current->generation);
             }
             return states.size() >= 4 && bars.size() >= 4 && spinners.size() >= 4 && generations.size() >= 4;
-        }, "Ink spinner/progress did not produce four distinct visible frames");
-        check_live_frame(frame);
+        }, "four distinct coherent spinner/progress frames");
+        (void)frame;
     }
 };
 
 void exercise(const std::string& node, const std::string& fixture, bool alternate) {
     FixtureSession test(node, fixture, alternate);
     const auto first = test.text("Interactive TTY | Size: 80x24");
-    FixtureSession::check_live_frame(first);
     check(first->alternate_screen == alternate, "Ink alternate-screen mode not represented in VT state");
     check(!first->cursor.visible, "Interactive Ink did not hide the editing cursor");
     const auto retained = frame_text(first);
@@ -274,7 +354,6 @@ void exercise(const std::string& node, const std::string& fixture, bool alternat
     check(test.session->paste("世界") == SessionSendResult::accepted, "Session rejected Unicode paste");
     const auto input_frame = test.text("Paste: <世界>");
     check(frame_text(input_frame).find("Input: <storm>") != std::string::npos, "Bracketed paste leaked into ordinary key input");
-    FixtureSession::check_live_frame(input_frame);
 
     test.resize(56, 20);
     test.animation();

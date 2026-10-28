@@ -355,8 +355,58 @@ void semantic_capture_tests() {
         require(capture.contains_terminal_text("SIZE:120:40", 1s), "semantic capture did not apply updated terminal geometry");
     }
 }
+void idle_writer_shutdown_stress(const std::string& executable, unsigned rounds) {
+    // No input is ever enqueued: normal exit and explicit close must wake a
+    // writer parked in its CV wait. Concurrent small batches vary scheduling
+    // without unbounded process/thread creation. This is bounded stress, not a
+    // deterministic scheduler test for the predicate-to-wait lost-wakeup window.
+    constexpr unsigned batch_size = 4;
+    for (unsigned round = 0; round < rounds; ++round) {
+        for (bool requested : {false, true}) {
+            std::vector<std::unique_ptr<Session>> sessions;
+            try {
+                for (unsigned i = 0; i < batch_size; ++i) {
+                    ProcessOptions options;
+                    options.executable = executable;
+                    options.arguments = {requested ? "--child-slow" : "--child-exit"};
+                    sessions.push_back(std::make_unique<Session>(std::move(options)));
+                }
+                if (requested) {
+                    for (auto& session : sessions) {
+                        diagnostic_capture = session->capture;
+                        require(session->capture->contains("READY"), "idle-writer close child not ready");
+                    }
+                    for (auto& session : sessions) session->process->request_close();
+                }
+                for (auto& session : sessions) {
+                    diagnostic_capture = session->capture;
+                    const auto result = session->finish();
+                    require(result.error.empty(), "idle-writer shutdown reported a transport failure");
+                    require(result.close_requested == requested, "idle-writer shutdown reason changed");
+                    require(session->process->diagnostics().queued_input_bytes == 0, "idle-writer shutdown retained input");
+                    if (!requested) {
+                        require(result.exit_code == 23, "idle-writer natural exit code lost");
+                        require(session->capture->contains("STORM-TAIL-\xe2\x98\x83-\xf0\x9f\x8c\xa9", 0ms),
+                                "idle-writer natural exit lost trailing UTF-8 output");
+                    }
+                }
+            } catch (...) {
+                // Re-notify even a regressed parked writer and reap owned children
+                // before reporting the original failure. Never leave slow test
+                // children behind merely because a sibling assertion failed.
+                for (auto& session : sessions) session->process->request_close();
+                for (auto& session : sessions) {
+                    if (!session->process->wait_for_exit(8s))
+                        std::cerr << "idle-writer cleanup also exceeded its deadline\n";
+                }
+                throw;
+            }
+        }
+    }
+}
 void run_tests(const std::string& executable) {
     semantic_capture_tests();
+    idle_writer_shutdown_stress(executable, 8);
     const auto options = [&](std::string mode) { ProcessOptions o; o.executable = executable; o.arguments = {std::move(mode)}; return o; };
 #ifdef _WIN32
     {
@@ -508,7 +558,10 @@ void run_tests(const std::string& executable) {
 int main(int argc, char** argv) {
     if (argc > 1 && std::string_view(argv[1]).starts_with("--child-")) return child_main(argc, argv);
     try {
-        run_tests(executable_path(argv[0]));
+        const auto executable = executable_path(argv[0]);
+        if (argc > 1 && std::string_view(argv[1]) == "--idle-writer-stress")
+            idle_writer_shutdown_stress(executable, 64); // 512 launches; opt-in longer run.
+        else run_tests(executable);
 #ifdef _WIN32
         std::cout << "PASS: native Windows system ConPTY process lifecycle tests (not graphics/Ink/physical UI qualification)\n";
 #elif defined(__APPLE__)

@@ -30,6 +30,10 @@ extern char** environ;
 namespace stormtty {
 namespace {
 using namespace std::chrono_literals;
+// pipe/forkpty do not atomically mark every returned descriptor CLOEXEC on
+// every supported POSIX host. Serialize only our descriptor-creation/fork/setup
+// window so another session cannot exec with a peer's status pipe or PTY master.
+std::mutex launch_mutex;
 struct Fd {
     int value{-1};
     Fd() = default;
@@ -84,15 +88,22 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
     pid_t child{-1};
 
     Impl(ProcessOptions o, ProcessCallbacks c) : options(std::move(o)), callbacks(std::move(c)) {}
+    // Every flag read by a changed.wait predicate must be published while
+    // holding this mutex. Atomic storage alone does not prevent a notification
+    // falling between a predicate check and the wait's unlock-and-sleep step.
+    // Keep callbacks, stop requests and joins outside this short critical section.
+    void publish_flag(std::atomic<bool>& flag) noexcept {
+        { std::lock_guard lock(mutex); flag.store(true); }
+        changed.notify_all();
+    }
     void close() noexcept {
         cancel_output_requested.store(true);
-        closing.store(true);
+        publish_flag(closing);
         auto p = phase.load();
         while (p == ProcessState::starting || p == ProcessState::running)
             if (phase.compare_exchange_weak(p, ProcessState::close_requested)) break;
         // stop callbacks can execute synchronously, so only the controller
         // requests the stop token; this caller-facing method never runs them.
-        changed.notify_all();
     }
     void fail(std::string message) noexcept {
         try { std::lock_guard lock(mutex); if (failure.empty()) failure = std::move(message); } catch (...) {}
@@ -133,6 +144,7 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
         std::vector<char*> envp;
         for (auto& e : entries) envp.push_back(e.data());
         envp.push_back(nullptr);
+        std::unique_lock launch_lock(launch_mutex);
         int error_pipe[2];
         if (pipe(error_pipe) < 0) throw os_error("pipe(exec status)");
         Fd error_read(error_pipe[0]), error_write(error_pipe[1]);
@@ -161,6 +173,10 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
         set_cloexec(master.value);
         int flags = fcntl(master.value, F_GETFL);
         if (flags < 0 || fcntl(master.value, F_SETFL, flags | O_NONBLOCK) < 0) throw os_error("fcntl(O_NONBLOCK)");
+        // Only the parent unlocks; the child execs/_exits without touching the
+        // inherited mutex or running C++ destructors. Never hold across waiting
+        // for exec, callbacks, joins, or the child lifetime.
+        launch_lock.unlock();
         int exec_error = 0;
         ssize_t result;
         do { result = ::read(error_read.value, &exec_error, sizeof(exec_error)); } while (result < 0 && errno == EINTR);
@@ -181,8 +197,7 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
             } else if (!count || (count < 0 && errno == EIO)) break; // Linux PTY EOF is EIO.
             else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { fail("read(PTY output) failed"); break; }
         }
-        reader_done.store(true);
-        changed.notify_all();
+        publish_flag(reader_done);
     }
     void write_loop() noexcept {
         try {
@@ -264,7 +279,7 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
                 phase.store(ProcessState::draining);
                 // Session leader remains unreaped while cleaning up its groups.
                 signal_owned_groups(SIGHUP);
-                closing.store(true); changed.notify_all();
+                publish_flag(closing);
                 if (writer.joinable()) writer.join();
                 // Allow remaining PTY output to drain. A descendant that keeps a
                 // slave fd open must not retain the session forever after exit.
@@ -294,7 +309,7 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
         catch (...) { fail("unknown PTY lifecycle failure"); }
         if (child > 0) {
             signal_owned_groups(SIGKILL);
-            closing.store(true); stop_reader.store(true); output_stop.request_stop(); changed.notify_all();
+            publish_flag(closing); stop_reader.store(true); output_stop.request_stop();
             if (writer.joinable()) writer.join();
             if (reader.joinable()) reader.join();
             int status{};
