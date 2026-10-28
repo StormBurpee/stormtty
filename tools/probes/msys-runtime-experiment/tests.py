@@ -35,7 +35,8 @@ class StagingTests(unittest.TestCase):
         for name in ('pacman-before.txt', 'pacman-after.txt'):
             (prov / name).write_text('gcc identical\n')
         for name in ('msys2-runtime-3.6.11-4.src.tar.zst', 'console-before.cc', 'console-after.cc'):
-            (prov / name).write_text('fixture\n')
+            # Hash fixtures are byte contracts, not platform-native text files.
+            (prov / name).write_bytes(b'fixture\n')
         fixture_hash = hashlib.sha256(b'fixture\n').hexdigest()
         for name in ('SOURCE_SHA256', 'BEFORE_SHA256', 'AFTER_SHA256'):
             patcher = patch.object(stage, name, fixture_hash)
@@ -52,6 +53,19 @@ class StagingTests(unittest.TestCase):
         self.assertTrue(result['qualification_only'])
         self.assertEqual(result['native_qualification']['status'], 'unverified-experimental')
         self.assertTrue((self.dest / 'experimental-runtime-provenance/original-bundle-manifest.json').is_file())
+
+    def test_hash_controlled_fixture_bytes_are_platform_independent(self):
+        for name in ('msys2-runtime-3.6.11-4.src.tar.zst', 'console-before.cc', 'console-after.cc'):
+            path = self.build / 'provenance' / name
+            self.assertEqual(path.read_bytes(), b'fixture\n')
+            self.assertEqual(stage.sha(path), hashlib.sha256(b'fixture\n').hexdigest())
+
+    def test_newline_translation_is_not_accepted_as_same_source(self):
+        path = self.build / 'provenance/msys2-runtime-3.6.11-4.src.tar.zst'
+        path.write_bytes(b'fixture\r\n')
+        with self.assertRaisesRegex(ValueError, 'source archive provenance mismatch'):
+            stage.stage(self.base, self.build, self.dest)
+        self.assertFalse(self.dest.exists())
 
     def test_existing_destination_rejected(self):
         self.dest.mkdir()
