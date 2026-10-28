@@ -82,6 +82,15 @@ struct RendererStats {
     bool warp{}, color_fonts{}, composition{};
     bool bundled_font{}; // Actual selected terminal base is a private bundled face.
 };
+// Alpha-only diagnostic of a bounded, caller-selected canvas patch. Never
+// returns RGB, text, images, desktop pixels or a capture of another window.
+struct RendererAlphaProbe {
+    std::uint8_t minimum{}, maximum{};
+    std::uint32_t samples{};
+    float effective_background_opacity{1};
+    bool composition{}, software{};
+    std::uint64_t device_generation{}, presents{};
+};
 // One owner thread. All OS/D3D/COM types are hidden for future Metal/CoreText.
 // HWND is passed as native_window on Windows; nullptr selects an offscreen WARP
 // capable surface for native tests. resize() must precede the first render.
@@ -107,6 +116,13 @@ public:
     // Explicit test/readback path, NOT called by rendering; blocks for GPU copy.
     // Returns tightly packed RGBA of the persistent composited surface.
     std::vector<std::uint8_t> read_pixels();
+    // Windows diagnostic only: copies at most 16x16 pixels without waiting.
+    // A false return explicitly means unavailable (including other backends).
+    // poll uses a nonblocking GPU map; nullopt means pending/cancelled. Host owns
+    // a finite deadline and must cancel on expiry, not poll during idle forever.
+    bool begin_alpha_probe(PixelRect area);
+    std::optional<RendererAlphaProbe> poll_alpha_probe();
+    void cancel_alpha_probe() noexcept;
     // Native CI exercises real device resource reconstruction without removing
     // the process-wide adapter. Preserves owned CPU frame data/session state.
     void recreate_device();

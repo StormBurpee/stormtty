@@ -521,6 +521,11 @@ CellMetrics Renderer::metrics()const noexcept{return impl_->cell;}
 RenderResult Renderer::render(const WindowScene& scene){return impl_->render(scene);}
 void* Renderer::frame_latency_wait_handle()const noexcept{return nullptr;}
 RendererStats Renderer::stats()const noexcept{return impl_->statistics;}
+// The alpha diagnostic currently targets the Windows DComp investigation.
+// Explicitly unavailable rather than blocking AppKit or pretending a sample.
+bool Renderer::begin_alpha_probe(PixelRect) { return false; }
+std::optional<RendererAlphaProbe> Renderer::poll_alpha_probe() { return std::nullopt; }
+void Renderer::cancel_alpha_probe() noexcept {}
 std::vector<std::uint8_t> Renderer::read_pixels(){
     if(!impl_->target)return {};
     const auto stride=(std::size_t(impl_->width)*4+255)&~std::size_t(255);

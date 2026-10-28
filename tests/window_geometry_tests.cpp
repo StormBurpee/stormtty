@@ -1,6 +1,7 @@
 #include "stormtty/native_window.hpp"
 #include "stormtty/settings_panel.hpp"
 #include <cstdlib>
+#include <array>
 #include <iostream>
 
 namespace { void require(bool condition, const char* message) {
@@ -21,6 +22,14 @@ int main() {
         require(blocked.system_backdrop==1 && blocked.opacity==1 && blocked.fallback!=MaterialFallback::none,"unsupported/accessibility paths stay opaque");
     appearance.background_opacity=1;
     require(window_material_policy(appearance,true,false,false,true).opacity==1,"saved 100 percent opacity is not silently changed");
+    const Rect probe_pane{184,104,500,500},probe_content{204,148,460,440};
+    const auto patch=material_probe_patch(probe_pane,probe_content);
+    require(patch && patch->x+patch->width<probe_content.x && patch->y>=probe_content.y,"alpha sample only uses empty padding, never terminal cells/header");
+    const std::array<Rect,1> scrim{{{0,32,1100,688}}};
+    require(!material_probe_patch(probe_pane,probe_content,scrim),"opaque/modal scrim cannot masquerade as canvas alpha");
+    const std::array<Rect,1> bottom_toast{{{12,664,1076,44}}};
+    require(material_probe_patch(probe_pane,probe_content,bottom_toast).has_value(),"nonintersecting toast leaves padding sample valid");
+    require(!material_probe_patch({0,0,20,20},{4,4,12,12}),"insufficient padding produces no sample");
     MaterialRefreshTracker tracker;
     require(tracker.observe({false,false,0}),"first material observation");
     require(!tracker.observe({false,false,0}),"unchanged capability creates no idle work");

@@ -416,7 +416,9 @@ struct Renderer::Impl {
     Com<IDWriteTypography> typography;
     Com<IDWriteFontCollection> bundled_fonts;
     bool bundled_fonts_attempted{};
-    Com<ID3D11Texture2D> canvas_texture;
+    Com<ID3D11Texture2D> canvas_texture, alpha_staging;
+    UINT alpha_width{}, alpha_height{};
+    RendererAlphaProbe alpha_metadata{};
     Com<ID2D1Bitmap1> canvas;
     Com<ID2D1SolidColorBrush> brush;
     std::unordered_map<RowKey, ShapedRow, RowHash> shapes;
@@ -455,7 +457,7 @@ struct Renderer::Impl {
     }
     void release_gpu() noexcept {
         if (dc) dc->SetTarget(nullptr);
-        canvas.reset(); canvas_texture.reset(); brush.reset(); images.clear();
+        alpha_staging.reset(); canvas.reset(); canvas_texture.reset(); brush.reset(); images.clear();
         counters.image_cache_bytes = 0;
         release_swapchain();
         dc4.reset(); dc.reset(); d2d_device.reset();
@@ -1222,6 +1224,36 @@ void Renderer::recreate_device() {
     auto& p=*impl_;
     p.release_gpu();
     p.create_device();p.invalid=true;++p.counters.device_recoveries;
+}
+void Renderer::cancel_alpha_probe() noexcept { impl_->alpha_staging.reset(); }
+bool Renderer::begin_alpha_probe(PixelRect area) {
+    auto& p=*impl_;p.alpha_staging.reset();
+    if(!p.canvas_texture || !std::isfinite(area.x) || !std::isfinite(area.y) || !std::isfinite(area.width) || !std::isfinite(area.height) ||
+        area.x<0 || area.y<0 || area.width<1 || area.height<1 || area.x>=p.width || area.y>=p.height) return false;
+    const UINT x=static_cast<UINT>(area.x),y=static_cast<UINT>(area.y);
+    p.alpha_width=std::min({16u,static_cast<UINT>(std::min(area.width,16.f)),p.width-x});
+    p.alpha_height=std::min({16u,static_cast<UINT>(std::min(area.height,16.f)),p.height-y});
+    D3D11_TEXTURE2D_DESC desc{};desc.Width=p.alpha_width;desc.Height=p.alpha_height;desc.MipLevels=1;desc.ArraySize=1;
+    desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;desc.SampleDesc.Count=1;desc.Usage=D3D11_USAGE_STAGING;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+    check(p.device->CreateTexture2D(&desc,nullptr,p.alpha_staging.put()),"Create alpha diagnostic staging texture");
+    const D3D11_BOX source{x,y,0,x+p.alpha_width,y+p.alpha_height,1};
+    p.immediate->CopySubresourceRegion(p.alpha_staging.get(),0,0,0,0,p.canvas_texture.get(),0,&source);
+    p.alpha_metadata={255,0,p.alpha_width*p.alpha_height,p.backdrop_opacity(),p.counters.composition,p.counters.warp,p.counters.device_recoveries,p.counters.presents};
+    p.immediate->Flush(); // Submit the tiny copy, never wait for completion.
+    return true;
+}
+std::optional<RendererAlphaProbe> Renderer::poll_alpha_probe() {
+    auto& p=*impl_;if(!p.alpha_staging)return std::nullopt;
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    const auto hr=p.immediate->Map(p.alpha_staging.get(),0,D3D11_MAP_READ,D3D11_MAP_FLAG_DO_NOT_WAIT,&mapped);
+    if(hr==DXGI_ERROR_WAS_STILL_DRAWING)return std::nullopt;
+    if(FAILED(hr)){p.alpha_staging.reset();check(hr,"Map alpha diagnostic staging texture");}
+    auto result=p.alpha_metadata;
+    for(UINT y=0;y<p.alpha_height;++y) {
+        const auto* bytes=static_cast<const std::uint8_t*>(mapped.pData)+std::size_t(y)*mapped.RowPitch;
+        for(UINT x=0;x<p.alpha_width;++x) {const auto alpha=bytes[x*4+3];result.minimum=std::min(result.minimum,alpha);result.maximum=std::max(result.maximum,alpha);}
+    }
+    p.immediate->Unmap(p.alpha_staging.get(),0);p.alpha_staging.reset();return result;
 }
 std::vector<std::uint8_t> Renderer::read_pixels() {
     auto& p=*impl_;if(!p.canvas_texture) return {};

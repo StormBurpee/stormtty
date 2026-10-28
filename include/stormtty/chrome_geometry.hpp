@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cmath>
 #include <vector>
+#include <span>
+#include <optional>
 
 namespace stormtty {
 
@@ -130,6 +132,17 @@ inline ProjectNavigationLayout layout_project_navigation(double width, double he
     for (std::size_t row=0;row<result.capacity && result.first+row<projects.size();++row)
         result.projects.push_back({projects[result.first+row],{4,caption+40+row*36,std::max(0.0,rail-8),34}});
     return result;
+}
+
+// Diagnostic sample belongs to empty left padding, not terminal cells, headers,
+// sidebar material, or overlays. No sample is safer than an occluded sample.
+inline std::optional<Rect> material_probe_patch(Rect pane, Rect content, std::span<const Rect> occluders={}) {
+    const Rect patch{pane.x+4,content.y+2,std::min(8.0,content.x-pane.x-8),std::min(8.0,content.height-4)};
+    if(!std::isfinite(patch.x) || !std::isfinite(patch.y) || !std::isfinite(patch.width) || !std::isfinite(patch.height) ||
+        patch.width<1 || patch.height<1 || patch.x+patch.width>content.x || patch.x+patch.width>pane.x+pane.width ||
+        patch.y<pane.y || patch.y+patch.height>pane.y+pane.height) return std::nullopt;
+    for(const auto& r:occluders) if(r.width>0 && r.height>0 && patch.x<r.x+r.width && patch.x+patch.width>r.x && patch.y<r.y+r.height && patch.y+patch.height>r.y) return std::nullopt;
+    return patch;
 }
 
 // Shared presentation-only modal geometry and keyboard decision state. Hosts

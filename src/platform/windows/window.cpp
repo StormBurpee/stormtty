@@ -48,6 +48,7 @@ constexpr UINT deferred_layout_message = WM_APP + 42;
 constexpr UINT_PTR cursor_timer = 1;
 constexpr UINT_PTR smoke_timeout_timer = 2;
 constexpr UINT_PTR chrome_motion_timer = 3;
+constexpr UINT_PTR material_probe_timer = 4;
 constexpr std::string_view smoke_marker="__STORMTTY_NATIVE_SMOKE_OK__";
 constexpr std::size_t clipboard_limit = 1024 * 1024;
 
@@ -260,6 +261,10 @@ private:
     void create();
     void settings_changed();
     void observe_material_renderer();
+    void queue_material_probe(bool invalidate = false);
+    void begin_material_probe(const WindowScene&);
+    void poll_material_probe();
+    void publish_material_status();
     void open_settings(std::string binding = {});
     void settings_actions();
     void settings_completed();
@@ -437,7 +442,14 @@ private:
     std::size_t pending_bytes_{};
     bool backdrop_{};
     MaterialRefreshTracker material_tracker_;
-    std::string material_status_;
+    std::string material_status_, material_probe_status_;
+    bool material_probe_requested_{}, material_probe_running_{}, material_probe_succeeded_{};
+    ULONGLONG material_probe_deadline_{};
+    std::uint64_t material_probe_present_{};
+    bool material_probe_foreground_{}, material_probe_cells_limited_{};
+    std::uint32_t material_probe_default_cells_{}, material_probe_explicit_cells_{}, material_probe_other_opaque_cells_{};
+    DWORD material_probe_dwm_{};
+    HRESULT material_probe_dwm_result_{E_PENDING};
 };
 
 void NativeWindow::create() {
@@ -610,11 +622,11 @@ void NativeWindow::settings_changed() {
         if(FAILED(material_result)) status="Opaque: Windows system material is unavailable (requires Windows 11 22H2+).";
         else if(FAILED(frame_result)) status="Opaque: Windows could not extend the material into the client area.";
         else if(policy.opacity>=1) status="100% background opacity covers the material. Lower Background opacity.";
-        else status=std::string(material==3?"Acrylic requested":"Mica requested (wallpaper only)")+" · "+std::to_string(std::lround(policy.opacity*100))+"% tint; Windows may use a solid fallback.";
+        else status=std::string(material==3?"Acrylic requested":"Mica (wallpaper) requested")+" · "+std::to_string(std::lround(policy.opacity*100))+"% tint.";
         break;
     }
-    settings_panel_.set_material_status(status);
-    if(status!=material_status_) {
+    const bool policy_changed=status!=material_status_;
+    if(policy_changed) {
         material_status_=std::move(status);
         char diagnostic[512]{};
         std::snprintf(diagnostic,sizeof diagnostic,"StormTTY material: %s composition=%u software=%u requested=%lu set_hr=0x%08lx frame_hr=0x%08lx\n",
@@ -623,7 +635,91 @@ void NativeWindow::settings_changed() {
         OutputDebugStringA(diagnostic);
         if(options_.smoke_test) std::fputs(diagnostic,stderr);
     }
+    queue_material_probe(policy_changed);
     caret_schedule(); changed();
+}
+void NativeWindow::publish_material_status() {
+    // Put measured evidence first: this help row is deliberately single-line.
+    // Keep actionable fallback errors first instead of burying them in metrics.
+    const bool actionable=material_status_.starts_with("Opaque") || material_status_.starts_with("Solid") || material_status_.starts_with("100%");
+    settings_panel_.set_material_status(material_probe_status_.empty()?material_status_:actionable?
+        material_status_+" "+material_probe_status_:material_probe_status_+" "+material_status_);
+}
+void NativeWindow::queue_material_probe(bool invalidate) {
+    if(hwnd_)KillTimer(hwnd_,material_probe_timer);
+    if(renderer_)renderer_->cancel_alpha_probe();
+    material_probe_running_=false;material_probe_requested_=true;material_probe_succeeded_=false;
+    if(invalidate || material_probe_status_.empty())material_probe_status_="Canvas check after overlays close; DWM may use solid fallback.";
+    publish_material_status();
+}
+void NativeWindow::begin_material_probe(const WindowScene& rendered) {
+    if(!material_probe_requested_ || material_probe_running_ || !renderer_ || minimized_ || in_size_move_ || settings_pending_ ||
+        overlay_open() || modal_ || palette_open_ || rename_open_ || palette_transition_.value(GetTickCount64())>0 || drag_!=Drag::none) return;
+    std::vector<Rect> occluders;
+    if(!notice_.empty())occluders.push_back({12,std::max(44.0,height_-56),std::max(0.0,width_-24),44});
+    std::optional<Rect> patch;SessionId sampled;
+    // Prefer the active pane; if it has no uncovered padding, don't silently
+    // call another pane's cell flags the active grid.
+    for(const auto& pane:layout_.panes)if(pane.pane==workspace().active_pane()) {
+        patch=material_probe_patch(pane.bounds,content_bounds(pane),occluders);sampled=pane.session;break;
+    }
+    material_probe_default_cells_=material_probe_explicit_cells_=material_probe_other_opaque_cells_=0;material_probe_cells_limited_=false;
+    for(const auto& pane:rendered.panes)if(pane.id==sampled.value && pane.frame) {
+        const auto& frame=*pane.frame;
+        for(std::size_t r=0;r<std::min<std::size_t>(frame.rows,frame.lines.size()) && !material_probe_cells_limited_;++r) {
+            if(!frame.lines[r])continue;const auto& row=*frame.lines[r];
+            for(std::size_t column=0;column<std::min<std::size_t>(frame.columns,row.cells.size());++column) {
+                if(material_probe_default_cells_+material_probe_explicit_cells_+material_probe_other_opaque_cells_>=65536) {material_probe_cells_limited_=true;break;}
+                const auto& cell=row.cells[column];
+                const bool selected=cell.selected || (row.selection && column>=row.selection->first && column<=row.selection->last);
+                if(!cell.background_is_default)++material_probe_explicit_cells_;
+                else if(cell.style.inverse || selected)++material_probe_other_opaque_cells_;
+                else ++material_probe_default_cells_;
+            }
+        }
+    }
+    material_probe_requested_=false;
+    if(!patch){material_probe_status_="Canvas check unavailable: no uncovered padding.";publish_material_status();return;}
+    try {
+        if(!renderer_->begin_alpha_probe(pixels(*patch))) {material_probe_status_="Canvas check unavailable: no GPU surface.";publish_material_status();return;}
+        material_probe_present_=renderer_->stats().presents;
+        material_probe_foreground_=GetForegroundWindow()==hwnd_;
+        material_probe_dwm_=0;
+        material_probe_dwm_result_=DwmGetWindowAttribute(hwnd_,static_cast<DWMWINDOWATTRIBUTE>(38),&material_probe_dwm_,sizeof(material_probe_dwm_));
+        material_probe_deadline_=GetTickCount64()+2000;
+        material_probe_running_=SetTimer(hwnd_,material_probe_timer,16,nullptr)!=0;
+        if(!material_probe_running_) {renderer_->cancel_alpha_probe();material_probe_status_="Canvas check unavailable: timer could not start.";publish_material_status();}
+    } catch(...) {renderer_->cancel_alpha_probe();material_probe_status_="Canvas check unavailable: GPU copy failed.";publish_material_status();}
+}
+void NativeWindow::poll_material_probe() {
+    if(!material_probe_running_ || !renderer_)return;
+    try {
+        if(const auto sample=renderer_->poll_alpha_probe()) {
+            KillTimer(hwnd_,material_probe_timer);material_probe_running_=false;material_probe_succeeded_=true;
+            if(options_.smoke_test && (sample->minimum!=255 || sample->maximum!=255)) {
+                smoke_finish("Alpha diagnostic sampled something other than the expected opaque WARP padding.");return;
+            }
+            const auto percent=[](unsigned alpha){return (alpha*100+127)/255;};
+            material_probe_status_="Padding "+std::to_string(percent(sample->minimum));
+            if(sample->minimum!=sample->maximum)material_probe_status_+="–"+std::to_string(percent(sample->maximum));
+            const auto cells=material_probe_default_cells_+material_probe_explicit_cells_+material_probe_other_opaque_cells_;
+            material_probe_status_+="% alpha (last, "+std::string(material_probe_foreground_?"active":"inactive")+")";
+            if(cells)material_probe_status_+=" · grid "+std::to_string((material_probe_default_cells_*100+cells/2)/cells)+"% default"+(material_probe_cells_limited_?" (sample)":"");
+            material_probe_status_+=". DWM may be solid.";
+            publish_material_status();
+            char diagnostic[640]{};
+            std::snprintf(diagnostic,sizeof diagnostic,
+                "StormTTY alpha-only diagnostic: padding_min=%u padding_max=%u samples=%u effective_opacity=%.3f composition=%u software=%u device_generation=%llu presents=%llu sampled_present=%llu sample_foreground=%u current_active_window=%u current_focused=%u dwm_type=%lu get_hr=0x%08lx exstyle=0x%08lx grid_default=%u grid_explicit=%u grid_other_opaque=%u grid_limited=%u. No RGB/text/desktop capture.\n",
+                unsigned(sample->minimum),unsigned(sample->maximum),sample->samples,double(sample->effective_background_opacity),unsigned(sample->composition),unsigned(sample->software),
+                static_cast<unsigned long long>(sample->device_generation),static_cast<unsigned long long>(sample->presents),static_cast<unsigned long long>(material_probe_present_),unsigned(material_probe_foreground_),
+                unsigned(GetActiveWindow()==hwnd_),unsigned(GetFocus()==hwnd_),static_cast<unsigned long>(material_probe_dwm_),static_cast<unsigned long>(material_probe_dwm_result_),static_cast<unsigned long>(GetWindowLongPtrW(hwnd_,GWL_EXSTYLE)),material_probe_default_cells_,material_probe_explicit_cells_,material_probe_other_opaque_cells_,unsigned(material_probe_cells_limited_));
+            OutputDebugStringA(diagnostic);if(options_.smoke_test)std::fputs(diagnostic,stderr);
+            changed();return;
+        }
+        if(GetTickCount64()<material_probe_deadline_)return;
+        material_probe_status_="Canvas check timed out; no alpha result.";
+    } catch(...) {material_probe_status_="Canvas check unavailable: GPU map failed.";}
+    KillTimer(hwnd_,material_probe_timer);material_probe_running_=false;renderer_->cancel_alpha_probe();publish_material_status();changed();
 }
 void NativeWindow::observe_material_renderer() {
     if(!renderer_) return;
@@ -1577,12 +1673,13 @@ WindowScene NativeWindow::scene() {
 void NativeWindow::render() {
     if (!renderer_ || minimized_) return;
     if (renderer_call_) { defer_layout(); return; }
-    RenderResult result;
-    { RendererCallGuard guard(renderer_call_); result=renderer_->render(scene()); }
+    RenderResult result;const auto rendered=scene();
+    { RendererCallGuard guard(renderer_call_); result=renderer_->render(rendered); }
     if (result==RenderResult::presented) force_redraw_=false;
     render_busy_ = result == RenderResult::busy;
     if (!render_busy_) dirty_ = false;
     observe_material_renderer();
+    if (result==RenderResult::presented || result==RenderResult::unchanged) begin_material_probe(rendered);
     if (options_.smoke_test) smoke_progress(result==RenderResult::presented);
     // Occlusion is retried on actual exposure/activation/output, not a timer.
 }
@@ -2320,6 +2417,8 @@ void NativeWindow::smoke_progress(bool presented) {
     if (all_closed) {
         if (!smoke_frame_ready()) { smoke_finish("Controlled smoke shell exited without its expected output marker."); return; }
         if (smoke_marker_presented_ && renderer_->stats().presents) {
+            if(material_probe_requested_ || material_probe_running_)return;
+            if(!material_probe_succeeded_) {smoke_finish("Alpha-only normal-frame diagnostic failed: "+material_probe_status_);return;}
             if (options_.smoke_projects) {
                 for (const auto& [id,actor]:smoke_project_actors_) if (!sessions_.contains(id) || sessions_.at(id)!=actor || !frame_has_smoke_marker(actor->frame())) {
                     smoke_finish("A hidden workspace lost its original actor or real shell output."); return;
@@ -2497,7 +2596,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (renderer_ && !minimized_) changed(true);
         caret_schedule(); motion_schedule(); return 0;
     case WM_ENTERSIZEMOVE: in_size_move_=true; return 0;
-    case WM_EXITSIZEMOVE: in_size_move_=false; changed(true); return 0;
+    case WM_EXITSIZEMOVE: in_size_move_=false; queue_material_probe(); changed(true); return 0;
     case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_DWMCOMPOSITIONCHANGED:
         settings_changed(); changed(true); return 0;
     case WM_ACTIVATE:
@@ -2523,6 +2622,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     case wake_message:
         wake_->posted.store(false,std::memory_order_release); update_sessions(); InvalidateRect(hwnd_,nullptr,FALSE); return 0;
     case WM_TIMER:
+        if (wparam==material_probe_timer) {poll_material_probe();return 0;}
         if (wparam==smoke_timeout_timer) { smoke_finish("Native smoke timed out before real shell output, presentation and clean exit."); return 0; }
         if (wparam==chrome_motion_timer) { motion_schedule(); ++chrome_generation_; dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0; }
         if (wparam==cursor_timer && cursor_blink_.tick(GetTickCount64())) { dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); } return 0;
@@ -2670,7 +2770,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_DESTROY:
         wake_->window.store(nullptr,std::memory_order_release);
-        KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer); KillTimer(hwnd_,chrome_motion_timer);
+        KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer); KillTimer(hwnd_,chrome_motion_timer); KillTimer(hwnd_,material_probe_timer);
         if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);
         tooltip_=nullptr; tooltip_texts_.clear();
         for (auto& [id,session]:sessions_) { (void)id; session->request_close(); }

@@ -399,6 +399,29 @@ void chrome_material_test() {
     require(pixel(fallback.read_pixels(),128,20,16).a==255,"opaque fallback left material band translucent");
     require(pixel(fallback.read_pixels(),128,20,80).a==255,"opaque fallback left canvas translucent");
 }
+void alpha_probe_test() {
+    RendererOptions options;options.force_warp=true;options.background_opacity=.8f;
+    Renderer renderer(nullptr,options);renderer.resize(96,64);
+    WindowScene scene;scene.chrome_generation=1;scene.background={31,48,72,255};renderer.render(scene);
+    require(!renderer.begin_alpha_probe({-1,0,8,8}),"negative probe coordinates accepted");
+    require(!renderer.begin_alpha_probe({0,0,0,8}),"zero-width probe accepted");
+    require(renderer.begin_alpha_probe({8,8,8000,8000}),"alpha probe did not start");
+    const auto deadline=GetTickCount64()+2000;
+    std::optional<RendererAlphaProbe> result;
+    do { result=renderer.poll_alpha_probe();if(!result)Sleep(1); } while(!result && GetTickCount64()<deadline);
+    require(result && result->samples==256,"probe failed or exceeded 16x16 bound");
+    require(result->minimum==204 && result->maximum==204,"GPU alpha-only sample disagrees with requested 80 percent canvas");
+    require(std::abs(result->effective_background_opacity-.8f)<.001f && result->software,"probe metadata lost actual renderer policy");
+    require(!renderer.poll_alpha_probe(),"completed alpha probe kept emitting stale samples");
+    require(renderer.begin_alpha_probe({8,8,8,8}),"second probe did not start");renderer.cancel_alpha_probe();
+    require(!renderer.poll_alpha_probe(),"cancelled alpha probe returned stale data");
+    renderer.set_background_opacity(1);renderer.render(scene);require(renderer.begin_alpha_probe({8,8,8,8}),"opaque probe did not start");
+    const auto opaque_deadline=GetTickCount64()+2000;
+    do { result=renderer.poll_alpha_probe();if(!result)Sleep(1); } while(!result && GetTickCount64()<opaque_deadline);
+    require(result && result->minimum==255 && result->maximum==255,"opaque GPU canvas misreported translucent");
+    require(renderer.begin_alpha_probe({8,8,8,8}),"recovery probe did not start");renderer.recreate_device();
+    require(!renderer.poll_alpha_probe(),"device recreation retained invalid GPU probe");
+}
 void chrome_alignment_test() {
     RendererOptions options;options.font.family="Consolas";
     Renderer renderer(nullptr,options);
@@ -480,7 +503,7 @@ int main() {
         const auto previous_directory=std::filesystem::current_path();
         struct RestoreDirectory {std::filesystem::path path;~RestoreDirectory(){std::error_code ignored;std::filesystem::current_path(path,ignored);}} restore{previous_directory};
         std::filesystem::current_path(std::filesystem::temp_directory_path());
-        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();cache_pressure_test();rejected_image_test();
+        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();
         std::cout<<"PASS Windows WARP renderer: HWND/DComp style lifecycle and fallback, private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
         return 0;
     } catch(const std::exception& error) { std::cerr<<"FAIL renderer smoke: "<<error.what()<<'\n';return 1; }

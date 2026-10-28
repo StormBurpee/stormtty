@@ -70,6 +70,7 @@ void test(){
     scene.primitives.clear();++scene.chrome_generation;
     const auto old=renderer.metrics();renderer.resize(256,160,192);require(renderer.metrics().width>old.width,"Retina font metrics");
     renderer.recreate_device();renderer.render(scene);renderer.read_pixels();require(renderer.stats().device_recoveries==1,"Metal resource recreation");
+    require(!renderer.begin_alpha_probe({0,0,8,8}) && !renderer.poll_alpha_probe(),"Windows-only alpha diagnostic must report unavailable on Metal");renderer.cancel_alpha_probe();
     renderer.resize(0,0);require(renderer.render(scene)==RenderResult::suspended,"Minimized renderer did not suspend");
     require(renderer.stats().image_cache_bytes<=options.image_cache_bytes,"Image cache exceeded budget");
 }
