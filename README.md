@@ -138,8 +138,9 @@ Dependency revisions and archive hashes live in
 
 ## Using the Windows host
 
-The development host starts Command Prompt by default. Profiles can select a
-different shell; StormTTY does not replace or emulate the shell itself.
+Fresh Windows app builds start managed Zsh by default. Existing saved shell
+choices are preserved, and Settings can select another installed shell.
+StormTTY hosts the shell; its terminal engine does not interpret shell commands.
 
 | Action | Default shortcut |
 | --- | --- |
@@ -199,12 +200,15 @@ runtime can be supplied with `-DSTORMTTY_DEVELOPER_SHELL_RUNTIME=<absolute-root>
 that is an advanced offline override, not a required setup step. No IDE-specific
 project files are needed.
 
-Native Windows CI has passed both inbox and packaged-console Zsh probes:
-interactive/native handles, Unicode and working directories, shell/native resize,
-Ctrl-C, suspend/background/foreground jobs, and exit status. All five explicit
-app-with-Zsh smoke scenarios also pass. This is runtime evidence, not physical
-keyboard/UI qualification. Compact alternate-screen Ink layouts still have a
-resize-redraw race; the full Windows suite is not green.
+Native Windows CI has exercised both inbox and packaged-console Zsh probes:
+interactive/native handles, Unicode and working directories, Ctrl-C,
+suspend/background/foreground jobs, and exit status. App-with-Zsh smoke checks
+pass, including normal launches without a shell-runtime flag. Resize qualification
+remains intermittent: the native console can report the new grid while Zsh still
+reports the previous dimensions, and an input-loss case has also been observed.
+Compact alternate-screen Ink layouts retain a separate resize-redraw failure.
+The full Windows suite is not green; passing CI smoke checks are not physical
+keyboard/UI qualification.
 
 The optional pinned Microsoft console backend remains a separate experiment,
 selected with `--console-runtime <absolute-directory>`; bundling Zsh does not
