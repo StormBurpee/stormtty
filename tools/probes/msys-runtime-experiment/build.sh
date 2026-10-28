@@ -20,6 +20,18 @@ cp -- "$here/0001-retire-resize-before-signal.patch" "$output/provenance/"
 pacman -Q > "$output/provenance/pacman-before.txt"
 find /var/cache/pacman/pkg -maxdepth 1 -type f -name '*.pkg.tar.*' -exec sha256sum {} + > "$output/provenance/cached-toolchain-packages.sha256.txt"
 { uname -a; gcc --version; g++ --version; make --version; makepkg --version; } > "$output/provenance/toolchain.txt"
+# Match the original GCC15 runtime build's GNU++17 dialect explicitly. GCC16
+# defaults to GNU++20; the official recipe overwrites CXXFLAGS, but not CXX.
+# This applies identically to control and patched, without relaxing -Werror.
+cxx_command=(g++ -std=gnu++17)
+export CXX="${cxx_command[*]}"
+cplusplus=$("${cxx_command[@]}" -dM -E -x c++ /dev/null | awk '$2 == "__cplusplus" {print $3}')
+[[ $cplusplus == 201703L ]]
+printf 'CXX=%s\n__cplusplus=%s\n' "$CXX" "$cplusplus" > "$output/provenance/compiler-mode.txt"
+printf 'int main() { volatile int value = 0; ++value; --value; return value; }\n' |
+  "${cxx_command[@]}" -Wall -Wextra -Werror -x c++ -fsyntax-only -
+command -v makeinfo > "$output/provenance/makeinfo.txt"
+makeinfo --version >> "$output/provenance/makeinfo.txt"
 tar --zstd --no-same-owner -xf "$archive" -C "$output"
 cd "$output/msys2-runtime"
 echo '3fc783146515f8882e2c1ec57c3d9029294141acf7a8edf68244bb386214d84a  PKGBUILD' | sha256sum -c -
@@ -30,6 +42,7 @@ config="$output/provenance/makepkg.conf"
 cp /etc/makepkg.conf "$config"
 { printf '\nBUILDDIR=\nPKGDEST=%q\nSRCDEST=%q\nMAKEFLAGS=-j2\n' \
     "$output/packages" "$output/msys2-runtime"; } >> "$config"
+printf 'export CXX=%q\n' "$CXX" >> "$config"
 # --holdver uses the verified archive's bundled Git source, not a remote update.
 # Dependencies must be installed beforehand in the isolated build environment.
 # No --syncdeps, --install, --skipinteg, or --nocheck.
@@ -45,6 +58,8 @@ cp winsup/cygwin/fhandler/console.cc "$output/provenance/console-after.cc"
 git diff --binary > "$output/provenance/all-packaging-and-experimental.patch"
 cd ../..
 makepkg --config "$config" --noextract --holdver --noconfirm
+find src -name Makefile -exec grep -H '^CXX = ' {} \; > "$output/provenance/configured-cxx.txt"
+grep -F -- '-std=gnu++17' "$output/provenance/configured-cxx.txt" > /dev/null
 pacman -Q > "$output/provenance/pacman-after.txt"
 cmp "$output/provenance/pacman-before.txt" "$output/provenance/pacman-after.txt"
 # Build output stays separate from the running build environment's DLL.

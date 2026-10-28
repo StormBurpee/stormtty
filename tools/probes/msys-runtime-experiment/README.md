@@ -48,7 +48,7 @@ upstream source; preserve the upstream licensing and provenance.
 ## Build dependencies and reproducibility limit
 
 Use a dedicated native **MSYS x86_64**, not UCRT64/MINGW64, build environment.
-Install standard official MSYS2 `base-devel`, the official `zstd` CLI (used by tar), plus the recipe's makedepends:
+Install standard official MSYS2 `base-devel`, the official `zstd` CLI (used by tar), `texinfo` (makeinfo), plus the recipe's makedepends:
 
 ```text
 autotools cocom docbook-xsl gcc gettext-devel git libzstd-devel
@@ -146,3 +146,26 @@ Local validation: full archive/recipe identity and official43-patch reconstructi
 candidate apply check, three race-model tests, six staging safety tests, Bash
 syntax and Python compilation. **No experimental DLL has been built or run here**;
 native build and runtime results must be recorded by the dedicated CI job.
+
+
+## Compiler dialect correction after first native source build
+
+Run40705457308 stopped before comparison: the new toolchain supplied GCC16.2.0;
+its default C++20 mode rejected existing dcrt0.cc volatile increment/decrement
+expressions under the upstream `-Werror`. The original .BUILDINFO used GCC15.3.0.
+[GCC16 release notes](https://gcc.gnu.org/gcc-16/changes.html) explicitly document
+the default transition from GNU++17 to GNU++20.
+
+Both experimental variants now use the same explicit `CXX='g++ -std=gnu++17'`
+through the generated makepkg configuration. The official recipe overwrites
+CXXFLAGS, so setting only those flags would not reliably select the dialect.
+No source/recipe checksum or warning policy is relaxed. Preflight checks require
+`__cplusplus=201703L` and compile volatile ++/-- under `-Wall -Wextra -Werror`;
+compiler-mode.txt is hash-bound into staging/comparison provenance, and generated
+Makefile CXX settings are retained. The existing full compiler inventory remains
+required. This is still GCC16 with explicit C++17, not historical GCC15 replay.
+
+The first build also reported missing makeinfo. The workflow explicitly installs
+the official texinfo package; build preflight records its path/version rather
+than waiting for a later documentation failure. Native success still must be
+established by the next controlled run.

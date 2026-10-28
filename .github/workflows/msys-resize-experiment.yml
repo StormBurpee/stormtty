@@ -95,7 +95,7 @@ jobs:
           install: >-
             base-devel autotools cocom docbook-xsl gcc gettext-devel git
             libzstd-devel libiconv-devel mingw-w64-cross-crt mingw-w64-cross-gcc
-            mingw-w64-cross-zlib perl xmlto zlib-devel zstd
+            mingw-w64-cross-zlib perl xmlto zlib-devel zstd texinfo
       - name: Build control from official source and all packaging patches
         id: control
         timeout-minutes: 40

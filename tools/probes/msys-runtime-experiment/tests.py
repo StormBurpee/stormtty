@@ -32,6 +32,7 @@ class StagingTests(unittest.TestCase):
         prov.mkdir(parents=True)
         (self.build / 'experimental-msys-2.0.dll').write_bytes(b'MZcandidate-fixture')
         (prov / 'variant.txt').write_text('patched\n')
+        (prov / 'compiler-mode.txt').write_bytes(b'CXX=g++ -std=gnu++17\n__cplusplus=201703L\n')
         for name in ('pacman-before.txt', 'pacman-after.txt'):
             (prov / name).write_text('gcc identical\n')
         for name in ('msys2-runtime-3.6.11-4.src.tar.zst', 'console-before.cc', 'console-after.cc'):
@@ -86,6 +87,11 @@ class StagingTests(unittest.TestCase):
     def test_toolchain_drift_rejected(self):
         (self.build / 'provenance/pacman-after.txt').write_text('gcc changed\n')
         with self.assertRaises(ValueError):
+            stage.stage(self.base, self.build, self.dest)
+
+    def test_wrong_compiler_dialect_rejected(self):
+        (self.build / 'provenance/compiler-mode.txt').write_bytes(b'CXX=g++\n__cplusplus=202002L\n')
+        with self.assertRaisesRegex(ValueError, 'compiler dialect'):
             stage.stage(self.base, self.build, self.dest)
 
     def test_wrong_source_rejected(self):

@@ -36,6 +36,8 @@ def stage(base, build, destination):
     expected_after = AFTER_SHA256 if variant == 'patched' else BEFORE_SHA256
     if sha(provenance / 'console-before.cc') != BEFORE_SHA256 or sha(provenance / 'console-after.cc') != expected_after:
         raise ValueError('Unexpected experimental source contents')
+    if (provenance / 'compiler-mode.txt').read_bytes() != b'CXX=g++ -std=gnu++17\n__cplusplus=201703L\n':
+        raise ValueError('Unexpected runtime compiler dialect')
     if (provenance / 'pacman-before.txt').read_bytes() != (provenance / 'pacman-after.txt').read_bytes():
         raise ValueError('Build environment changed during compilation')
     if sha(dll) != (provenance / 'hashes.txt').read_text().split()[0]:
@@ -79,6 +81,7 @@ def stage(base, build, destination):
         'source_archive_sha256': '4b178dfb5b77bce293706dcfabea673b77d8da061a4725bdf4cd94f17533c204',
         'patch_sha256': sha(provenance / '0001-retire-resize-before-signal.patch'),
         'build_environment_sha256': sha(provenance / 'pacman-before.txt'),
+        'compiler_mode_sha256': sha(provenance / 'compiler-mode.txt'),
         'scope': 'Private qualification only; not an approved production bundle',
     }
     (destination / 'stormtty-shell-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
