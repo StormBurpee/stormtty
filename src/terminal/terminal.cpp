@@ -214,7 +214,7 @@ struct TerminalCore::Impl {
     std::exception_ptr callback_failure;
     FramePtr frame;
     std::uint64_t frame_generation{}, row_generation{};
-    bool held{};
+    bool held{}, output_finished{};
     Clock::time_point hold_started{}, animation_origin{Clock::now()}, last_tick{animation_origin};
     std::optional<Clock::time_point> animation_deadline;
     std::uint64_t content_revision{1}, search_request_id{}, search_fed_revision{}, search_work{}, search_update{}, search_generation{};
@@ -422,6 +422,7 @@ struct TerminalCore::Impl {
         return result; // Borrowed only inside this actor operation, never published.
     }
     void tick(Clock::time_point now) {
+        if (output_finished) return;
         now = std::max(now, last_tick); last_tick = now;
         if (held && now >= hold_started + options.render_hold_timeout) {
             GhosttyTerminalModeConfig config{GHOSTTY_MODE_SYNC_OUTPUT, false};
@@ -658,6 +659,7 @@ void TerminalCore::feed(std::string_view bytes) {
 }
 void TerminalCore::feed(std::span<const std::uint8_t> bytes) {
     impl_->check_thread();
+    if (impl_->output_finished) throw std::invalid_argument("terminal output stream has finished");
     const PngBudgetScope png_scope(impl_->options.image_budget_bytes);
     if (!bytes.empty()) {
         ++impl_->content_revision;
@@ -802,6 +804,18 @@ void TerminalCore::scroll_to_bottom() {
     impl_->check_thread();
     GhosttyTerminalScrollViewport scroll{}; scroll.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM;
     ghostty_terminal_scroll_viewport(impl_->terminal, scroll);
+}
+void TerminalCore::finish_output() {
+    impl_->check_thread();
+    if (impl_->output_finished) return;
+    if (impl_->held) {
+        GhosttyTerminalModeConfig config{GHOSTTY_MODE_SYNC_OUTPUT, false};
+        impl_->set(GHOSTTY_TERMINAL_OPT_MODE, &config);
+        impl_->held = false;
+    }
+    impl_->tick(Clock::now());
+    impl_->output_finished = true;
+    impl_->animation_deadline.reset();
 }
 FramePtr TerminalCore::snapshot(Clock::time_point now) {
     impl_->check_thread(); impl_->tick(now);

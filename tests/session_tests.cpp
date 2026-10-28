@@ -35,8 +35,8 @@ struct WakeCounter {
 };
 template<class Predicate> bool await(Predicate predicate, const std::shared_ptr<WakeCounter>& wake, std::chrono::milliseconds timeout=5s) {
     const auto end=std::chrono::steady_clock::now()+timeout;
+    std::unique_lock lock(wake->mutex);
     while (!predicate()) {
-        std::unique_lock lock(wake->mutex);
         if (wake->cv.wait_until(lock,end)==std::cv_status::timeout) return predicate();
     }
     return true;
@@ -63,7 +63,157 @@ int child(std::string_view mode) {
     if(mode=="flood") {
         for(std::uint64_t i=0;;++i) std::cout << "STREAM:" << i << " \x1b[32moutput\x1b[0m\r\n" << std::flush;
     }
+    if(mode=="retained-history" || mode=="retained-bounded") {
+#ifdef _WIN32
+        const auto identity=std::to_string(GetCurrentProcessId());
+#else
+        const auto identity=std::to_string(getpid());
+#endif
+        std::cout << "old retained NEEDLE\r\n";
+        const unsigned count=mode=="retained-bounded"?30000:3000;
+        for(unsigned i=0;i<count;++i) std::cout << "history " << i << "\r\n";
+        std::cout << "READY:" << identity << "\r\n" << std::flush;
+        if(mode=="retained-history") { std::string input; std::getline(std::cin,input); }
+        // A real child may die during synchronized output or an incomplete VT
+        // sequence. Preserve the delivered printable bytes; invent no suffix.
+        std::cout << "\x1b[?2026hFINAL:" << identity << "\r\n\x1b[" << std::flush;
+        return 23;
+    }
     return 3;
+}
+struct CloseSession {
+    std::shared_ptr<Session> session;
+    ~CloseSession() { session->request_close(); (void)session->wait_closed(5s); }
+};
+void retained_document(const std::string& executable) {
+    auto wake=std::make_shared<WakeCounter>();
+    ProcessOptions p; p.executable=executable; p.arguments={"--child","retained-history"};
+    TerminalOptions t; t.size={80,8,8,16}; t.scrollback_lines=10000;
+    auto session=Session::start(p,t,[wake]{wake->signal();},SessionRetentionPolicy::retain_document);
+    CloseSession close{session};
+    check(await([&]{return frame_text(session->frame()).find("READY:")!=std::string::npos;},wake),"retained child did not reach ready marker");
+    check(!session->process_finished() && !session->wait_for_process_exit(1ms),"running child reported a terminal result");
+    const auto ready_text=frame_text(session->frame());
+    const auto begin=ready_text.find("READY:")+6;
+    const auto identity=ready_text.substr(begin,ready_text.find_first_of(" \r\n",begin)-begin);
+    SearchOptions busy{"history"}; busy.max_matches=4096; busy.max_work_units_per_step=1;
+    const auto pending=session->search(busy); check(pending.result==SessionSendResult::accepted,"pre-exit search rejected");
+    check(session->text("EXIT")==SessionSendResult::accepted,"retained child exit input rejected");
+    KeyInput enter; enter.key=Key::enter; check(session->key(enter)==SessionSendResult::accepted,"retained child Enter rejected");
+    check(session->wait_for_process_exit(5s),"retained process did not finish");
+    const auto final_frame=session->frame();
+    check(frame_text(final_frame).find("FINAL:"+identity)!=std::string::npos,"exit published before final synchronized-output bytes");
+    check(session->info().state==SessionState::exited && session->info().exit_code==23,"retained process result incorrect");
+    check(session->process_finished() && !session->closed() && !session->wait_closed(10ms),"retention ambiguously changed actor completion");
+    check(!session->diagnostics().provider.empty(),"process diagnostics lost with released transport");
+    check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==pending.request_id&&r->status==SearchStatus::complete;},wake),"search did not survive process exit");
+    check(session->search_snapshot()->matches.size()==3000,"retained search lost history");
+    const auto sent=session->info().bytes_sent, received=session->info().bytes_received;
+    check(session->key(enter)==SessionSendResult::closed,"exited document accepted key");
+    check(session->text("must not restart")==SessionSendResult::closed,"exited document accepted text");
+    check(session->paste("x")==SessionSendResult::closed,"exited document accepted paste");
+    check(session->mouse({})==SessionSendResult::closed,"exited document accepted mouse protocol input");
+    check(session->focus(true)==SessionSendResult::closed,"exited document accepted focus protocol input");
+    check(session->scroll(-100000)==SessionSendResult::accepted,"retained scroll rejected");
+    check(await([&]{return frame_text(session->frame()).find("old retained NEEDLE")!=std::string::npos;},wake),"retained scrollback unavailable");
+    check(session->select(0,0,18,0)==SessionSendResult::accepted,"retained selection rejected");
+    struct Copy { std::mutex mutex; std::optional<std::string> text; };
+    auto copy=std::make_shared<Copy>();
+    check(session->copy_selection([copy,wake](std::string text){
+        {std::lock_guard lock(copy->mutex);copy->text=std::move(text);}wake->signal();
+    })==SessionSendResult::accepted,"retained copy rejected");
+    check(await([&]{std::lock_guard lock(copy->mutex);return copy->text.has_value();},wake),"retained copy did not complete");
+    {std::lock_guard lock(copy->mutex);check(copy->text->find("old retained NEEDLE")!=std::string::npos,"retained copy lost selection");}
+    SearchOptions limited{"history"}; limited.max_work_units_per_step=1; limited.max_total_work_units=1;
+    auto find=session->search(limited);
+    check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==find.request_id&&r->status==SearchStatus::limited;},wake),"retained search work bound ignored");
+    check(session->search_snapshot()->work_units==1,"retained search exceeded work budget");
+    check(session->search({std::string(4097,'x')}).result==SessionSendResult::too_large,"retained query size bound ignored");
+    for(unsigned i=0;i<150;++i)check(session->search({"absent"+std::to_string(i)}).result==SessionSendResult::accepted,"retained search coalescing failed");
+    find=session->search({"NEEDLE"});
+    check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==find.request_id&&r->status==SearchStatus::complete;},wake),"post-exit search failed");
+    const auto found=session->search_snapshot(); check(found->matches.size()==1,"post-exit search not over full retained document");
+    check(session->select_search_match(found->token,0)==SessionSendResult::accepted,"retained search selection rejected");
+    check(await([&]{auto r=session->search_snapshot();return r&&r->selected_index==0;},wake),"retained search selection did not apply");
+    const Color foreground{230,231,232,255}, background{12,13,14,255};
+    for(unsigned i=0;i<2000;++i)check(session->set_default_colors({static_cast<std::uint8_t>(180+i%50),231,232,255},background)==SessionSendResult::accepted,"retained theme previews hit input bound");
+    check(session->set_default_colors(foreground,background)==SessionSendResult::accepted,"retained final theme rejected");
+    check(await([&]{auto f=session->frame();return f&&f->foreground==foreground&&f->background==background;},wake),"retained theme latest value lost");
+    check(session->request_resize({60,10,8,16})==SessionSendResult::accepted,"retained local resize rejected");
+    check(await([&]{auto f=session->frame();return f&&f->columns==60&&f->rows==10;},wake),"retained local resize did not apply");
+    check(session->scroll_to_bottom()==SessionSendResult::accepted,"retained bottom rejected");
+    check(await([&]{return frame_text(session->frame()).find("FINAL:"+identity)!=std::string::npos;},wake),"reopening retained output lost child identity/final marker");
+    const auto cancelled=session->cancel_search();
+    check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==cancelled.request_id&&r->status==SearchStatus::cancelled;},wake),"retained cancellation failed");
+    check(session->clear_selection()==SessionSendResult::accepted,"retained clear selection rejected");
+    std::this_thread::sleep_for(40ms); // Let the last bounded display publication settle.
+    unsigned wakes{}; {std::lock_guard lock(wake->mutex);wakes=wake->wakes;}
+    const auto generation=session->frame()->generation;
+    std::this_thread::sleep_for(120ms);
+    {std::lock_guard lock(wake->mutex);check(wake->wakes==wakes,"retained idle document kept waking UI");}
+    check(session->frame()->generation==generation,"retained idle document kept publishing frames");
+    check(session->info().bytes_sent==sent&&session->info().bytes_received==received,"retained display work touched/restarted transport");
+    check(frame_text(final_frame).find("FINAL:"+identity)!=std::string::npos&&final_frame->columns==80,"retained edits mutated old owned frame");
+    const auto start=std::chrono::steady_clock::now();session->request_close();session->request_close();
+    check(std::chrono::steady_clock::now()-start<100ms,"retained disposal blocked caller");
+    check(session->wait_closed(5s)&&session->wait_for_process_exit(0ms),"retained actor did not dispose independently of process exit");
+    check(session->scroll(-1)==SessionSendResult::closed&&session->search({"needle"}).result==SessionSendResult::closed,"disposed document accepted commands");
+    check(session->set_default_colors(foreground,background)==SessionSendResult::closed,"disposed document accepted theme");
+}
+void retained_bounds_failure_and_destructor(const std::string& executable) {
+    ProcessOptions p;p.executable=executable;p.arguments={"--child","retained-bounded"};
+    TerminalOptions t;t.size={80,4,8,16};t.scrollback_lines=10;
+    auto wake=std::make_shared<WakeCounter>();
+    auto session=Session::start(p,t,[wake]{wake->signal();},SessionRetentionPolicy::retain_document);
+    CloseSession close{session};
+    check(session->wait_for_process_exit(10s),"bounded retained child failed to exit");
+    auto find=session->search({"old retained NEEDLE"});
+    check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==find.request_id&&r->status==SearchStatus::complete;},wake),"bounded retained search failed");
+    check(session->search_snapshot()->matches.empty(),"retention bypassed scrollback bound");
+    find=session->search({"FINAL:"});
+    check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==find.request_id&&r->status==SearchStatus::complete;},wake),"bounded final-marker search failed");
+    check(session->search_snapshot()->matches.size()==1,"bounded retention lost final bytes");
+    session->request_close();check(session->wait_closed(5s),"bounded document disposal hung");
+    auto legacy=Session::start(p,t);
+    check(legacy->wait_closed(10s)&&legacy->process_finished(),"default final-frame-only child failed to dispose");
+    check(frame_text(legacy->frame()).find("FINAL:")!=std::string::npos,"default final frame froze at a pre-hold viewport");
+    check(legacy->scroll(-1)==SessionSendResult::closed,"default policy unexpectedly retained readable terminal");
+    p.executable=executable+".missing";
+    auto failed=Session::start(p,t,{},SessionRetentionPolicy::retain_document);
+    check(failed->wait_for_process_exit(5s),"retained launch failure did not settle process wait");
+    check(failed->info().state==SessionState::failed&&!failed->info().error.empty(),"retained launch failure lacks diagnostic");
+    check(!failed->closed()&&failed->text("x")==SessionSendResult::closed,"launch failure retained a live transport or disposed document");
+    failed->request_close();check(failed->wait_closed(5s),"launch failure document disposal hung");
+    auto lifetime=std::make_shared<int>(1);std::weak_ptr<int> released=lifetime;
+    auto abandoned=Session::start(p,t,[lifetime]{},SessionRetentionPolicy::retain_document);
+    check(abandoned->wait_for_process_exit(5s),"destructor fixture failed");
+    lifetime.reset();abandoned.reset();
+    const auto deadline=std::chrono::steady_clock::now()+5s;
+    while(!released.expired()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(5ms);
+    check(released.expired(),"last Session owner did not dispose retained actor");
+    // Discarding a queued callback can release the final Session owner. Its
+    // destructor reenters request_close, so closure disposal must be unlocked.
+    struct Gate { std::mutex mutex; std::condition_variable cv; bool entered{}, release{}; };
+    auto gate=std::make_shared<Gate>();lifetime=std::make_shared<int>(2);released=lifetime;
+    auto queued=Session::start(p,t,[lifetime]{},SessionRetentionPolicy::retain_document);
+    check(queued->wait_for_process_exit(5s),"queued-disposal fixture failed");
+    check(queued->copy_selection([gate](std::string){
+        std::unique_lock lock(gate->mutex);gate->entered=true;gate->cv.notify_all();
+        gate->cv.wait(lock,[&]{return gate->release;});
+    })==SessionSendResult::accepted,"queued-disposal gate rejected");
+    {std::unique_lock lock(gate->mutex);check(gate->cv.wait_for(lock,5s,[&]{return gate->entered;}),"queued-disposal gate timed out");}
+    check(queued->copy_selection([owned=queued](std::string){(void)owned;})==SessionSendResult::accepted,"queued owner rejected");
+    queued->request_close();lifetime.reset();queued.reset();
+    {std::lock_guard lock(gate->mutex);gate->release=true;}gate->cv.notify_all();
+    const auto queued_deadline=std::chrono::steady_clock::now()+5s;
+    while(!released.expired()&&std::chrono::steady_clock::now()<queued_deadline)std::this_thread::sleep_for(5ms);
+    check(released.expired(),"discarding queued final owner deadlocked retained disposal");
+    p.executable=executable;p.arguments={"--child","flood"};
+    for(unsigned i=0;i<8;++i){
+        auto race=Session::start(p,t,{},SessionRetentionPolicy::retain_document);
+        race->request_close();
+        check(race->wait_for_process_exit(5s)&&race->wait_closed(5s),"retained explicit-close/start race hung");
+    }
 }
 }
 int main(int argc,char** argv) {
@@ -106,6 +256,7 @@ int main(int argc,char** argv) {
             check(session->wait_closed(5s),"natural child exit did not close actor");
             check(session->info().state==SessionState::exited,"natural child exit state");
             check(session->info().exit_code==7,"exit code lost");
+            check(session->process_finished()&&session->wait_for_process_exit(0ms),"default process-exit observation missing");
             check(frame_text(session->frame()).find("GOT:hello PID:"+identity)!=std::string::npos,"input ordering or child identity changed during theme preview");
             const auto exited_frame=session->frame();
             check(session->set_default_colors(preview_fg,preview_bg)==SessionSendResult::closed,"exited session accepted a theme update");
@@ -137,7 +288,9 @@ int main(int argc,char** argv) {
             auto session=Session::start(p,{});session->request_close();
             check(session->wait_closed(5s),"immediate close race hung");
         }
-        std::cout << "Session: real child, input ordering, immutable frame, bounded queue, flood close, launch failure, immediate-close races passed\n";
+        retained_document(executable);
+        retained_bounds_failure_and_destructor(executable);
+        std::cout << "Session: retained document read/search/display, bounded scrollback, final held output, idle/disposal; real child, input ordering, immutable frame, bounded queue, flood close, launch failure, immediate-close races passed\n";
         return 0;
     } catch(const std::exception& e){std::cerr << "FAIL: " << e.what() << '\n';return 1;}
 }
