@@ -90,7 +90,7 @@ CommandAvailability command_availability(std::string_view id, const CommandConte
     if (id == "tab.new") return {c.tabs < Workspace::maximum_tabs, c.tabs < Workspace::maximum_tabs ? "" : "Tab limit reached"};
     if (id == "app.command_palette" || id == "settings.open" || id == "window.fullscreen") return {true, {}};
     if (!c.tabs || !c.panes) return {false, "No active terminal pane"};
-    if (id == "pane.background") return {c.supports_background_sessions && c.parked_sessions<ProjectWorkspaceCatalog::maximum_parked_sessions, !c.supports_background_sessions ? "Background sessions are not implemented by this host" : "Background session limit reached"};
+    if (id == "pane.background") return {c.supports_background_sessions && c.parked_sessions<ProjectWorkspaceCatalog::maximum_parked_sessions, !c.supports_background_sessions ? "Background sessions are not implemented by this host" : c.parked_sessions>=ProjectWorkspaceCatalog::maximum_parked_sessions ? "Background session limit reached" : ""};
     if (id == "edit.copy") return {c.has_selection, c.has_selection ? "" : "Select terminal text first"};
     if (id == "edit.paste") return {c.clipboard_has_text && c.session_running,
         !c.session_running ? "Session is not running" : (!c.clipboard_has_text ? "Clipboard has no text" : "")};

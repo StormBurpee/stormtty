@@ -2655,7 +2655,11 @@ void NativeWindow::smoke_progress(bool presented) {
             submit([session,enter] { return session->key(enter); });
         }
         if (!session->process_finished()) all_closed=false;
-        else if (!info.exit_code || *info.exit_code!=0) { smoke_finish("Controlled smoke shell did not exit successfully."); return; }
+        else {
+            // Completion can race the earlier running-state snapshot.
+            const auto completed=session->info();
+            if (!completed.exit_code || *completed.exit_code!=0) { smoke_finish("Controlled smoke shell did not exit successfully."); return; }
+        }
     }
     if (presented && smoke_frame_ready() && !motion_timer_active_) smoke_marker_presented_=true;
     if (all_closed) {
