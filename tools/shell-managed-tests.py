@@ -41,6 +41,22 @@ class ManagedTests(unittest.TestCase):
         if args.zsh: self.env['PATH'] = str(args.zsh.resolve().parent) + os.pathsep + self.env.get('PATH', '')
     def run_shell(self, command, **kwargs):
         return subprocess.run([self.shell, '-dic', command], env=self.env, cwd=self.root, capture_output=True, text=True, timeout=15, **kwargs)
+    def test_drive_source_normalized_before_canonicalization(self):
+        # Exercise the exact loader expansion before :A. Native MSYS execution
+        # remains a separate gate; this proves the path-expression semantics.
+        script = (TOOLS / 'shell-preset.zsh').read_text()
+        start = script.index('if [[ $OSTYPE == (msys*|cygwin*) && $_stormtty_source')
+        end = script.index('unset _stormtty_source', start)
+        for source, expected in [
+                ('D:/runtime/stormtty/zsh/.zshrc', '/d/runtime/stormtty/vendor'),
+                ('/d/runtime/stormtty/zsh/.zshrc', '/d/runtime/stormtty/vendor')]:
+            env = dict(self.env, QUAL_SOURCE=source)
+            result = subprocess.run([self.shell, '-fc',
+                'OSTYPE=msys; _stormtty_source=$QUAL_SOURCE; ' + script[start:end] +
+                'print -r -- "$_stormtty_vendor"'], env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), expected)
+
     def test_pins_and_source_allowlist(self):
         self.assertEqual(len(addons.read_lock()['components']), 3)
         c=addons.read_lock()['components'][0]

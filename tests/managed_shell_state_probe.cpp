@@ -128,6 +128,7 @@ int main() {
         const fs::path provider = count == 3 ? fs::absolute(args[2]) : fs::path{};
         check(fs::is_regular_file(runtime / L"usr" / L"bin" / L"zsh.exe"));
         check(fs::is_regular_file(runtime / L"stormtty" / L"zsh" / L".zshrc"));
+        check(fs::is_regular_file(runtime / L"stormtty" / L"vendor" / L"oh-my-zsh" / L"oh-my-zsh.sh"));
         Fixture fixture;
         const auto state = prepare_managed_shell_state_at(fixture.root, false); check(static_cast<bool>(state));
         write(state.directory / L"config.zsh", config);
@@ -139,7 +140,8 @@ int main() {
             // Keep each contract independently observable without logging paths,
             // shell contents or history. A failed bit identifies the invariant;
             // the same required predicates still block qualification.
-            const std::array<const char*, 9> contracts = {
+            const std::array<const char*, 10> contracts = {
+                "-r $_stormtty_vendor/oh-my-zsh/oh-my-zsh.sh",
                 "$STORMTTY_OMZ_LOADED == 1", "$STORMTTY_EPHEMERAL == 0", "$_qual_config == 73",
                 "${+functions[_zsh_autosuggest_start]} == 1", "${+functions[_zsh_highlight]} == 1",
                 "${+STORMTTY_NATIVE_ZSH_STATE} == 0", "${+QUAL_GLOBAL_RC_READ} == 0",

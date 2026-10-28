@@ -19,7 +19,15 @@ setopt INTERACTIVE_COMMENTS HIST_IGNORE_SPACE
 bindkey -e
 # Private persistent state/config never lives in the replaceable runtime. An
 # explicitly empty/unusable HOME keeps this session ephemeral (no fallback).
-typeset -g _stormtty_vendor="${${(%):-%x}:A:h:h}/vendor"
+# MSYS accepts a Windows-form ZDOTDIR when opening .zshrc, but Zsh's :A
+# path modifier must receive a POSIX path. Normalize the source spelling first
+# so vendor lookup does not resolve a drive prefix beneath the working folder.
+typeset _stormtty_source=${(%):-%x}
+if [[ $OSTYPE == (msys*|cygwin*) && $_stormtty_source == [A-Za-z]:/* ]]; then
+  _stormtty_source="/${(L)_stormtty_source[1]}${_stormtty_source[3,-1]}"
+fi
+typeset -g _stormtty_vendor="${_stormtty_source:A:h:h}/vendor"
+unset _stormtty_source
 typeset -g _stormtty_state=''
 typeset +x STORMTTY_OMZ_LOADED
 typeset -g STORMTTY_OMZ_LOADED=0
