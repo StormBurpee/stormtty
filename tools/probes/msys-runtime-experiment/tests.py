@@ -31,8 +31,9 @@ class StagingTests(unittest.TestCase):
         prov = self.build / 'provenance'
         prov.mkdir(parents=True)
         (self.build / 'experimental-msys-2.0.dll').write_bytes(b'MZcandidate-fixture')
+        (prov / 'compiler-packages.txt').write_bytes(b'identical verified compiler packages\n')
         (prov / 'variant.txt').write_text('patched\n')
-        (prov / 'compiler-mode.txt').write_bytes(b'CXX=g++ -std=gnu++17\n__cplusplus=201703L\n')
+        (prov / 'compiler-mode.txt').write_bytes(b'CXX=stormtty-gxx-15 -std=gnu++17\n__cplusplus=201703L\n')
         for name in ('pacman-before.txt', 'pacman-after.txt'):
             (prov / name).write_text('gcc identical\n')
         for name in ('msys2-runtime-3.6.11-4.src.tar.zst', 'console-before.cc', 'console-after.cc'):

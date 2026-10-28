@@ -96,6 +96,13 @@ jobs:
             base-devel autotools cocom docbook-xsl gcc gettext-devel git
             libzstd-devel libiconv-devel mingw-w64-cross-crt mingw-w64-cross-gcc
             mingw-w64-cross-zlib perl xmlto zlib-devel zstd texinfo
+      - name: Verify and preflight private GCC15 compiler (no system downgrade)
+        timeout-minutes: 10
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          bash tools/probes/msys-runtime-experiment/toolchain.sh "$root/gcc15" 2>&1 | tee "$root/evidence/gcc15-preflight.log"
       - name: Build control from official source and all packaging patches
         id: control
         timeout-minutes: 40
@@ -103,6 +110,7 @@ jobs:
         run: |
           set -euo pipefail
           root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
           bash tools/probes/msys-runtime-experiment/build.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/control-build" control 2>&1 | tee "$root/evidence/control-build.log"
       - name: Build resize-only patched runtime with identical toolchain
         id: patched
@@ -112,6 +120,7 @@ jobs:
         run: |
           set -euo pipefail
           root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
           bash tools/probes/msys-runtime-experiment/build.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/patched-build" patched 2>&1 | tee "$root/evidence/patched-build.log"
           cmp "$root/control-build/provenance/pacman-before.txt" "$root/patched-build/provenance/pacman-before.txt"
       - name: Stage experimental copies without touching active runtime
@@ -137,6 +146,7 @@ jobs:
           name: msys-resize-experiment-logs-${{ github.sha }}
           if-no-files-found: warn
           path: |
+            ${{ env.EXPERIMENT_ROOT }}/gcc15/provenance/*.txt
             ${{ env.EXPERIMENT_ROOT }}/evidence/*.txt
             ${{ env.EXPERIMENT_ROOT }}/evidence/*.md
             ${{ env.EXPERIMENT_ROOT }}/evidence/*.log

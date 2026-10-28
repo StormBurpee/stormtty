@@ -19,12 +19,19 @@ cp -- "$archive" "$output/provenance/msys2-runtime-3.6.11-4.src.tar.zst"
 cp -- "$here/0001-retire-resize-before-signal.patch" "$output/provenance/"
 pacman -Q > "$output/provenance/pacman-before.txt"
 find /var/cache/pacman/pkg -maxdepth 1 -type f -name '*.pkg.tar.*' -exec sha256sum {} + > "$output/provenance/cached-toolchain-packages.sha256.txt"
-{ uname -a; gcc --version; g++ --version; make --version; makepkg --version; } > "$output/provenance/toolchain.txt"
+{ uname -a; gcc --version; g++ --version; make --version; makepkg --version; } > "$output/provenance/system-toolchain.txt"
 # Match the original GCC15 runtime build's GNU++17 dialect explicitly. GCC16
 # defaults to GNU++20; the official recipe overwrites CXXFLAGS, but not CXX.
 # This applies identically to control and patched, without relaxing -Werror.
-cxx_command=(g++ -std=gnu++17)
+[[ -n ${EXPERIMENT_TOOLCHAIN:-} ]]
+export PATH="$EXPERIMENT_TOOLCHAIN/wrappers:$PATH"
+export CC=stormtty-gcc-15
+[[ $($CC -dumpfullversion) == 15.3.0 ]]
+[[ $(stormtty-gxx-15 -dumpfullversion) == 15.3.0 ]]
+cp "$EXPERIMENT_TOOLCHAIN/provenance/compiler-packages.txt" "$output/provenance/"
+cxx_command=(stormtty-gxx-15 -std=gnu++17)
 export CXX="${cxx_command[*]}"
+{ "$CC" --version; "${cxx_command[@]}" --version; } > "$output/provenance/selected-toolchain.txt"
 cplusplus=$("${cxx_command[@]}" -dM -E -x c++ /dev/null | awk '$2 == "__cplusplus" {print $3}')
 [[ $cplusplus == 201703L ]]
 printf 'CXX=%s\n__cplusplus=%s\n' "$CXX" "$cplusplus" > "$output/provenance/compiler-mode.txt"
@@ -42,6 +49,7 @@ config="$output/provenance/makepkg.conf"
 cp /etc/makepkg.conf "$config"
 { printf '\nBUILDDIR=\nPKGDEST=%q\nSRCDEST=%q\nMAKEFLAGS=-j2\n' \
     "$output/packages" "$output/msys2-runtime"; } >> "$config"
+printf 'export CC=%q\n' "$CC" >> "$config"
 printf 'export CXX=%q\n' "$CXX" >> "$config"
 # --holdver uses the verified archive's bundled Git source, not a remote update.
 # Dependencies must be installed beforehand in the isolated build environment.

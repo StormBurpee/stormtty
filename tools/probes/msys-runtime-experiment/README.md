@@ -169,3 +169,30 @@ The first build also reported missing makeinfo. The workflow explicitly installs
 the official texinfo package; build preflight records its path/version rather
 than waiting for a later documentation failure. Native success still must be
 established by the next controlled run.
+
+### Private GCC15 compatibility boundary
+
+Run40709807032 reached a second **control compile** failure (`spawn.cc:341`,
+`-Werror=unused-but-set-variable`) even in GNU++17. It did not test the resize
+patch. Rather than suppress warnings or alter runtime source, `toolchain.sh`
+extracts the official `gcc` and `gcc-libs`15.3.0-1 packages into a new private
+prefix, matching the compiler version in the original runtime `.BUILDINFO`.
+The current installed GCC, runtime and package database are not downgraded.
+Only compiler-child processes receive the private DLL directory in PATH;
+the ordinary build tools and MinGW cross compiler keep their normal environment.
+
+Both package bytes and the corresponding official source archive are SHA256
+pinned in the script, and their adjacent official signatures must pass
+`pacman-key --verify` using the installed official keyring before extraction.
+The locally verified signer was `5F944B027F7FE2091985AA2EFA11531AA0AA7F57`.
+Source: <https://repo.msys2.org/msys/sources/gcc-15.3.0-1.src.tar.zst>.
+All upstream licenses remain in the extracted private prefix. Source/packages
+stay ephemeral within the job; uploads contain only logs/provenance, not binaries.
+
+Relocation is **not assumed to work**: before either expensive runtime build,
+require compiler version15.3.0, private CRT/libgcc paths, GCC15 C++ headers,
+and successful strict C/C++ compile/link/run smoke tests. Record search/header/
+link paths and signature results. Both builds must retain identical compiler
+package provenance and dialect hashes. System headers/binutils remain the
+same-run installed dependencies, so this is not full historical reproducibility.
+Native relocation and the actual source build still require CI verification.
