@@ -7,6 +7,18 @@ using namespace stormtty;
 int main() { return run_core_tests("commands", [] {
     std::set<std::string_view> ids;
     for (const auto& c : command_registry()) { CHECK(ids.insert(c.id).second); CHECK(!c.label.empty()); CHECK(find_command(c.id) == &c); }
+    CHECK(background_session_title({},R"(D:\a\stormtty\runtimes\zsh\usr\bin\zsh.exe)",{})=="Zsh");
+    CHECK(background_session_title({},R"("C:\Program Files\PowerShell\7\pwsh.exe")",{})=="PowerShell");
+    CHECK(background_session_title({},R"(C:\Windows\System32\cmd.exe)",{})=="Command Prompt");
+    CHECK(background_session_title({},"/usr/bin/zsh",{})=="Zsh");
+    CHECK(background_session_title("My build", "zsh.exe", "Zsh")=="My build");
+    CHECK(background_session_title("zsh.exe", "powershell.exe", {})=="zsh.exe");
+    CHECK(background_session_title({},"Build · café", "Zsh")=="Build · café");
+    CHECK(background_session_title({},"notes/zsh.exe",{})=="notes/zsh.exe");
+    CHECK(background_session_title({},"zsh.exe — build",{})=="zsh.exe — build");
+    CHECK(background_session_title({},"/tools/custom.exe",{})=="/tools/custom.exe");
+    CHECK(background_session_title({}, {}, "Development")=="Development");
+    CHECK(background_session_title({}, {}, {})=="Terminal");
     CHECK(search_commands("").size()==command_registry().size());
     CHECK(search_commands("  ")==search_commands(""));
     CHECK(search_commands("nwtb").front()->id=="tab.new");

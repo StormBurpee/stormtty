@@ -138,6 +138,34 @@ std::optional<int> command_search_score(std::string_view query, std::string_view
     if (secondary) return *secondary;
     return {};
 }
+std::string background_session_title(std::string_view user_title, std::string_view process_title, std::string_view profile_label) {
+    auto clean=[](std::string_view value) {
+        std::string result(value);
+        std::erase_if(result,[](unsigned char c){return c<0x20 || c==0x7f;});
+        return result;
+    };
+    if (!user_title.empty()) return clean(user_title);
+    auto title=clean(process_title);
+    auto executable=std::string_view(title);
+    if (executable.size()>1 && executable.front()=='"' && executable.back()=='"') {
+        executable.remove_prefix(1); executable.remove_suffix(1);
+    }
+    const auto separator=executable.find_last_of("/\\");
+    // A complete executable basename or absolute path, not arbitrary prose with
+    // a shell-looking suffix. Never interpret this presentation text as a path.
+    const bool raw=separator==std::string_view::npos || executable.starts_with("/") || executable.starts_with("\\") ||
+        (executable.size()>2 && executable[1]==':' && (executable[2]=='/' || executable[2]=='\\'));
+    if (raw) {
+        const auto name=uppercase(executable.substr(separator==std::string_view::npos?0:separator+1));
+        if (name=="ZSH" || name=="ZSH.EXE") return "Zsh";
+        if (name=="PWSH" || name=="PWSH.EXE" || name=="POWERSHELL" || name=="POWERSHELL.EXE") return "PowerShell";
+        if (name=="CMD" || name=="CMD.EXE") return "Command Prompt";
+        if (name=="BASH" || name=="BASH.EXE") return "Bash";
+    }
+    if (!title.empty()) return title;
+    title=clean(profile_label);
+    return title.empty()?"Terminal":title;
+}
 std::vector<const Command*> search_commands(std::string_view query) {
     std::vector<std::pair<const Command*,int>> ranked;
     for (const auto& command:commands) if (const auto score=command_search_score(query,command.label,command.description)) ranked.push_back({&command,*score});

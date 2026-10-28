@@ -345,9 +345,9 @@ private:
         std::optional<ProjectSessionReference> session;
         int score{};
     };
-    struct PaletteLayout { Rect panel; std::size_t first{}, rows{}; };
+    struct PaletteLayout { Rect panel; std::size_t first{}, rows{}; std::vector<Rect> row_bounds; };
     std::vector<PaletteEntry> palette_commands() const;
-    PaletteLayout palette_layout(std::size_t count) const;
+    PaletteLayout palette_layout(std::span<const PaletteEntry>) const;
     CommandAvailability palette_availability(const PaletteEntry&) const;
     void activate_palette_entry(const PaletteEntry&);
     void popup_menu(Point, bool pane_actions = false);
@@ -1000,12 +1000,13 @@ void NativeWindow::answer_modal(ModalDecision decision) {
     if (hwnd_) { changed(); caret_schedule(); }
 }
 std::string NativeWindow::background_title(const ParkedSession& parked, bool status) const {
-    std::string title=parked.title.empty()?parked.profile:parked.title;
+    std::string profile;
+    if (managed_shell_profile_ && managed_shell_profile_->id==parked.profile) profile=managed_shell_profile_->label;
+    else for (const auto& candidate:config_.profiles) if (candidate.id==parked.profile) { profile=candidate.label; break; }
+    std::string title=background_session_title(parked.user_title,parked.title,profile);
     if (auto found=sessions_.find(parked.session); found!=sessions_.end()) {
         const auto info=found->second->info();
-        if (!info.title.empty()) title=info.title;
-        title.erase(std::remove_if(title.begin(),title.end(),[](unsigned char c){return c<0x20 || c==0x7f;}),title.end());
-        if (title.empty()) title="Terminal";
+        title=background_session_title(parked.user_title,info.title.empty()?parked.title:info.title,profile);
         // Keep UTF-8 intact; DirectWrite clips bounded actor titles.
         if (!status) return title;
         if (const auto attention=parked_attention_.find(parked.session); attention!=parked_attention_.end() && attention->second.unread_completion()) title+=" · command finished";
@@ -1526,24 +1527,41 @@ std::vector<NativeWindow::PaletteEntry> NativeWindow::palette_commands() const {
     // Only the current workspace: restoration must never silently switch projects.
     // Titles are presentation/search data, never interpreted as commands or IDs.
     for (const auto& parked:projects_.active()->parked_sessions) {
-        const auto title="Restore · "+background_title(parked,false);
-        const auto context=projects_.active()->metadata.name+" · Background terminal · Same session";
+        const auto title=(palette_background_only_?"":"Restore · ")+background_title(parked,false);
+        auto context=projects_.active()->metadata.name;
+        if (const auto actor=sessions_.find(parked.session); actor!=sessions_.end()) {
+            auto cwd=actor->second->info().working_directory;
+            std::erase_if(cwd,[](unsigned char c){return c<0x20 || c==0x7f;});
+            if (!cwd.empty() && cwd!=context) context+=(context.empty()?"":" · ")+cwd;
+        }
         if (const auto score=command_search_score(query_,title,context))
             result.push_back({{},title,context,ProjectSessionReference{projects_.active_id(),parked.session},*score});
     }
     std::stable_sort(result.begin(),result.end(),[](const auto& a,const auto& b){return a.score>b.score;});
     return result;
 }
-NativeWindow::PaletteLayout NativeWindow::palette_layout(std::size_t count) const {
+NativeWindow::PaletteLayout NativeWindow::palette_layout(std::span<const PaletteEntry> entries) const {
     const double w=std::min(640.0,std::max(0.0,width_-32));
     const double preferred_y=std::min(72.0,std::max(16.0,height_*0.12));
-    const auto capacity=static_cast<std::size_t>(std::clamp((height_-preferred_y-130)/52,1.0,8.0));
-    const auto selected=count?std::min(palette_index_,count-1):0;
-    const auto first=selected>=capacity?selected-capacity+1:0;
-    const auto rows=rename_open_?0:std::min(capacity,count-first);
-    const double h=rename_open_?100.0:110.0+std::max<std::size_t>(1,rows)*52.0;
+    const double budget=std::max(48.0,height_-preferred_y-102);
+    const auto selected=entries.empty()?0:std::min(palette_index_,entries.size()-1);
+    auto height=[&](std::size_t i){return entries[i].session || !palette_availability(entries[i]).enabled?48.0:36.0;};
+    std::size_t first=selected;
+    double body=entries.empty()?0:height(selected);
+    while (first && selected-first<7 && body+height(first-1)<=budget) body+=height(--first);
+    std::vector<double> heights;
+    body=0;
+    if (!rename_open_) for (auto i=first;i<entries.size() && heights.size()<8;++i) {
+        const auto row_height=height(i);
+        if (!heights.empty() && body+row_height>budget) break;
+        heights.push_back(row_height); body+=row_height;
+    }
+    const double h=rename_open_?86:86+std::max(48.0,body);
     const double y=std::min(preferred_y,std::max(8.0,height_-h-8));
-    return {{(width_-w)/2,y,w,h},first,rows};
+    PaletteLayout result{{(width_-w)/2,y,w,h},first,heights.size(),{}};
+    double top=y+58;
+    for (const auto row_height:heights) { result.row_bounds.push_back({result.panel.x+8,top,w-16,row_height}); top+=row_height; }
+    return result;
 }
 CommandAvailability NativeWindow::palette_availability(const PaletteEntry& entry) const {
     if (!entry.session) return host_availability(entry.id,command_context());
@@ -1895,35 +1913,36 @@ WindowScene NativeWindow::scene() {
     const auto palette_primitive_start=result.primitives.size(), palette_text_start=result.texts.size();
     if (palette_open_ || rename_open_) {
         const auto commands=palette_commands();
-        const auto layout=palette_layout(commands.size());
+        const auto layout=palette_layout(commands);
         const auto [x,y,w,h]=layout.panel;
         rectangle(layout.panel,raised,10,seam,1);
-        label({x+20,y+12,w-80,16},rename_open_?"RENAME TAB":palette_background_only_?"BACKGROUND TERMINALS":"COMMANDS",secondary,10);
-        rectangle({x+w-49,y+12,30,19},background,4,seam,1);
-        label({x+w-44,y+14,24,15},"Esc",secondary,10);
-        label({x+20,y+35,w-40,24},query_.empty()?(rename_open_?"Tab name":palette_background_only_?"Search background terminals…":"Type a command…"):query_,query_.empty()?secondary:text,16);
-        line(x+1,y+70,x+w-1,y+70,seam);
+        rectangle({x+w-49,y+18,30,19},background,4,seam,1);
+        label({x+w-44,y+20,24,15},"Esc",secondary,10);
+        label({x+20,y+16,w-90,24},query_.empty()?(rename_open_?"Tab name":palette_background_only_?"Search background terminals…":"Type a command…"):query_,query_.empty()?secondary:text,16);
+        line(x+1,y+50,x+w-1,y+50,seam);
         for (std::size_t row=0;row<layout.rows;++row) {
             const auto index=layout.first+row; const auto& command=commands[index];
             const auto available=palette_availability(command);
-            const double top=y+78+row*52;
+            const auto bounds=layout.row_bounds[row];
+            const auto detail=!available.enabled?available.reason:command.session?std::string_view(command.description):std::string_view{};
+            const double top=bounds.y+(detail.empty()?7:3);
             if (index==std::min(palette_index_,commands.size()-1)) {
-                rectangle({x+8,top-3,w-16,48},background,5);
-                rectangle({x+8,top+6,3,27},accent,1);
+                rectangle({bounds.x,bounds.y,bounds.width,bounds.height-4},background,5);
+                rectangle({bounds.x,bounds.y+7,3,bounds.height-18},accent,1);
             }
             std::string shortcut;
             for (const auto& binding:config_.bindings) if (binding.command==command.id) { shortcut=format_key_chord(binding.chord,Platform::windows); break; }
             const double key_width=shortcut.empty()?0:std::min(w*0.45,shortcut.size()*6.3+16);
             label({x+20,top,w-40-key_width-(key_width?12:0),21},command.label,available.enabled?text:secondary,14);
-            label({x+20,top+23,w-40,17},std::string(available.enabled?std::string_view(command.description):available.reason),secondary,11);
+            if (!detail.empty()) label({x+20,top+21,w-40,17},std::string(detail),secondary,11);
             if (key_width) {
                 rectangle({x+w-20-key_width,top,key_width,21},raised,4,seam,1);
                 label({x+w-12-key_width,top+3,key_width-16,15},shortcut,secondary,10);
             }
         }
         if (!rename_open_ && commands.empty()) {
-            label({x+20,y+84,w-40,21},palette_background_only_ && query_.empty()?"No background terminals":"No matching commands",text,14);
-            label({x+20,y+108,w-40,18},query_.empty()?"Move a terminal to background to keep it running here.":"Try fewer letters or a different action name.",secondary,11);
+            label({x+20,y+60,w-40,21},palette_background_only_ && query_.empty()?"No background terminals":"No matching commands",text,14);
+            label({x+20,y+83,w-40,18},query_.empty()?"Move a terminal to background to keep it running here.":"Try fewer letters or a different action name.",secondary,11);
         }
         const auto hint=rename_open_?"Enter  Save":palette_background_only_?"↑ ↓  Navigate     Enter  Restore":"↑↓  Move     Enter  Run     Alt+Enter  Shortcut";
         line(x+1,y+h-29,x+w-1,y+h-29,seam);
@@ -2136,7 +2155,7 @@ bool NativeWindow::key_message(MSG& message) {
         if (!rename_open_ && (vk==VK_HOME || vk==VK_END || vk==VK_PRIOR || vk==VK_NEXT)) {
             const auto commands=palette_commands();
             if (!commands.empty()) {
-                const auto last=commands.size()-1, step=palette_layout(commands.size()).rows;
+                const auto last=commands.size()-1, step=palette_layout(commands).rows;
                 palette_index_=std::min(palette_index_,last);
                 if (vk==VK_HOME) palette_index_=0;
                 else if (vk==VK_END) palette_index_=last;
@@ -2376,12 +2395,15 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
     }
     notice_.clear();
     if (palette_open_ || rename_open_) {
-        const auto commands=palette_commands(); const auto layout=palette_layout(commands.size());
+        const auto commands=palette_commands(); const auto layout=palette_layout(commands);
         const auto& panel=layout.panel;
-        if (!rename_open_ && Rect{panel.x+8,panel.y+75,panel.width-16,layout.rows*52.0}.contains(point)) {
-            const auto index=layout.first+static_cast<std::size_t>((point.y-panel.y-75)/52);
-            if (index<commands.size()) { palette_index_=index; activate_palette_entry(commands[index]); }
-        } else if (!panel.contains(point)) { palette_open_=rename_open_=false; query_.clear(); }
+        if (!rename_open_) for (std::size_t row=0;row<layout.row_bounds.size();++row) {
+            if (layout.row_bounds[row].contains(point)) {
+                palette_index_=layout.first+row; activate_palette_entry(commands[palette_index_]);
+                changed(); return;
+            }
+        }
+        if (!panel.contains(point)) { palette_open_=rename_open_=false; query_.clear(); }
         changed(); return;
     }
     if (zoom_return_.contains(point)) { dispatch("pane.zoom"); return; }
@@ -3297,8 +3319,8 @@ void NativeWindow::position_ime() {
     if (!hwnd_ || !renderer_) return;
     POINT position{}; RECT exclusion{};
     if (palette_open_ || rename_open_) {
-        const auto panel=palette_layout(0).panel;
-        position={static_cast<LONG>((panel.x+20)*scale_),static_cast<LONG>((panel.y+35)*scale_)};
+        const auto panel=palette_layout({}).panel;
+        position={static_cast<LONG>((panel.x+20)*scale_),static_cast<LONG>((panel.y+16)*scale_)};
         exclusion={position.x,position.y,position.x+1,position.y+static_cast<LONG>(20*scale_)};
     } else for (const auto& pane:layout_.panes) if (pane.pane==workspace().active_pane()) {
         const auto content=content_bounds(pane); const auto metrics=renderer_->metrics();

@@ -3,13 +3,19 @@
 Open **Ctrl+Shift+P**. Search accepts ordered, non-contiguous letters (`nwtb`
 → New tab, `splr` → Split right). Word starts and consecutive letters rank
 higher; equal scores retain registry/session order. Empty search shows actions
-without injecting suggestions or history. Disabled actions explain why.
+without injecting suggestions or history. Action rows are single-line; secondary
+text is reserved for actionable disabled reasons and actual session context.
+The search field identifies the palette without a redundant heading.
 
 - Up/Down moves through results; Home/End and PageUp/PageDown navigate longer lists.
 - Enter runs the selected action; Escape dismisses without terminal input.
 - Alt+Enter still opens shortcut editing for application commands.
 - **Restore background terminal…** opens a session-only picker. Direct restore
   results also appear in ordinary search, with the workspace and terminal title.
+  Raw known-shell executable titles are shown as Zsh, PowerShell or Command
+  Prompt. Explicit user tab names and custom program titles are retained; real
+  observed CWD is shown when available, never inferred or invented. User tab
+  naming is preserved separately from the process title across backgrounding.
 - Restoration validates live workspace/session IDs and attaches the same actor
   in a new tab. It does not start a new shell. An empty foreground workspace can
   still restore its background terminals.

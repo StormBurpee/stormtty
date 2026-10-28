@@ -36,7 +36,8 @@ struct ProjectWorkspaceMetadata {
 struct ParkedSession {
     SessionId session;
     std::string profile;
-    std::string title;
+    std::string title; // Last process title, not a user-assigned tab name.
+    std::string user_title; // Preserve explicit tab naming separately from OSC titles.
     auto operator<=>(const ParkedSession&) const = default;
 };
 

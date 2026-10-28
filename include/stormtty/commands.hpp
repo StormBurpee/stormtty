@@ -39,6 +39,10 @@ struct Command {
 };
 struct CommandAvailability { bool enabled{}; std::string_view reason; };
 struct Binding { std::string command; KeyChord chord; auto operator<=>(const Binding&) const = default; };
+// Display-only background title: explicit user names win; only raw known shell
+// executable titles are shortened. Custom process titles remain unchanged.
+std::string background_session_title(std::string_view user_title, std::string_view process_title,
+                                     std::string_view profile_label);
 // Bounded Unicode-codepoint subsequence matching. ASCII case-insensitive; other
 // codepoints match exactly. Malformed UTF-8 and queries over 64 codepoints fail.
 // Candidate fields are bounded to 512 codepoints; no regex or locale dependency.
