@@ -101,3 +101,71 @@ python3 tools/probes/check_input_evidence_isolation.py /absolute/build-directory
 This checks both link dependency lists and the actual two executable artifacts.
 It does not execute either binary or claim native runtime coverage; optimized C++
 class names are deliberately not required as evidence markers.
+
+## Opt-in MSYS resize trace experiment (not qualification)
+
+`--resize-trace-directory ABSOLUTE_EMPTY_DIRECTORY` passes that private directory
+as `STORMTTY_MSYS_RESIZE_TRACE_DIR` to the child. Only the separately instrumented
+experimental runtime writes traces; original/control runs legitimately produce an
+empty snapshot. The comparison runner, not the probe, checks variant-specific
+trace availability. Never point this option at user files or a production runtime.
+
+Add `--resize-trace-idle` for a separate one-shot workload: observe the initial
+sequence-1 ZLE-initialized prompt, request one 111×35 resize, submit exactly one
+size command, require status zero and its fresh sequence-tagged 111×35 ACK. No
+successful-but-stale command is resubmitted. No preliminary native child, journal
+command, job-control exercise, forced signal, or diagnostic sleep is added. The
+prompt proves ZLE initialization, not that its thread is already blocked in read.
+This option cannot combine with `--resize-repeats`, even `1`.
+
+At the success/failure boundary the host copies runtime trace prefixes to
+`SCRATCH/resize-trace-phase-N` **before** any native helper, post-failure diagnostic,
+or teardown. Idle mode then closes its owned session without sending another
+shell command. It never claims full bundled-shell qualification. Without idle
+mode the existing repeated workload and assertions remain unchanged; snapshots
+precede each phase's native helper or failure diagnostics. Ordinary invocations
+without trace flags retain their existing behavior.
+
+Collection accepts only regular `resize-<decimal PID>.log` files (no symlinks),
+with at most 32 files, 2 MiB per file, and 16 MiB total per snapshot; unexpected
+entries, excess bounds, or copy failures fail closed and suppress further shell
+diagnostics. A snapshot is a live-file **prefix**, not an atomic freeze of all
+writers. Trace instrumentation and file copies perturb scheduling. Runtime trace
+records contain numeric metadata, not terminal content; the existing controlled
+fixture input journal is a separate artifact and must not be confused with it.
+
+### Paired native runner
+
+`tools/probes/msys-runtime-experiment/compare-trace.py` requires explicit
+`--workload idle` or `--workload repeated`, plus `--probe`, `--fixture`, `--original`,
+`--control`, `--instrumented`, `--provider`, and a **new** `--output` directory.
+`--rounds 1..5` defaults to 1. Each round uses a prespecified rotating variant
+order for both inbox and packaged ConPTY. Repeated means the existing 50-resize
+workload, not a retry of a failed idle case. No case is conditionally rerun.
+
+The runner keeps the existing owned-process 180-second timeout and checks staged
+DLLs, unchanged non-runtime bundle content, source/trace-patch provenance, exact
+compiler-mode bytes and shared build environment before launching any case. The
+failed retirement behavior patch is rejected. Each probe receives identical
+trace/workload flags; original/control must produce empty snapshots and the
+instrumented variant must produce numeric records. Exit status, timeout/reaping,
+trace errors, artifact hashes, and bounded snapshot summaries are retained in
+`results.json`. A failed original assertion stays failed even when trace evidence
+is useful. Timeout/missing/invalid/incomplete/capped trace evidence is never a pass.
+
+The 12-field trace schema is `seq winPID winTID caller event unit oldX oldY newX
+newY targetPOSIXPID targetPGID`. Event 11 at sequence 1 maps each emitting Windows
+PID to its positive POSIX PID and initial process group; the runner requires it
+for every nonempty trace and records per-event counts. Sequences are process-local, may be emitted out of
+order across threads, and **do not establish a global cross-process timeline**.
+The runner validates unique contiguous sequence prefixes, PID/file attribution,
+scalar bounds and event codes; it preserves but flags an incomplete trailing
+record. Per-process record-cap exhaustion is an evidence limitation. Use trace
+causality only where the available ordering supports it; do not infer it merely
+from file concatenation or from stale Zsh variables.
+
+Portable runner checks (no Windows runtime execution):
+
+```sh
+python3 tools/probes/msys-runtime-experiment/compare-trace-tests.py
+```

@@ -93,6 +93,35 @@ void dump_journal(const fs::path& path) {
     std::cout << "ZLE journal (controlled fixture; max128KiB; last successful flush, possibly before failure):\n" << bytes
               << "\nEnd ZLE journal\n";
 }
+// Copy only the experiment's bounded numeric trace files, never arbitrary files.
+// A live writer may append after this boundary: snapshots are evidence prefixes,
+// not an atomic global stop. No shell command or console query is used here.
+void collect_resize_trace(const fs::path& source, const fs::path& destination) {
+    require(fs::create_directory(destination), "trace snapshot directory already exists");
+    std::size_t count=0, total=0;
+    for (const auto& entry : fs::directory_iterator(source)) {
+        const auto name=entry.path().filename().string();
+        require(name.starts_with("resize-") && name.ends_with(".log") && name.size()>11 &&
+                name.substr(7,name.size()-11).find_first_not_of("0123456789")==std::string::npos,
+                "unexpected file in resize trace directory");
+        require(fs::is_regular_file(entry.symlink_status()), "trace entry must be a regular file, not a link");
+        const auto size=entry.file_size();
+        require(++count<=32 && size<=2*1024*1024 && total+size<=16*1024*1024,
+                "resize trace snapshot budget exceeded");
+        total+=static_cast<std::size_t>(size);
+        std::ifstream input(entry.path(),std::ios::binary);
+        require(bool(input), "trace file could not be opened");
+        std::string bytes(static_cast<std::size_t>(size),'\0');
+        input.read(bytes.data(),static_cast<std::streamsize>(bytes.size()));
+        require(input.gcount()==static_cast<std::streamsize>(bytes.size()), "trace file changed or could not be read");
+        std::ofstream output(destination/entry.path().filename(),std::ios::binary);
+        output.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        require(bool(output), "trace snapshot write failed");
+    }
+    std::cout << "RESIZE_TRACE_COLLECTED files=" << count << " bytes=" << total
+              << " directory=" << utf8(destination) << " prefix_only=1\n";
+}
 // Snapshot controller completion separately from shell/native observations.
 // A successful native resize API call does not establish Zsh observation.
 void dump_process_diagnostics(const std::shared_ptr<Session>& session, std::string_view label) {
@@ -184,17 +213,58 @@ int main(int argc, char** argv) {
         return native_size(argc==3?std::string_view(argv[2]):std::string_view{});
     if (argc == 2 && std::string_view(argv[1]) == "--native-handles") return native_handles();
     unsigned resize_repeats=1;
-    if (argc >= 3 && std::string_view(argv[argc-2]) == "--resize-repeats") {
-        const std::string count=argv[argc-1];
-        if (count.empty() || count.size()>2 || count.find_first_not_of("0123456789")!=std::string::npos ||
-            (resize_repeats=static_cast<unsigned>(std::strtoul(count.c_str(),nullptr,10)))<1 || resize_repeats>50) {
-            std::cerr << "--resize-repeats must be 1..50\n"; return 2;
-        }
-        argc-=2;
+    bool repeats_set=false, trace_idle=false;
+    fs::path trace_directory;
+    // Experiment options follow positional/provider arguments, in either order.
+    while (argc>1) {
+        const std::string_view last=argv[argc-1];
+        if (last=="--resize-trace-idle") {
+            if (trace_idle) { std::cerr << "duplicate --resize-trace-idle\n"; return 2; }
+            trace_idle=true; --argc;
+        } else if (argc>=3 && std::string_view(argv[argc-2])=="--resize-trace-directory") {
+            if (!trace_directory.empty() || last.empty()) { std::cerr << "invalid trace directory option\n"; return 2; }
+            trace_directory=path_utf8(last); argc-=2;
+        } else if (argc>=3 && std::string_view(argv[argc-2])=="--resize-repeats") {
+            const std::string count(last);
+            if (repeats_set || count.empty() || count.size()>2 || count.find_first_not_of("0123456789")!=std::string::npos ||
+                (resize_repeats=static_cast<unsigned>(std::strtoul(count.c_str(),nullptr,10)))<1 || resize_repeats>50) {
+                std::cerr << "--resize-repeats must occur once and be 1..50\n"; return 2;
+            }
+            repeats_set=true; argc-=2;
+        } else break;
     }
-    if (argc < 4 || argc > 6) {
-        std::cerr << "usage: bundled_shell_probe SHELL_ABSOLUTE FIXTURE_ABSOLUTE SCRATCH_DIR [inbox | --packaged-provider ABSOLUTE_DIRECTORY] [--resize-repeats 1..50]\n";
+    if (argc < 4 || argc > 6 || (argc==5 && std::string_view(argv[4])!="inbox") ||
+        (argc==6 && std::string_view(argv[4])!="--packaged-provider") || (trace_idle && (trace_directory.empty() || repeats_set))) {
+        std::cerr << "usage: bundled_shell_probe SHELL_ABSOLUTE FIXTURE_ABSOLUTE SCRATCH_DIR [inbox | --packaged-provider ABSOLUTE_DIRECTORY] [--resize-repeats 1..50] [--resize-trace-directory ABSOLUTE_EMPTY_DIRECTORY] [--resize-trace-idle]\n";
         return 2;
+    }
+    if (!trace_directory.empty()) {
+        std::error_code error;
+        const bool directory=fs::is_directory(trace_directory,error);
+        const bool empty=directory && !error && fs::is_empty(trace_directory,error);
+        if (!trace_directory.is_absolute() || error || !empty) {
+            std::cerr << "trace directory must be absolute, existing and empty\n"; return 2;
+        }
+#ifdef _WIN32
+        trace_directory.make_preferred();
+        const auto native=trace_directory.native();
+        if (native.size()<3 || native.size()>=180 || native[1]!=L':' || native[2]!=L'\\' ||
+            !((native[0]>=L'A' && native[0]<=L'Z') || (native[0]>=L'a' && native[0]<=L'z')) ||
+            trace_directory.lexically_normal()!=trace_directory) {
+            std::cerr << "trace directory must be a normalized local drive path shorter than 180 characters\n"; return 2;
+        }
+        for (auto ancestor=trace_directory; !ancestor.empty();) {
+            const auto attributes=GetFileAttributesW(ancestor.c_str());
+            const auto component=ancestor.filename().native();
+            if (attributes==INVALID_FILE_ATTRIBUTES || (attributes&FILE_ATTRIBUTE_REPARSE_POINT) ||
+                (!component.empty() && (component.back()==L'.' || component.back()==L' '))) {
+                std::cerr << "trace directory must not contain reparse points or ambiguous components\n"; return 2;
+            }
+            const auto parent=ancestor.parent_path();
+            if (parent==ancestor) break;
+            ancestor=parent;
+        }
+#endif
     }
     std::cout << std::unitbuf;
     std::shared_ptr<Session> session;
@@ -254,6 +324,12 @@ int main(int argc, char** argv) {
             {"PATH", path}, {"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"},
             {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"},
             {"MSYSTEM", "MSYS"}, {"MSYS", std::nullopt}, {"ENV", std::nullopt}, {"BASH_ENV", std::nullopt}};
+        if (!trace_directory.empty()) {
+            // Runtime trace validates a native drive path, not MSYS/generic slashes.
+            const auto native=trace_directory.u8string();
+            p.environment.push_back({"STORMTTY_MSYS_RESIZE_TRACE_DIR",
+                std::string(reinterpret_cast<const char*>(native.data()),native.size())});
+        } else p.environment.push_back({"STORMTTY_MSYS_RESIZE_TRACE_DIR",std::nullopt});
         TerminalOptions terminal; terminal.size = {100, 30, 8, 16};
         const auto started = std::chrono::steady_clock::now();
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
@@ -270,19 +346,29 @@ int main(int argc, char** argv) {
             std::chrono::steady_clock::now() - started).count() << '\n';
         require(screen(session).find("GLOBAL_DOTFILE_WAS_READ") == std::string::npos,
                 "managed profile sourced HOME/.zshrc");
-        prompt.send("stormtty_probe_tty"); expect(session, "__STORMTTY_TTY_OK__");
-        prompt.send("stormtty_probe_native"); expect(session, "__STORMTTY_NATIVE_TTY_OK__");
-        prompt.send("stormtty_probe_unicode 'caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83'");
-        expect(session, "__STORMTTY_UNICODE:caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83__");
-        prompt.send("stormtty_probe_cwd");
-        expect(session, "workspace caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84__");
-        require(until([&] { return session->info().working_directory.find("workspace") != std::string::npos; }),
-                "OSC 7 did not reach Session cwd metadata");
+        if (!trace_idle) {
+            prompt.send("stormtty_probe_tty"); expect(session, "__STORMTTY_TTY_OK__");
+            prompt.send("stormtty_probe_native"); expect(session, "__STORMTTY_NATIVE_TTY_OK__");
+            prompt.send("stormtty_probe_unicode 'caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83'");
+            expect(session, "__STORMTTY_UNICODE:caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83__");
+            prompt.send("stormtty_probe_cwd");
+            expect(session, "workspace caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84__");
+            require(until([&] { return session->info().working_directory.find("workspace") != std::string::npos; }),
+                    "OSC 7 did not reach Session cwd metadata");
+        }
         for (unsigned phase=0; phase<resize_repeats; ++phase) {
             const bool enlarged=phase%2==0;
             const std::string dimensions=enlarged?"111x35":"100x30";
             std::cout << "[resize phase " << phase+1 << '/' << resize_repeats << "] target=" << dimensions << '\n';
-            prompt.send("stormtty_probe_journal_reset"); prompt.ready(0);
+            if (!trace_idle) { prompt.send("stormtty_probe_journal_reset"); prompt.ready(0); }
+            else std::cout << "RESIZE_TRACE_IDLE prompt_sequence=" << prompt.sequence << " zle_initialized=1\n";
+            bool trace_collected=false, trace_attempted=false;
+            auto collect = [&] {
+                if (trace_directory.empty() || trace_collected) return;
+                trace_attempted=true;
+                collect_resize_trace(trace_directory,scratch/("resize-trace-phase-"+std::to_string(phase+1)));
+                trace_collected=true;
+            };
             auto flush = [&] {
                 prompt.send("stormtty_probe_journal_flush");
                 prompt.ready(0);
@@ -290,16 +376,28 @@ int main(int argc, char** argv) {
             try {
                 require(session->request_resize(enlarged?TerminalSize{111,35,8,16}:TerminalSize{100,30,8,16})
                         == SessionSendResult::accepted, "resize request rejected");
-                const bool shell_resized = until([&] {
+                auto observe_size = [&] {
                     const auto sequence=prompt.sequence;
                     prompt.send("stormtty_probe_size");
                     prompt.ready(0); // Any lost/altered command fails immediately, never retried.
                     const auto frame=screen(session);
                     return frame.find("__STORMTTY_SIZE:"+dimensions+"__") != std::string::npos &&
                         frame.find("__STORMTTY_SIZE_ACK:"+std::to_string(sequence)+":"+dimensions+"__") != std::string::npos;
-                });
+                };
+                const bool shell_resized = trace_idle ? observe_size() : until(observe_size);
+                collect(); // Before native helper, diagnostic commands, or teardown.
                 std::cout << "shell_resize_observed=" << shell_resized << '\n';
                 require(shell_resized, "shell did not observe terminal resize");
+                if (trace_idle) {
+                    dump_process_diagnostics(session,"trace-idle-complete");
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                    dump_input("trace-idle-complete");
+#endif
+                    session->request_close();
+                    require(session->wait_closed(10s), "trace experiment cleanup did not close Session");
+                    std::cout << "PASS isolated idle-resize observation; NOT full bundled-shell qualification\n";
+                    return 0;
+                }
                 // Independent native dimensions never substitute for shell evidence.
                 const auto native_sequence=prompt.sequence;
                 prompt.send("stormtty_probe_native_size"); prompt.ready(0);
@@ -319,6 +417,18 @@ int main(int argc, char** argv) {
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
                 dump_input("original-resize-failure-before-diagnostics");
 #endif
+                try {
+                    if (!trace_attempted) collect();
+                    else if (!trace_collected) throw; // Preserve original collection failure; never retry.
+                }
+                catch (const std::exception& error) {
+                    std::cerr << "Resize trace collection failed: " << error.what() << '\n';
+                    throw; // Do not run contaminating diagnostics without evidence.
+                }
+                if (trace_idle) {
+                    std::cerr << "Trace idle experiment: post-failure shell diagnostics suppressed\n";
+                    throw;
+                }
                 // Diagnostics only after the original failure. Neither a
                 // successful flush nor new observations can change that result.
                 try {

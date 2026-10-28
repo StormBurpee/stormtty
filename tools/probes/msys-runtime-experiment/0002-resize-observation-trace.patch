@@ -1,0 +1,394 @@
+--- a/winsup/cygwin/fhandler/console.cc
++++ b/winsup/cygwin/fhandler/console.cc
+@@ -37,6 +37,123 @@
+ 
+ /* Don't make this bigger than NT_MAX_PATH as long as the temporary buffer
+    is allocated using tmp_pathbuf!!! */
++
++/* Private diagnostic build only. No handle/cache survives fork or exec.
++   Synchronous native append may perturb scheduling: this is NOT qualification.
++   Codes: 1 fillin change, 2 master resize event, 3 reader resize event,
++   4 resize compare, 5 group signal request, 6 selected target,
++   7 excluded native target, 8 signal send attempt, 9 reserved,
++   10 same-tty target excluded for different foreground group,
++   11 Windows/POSIX process identity (first record, POSIX pid/pgid in targets).
++   caller is original-source line number; unknown unit is -1. */
++void
++stormtty_resize_trace (int caller, int event, int unit,
++                      int ox, int oy, int nx, int ny,
++                      int target_pid, int target_pgid)
++{
++#if defined(STORMTTY_MSYS_RESIZE_TRACE) && STORMTTY_MSYS_RESIZE_TRACE == 1
++  DWORD saved_error = GetLastError ();
++  int saved_errno = errno;
++  WCHAR directory[200];
++  DWORD n = GetEnvironmentVariableW (L"STORMTTY_MSYS_RESIZE_TRACE_DIR",
++                                     directory, 200);
++  /* Require an explicit existing drive-absolute local destination. No mkdir,
++     UNC/device path, inherited descriptor, terminal write, or implicit fallback. */
++  if (n < 3 || n >= 180 || directory[1] != L':'
++      || directory[2] != L'\\'
++      || !((directory[0] >= L'A' && directory[0] <= L'Z')
++           || (directory[0] >= L'a' && directory[0] <= L'z')))
++    goto restore;
++  {
++    WCHAR drive[4] = {directory[0], L':', L'\\', 0};
++    if (GetDriveTypeW (drive) != DRIVE_FIXED)
++      goto restore;
++    /* Reject ambiguous components and every existing reparse ancestor. */
++    for (DWORD i = 3; i <= n; ++i)
++      {
++        if (directory[i] == L'/' || directory[i] == L':')
++          goto restore;
++        if (directory[i] == L'\\' || directory[i] == 0)
++          {
++            if (directory[i - 1] == L'.' || directory[i - 1] == L' '
++                || directory[i - 1] == L'\\')
++              goto restore;
++            WCHAR saved = directory[i];
++            directory[i] = 0;
++            DWORD attr = GetFileAttributesW (directory);
++            directory[i] = saved;
++            if (attr == INVALID_FILE_ATTRIBUTES
++                || !(attr & FILE_ATTRIBUTE_DIRECTORY)
++                || (attr & FILE_ATTRIBUTE_REPARSE_POINT))
++              goto restore;
++          }
++      }
++    DWORD attributes = GetFileAttributesW (directory);
++    if (attributes == INVALID_FILE_ATTRIBUTES
++        || !(attributes & FILE_ATTRIBUTE_DIRECTORY)
++        || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
++      goto restore;
++    if (!myself)
++      goto restore;
++    static LONG NO_COPY count;
++    /* Saturating per-process budget; copied DLL used only in disposable bundle. */
++    LONG seq;
++    do
++      {
++        seq = InterlockedCompareExchange (&count, 0, 0);
++        if (seq >= 8192)
++          goto restore;
++      }
++    while (InterlockedCompareExchange (&count, seq + (seq == 0 ? 2 : 1), seq) != seq);
++    WCHAR path[240];
++    __small_swprintf (path, L"%W\\resize-%u.log", directory,
++                     GetCurrentProcessId ());
++    HANDLE file = CreateFileW (path, FILE_APPEND_DATA,
++                              FILE_SHARE_READ | FILE_SHARE_WRITE,
++                              NULL, OPEN_ALWAYS,
++                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
++                              NULL);
++    if (file != INVALID_HANDLE_VALUE)
++      {
++        BY_HANDLE_FILE_INFORMATION info;
++        if (!GetFileInformationByHandle (file, &info)
++            || info.nNumberOfLinks != 1
++            || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT
++                                         | FILE_ATTRIBUTE_DIRECTORY)))
++          {
++            CloseHandle (file);
++            goto restore;
++          }
++        char record[512];
++        int len = 0;
++        if (seq == 0)
++          {
++            len = __small_sprintf (record,
++              "1 %u %u 0 11 -1 0 0 0 0 %d %d\n",
++              GetCurrentProcessId (), GetCurrentThreadId (),
++              myself->pid, myself->pgid);
++            ++seq;
++          }
++        len += __small_sprintf (record + len,
++          "%d %u %u %d %d %d %d %d %d %d %d %d\n",
++          (int) seq + 1, GetCurrentProcessId (), GetCurrentThreadId (),
++          caller, event, unit, ox, oy, nx, ny, target_pid, target_pgid);
++        DWORD written;
++        if (len > 0 && len < (int) sizeof record)
++          WriteFile (file, record, len, &written, NULL);
++        CloseHandle (file);
++      }
++  }
++restore:
++  errno = saved_errno;
++  SetLastError (saved_error);
++#else
++  (void) caller; (void) event; (void) unit;
++  (void) ox; (void) oy; (void) nx; (void) ny;
++  (void) target_pid; (void) target_pgid;
++#endif
++}
++
+ #define CONVERT_LIMIT NT_MAX_PATH
+ 
+ #define ALT_PRESSED (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)
+@@ -512,7 +629,9 @@
+ 	{
+ 	  SHORT y = con.dwWinSize.Y;
+ 	  SHORT x = con.dwWinSize.X;
+-	  con.fillin (p->output_handle);
++	  con.fillin (p->output_handle, 515, unit);
++	  stormtty_resize_trace (516, 4, unit, x, y, con.dwWinSize.X,
++                                con.dwWinSize.Y, 0, ttyp->pgid);
+ 	  if (y != con.dwWinSize.Y || x != con.dwWinSize.X)
+ 	    {
+ 	      con.scroll_region.Top = 0;
+@@ -551,10 +670,15 @@
+ 	      processed = process_stop_start (c, ttyp);
+ 	      break;
+ 	    case WINDOW_BUFFER_SIZE_EVENT:
++      stormtty_resize_trace (553, 2, unit, con.dwWinSize.X, con.dwWinSize.Y,
++                            input_rec[i].Event.WindowBufferSizeEvent.dwSize.X,
++                            input_rec[i].Event.WindowBufferSizeEvent.dwSize.Y, 0, ttyp->pgid);
+ 	      SHORT y = con.dwWinSize.Y;
+ 	      SHORT x = con.dwWinSize.X;
+-	      con.fillin (p->output_handle);
+-	      if (y != con.dwWinSize.Y || x != con.dwWinSize.X)
++	      con.fillin (p->output_handle, 556, unit);
++	      stormtty_resize_trace (557, 4, unit, x, y, con.dwWinSize.X,
++                            con.dwWinSize.Y, 0, ttyp->pgid);
++      if (y != con.dwWinSize.Y || x != con.dwWinSize.X)
+ 		{
+ 		  con.scroll_region.Top = 0;
+ 		  con.scroll_region.Bottom = -1;
+@@ -1188,7 +1312,7 @@
+ void
+ fhandler_console::set_cursor_maybe ()
+ {
+-  con.fillin (get_output_handle ());
++  con.fillin (get_output_handle (), 1191, unit);
+   /* Nothing to do for xterm compatible mode. */
+   if (wincap.has_con_24bit_colors () && !con_is_legacy)
+     return;
+@@ -1226,8 +1350,10 @@
+ {
+   SHORT y = con.dwWinSize.Y;
+   SHORT x = con.dwWinSize.X;
+-  con.fillin (get_output_handle ());
+-
++  con.fillin (get_output_handle (), 1229, unit);
++
++  stormtty_resize_trace (1231, 4, unit, x, y, con.dwWinSize.X,
++                        con.dwWinSize.Y, 0, get_ttyp ()->pgid);
+   if (y != con.dwWinSize.Y || x != con.dwWinSize.X)
+     {
+       con.scroll_region.Top = 0;
+@@ -1832,6 +1958,10 @@
+ 	  break;
+ 
+ 	case WINDOW_BUFFER_SIZE_EVENT:
++          stormtty_resize_trace (1834, 3, unit, con.dwWinSize.X, con.dwWinSize.Y,
++                                input_rec[i].Event.WindowBufferSizeEvent.dwSize.X,
++                                input_rec[i].Event.WindowBufferSizeEvent.dwSize.Y,
++                                0, get_ttyp ()->pgid);
+ 	  if (send_winch_maybe ())
+ 	    {
+ 	      stat = input_winch;
+@@ -1903,8 +2033,9 @@
+ }
+ 
+ bool
+-dev_console::fillin (HANDLE h)
+-{
++dev_console::fillin (HANDLE h, int caller, int trace_unit)
++{
++  SHORT trace_x = dwWinSize.X, trace_y = dwWinSize.Y;
+   acquire_attach_mutex (mutex_timeout);
+   DWORD resume_pid = fhandler_console::attach_console (owner);
+   bool ret = GetConsoleScreenBufferInfo (h, &b);
+@@ -1929,6 +2060,9 @@
+       b.srWindow.Right = 79;
+     }
+ 
++  if (trace_x != dwWinSize.X || trace_y != dwWinSize.Y)
++    stormtty_resize_trace (caller, 1, trace_unit, trace_x, trace_y,
++                          dwWinSize.X, dwWinSize.Y, 0, 0);
+   return ret;
+ }
+ 
+@@ -1948,7 +2082,7 @@
+   fill.Char.UnicodeChar = L' ';
+   fill.Attributes = current_win32_attr;
+ 
+-  fillin (h);
++  fillin (h, 1951, -1);
+   sr1.Left = x1 >= 0 ? x1 : dwWinSize.X - 1;
+   sr1.Top = y1 >= 0 ? y1 : b.srWindow.Bottom;
+   sr1.Right = x2 >= 0 ? x2 : dwWinSize.X - 1;
+@@ -2080,7 +2214,7 @@
+ 
+   handle_set.unit = unit;
+ 
+-  if (con.fillin (get_output_handle ()))
++  if (con.fillin (get_output_handle (), 2083, unit))
+     {
+       con.current_win32_attr = con.b.wAttributes;
+       if (!con.default_color)
+@@ -2356,7 +2490,7 @@
+       case TIOCGWINSZ:
+ 	int st;
+ 
+-	st = con.fillin (get_output_handle ());
++	st = con.fillin (get_output_handle (), 2359, unit);
+ 	if (st)
+ 	  {
+ 	    /* *not* the buffer size, the actual screen size... */
+@@ -2685,7 +2819,7 @@
+   fhandler_console::detach_console (resume_pid, owner);
+   release_attach_mutex ();
+   /* Fix up console buffer info. */
+-  fillin (h);
++  fillin (h, 2688, -1);
+   return true;
+ }
+ 
+@@ -2699,7 +2833,7 @@
+   HANDLE h = get_output_handle ();
+   SHORT oldEndY = con.dwEnd.Y;
+ 
+-  con.fillin (h);
++  con.fillin (h, 2702, unit);
+ 
+   int x1 = con.set_cl_x (xc1);
+   int y1 = con.set_cl_y (yc1);
+@@ -2753,7 +2887,7 @@
+ {
+   COORD pos;
+ 
+-  con.fillin (get_output_handle ());
++  con.fillin (get_output_handle (), 2756, unit);
+ #if 0
+   /* Setting y to the current b.srWindow.Bottom here is the reason that the window
+      isn't scrolled back to the current cursor position like it's done in
+@@ -2788,7 +2922,7 @@
+ void
+ fhandler_console::cursor_rel (int x, int y)
+ {
+-  con.fillin (get_output_handle ());
++  con.fillin (get_output_handle (), 2791, unit);
+   x += con.b.dwCursorPosition.X;
+   y += con.b.dwCursorPosition.Y;
+   cursor_set (false, x, y);
+@@ -2797,7 +2931,7 @@
+ void
+ fhandler_console::cursor_get (int *x, int *y)
+ {
+-  con.fillin (get_output_handle ());
++  con.fillin (get_output_handle (), 2800, unit);
+   *y = con.b.dwCursorPosition.Y;
+   *x = con.b.dwCursorPosition.X;
+ }
+@@ -2929,7 +3063,7 @@
+ {
+   if (c == 'h') /* save */
+     {
+-      fillin (h);
++      fillin (h, 2932, -1);
+       save_bufsize.X = b.dwSize.X;
+       if ((save_bufsize.Y = dwEnd.Y + 1) > b.dwSize.Y)
+ 	save_bufsize.X = b.dwSize.Y;
+@@ -2999,7 +3133,7 @@
+       release_attach_mutex ();
+       /* Get back correct version of buffer information */
+       dwEnd.X = dwEnd.Y = 0;
+-      fillin (h);
++      fillin (h, 3002, -1);
+     }
+ }
+ 
+@@ -3229,7 +3363,7 @@
+ 	  wpbuf_put (c);
+ 	  if (con.args[0] == 3 && con.savey >= 0)
+ 	    {
+-	      con.fillin (get_output_handle ());
++	      con.fillin (get_output_handle (), 3232, unit);
+ 	      con.savey -= con.b.srWindow.Top;
+ 	    }
+ 	  if (con.args[0] == 3 && wincap.has_con_broken_csi3j ())
+@@ -3688,7 +3822,7 @@
+       scroll_buffer_screen (0, n, -1, -1, 0, 0);
+       break;
+     case 'T':				/* SR - Scroll down */
+-      con.fillin (get_output_handle ());
++      con.fillin (get_output_handle (), 3691, unit);
+       n = con.b.srWindow.Top + con.args[0] ?: 1;
+       scroll_buffer_screen (0, 0, -1, -1, 0, n);
+       break;
+@@ -4269,7 +4403,7 @@
+ 	    }
+ 	  else if (*src == 'M')		/* Reverse Index (scroll down) */
+ 	    {
+-	      con.fillin (get_output_handle ());
++	      con.fillin (get_output_handle (), 4272, unit);
+ 	      scroll_buffer_screen (0, 0, -1, -1, 0, 1);
+ 	      con.state = normal;
+ 	      wpbuf.empty();
+--- a/winsup/cygwin/fhandler/termios.cc
++++ b/winsup/cygwin/fhandler/termios.cc
+@@ -134,6 +134,8 @@
+ tty_min::kill_pgrp (int sig, pid_t target_pgid)
+ {
+   target_pgid = target_pgid ?: pgid;
++  if (sig == SIGWINCH)
++    stormtty_resize_trace (136, 5, -1, 0, 0, 0, 0, 0, target_pgid);
+   bool killself = false;
+   if (is_flush_sig (sig) && cygheap->ctty)
+     cygheap->ctty->sigflush ();
+@@ -147,18 +149,32 @@
+   for (unsigned i = 0; i < pids.npids; i++)
+     {
+       _pinfo *p = pids[i];
++      if (sig == SIGWINCH && p && p->exists () && p->ctty == ntty
++          && p->pgid != target_pgid)
++        stormtty_resize_trace (151, 10, -1, 0, 0, 0, 0, p->pid, p->pgid);
+       if (!p || !p->exists () || p->ctty != ntty || p->pgid != target_pgid)
+ 	continue;
++      if (sig == SIGWINCH)
++        stormtty_resize_trace (155, (p->process_state & PID_NOTCYGWIN) ? 7 : 6,
++                              -1, 0, 0, 0, 0, p->pid, target_pgid);
+       if (p->process_state & PID_NOTCYGWIN)
+ 	continue; /* Do not send signal to non-cygwin process to prevent
+ 		     cmd.exe from crash. */
+       if (p == myself)
+ 	killself = sig != __SIGSETPGRP && !exit_state;
+       else
+-	sig_send (p, si);
++        {
++          if (sig == SIGWINCH)
++            stormtty_resize_trace (163, 8, -1, 0, 0, 0, 0, p->pid, target_pgid);
++          sig_send (p, si);
++        }
+     }
+   if (killself)
+-    sig_send (myself, si);
++    {
++      if (sig == SIGWINCH)
++        stormtty_resize_trace (166, 8, -1, 0, 0, 0, 0, myself->pid, target_pgid);
++      sig_send (myself, si);
++    }
+ }
+ 
+ int
+--- a/winsup/cygwin/local_includes/fhandler.h
++++ b/winsup/cygwin/local_includes/fhandler.h
+@@ -2169,7 +2169,7 @@
+   void set_default_attr ();
+   int set_cl_x (cltype);
+   int set_cl_y (cltype);
+-  bool fillin (HANDLE);
++  bool fillin (HANDLE, int caller = 0, int trace_unit = -1);
+   bool scroll_window (HANDLE, int, int, int, int);
+   void scroll_buffer (HANDLE, int, int, int, int, int, int);
+   void clear_screen (HANDLE, int, int, int, int);
+@@ -3545,3 +3545,9 @@
+   char __virtual[sizeof (fhandler_virtual)];
+   char __windows[sizeof (fhandler_windows)];
+ } fhandler_union;
++
++
++/* Private opt-in qualification trace; never captures terminal payload. */
++void stormtty_resize_trace (int caller, int event, int unit,
++                           int ox, int oy, int nx, int ny,
++                           int target_pid, int target_pgid);

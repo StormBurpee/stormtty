@@ -14,11 +14,11 @@ output.mkdir()  # Never overwrite evidence or user files.
 fixture = pathlib.Path(__file__).with_name('bundled_shell_fixture.zsh').read_text()
 
 
-def run(name, text, expected, repeats='6'):
+def run(name, text, expected, repeats='6', options=None):
     source = output / (name + '.zsh')
     source.write_text(text)
     result = subprocess.run([str(probe), str(shell), str(source), str(output / name),
-                             '--resize-repeats', repeats], capture_output=True, text=True, timeout=90)
+                             *(options if options is not None else ['--resize-repeats', repeats])], capture_output=True, text=True, timeout=90)
     log = result.stdout + result.stderr
     (output / (name + '.log')).write_text(log)
     assert result.returncode == expected, (name, result.returncode, log[-2000:])
@@ -45,6 +45,52 @@ assert '[resize phase 1] PASS' not in stale
 for invalid in ['0', '51', '-1', 'abc', '100']:
     result = subprocess.run([str(probe), '--resize-repeats', invalid], capture_output=True, timeout=5)
     assert result.returncode == 2, invalid
+# Isolated trace workload: one initial ZLE cycle, one resize, one command.
+# Synthetic numeric files test host collection, not MSYS signal instrumentation.
+def trace_options(name):
+    directory = output / (name + '-runtime-trace')
+    directory.mkdir()
+    return ['--resize-trace-directory', str(directory), '--resize-trace-idle']
+
+trace_fixture = fixture + '''
+print -r -- '1 2 3 4' > "$STORMTTY_MSYS_RESIZE_TRACE_DIR/resize-123.log"
+'''
+idle = run('trace-idle', trace_fixture, 0, options=trace_options('trace-idle'))
+assert 'RESIZE_TRACE_IDLE prompt_sequence=1 zle_initialized=1' in idle
+assert idle.count('text=stormtty_probe_size\n') == 1
+assert 'text=stormtty_probe_native' not in idle
+assert 'text=stormtty_probe_journal_' not in idle
+assert 'NOT full bundled-shell qualification' in idle
+assert (output / 'trace-idle/resize-trace-phase-1/resize-123.log').read_text() == '1 2 3 4\n'
+for name, mutation in [('trace-command-failed', '\nstormtty_probe_size() { return 19 }\n'),
+                       ('trace-stale', '\nstormtty_probe_size() { stormtty_probe_emit SIZE:100x30; stormtty_probe_emit SIZE_ACK:0:100x30 }\n')]:
+    log = run(name, trace_fixture + mutation, 1, options=trace_options(name))
+    assert log.count('text=stormtty_probe_size\n') == 1
+    assert 'RESIZE_TRACE_COLLECTED files=1' in log
+    assert 'text=stormtty_probe_resize_diagnostic' not in log
+    assert 'text=stormtty_probe_native' not in log
+    assert 'post-failure shell diagnostics suppressed' in log
+repeat_options = trace_options('trace-repeated')[:-1] + ['--resize-repeats', '2']
+repeated = run('trace-repeated', trace_fixture, 0, options=repeat_options)
+assert repeated.count('RESIZE_TRACE_COLLECTED files=1') == 2
+assert repeated.index('RESIZE_TRACE_COLLECTED') < repeated.index('text=stormtty_probe_native_size')
+assert '[resize phase 2] PASS' in repeated
+assert (output / 'trace-repeated/resize-trace-phase-2/resize-123.log').exists()
+empty = run('trace-control', fixture, 0, options=trace_options('trace-control'))
+assert 'RESIZE_TRACE_COLLECTED files=0 bytes=0' in empty
+bad = run('trace-unexpected-file', fixture + '''
+print bad > "$STORMTTY_MSYS_RESIZE_TRACE_DIR/not-a-trace"
+''', 1, options=trace_options('trace-unexpected-file'))
+assert 'unexpected file' in bad
+assert 'text=stormtty_probe_resize_diagnostic' not in bad
+for options in [['--resize-trace-idle'], ['--resize-trace-directory'], ['--unknown-option'], ['--resize-trace-idle', '--resize-repeats', '2'],
+                ['--resize-trace-directory', 'relative'],
+                ['--resize-trace-directory', str(output)],
+                ['--resize-repeats', '1', '--resize-repeats', '2']]:
+    result = subprocess.run([str(probe), str(shell), str(output / 'positive.zsh'), str(output / 'invalid'), *options],
+                            capture_output=True, timeout=5)
+    assert result.returncode == 2, (options, result.stderr)
+    assert not (output / 'invalid').exists()
 # Exercise the ring in isolation: there must be no file until explicit flush,
 # and >256 synthetic records must retain only the newest 256, in order.
 ring_source = output / 'ring.zsh'
@@ -65,4 +111,4 @@ assert result.returncode == 0, result.stderr
 records = ring_path.read_text().splitlines()
 assert len(records) == 257 and 'retained-from=345' in records[0]
 assert 'synthetic=345' in records[1] and 'synthetic=600' in records[-1]
-print('PASS POSIX probe positive, failure preservation, stale ACK, CLI bounds, memory-ring bounds/no per-key file writes')
+print('PASS POSIX probe existing qualification, trace idle one-shot/collection/failure suppression, CLI bounds, memory-ring bounds')
