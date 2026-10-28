@@ -20,7 +20,7 @@ using namespace stormtty;
 using namespace std::chrono_literals;
 namespace {
 void check(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
-TerminalOptions small(unsigned columns = 40, unsigned rows = 4) {
+TerminalOptions make_search_terminal_options(unsigned columns = 40, unsigned rows = 4) {
     TerminalOptions options; options.size = {static_cast<std::uint16_t>(columns), static_cast<std::uint16_t>(rows),8,16};
     return options;
 }
@@ -43,7 +43,7 @@ std::string frame_text(const FramePtr& frame) {
     return text;
 }
 void real_history_navigation() {
-    TerminalCore t(small());
+    TerminalCore t(make_search_terminal_options());
     t.feed("old NEEDLE\r\n");
     for (unsigned i=0;i<200;++i) t.feed("padding " + std::to_string(i) + "\r\n");
     t.feed("recent needle\r\n");
@@ -62,7 +62,7 @@ void real_history_navigation() {
     check(t.selection_text() == "NEEDLE", "forward wrap did not reach oldest hit");
 }
 void utf8_and_literal_semantics() {
-    TerminalCore t(small(8,6));
+    TerminalCore t(make_search_terminal_options(8,6));
     const std::string grapheme = "\xE7\x95\x8C" "e\xCC\x81" "o";
     t.feed("alpha" + grapheme + "mega\r\n\xC3\x89 \xC3\xA9\r\nERROR error .");
     t.begin_search(1,{grapheme}); auto result=finish(t);
@@ -79,7 +79,7 @@ void utf8_and_literal_semantics() {
 void alternate_isolation_and_owned_results() {
     SearchSnapshotPtr primary;
     {
-        TerminalCore t(small()); t.feed("PRIMARY needle"); t.begin_search(1,{"needle"}); primary=finish(t);
+        TerminalCore t(make_search_terminal_options()); t.feed("PRIMARY needle"); t.begin_search(1,{"needle"}); primary=finish(t);
         check(primary->matches.size()==1 && !primary->alternate_screen,"primary search mismatch");
         t.feed("\x1b[?1049h\x1b[HALT needle");
         check(t.select_search_match(primary->token,0)==SearchApplyResult::stale,"primary token accepted in alternate screen");
@@ -94,7 +94,7 @@ void alternate_isolation_and_owned_results() {
     check(primary->matches.size()==1 && primary->matches[0].start.column==8,"owned results invalid after core destruction");
 }
 void revision_resize_eviction_and_reset() {
-    auto options=small(80,4); options.scrollback_lines=10;
+    auto options=make_search_terminal_options(80,4); options.scrollback_lines=10;
     TerminalCore t(options); t.feed("before needle\r\n"); t.begin_search(1,{"needle"}); auto original=finish(t);
     const auto revision=original->token.revision;
     t.resize({20,4,8,16});
@@ -107,7 +107,7 @@ void revision_resize_eviction_and_reset() {
     t.feed("\x1b" "c"); check(finish(t)->matches.empty(),"RIS preserved stale search results");
 }
 void budgets_errors_and_cancellation() {
-    TerminalCore t(small()); t.feed("word word word word");
+    TerminalCore t(make_search_terminal_options()); t.feed("word word word word");
     SearchOptions capped{"word"}; capped.max_matches=2;
     t.begin_search(1,capped); auto result=finish(t);
     check(result->status==SearchStatus::limited && result->matches.empty() && result->matches_found>2,"result cap reported false completion");
@@ -124,7 +124,7 @@ void budgets_errors_and_cancellation() {
     t.begin_search(8,{"other"}); result=finish(t);
     check(t.select_search_match(old_token,0)==SearchApplyResult::stale,"reused request ID accepted a previous query token");
     t.begin_search(9,{}); check(t.search_snapshot()->status==SearchStatus::idle && !t.search_needs_work(),"empty query not idle");
-    TerminalCore large(small(400,400)); large.feed(std::string(160000,'x') + "needle");
+    TerminalCore large(make_search_terminal_options(400,400)); large.feed(std::string(160000,'x') + "needle");
     SearchOptions memory{"needle"}; memory.memory_budget_bytes=64*1024;
     large.begin_search(10,memory); result=finish(large);
     check(result->status==SearchStatus::limited && result->message.find("memory")!=std::string::npos,"allocator denial became a fake complete search");
@@ -132,7 +132,7 @@ void budgets_errors_and_cancellation() {
     check(result->status==SearchStatus::complete && result->matches.size()==1,"search budget exhaustion poisoned the terminal or allocator");
 }
 void bounded_quanta_and_stale_navigation() {
-    TerminalCore t(small()); std::string data;
+    TerminalCore t(make_search_terminal_options()); std::string data;
     for(unsigned i=0;i<4000;++i)data+="line " + std::to_string(i) + (i%25==0 ? " needle\r\n":" padding\r\n");
     t.feed(data); SearchOptions options{"needle"}; options.max_work_units_per_step=1;
     t.begin_search(1,options); unsigned steps{};
@@ -150,7 +150,7 @@ void bounded_quanta_and_stale_navigation() {
     check(!t.search_needs_work() && t.search_step()==result,"completed search requires idle polling");
 }
 void mutation_during_materialization() {
-    TerminalCore t(small(40,200));
+    TerminalCore t(make_search_terminal_options(40,200));
     for (unsigned i=0;i<150;++i) t.feed("needle\r\n");
     SearchOptions options{"needle"}; options.max_work_units_per_step=1;
     t.begin_search(1,options);
@@ -195,7 +195,7 @@ int child() {
 }
 void session_coalescing_and_fairness(const std::string& executable) {
     auto wake=std::make_shared<WakeCounter>(); ProcessOptions process; process.executable=executable; process.arguments={"--search-child"};
-    auto session=Session::start(process,small(80,8),[wake]{wake->signal();});
+    auto session=Session::start(process,make_search_terminal_options(80,8),[wake]{wake->signal();});
     struct Close { std::shared_ptr<Session> value; ~Close(){value->request_close(); (void)value->wait_closed(5s);} } close{session};
     check(await([&]{return frame_text(session->frame()).find("READY")!=std::string::npos;},wake),"session child fixture did not arrive");
     auto submitted=session->search({"needle"}); check(submitted.result==SessionSendResult::accepted,"search not accepted");
