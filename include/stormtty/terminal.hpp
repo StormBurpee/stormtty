@@ -32,6 +32,19 @@ struct TerminalOptions {
     std::size_t effect_queue_limit_bytes{4u * 1024u * 1024u};
     std::chrono::milliseconds render_hold_timeout{1000};
 };
+// Observed OSC 133 metadata only: untrusted display hints, never authority or
+// service readiness. No command text, history, cwd, or borrowed engine strings.
+// Constant-size latest state, not an event queue. Generations are per terminal.
+enum class CommandPhase { unavailable, running, completed, interrupted };
+struct CommandSnapshot {
+    CommandPhase phase{CommandPhase::unavailable};
+    std::uint64_t command_generation{};
+    // Last explicitly ended command; compare this with a consumer's acknowledged
+    // generation to avoid duplicate notifications. Multiple ends may coalesce.
+    std::uint64_t completed_generation{};
+    std::optional<std::int32_t> last_exit_code; // Last explicit completion only.
+    bool operator==(const CommandSnapshot&) const = default;
+};
 enum class Key {
     unidentified, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z,
     digit0, digit1, digit2, digit3, digit4, digit5, digit6, digit7, digit8, digit9,
@@ -182,6 +195,7 @@ public:
     bool render_held() const;
     TerminalSize size() const;
     std::vector<TerminalEffect> take_effects();
+    [[nodiscard]] CommandSnapshot command_snapshot() const; // Owned value, owner thread.
 
     // Actor-only incremental real-scrollback search. A work unit is one bounded
     // engine feed/tick or a batch of <=64 coordinate conversions, not milliseconds.

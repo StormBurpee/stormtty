@@ -6,7 +6,34 @@ process memory, command arguments, environment values, or file contents.
 
 The owned-process runner remains the authority for completion: a loop-exit or
 last destructor marker is not a passing process exit. No teardown is skipped,
-no forced-exit API is added, and the existing release order is unchanged.
+no forced-exit API is added, and all owned resources are released.
+
+## Single-drain candidate (not yet runtime-qualified)
+
+The retained failure from commit `64e99b6`, run `40736011873`, Windows job
+`122984642100`, explicit-runtime repeat 8, reached the second renderer
+`ClearState begin` after the first ClearState/Flush and D2D releases returned.
+The owned host remained alive at the unchanged 30-second timeout and was killed
+and reaped. The other twelve repeats passed; they do not erase that failure.
+
+Full GPU teardown now unbinds the D2D target, releases canvas/image resources and
+the D2D contexts/device, then releases presentation resources and performs one
+ClearState/Flush before releasing the D3D context/device. Standalone swapchain
+replacement retains its ClearState/Flush. This consolidates two drains, rather
+than bypassing teardown. Microsoft documents releasing references followed by
+[ClearState/Flush before replacing a flip-model swapchain](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-flush).
+Flush is asynchronous: a returned call does not prove completed GPU work, and
+the documentation does not establish that the previous second ClearState was
+invalid. The ordering change is a controlled hypothesis, not a confirmed causal
+fix, and must pass the native repeat batch below with complete host exit.
+
+Keep the failing record alongside the new batch. Require every original smoke
+assertion and owned-process result, plus complete renderer/application teardown
+markers; do not accept only the earlier smoke-success or UI-loop-exit message.
+Also exercise existing renderer/device-recreation tests so the preserved
+swapchain-replacement path is checked. If a stall recurs, retain its exact stage
+and obtain sanitized native stacks before cleanup rather than lengthening the
+timeout or silently retrying it away.
 
 ## Repeatable probe
 

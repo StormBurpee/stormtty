@@ -22,6 +22,7 @@
 #include "stormtty/windows_console_runtime.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/session.hpp"
+#include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
 #include "stormtty/settings_services.hpp"
 #include "stormtty/context_menu.hpp"
@@ -383,6 +384,8 @@ private:
     Config smoke_settings_original_;
     std::shared_ptr<Session> smoke_settings_actor_;
     bool smoke_projects_live_verified_{}, smoke_background_restored_{}, smoke_chrome_verified_{}, smoke_tab_drag_verified_{};
+    bool smoke_background_command_sent_{}, smoke_background_command_verified_{};
+    unsigned smoke_background_capture_stage_{};
     SessionId smoke_parked_session_{};
     std::uint64_t smoke_parked_bytes_{};
     ProjectWorkspaceId smoke_primary_project_{}, smoke_secondary_project_{};
@@ -409,6 +412,7 @@ private:
     std::map<SessionId, TerminalSize> sizes_;
     std::map<SessionId, SessionState> session_states_;
     std::map<SessionId, std::string> background_labels_;
+    std::map<SessionId, ParkedAttention> parked_attention_;
     SessionId focused_session_{};
     std::uint64_t next_session_{1};
     std::shared_ptr<WakeState> wake_;
@@ -917,7 +921,7 @@ void NativeWindow::split(Direction direction) {
 void NativeWindow::retire_unused_sessions() {
     for (auto iterator = sessions_.begin(); iterator != sessions_.end();) {
         const bool used = projects_.contains_session(iterator->first);
-        if (!used) { iterator->second->request_close(); sizes_.erase(iterator->first); session_states_.erase(iterator->first); background_labels_.erase(iterator->first); iterator = sessions_.erase(iterator); }
+        if (!used) { iterator->second->request_close(); sizes_.erase(iterator->first); session_states_.erase(iterator->first); background_labels_.erase(iterator->first); parked_attention_.erase(iterator->first); iterator = sessions_.erase(iterator); }
         else ++iterator;
     }
 }
@@ -951,8 +955,9 @@ std::string NativeWindow::background_title(const ParkedSession& parked, bool sta
         if (title.empty()) title="Terminal";
         // Keep UTF-8 intact; DirectWrite clips bounded actor titles.
         if (!status) return title;
-        if (info.exit_code) title+=" · exit "+std::to_string(*info.exit_code);
-        else if (info.state==SessionState::failed) title+=" · failed";
+        if (const auto attention=parked_attention_.find(parked.session); attention!=parked_attention_.end() && attention->second.unread_completion()) title+=" · command finished";
+        if (info.state==SessionState::failed) title+=" · failed";
+        else if (info.exit_code) title+=" · exit "+std::to_string(*info.exit_code);
         else if (info.state==SessionState::closing) title+=" · closing";
         else if (info.state==SessionState::starting) title+=" · starting";
         else title+=" · running";
@@ -964,12 +969,15 @@ void NativeWindow::park_pane(PaneId pane) {
     cancel_drag();
     const auto result=projects_.park({projects_.active_id(),pane});
     if (!result) { show_error(result.error); return; }
+    // Baseline only after placement succeeds, before any reset/update can observe it.
+    parked_attention_.insert_or_assign(*result.value,ParkedAttention(sessions_.at(*result.value)->info()));
     reset_project_view(); // Clear IME, selection and renderer-local placement state.
 }
 void NativeWindow::restore_parked(ProjectSessionReference target) {
     if (target.project!=projects_.active_id() || !sessions_.contains(target.local)) { show_error("The background target changed; nothing was restored."); return; }
     const auto result=projects_.reattach_to_new_tab(target);
     if (!result) { show_error(result.error); return; }
+    parked_attention_.erase(target.local); // Successful restore acknowledges; failures/cancel do not.
     notice_.clear();
     sizes_.erase(target.local); // Reattach always resizes and presents the actor's latest frame.
     reset_project_view();
@@ -1065,27 +1073,40 @@ void NativeWindow::update_sessions() {
     struct TitleUpdate { ProjectWorkspaceId project; PaneId pane; std::string title; };
     std::vector<TitleUpdate> titles;
     bool state_changed=false;
+    ParkedNoticeBatch notice_batch;
+    std::string batch_notice;
     // Hidden workspaces retain actors and model metadata. Never retire them just
     // because only the active project's panes are submitted to the renderer.
     for (const auto& project:projects_.entries()) for (const auto& [pane_id,pane]:project.workspace.state().panes) {
         auto found=sessions_.find(pane.session); if (found==sessions_.end()) continue;
         const auto info=found->second->info();
         if (!info.title.empty() && pane.title!=info.title) titles.push_back({project.id,pane_id,info.title});
-        if (project.id==projects_.active_id() && !info.error.empty() && notice_!=info.error) { notice_=info.error; ++chrome_generation_; }
+        if (project.id==projects_.active_id() && !info.error.empty() && notice_!=info.error) {
+            if (notice_batch.consider(ParkedNotice::process_failed)) batch_notice=info.error;
+            ++chrome_generation_;
+        }
         if (!session_states_.contains(pane.session) || session_states_[pane.session]!=info.state) { session_states_[pane.session]=info.state; state_changed=true; ++chrome_generation_; }
     }
     for (const auto& project:projects_.entries()) for (const auto& parked:project.parked_sessions) {
         auto found=sessions_.find(parked.session); if (found==sessions_.end()) continue;
         const auto info=found->second->info();
+        // Normally inserted by park_pane; fallback baselines without inventing an alert.
+        auto attention=parked_attention_.try_emplace(parked.session,info).first;
+        const auto event=attention->second.observe(info);
         const auto title=background_title(parked);
         if (background_labels_[parked.session]!=title) { background_labels_[parked.session]=title; state_changed=true; ++chrome_generation_; }
         if (!session_states_.contains(parked.session) || session_states_[parked.session]!=info.state) {
             session_states_[parked.session]=info.state; state_changed=true; ++chrome_generation_;
+        }
+        if (notice_batch.consider(event)) {
             const std::string destination=project.id==projects_.active_id()?" Restore it from the footer to inspect output.":" Switch to this workspace and restore it from its footer to inspect output.";
-            if (info.exit_code) notice_=project.metadata.name+" · Background terminal exited ("+std::to_string(*info.exit_code)+")."+destination;
-            else if (info.state==SessionState::failed) notice_=project.metadata.name+" · Background terminal failed."+destination;
+            if (event==ParkedNotice::process_failed) batch_notice=project.metadata.name+" · Background terminal failed."+destination;
+            else if (event==ParkedNotice::process_exited) batch_notice=project.metadata.name+" · Background terminal exited"+(info.exit_code?" ("+std::to_string(*info.exit_code)+")":"")+"."+destination;
+            else batch_notice=project.metadata.name+" · Command finished"+(info.command.last_exit_code?" ("+std::to_string(*info.command.last_exit_code)+")":"")+"."+destination;
+            state_changed=true; ++chrome_generation_;
         }
     }
+    if (notice_batch.selected()!=ParkedNotice::none) notice_=std::move(batch_notice);
     for (auto& title:titles) { projects_.workspace(title.project)->set_pane_title(title.pane,std::move(title.title)); ++chrome_generation_; }
     std::optional<std::string> clipboard,error;
     { std::lock_guard lock(wake_->mutex); clipboard.swap(wake_->clipboard); error.swap(wake_->error); }
@@ -1687,13 +1708,23 @@ WindowScene NativeWindow::scene() {
                 rectangle(bounds,raised,4);
                 const auto found=sessions_.find(parked.session);
                 const auto info=found!=sessions_.end()?found->second->info():SessionInfo{};
-                const std::string status=info.exit_code?"exit "+std::to_string(*info.exit_code):info.state==SessionState::failed?"failed":info.state==SessionState::starting?"starting":info.state==SessionState::closing?"closing":"running";
-                label({bounds.x+6,bounds.y,std::max(0.0,bounds.width-78),bounds.height},background_title(parked,false),text,11);
+                const std::string status=info.state==SessionState::failed?"failed":info.exit_code?"exit "+std::to_string(*info.exit_code):info.state==SessionState::starting?"starting":info.state==SessionState::closing?"closing":"running";
+                const auto attention=parked_attention_.find(parked.session);
+                const bool unread=attention!=parked_attention_.end() && attention->second.unread_completion();
+                if (unread) rectangle({bounds.x+6,bounds.y+bounds.height/2-2,4,4},accent,2);
+                const double inset=unread?15:6;
+                label({bounds.x+inset,bounds.y,std::max(0.0,bounds.width-72-inset),bounds.height},background_title(parked,false),text,11);
                 label({bounds.x+bounds.width-70,bounds.y,64,bounds.height},status,info.exit_code?accent:secondary,10,false,ChromeTextAlignment::trailing);
             }
             if (footer_layout.overflow.width>0) {
                 rectangle(footer_layout.overflow,raised,4);
-                label(footer_layout.overflow,"+"+std::to_string(projects_.active()->parked_sessions.size()-footer_layout.chips.size())+" more",secondary,11,false,ChromeTextAlignment::center);
+                const auto& parked=projects_.active()->parked_sessions;
+                const bool unread=std::any_of(parked.begin()+static_cast<std::ptrdiff_t>(footer_layout.chips.size()),parked.end(),[&](const auto& item) {
+                    const auto found=parked_attention_.find(item.session);
+                    return found!=parked_attention_.end() && found->second.unread_completion();
+                });
+                if (unread) rectangle({footer_layout.overflow.x+5,footer_layout.overflow.y+footer_layout.overflow.height/2-2,4,4},accent,2);
+                label(footer_layout.overflow,"+"+std::to_string(parked.size()-footer_layout.chips.size())+" more",secondary,11,false,ChromeTextAlignment::center);
             }
         } else {
         std::string profile="Terminal";
@@ -2700,6 +2731,59 @@ void NativeWindow::smoke_progress(bool presented) {
             smoke_finish("Layout smoke did not retain its real background actors and foreground splits."); return;
         }
     }
+    if (options_.smoke_projects && smoke_projects_live_verified_ && !smoke_background_command_verified_) {
+        const auto actor=sessions_.at(smoke_parked_session_);
+        if (!smoke_background_command_sent_) {
+            // Generate OSC inside the child, never by echoing raw control bytes
+            // through terminal input. Keep the shell alive after prompt return.
+            const std::string command=smoke_managed_sessions_.contains(smoke_parked_session_)?
+                "printf '\\033]133;C\\007\\033]133;D;0\\007'":
+                "powershell.exe -NoProfile -Command \"$e=[char]27; [Console]::Write($e+']133;C'+[char]7+$e+']133;D;0'+[char]7)\"";
+            submit([actor,command]{return actor->text(command);},command.size());
+            KeyInput enter; enter.key=Key::enter;
+            submit([actor,enter]{return actor->key(enter);});
+            smoke_background_command_sent_=true;
+            return;
+        }
+        if (actor->process_finished() || actor!=smoke_project_actors_.at(smoke_parked_session_)) {
+            smoke_finish("Command completion replaced or exited the parked shell."); return;
+        }
+        const auto attention=parked_attention_.find(smoke_parked_session_);
+        if (attention==parked_attention_.end() || !attention->second.unread_completion()) return;
+        // Capture the actual unread footer while the original shell is alive,
+        // before failed-restore/close checks replace the completion notice.
+        if (smoke_background_capture_stage_==0) {
+            activate_project(smoke_primary_project_);
+            smoke_background_capture_stage_=1;
+            changed(true); return; // A later presented frame must contain this workspace.
+        }
+        if (smoke_background_capture_stage_==1) {
+            if (!presented || motion_timer_active_) return;
+            const auto original_path=options_.capture_path;
+            if (!original_path.empty()) {
+                options_.capture_path=original_path.parent_path()/(original_path.stem().wstring()+L"-command-finished"+original_path.extension().wstring());
+                try { capture_frame(); }
+                catch (const std::exception& error) { options_.capture_path=original_path; smoke_finish(error.what()); return; }
+                options_.capture_path=original_path;
+            }
+            smoke_background_capture_stage_=2;
+            activate_project(smoke_secondary_project_);
+            return;
+        }
+        restore_parked({smoke_primary_project_,smoke_parked_session_}); // Wrong active project.
+        if (!parked_attention_.at(smoke_parked_session_).unread_completion()) {
+            smoke_finish("Failed restore acknowledged background command completion."); return;
+        }
+        activate_project(smoke_primary_project_);
+        close_parked({smoke_primary_project_,smoke_parked_session_});
+        if (!modal_) { smoke_finish("Completed background terminal skipped close confirmation."); return; }
+        answer_modal(ModalDecision::cancel);
+        if (!parked_attention_.at(smoke_parked_session_).unread_completion() || sessions_.at(smoke_parked_session_)!=actor) {
+            smoke_finish("Canceled close lost command attention or actor ownership."); return;
+        }
+        activate_project(smoke_secondary_project_);
+        smoke_background_command_verified_=true;
+    }
     bool all_closed=true;
     for (const auto& [id,session]:sessions_) {
         const auto info=session->info();
@@ -2729,7 +2813,7 @@ void NativeWindow::smoke_progress(bool presented) {
             }
             activate_project(smoke_primary_project_);
             restore_parked({smoke_primary_project_,smoke_parked_session_});
-            if (!active_session() || active_session()!=actor.get() || !projects_.active()->parked_sessions.empty() || layout_.panes.empty()) {
+            if (!active_session() || active_session()!=actor.get() || !projects_.active()->parked_sessions.empty() || layout_.panes.empty() || parked_attention_.contains(smoke_parked_session_)) {
                 smoke_finish("Restore did not reattach the same exited actor and latest frame."); return;
             }
             notice_.clear(); smoke_background_restored_=true; smoke_marker_presented_=false; changed(true); return;

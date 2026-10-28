@@ -438,6 +438,63 @@ void finished_output_document() {
     CHECK(frozen->images[0].pixels->generation==later->images[0].pixels->generation);
     CHECK(frozen->images[0].pixels->bytes==later->images[0].pixels->bytes);
 }
+void command_lifecycle() {
+    TerminalCore t(small());
+    const CommandSnapshot empty;
+    t.feed("\x1b]133;A\a\x1b]133;B\a\x1b]133;D;9\a");
+    CHECK(t.command_snapshot() == empty);
+    // Both OSC terminators must survive every possible feed boundary.
+    for (const std::string& terminator : {std::string("\a"), std::string("\x1b\\")}) {
+        const std::string bytes = "\x1b]133;C" + terminator + "\x1b]133;D;17" + terminator;
+        for (std::size_t cut = 0; cut <= bytes.size(); ++cut) {
+            TerminalCore split(small());
+            split.feed(std::string_view(bytes).substr(0, cut));
+            split.feed(std::string_view(bytes).substr(cut));
+            const auto state = split.command_snapshot();
+            CHECK(state.phase == CommandPhase::completed);
+            CHECK(state.command_generation == 1 && state.completed_generation == 1);
+            CHECK(state.last_exit_code == 17);
+        }
+    }
+    t.feed("\x1b]133;C\a\x1b]133;C\a\x1b]133;A\a\x1b]133;B\a");
+    CHECK(t.command_snapshot().phase == CommandPhase::running);
+    CHECK(t.command_snapshot().command_generation == 1);
+    CHECK(t.command_snapshot().completed_generation == 0);
+    CHECK(!t.command_snapshot().last_exit_code);
+    t.feed("\x1b]133;D;0\a\x1b]133;D;99\a");
+    CHECK(t.command_snapshot().last_exit_code == 0);
+    const auto owned = t.command_snapshot();
+    t.feed("\x1b]133;C\a\x1b]133;D\a\x1b]133;C\a");
+    const auto running = t.command_snapshot();
+    CHECK(running.phase == CommandPhase::running);
+    CHECK(running.command_generation == 3 && running.completed_generation == 2);
+    CHECK(!running.last_exit_code);
+    CHECK(owned.phase == CommandPhase::completed && owned.command_generation == 1);
+    TerminalCore other(small());
+    CHECK(other.command_snapshot() == empty);
+    other.feed("\x1b]133;C\a");
+    CHECK(other.command_snapshot().command_generation == 1);
+    CHECK(t.command_snapshot() == running);
+    t.feed("\x1b" "c\x1b]133;D;0\a"); // RIS interrupts; stale D cannot complete.
+    CHECK(t.command_snapshot().phase == CommandPhase::interrupted);
+    CHECK(t.command_snapshot().completed_generation == 2);
+    CHECK(!t.command_snapshot().last_exit_code);
+    t.feed("\x1b]133;C\a\x1b]133;D;42\a\x1b]133;C\a");
+    t.finish_output(); t.finish_output();
+    const auto interrupted = t.command_snapshot();
+    CHECK(interrupted.phase == CommandPhase::interrupted);
+    CHECK(interrupted.command_generation == 5 && interrupted.completed_generation == 4);
+    CHECK(interrupted.last_exit_code == 42); // Previous explicit result, not interrupted command.
+    bool rejected{};
+    try { t.feed("\x1b]133;D;0\a\x1b]133;C\a"); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected && t.command_snapshot() == interrupted);
+    TerminalCore completed(small());
+    completed.feed("\x1b]133;C\a\x1b]133;D;0\a"); completed.finish_output();
+    CHECK(completed.command_snapshot().phase == CommandPhase::completed);
+    TerminalCore startup(small()); startup.finish_output();
+    CHECK(startup.command_snapshot() == empty);
+}
 void graphics_security() {
     TerminalOptions options = small(); options.image_budget_bytes = 0; TerminalCore disabled(options);
     disabled.feed("\x1b_Ga=T,f=32,i=42,s=1,v=1,q=2;/wAA/w==\x1b\\"); CHECK(disabled.snapshot()->images.empty());
@@ -475,6 +532,7 @@ int main() {
         {"owned image pixels and generation", image_ownership_generation}, {"Unicode image placeholders", unicode_image_placeholders},
         {"resolved relative image placement", relative_image_placement}, {"PNG hook rejection/preflight", png_hook_rejection_and_preflight}, {"image animation deadlines", image_animation},
         {"finished output retains a frozen readable document", finished_output_document},
+        {"owned bounded OSC 133 command lifecycle", command_lifecycle},
         {"graphics security defaults", graphics_security}, {"explicit effect budget failure", queue_budget_failure_is_explicit},
         {"actor thread confinement", thread_confinement}
     };

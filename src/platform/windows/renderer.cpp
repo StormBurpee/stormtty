@@ -507,9 +507,13 @@ struct Renderer::Impl {
         images.clear();
         windows::smoke_teardown_trace(tracing_teardown,"renderer image cache clear end");
         counters.image_cache_bytes = 0;
-        release_swapchain();
+        // Drop D2D's device-dependent owners before the single deferred-release
+        // drain in release_swapchain(). Keep that helper's ClearState/Flush for
+        // standalone swapchain replacement too; do not drain twice around D2D
+        // destruction. This ordering is a teardown candidate, not proof that a
+        // previously observed WARP ClearState stall has been resolved.
         dc4.reset(); dc.reset(); d2d_device.reset();
-        clear_and_flush();
+        release_swapchain();
         immediate.reset(); device.reset();
     }
     void create_device() {

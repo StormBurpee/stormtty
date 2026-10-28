@@ -1,5 +1,6 @@
 #include "core_test.hpp"
 #include "stormtty/project_workspaces.hpp"
+#include "stormtty/parked_attention.hpp"
 
 #include <algorithm>
 #include <map>
@@ -298,6 +299,42 @@ void parked_ownership_and_identity() {
     CHECK(catalog.validate());
 }
 
+void parked_attention_placement_lifecycle() {
+    ProjectWorkspaceCatalog catalog;
+    Workspace initial; CHECK(initial.create_tab({41}));
+    const auto project=create(catalog,"Attention",std::move(initial));
+    const auto pane=catalog.workspace(project)->active_pane();
+    const auto parked=catalog.park({project,pane}); CHECK(parked);
+    SessionInfo info; info.state=SessionState::running;
+    info.command={CommandPhase::completed,1,1,0};
+    std::map<SessionId,ParkedAttention> attention;
+    attention.emplace(*parked.value,ParkedAttention(info));
+    CHECK(!attention.at(*parked.value).unread_completion());
+    info.command={CommandPhase::completed,2,2,0};
+    CHECK(attention.at(*parked.value).observe(info)==ParkedNotice::command_finished);
+    const auto before=snapshot(catalog);
+    // A canceled confirmation performs no placement or attention mutation.
+    const bool confirmed=false;
+    if (confirmed) { CHECK(catalog.discard_parked({project,*parked.value})); attention.erase(*parked.value); }
+    CHECK(snapshot(catalog)==before && attention.at(*parked.value).unread_completion());
+    for(std::size_t i=0;i<Workspace::maximum_tabs;++i) CHECK(catalog.workspace(project)->create_tab());
+    auto restore=[&] {
+        const auto result=catalog.reattach_to_new_tab({project,*parked.value});
+        if(result)attention.erase(*parked.value);
+        return bool(result);
+    };
+    CHECK(!restore()); CHECK(attention.at(*parked.value).unread_completion());
+    CHECK(catalog.workspace(project)->close_tab(catalog.workspace(project)->state().tabs.back().id));
+    CHECK(restore()); CHECK(attention.empty());
+    const auto again=catalog.park({project,catalog.workspace(project)->active_pane()}); CHECK(again);
+    attention.emplace(*again.value,ParkedAttention(info));
+    CHECK(!attention.at(*again.value).unread_completion());
+    CHECK(attention.at(*again.value).observe(info)==ParkedNotice::none);
+    CHECK(catalog.discard_parked({project,*again.value}));
+    std::erase_if(attention,[&](const auto& item){return !catalog.contains_session(item.first);});
+    CHECK(attention.empty()); CHECK(catalog.validate());
+}
+
 void parked_bounds_and_rollback() {
     ProjectWorkspaceCatalog catalog;
     const auto id = create(catalog, "Capacity");
@@ -404,6 +441,6 @@ int main() {
     return run_core_tests("project_workspaces", [] {
         lifecycle_and_hidden_sessions(); identity_domains(); deliberate_removal();
         failures_are_transactional(); bounds_and_unbound_workspaces(); operation_trace();
-        parked_ownership_and_identity(); parked_bounds_and_rollback();
+        parked_ownership_and_identity(); parked_bounds_and_rollback(); parked_attention_placement_lifecycle();
     });
 }
