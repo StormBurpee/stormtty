@@ -2,6 +2,8 @@
 """Portable packaging tests, NOT Windows trust/runtime qualification."""
 import base64
 import copy
+import contextlib
+import io
 import hashlib
 import importlib.util
 import json
@@ -166,6 +168,24 @@ class PackagingTests(unittest.TestCase):
         self.assertNotIn("ExecutionPolicy", " ".join(args) + script)
         self.assertIn("$s.Status -ne 'Valid'", script)
         self.assertIn("O=Microsoft Corporation", script)
+        self.assertIn("$ErrorActionPreference='Stop'", script)
+        self.assertLess(script.index("$ProgressPreference='SilentlyContinue'"), script.index("Import-Module"))
+        self.assertEqual(args[args.index("-OutputFormat") + 1], "Text")
+        self.assertIn('Write-Output "$p signer=', script)
+        # Keep stdout/stderr attached: a real trust error must remain visible.
+        self.assertNotIn("capture_output", options)
+        self.assertNotIn("stdout", options)
+        self.assertNotIn("stderr", options)
+
+    def test_success_message_is_clear_and_does_not_change_preview_default(self):
+        output = io.StringIO()
+        with mock.patch.object(bootstrap, "prepare") as prepare, \
+             mock.patch("sys.argv", ["prepare-bundled-conpty.py", "--destination", str(self.output), "--cache", str(self.root / "cache")]), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(bootstrap.main(), 0)
+        prepare.assert_called_once()
+        self.assertEqual(output.getvalue(), "ConPTY runtime verified (optional preview; System remains default).\n")
+
 
     def test_signature_command_failure_is_not_swallowed(self):
         with mock.patch.object(bootstrap.subprocess, "run", side_effect=bootstrap.subprocess.CalledProcessError(1, "trust")), \

@@ -82,7 +82,10 @@ def verify_authenticode(root: Path, powershell: Path) -> None:
     # This is child-only module discovery, not an execution-policy change.
     environment = {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
     environment["PSModulePath"] = str(powershell.parent / "Modules")
-    script = ("$ErrorActionPreference='Stop'; "
+    # Suppress only the child process's module-import progress stream. With
+    # EncodedCommand, Windows PowerShell otherwise serializes that stream as
+    # CLIXML even when verification succeeds. Errors and signer output remain.
+    script = ("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; "
               "Import-Module ($PSHOME + '\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop; "
               "foreach ($p in @(" + quoted + ")) { ") + r"""
 $s=Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $p
@@ -92,7 +95,7 @@ if ($s.Status -ne 'Valid' -or !$s.SignerCertificate -or $s.SignerCertificate.Sub
 Write-Output "$p signer=$($s.SignerCertificate.Subject) thumbprint=$($s.SignerCertificate.Thumbprint)"
 }"""
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    subprocess.run([str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], check=True, timeout=120, env=environment)
+    subprocess.run([str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", encoded], check=True, timeout=120, env=environment)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -294,7 +297,7 @@ def main() -> int:
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, subprocess.SubprocessError) as error:
         print(f"ConPTY preparation failed: {error}", file=sys.stderr)
         return 1
-    print("Verified private ConPTY preview runtime; System remains the default. Compact-alt resize qualification remains unresolved.")
+    print("ConPTY runtime verified (optional preview; System remains default).")
     return 0
 
 
