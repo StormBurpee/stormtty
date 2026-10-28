@@ -59,6 +59,7 @@ jobs:
           python tools/shell-notices-tests.py
           python tools/stage-developer-shell-tests.py
           python tools/shell-zstd-bootstrap-tests.py
+          python tools/run-owned-process-tests.py
       - name: Configure native Windows application
         if: runner.os == 'Windows'
         run: cmake -S . -B build -G Ninja "-DPython3_EXECUTABLE=${{ env.pythonLocation }}/python.exe" -DCMAKE_CXX_COMPILER=cl -DSTORMTTY_TEST_SHELL_PROBE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=ON
@@ -125,21 +126,19 @@ jobs:
         if: always() && runner.os == 'Windows' && steps.packaged_console.outcome == 'success'
         shell: python
         run: |
-          import os,pathlib,subprocess
+          import os,pathlib,subprocess,importlib.util,sys,json
+          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
           failures=[]
           for mode in ['smoke','smoke-layout','smoke-modal','smoke-projects','smoke-settings']:
             capture=pathlib.Path('build/artifacts')/('native-packaged-'+mode+'.png')
             args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--'+mode,'--console-runtime',str(provider),'--capture',str(capture.resolve())]
             print('PACKAGED_APPLICATION_CASE='+mode,flush=True)
-            try:
-              result=subprocess.run(args,timeout=60,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-              print(result.stdout[-65536:].decode('utf-8',errors='replace'),flush=True)
-              code=result.returncode
-            except subprocess.TimeoutExpired as error:
-              print((error.stdout or b'')[-65536:].decode('utf-8',errors='replace'),flush=True)
-              print('Application smoke timed out; not a pass',flush=True)
-              code=124
+            result=runner.run_owned(args,timeout=60,output_dir=pathlib.Path("build/artifacts"))
+            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
+            print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+            code=result.exit_code
             print('PACKAGED_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
             if code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
@@ -178,7 +177,9 @@ jobs:
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         shell: python
         run: |
-          import os,pathlib,subprocess
+          import os,pathlib,subprocess,importlib.util,sys,json
+          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
           runtime=pathlib.Path('.deps/stormtty-shell').resolve()
           failures=[]
@@ -186,13 +187,10 @@ jobs:
             capture=pathlib.Path('build/artifacts')/('native-zsh-'+mode+'.png')
             args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--'+mode,'--console-runtime',str(provider),'--shell-runtime',str(runtime),'--capture',str(capture.resolve())]
             print('BUNDLED_ZSH_APPLICATION_CASE='+mode,flush=True)
-            try:
-              result=subprocess.run(args,timeout=60,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-              print(result.stdout[-65536:].decode('utf-8',errors='replace'),flush=True)
-              code=result.returncode
-            except subprocess.TimeoutExpired as error:
-              print((error.stdout or b'')[-65536:].decode('utf-8',errors='replace'),flush=True)
-              code=124
+            result=runner.run_owned(args,timeout=60,output_dir=pathlib.Path("build/artifacts"))
+            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
+            print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+            code=result.exit_code
             print('BUNDLED_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
             if code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
@@ -209,20 +207,19 @@ jobs:
         if: always() && runner.os == 'Windows' && steps.developer_shell_build.outcome == 'success'
         shell: python
         run: |
-          import os,pathlib,subprocess
+          import os,pathlib,subprocess,importlib.util,sys,json
+          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
           failures=[]
           for mode in ['smoke','smoke-layout','smoke-modal','smoke-projects','smoke-settings']:
             capture=pathlib.Path('build/artifacts')/('native-developer-zsh-'+mode+'.png')
             args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--'+mode,'--console-runtime',str(provider),'--capture',str(capture.resolve())]
             print('DEVELOPER_ZSH_APPLICATION_CASE='+mode,flush=True)
-            try:
-              result=subprocess.run(args,timeout=90,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-              print(result.stdout[-65536:].decode('utf-8',errors='replace'),flush=True)
-              code=result.returncode
-            except subprocess.TimeoutExpired as error:
-              print((error.stdout or b'')[-65536:].decode('utf-8',errors='replace'),flush=True)
-              code=124
+            result=runner.run_owned(args,timeout=90,output_dir=pathlib.Path("build/artifacts"))
+            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
+            print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+            code=result.exit_code
             print('DEVELOPER_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
             if code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
