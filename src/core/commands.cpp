@@ -25,6 +25,7 @@ constexpr std::array commands{
     Command{"tab.move_right", "Move tab right", "Reorder without restarting sessions"},
     Command{"pane.split_right", "Split right", "Create a session to the right of the current pane"},
     Command{"pane.split_down", "Split below", "Create a session below the current pane"},
+    Command{"background.restore", "Restore background terminal…", "Choose a background session to bring to the foreground without restarting it"},
     Command{"pane.background", "Move to background", "Keep this terminal process and output in the workspace footer"},
     Command{"pane.close", "Close pane", "Close the current pane; host confirms running processes"},
     Command{"pane.focus_left", "Focus pane left", "Move focus spatially to the pane on the left"},
@@ -72,6 +73,79 @@ bool valid_key(std::string_view key) {
     return false;
 }
 }
+namespace {
+// Reject malformed sequences rather than matching partial UTF-8 bytes. Input
+// bounds are checked before decoding so even untrusted titles have bounded cost.
+std::optional<std::vector<char32_t>> search_text(std::string_view text, std::size_t limit, bool truncate) {
+    std::vector<char32_t> out;
+    for (std::size_t i=0; i<text.size();) {
+        if (out.size()==limit) { if (truncate) return out; return {}; }
+        const auto lead=static_cast<unsigned char>(text[i++]);
+        char32_t cp=lead; unsigned rest=0;
+        if (lead>=0xc2 && lead<=0xdf) { cp=lead&31; rest=1; }
+        else if (lead>=0xe0 && lead<=0xef) { cp=lead&15; rest=2; }
+        else if (lead>=0xf0 && lead<=0xf4) { cp=lead&7; rest=3; }
+        else if (lead>=0x80) return {};
+        if (rest>text.size()-i) return {};
+        for (unsigned n=0;n<rest;++n) {
+            const auto c=static_cast<unsigned char>(text[i++]);
+            if ((c&0xc0)!=0x80) return {};
+            cp=(cp<<6)|(c&63);
+        }
+        if ((rest==1 && cp<0x80) || (rest==2 && cp<0x800) ||
+            (rest==3 && cp<0x10000) || cp>0x10ffff || (cp>=0xd800 && cp<=0xdfff)) return {};
+        if (cp>='A' && cp<='Z') cp+='a'-'A';
+        out.push_back(cp);
+    }
+    return out;
+}
+bool search_separator(char32_t c) { return c==' ' || c=='\t' || c=='\n' || c=='.' || c=='_' || c=='-' || c=='/' || c==':' ; }
+std::optional<int> fuzzy_score(const std::vector<char32_t>& query, std::string_view candidate) {
+    const auto decoded=search_text(candidate,512,true);
+    if (!decoded || decoded->empty()) return {};
+    const auto& text=*decoded;
+    constexpr int missing=-1000000;
+    std::vector<int> previous(text.size(),missing), current(text.size(),missing);
+    for (std::size_t q=0;q<query.size();++q) {
+        std::fill(current.begin(),current.end(),missing);
+        int best=missing;
+        for (std::size_t j=0;j<text.size();++j) {
+            if (j) best=std::max(best,previous[j-1]+static_cast<int>(j-1));
+            if (query[q]!=text[j]) continue;
+            const int boundary=(j==0 || search_separator(text[j-1]))?18:0;
+            if (!q) current[j]=32+boundary-static_cast<int>(j);
+            else {
+                if (best>missing/2) current[j]=best-static_cast<int>(j)+32+boundary;
+                if (j && previous[j-1]>missing/2) current[j]=std::max(current[j],previous[j-1]+48+boundary);
+            }
+        }
+        previous.swap(current);
+    }
+    const int score=*std::max_element(previous.begin(),previous.end());
+    if (score<=missing/2) return {};
+    return score+(query==text?120:0);
+}
+}
+std::optional<int> command_search_score(std::string_view query, std::string_view label, std::string_view description) {
+    if (query.size()>256) return {};
+    auto decoded=search_text(query,64,false);
+    if (!decoded) return {};
+    while (!decoded->empty() && (decoded->front()==' ' || decoded->front()=='\t')) decoded->erase(decoded->begin());
+    while (!decoded->empty() && (decoded->back()==' ' || decoded->back()=='\t')) decoded->pop_back();
+    if (decoded->empty()) return 0;
+    const auto primary=fuzzy_score(*decoded,label), secondary=fuzzy_score(*decoded,description);
+    if (primary) return *primary+256; // Prefer an action's name to incidental help text.
+    if (secondary) return *secondary;
+    return {};
+}
+std::vector<const Command*> search_commands(std::string_view query) {
+    std::vector<std::pair<const Command*,int>> ranked;
+    for (const auto& command:commands) if (const auto score=command_search_score(query,command.label,command.description)) ranked.push_back({&command,*score});
+    std::stable_sort(ranked.begin(),ranked.end(),[](const auto& a,const auto& b){return a.second>b.second;});
+    std::vector<const Command*> result;
+    for (const auto& item:ranked) result.push_back(item.first);
+    return result;
+}
 std::span<const Command> command_registry() noexcept { return commands; }
 const Command* find_command(std::string_view id) noexcept {
     for (const auto& command : commands) if (command.id == id) return &command;
@@ -89,6 +163,8 @@ CommandAvailability command_availability(std::string_view id, const CommandConte
     }
     if (id == "tab.new") return {c.tabs < Workspace::maximum_tabs, c.tabs < Workspace::maximum_tabs ? "" : "Tab limit reached"};
     if (id == "app.command_palette" || id == "settings.open" || id == "window.fullscreen") return {true, {}};
+    if (id == "background.restore") return {c.supports_background_sessions && c.parked_sessions>0,
+        !c.supports_background_sessions ? "Background sessions are not implemented by this host" : c.parked_sessions==0 ? "No background terminals in this workspace" : ""};
     if (!c.tabs || !c.panes) return {false, "No active terminal pane"};
     if (id == "pane.background") return {c.supports_background_sessions && c.parked_sessions<ProjectWorkspaceCatalog::maximum_parked_sessions, !c.supports_background_sessions ? "Background sessions are not implemented by this host" : c.parked_sessions>=ProjectWorkspaceCatalog::maximum_parked_sessions ? "Background session limit reached" : ""};
     if (id == "edit.copy") return {c.has_selection, c.has_selection ? "" : "Select terminal text first"};

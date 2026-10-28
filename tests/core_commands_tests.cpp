@@ -7,13 +7,40 @@ using namespace stormtty;
 int main() { return run_core_tests("commands", [] {
     std::set<std::string_view> ids;
     for (const auto& c : command_registry()) { CHECK(ids.insert(c.id).second); CHECK(!c.label.empty()); CHECK(find_command(c.id) == &c); }
+    CHECK(search_commands("").size()==command_registry().size());
+    CHECK(search_commands("  ")==search_commands(""));
+    CHECK(search_commands("nwtb").front()->id=="tab.new");
+    CHECK(search_commands("splr").front()->id=="pane.split_right");
+    CHECK(search_commands("RST BKG")==search_commands("rst bkg"));
+    CHECK(search_commands("zzzzzzzzzzzzzzzz").empty());
+    CHECK(search_commands("[.*").empty()); // Literal punctuation, not a regex.
+    CHECK(search_commands(std::string(65,'a')).empty());
+    CHECK(command_search_score("é", "Café"));
+    CHECK(!command_search_score("é", "Cafe"));
+    CHECK(command_search_score("日本", "日本語 terminal"));
+    CHECK(!command_search_score(std::string("\xc3",1),"Café"));
+    CHECK(!command_search_score("x",std::string("\xc0\xaf",2)));
+    CHECK(!command_search_score("x",std::string("\xed\xa0\x80",3)));
+    CHECK(!command_search_score("x",std::string("\xf4\x90\x80\x80",4)));
+    CHECK(!command_search_score("z",std::string(512,'a')+"z"));
+    CHECK(*command_search_score("fb","foo bar")>*command_search_score("fb","foobar"));
+    CHECK(*command_search_score("tab","tab")>*command_search_score("tab","table"));
+    CHECK(*command_search_score("tab","tab")>*command_search_score("tab","t a b"));
+    for (int i=0;i<20;++i) CHECK(search_commands("pane")==search_commands("pane"));
+    for (std::size_t i=0;i<command_registry().size();++i) CHECK(search_commands("")[i]==&command_registry()[i]);
     CommandContext background{1,1};
     CHECK(!command_availability("pane.background",background).enabled);
     background.supports_background_sessions=true;
     CHECK(command_availability("pane.background",background).enabled);
     background.parked_sessions=256;
     CHECK(!command_availability("pane.background",background).enabled);
+    background.parked_sessions=1; background.panes=0; background.tabs=0;
+    CHECK(command_availability("background.restore",background).enabled);
+    background.supports_background_sessions=false;
+    CHECK(!command_availability("background.restore",background).enabled);
+    background.supports_background_sessions=true;
     background.parked_sessions=0; background.panes=0;
+    CHECK(!command_availability("background.restore",background).enabled);
     CHECK(!command_availability("pane.background",background).enabled);
     CommandContext projects;
     for (const auto* id : {"workspace.new","workspace.next","workspace.previous","workspace.close","workspace.toggle_navigation","window.focus_mode"}) {
