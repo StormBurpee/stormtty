@@ -144,6 +144,54 @@ class ZstdBootstrapTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 zstd.read_lock(path)
 
+    def test_exact_notice_recovery_and_cache_copy_preserve_checkout(self):
+        original = b"Pinned vendor license\nSecond line\n"
+        item = {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()}
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "LICENSE"
+            target = Path(tmp) / "cached-LICENSE"
+            for raw in (original, original.replace(b"\n", b"\r\n"),
+                        b"\xef\xbb\xbf" + original,
+                        b"\xef\xbb\xbf" + original.replace(b"\n", b"\r\n")):
+                with self.subTest(raw=raw):
+                    source.write_bytes(raw)
+                    self.assertEqual(zstd.notice_bytes(source, item), original)
+                    zstd.cache_notice(source, target, item)
+                    self.assertEqual(target.read_bytes(), original)
+                    self.assertEqual(source.read_bytes(), raw)
+            target.write_bytes(original.replace(b"\n", b"\r\n"))
+            zstd.cache_notice(target, target, item)
+            self.assertEqual(target.read_bytes(), original)
+
+    def test_notice_recovery_requires_exact_hash_and_size(self):
+        original = b"Pinned vendor license\n"
+        raw = original.replace(b"\n", b"\r\n")
+        checksum = hashlib.sha256(original).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "LICENSE"
+            for data, pin, size in ((raw, "0" * 64, len(original)),
+                                    (raw, checksum, len(original) + 1),
+                                    (raw + b"tampered", checksum, len(original))):
+                with self.subTest(data=data, pin=pin, size=size):
+                    source.write_bytes(data)
+                    with self.assertRaises(RuntimeError) as caught:
+                        zstd.notice_bytes(source, {"bytes": size, "sha256": pin})
+                    self.assertIn(pin, str(caught.exception))
+                    self.assertIn(hashlib.sha256(data).hexdigest(), str(caught.exception))
+                    self.assertEqual(source.read_bytes(), data)
+            source.write_bytes(raw)
+            with self.assertRaises(RuntimeError):
+                zstd.checked(source, {"bytes": len(original), "sha256": checksum})
+
+    def test_pinned_original_crlf_notice_is_preserved(self):
+        original = b"Original upstream CRLF\r\n"
+        item = {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()}
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "LICENSE"
+            source.write_bytes(original)
+            self.assertEqual(zstd.notice_bytes(source, item), original)
+            self.assertEqual(source.read_bytes(), original)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -58,9 +58,49 @@ def directory(path):
 
 
 def checked(path, item):
-    if regular(path).st_size != item["bytes"] or digest(path) != item["sha256"]:
-        raise RuntimeError(f"Tool integrity check failed: {path}; remove explicitly before retrying")
+    size = regular(path).st_size
+    actual = digest(path)
+    if size != item["bytes"] or actual != item["sha256"]:
+        raise RuntimeError(f"Tool integrity check failed: {path}; expected SHA-256 {item['sha256']}, "
+                           f"bytes {item['bytes']}; actual SHA-256 {actual}, bytes {size}; "
+                           "remove explicitly before retrying")
     return path
+
+
+def notice_bytes(path, item):
+    """Recovery is only for pinned notice texts, never an executable/archive."""
+    size = regular(path).st_size
+    if size <= 2 * item["bytes"] + 3:
+        raw = path.read_bytes()
+        without_bom = raw.removeprefix(b"\xef\xbb\xbf")
+        for candidate in (raw, raw.replace(b"\r\n", b"\n"), without_bom,
+                          without_bom.replace(b"\r\n", b"\n")):
+            if len(candidate) == item["bytes"] and hashlib.sha256(candidate).hexdigest() == item["sha256"]:
+                return candidate
+        actual = hashlib.sha256(raw).hexdigest()
+        size = len(raw)
+    else:
+        actual = digest(path)
+    raise RuntimeError(f"Tool notice integrity check failed: {path}; expected SHA-256 {item['sha256']}, "
+                       f"bytes {item['bytes']}; actual SHA-256 {actual}, bytes {size}")
+
+
+def cache_notice(source, target, item):
+    data = notice_bytes(source, item)
+    if target.exists() or target.is_symlink():
+        regular(target)
+        if target.read_bytes() == data:
+            return
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".zstd-notice-", dir=target.parent, delete=False) as output:
+            temporary = Path(output.name)
+            output.write(data)
+        checked(temporary, item)
+        temporary.replace(target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def read_lock(path=LOCK):
@@ -185,8 +225,11 @@ def provision(cache, offline=False, lock_path=LOCK):
         archive = download(lock["archive"], cache, offline)
         if destination.exists() or destination.is_symlink():
             directory(destination)
-            for item in lock["members"] + lock["notices"]:
+            for item in lock["members"]:
                 checked(destination / item["target"], item)
+            for item in lock["notices"]:
+                path = destination / item["target"]
+                cache_notice(path, path, item)
             if {p.name for p in destination.iterdir()} != {x["target"] for x in lock["members"] + lock["notices"]}:
                 raise RuntimeError("Unexpected file in private decompressor directory")
             return destination / "zstd.exe"
@@ -196,9 +239,7 @@ def provision(cache, offline=False, lock_path=LOCK):
             extract(archive, fresh, lock)
             for item in lock["notices"]:
                 source = Path(__file__).parent / item["source"]
-                checked(source, item)
-                shutil.copyfile(source, fresh / item["target"])
-                checked(fresh / item["target"], item)
+                cache_notice(source, fresh / item["target"], item)
             fresh.rename(destination)
         return destination / "zstd.exe"
     finally:

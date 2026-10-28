@@ -25,10 +25,35 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def checked_asset(path, expected):
-    if path.is_symlink() or not path.is_file() or bootstrap.digest(path) != expected:
+def checked_asset(path, expected, expected_bytes=None):
+    if path.is_symlink() or not path.is_file():
         raise RuntimeError(f"Notice asset integrity failure: {path}")
+    size = path.stat().st_size
+    actual = bootstrap.digest(path)
+    if (expected_bytes is not None and size != expected_bytes) or actual != expected:
+        raise RuntimeError(f"Notice asset integrity failure: {path}; expected SHA-256 {expected}, "
+                           f"bytes {expected_bytes}; actual SHA-256 {actual}, bytes {size}")
     return path
+
+
+def notice_bytes(path, expected, expected_bytes):
+    """Recover only exact hash-pinned notice text; never modify the checkout."""
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"Notice asset must be a regular file: {path}")
+    size = path.stat().st_size
+    if size <= 2 * expected_bytes + 3:
+        raw = path.read_bytes()
+        without_bom = raw.removeprefix(b"\xef\xbb\xbf")
+        for candidate in (raw, raw.replace(b"\r\n", b"\n"), without_bom,
+                          without_bom.replace(b"\r\n", b"\n")):
+            if len(candidate) == expected_bytes and hashlib.sha256(candidate).hexdigest() == expected:
+                return candidate
+        actual = hashlib.sha256(raw).hexdigest()
+        size = len(raw)
+    else:
+        actual = bootstrap.digest(path)
+    raise RuntimeError(f"Notice asset integrity failure: {path}; expected SHA-256 {expected}, "
+                       f"bytes {expected_bytes}; actual SHA-256 {actual}, bytes {size}")
 
 
 def source_records(lock):
@@ -60,7 +85,7 @@ def validated_assets(lock):
             raise RuntimeError("Component lacks mapped notice texts")
     for asset in index["assets"]:
         bootstrap.portable_path(asset["path"])
-        checked_asset(ASSETS / asset["path"], asset["sha256"])
+        notice_bytes(ASSETS / asset["path"], asset["sha256"], asset["bytes"])
     return index, mapping
 
 
@@ -95,7 +120,7 @@ def emit(args):
         name = record["path"]
         bootstrap.portable_path(name)
         if name.startswith(".stormtty-packages/"):
-            path = checked_asset(runtime / name, record["sha256"])
+            path = checked_asset(runtime / name, record["sha256"], record["bytes"])
             evidence.append((name, path, record["sha256"]))
     if not all(any(n.startswith(f".stormtty-packages/{p['name']}/") and n.endswith('/.BUILDINFO')
                    for n, _, _ in evidence) for p in lock["packages"]):
@@ -114,7 +139,7 @@ def emit(args):
         for asset in index["assets"]:
             path = notices / asset["path"]
             path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ASSETS / asset["path"], path)
+            path.write_bytes(notice_bytes(ASSETS / asset["path"], asset["sha256"], asset["bytes"]))
         for filename in ("assets.json", "components.json", "source-supplements.lock.json", "REVIEW.md"):
             shutil.copyfile(ASSETS / filename, notices / filename)
         (notices / "source-manifest.json").write_text(json.dumps(sources, indent=2) + "\n", encoding="utf-8")
@@ -177,9 +202,15 @@ def emit(args):
                 recipes += ["CMakeLists.txt", "cmake/StormTTYDeveloperShell.cmake"]
                 for name in sorted(recipes):
                     archive_file(archive, "stormtty-packaging/" + name, TOOLS.parent / name)
+                asset_pins = {a["path"]: a["sha256"] for a in index["assets"]}
                 for path in sorted(ASSETS.rglob("*")):
                     if path.is_file():
-                        archive_file(archive, "stormtty-packaging/tools/shell-notices/" + path.relative_to(ASSETS).as_posix(), path)
+                        name = path.relative_to(ASSETS).as_posix()
+                        # Recipe copies must use the same verified exact notice
+                        # bytes as the runtime overlay, not altered checkout text.
+                        source = notices / name if name in asset_pins else path
+                        archive_file(archive, "stormtty-packaging/tools/shell-notices/" + name,
+                                     source, asset_pins.get(name))
                 for path in sorted(notices.rglob("*")):
                     if path.is_file():
                         archive_file(archive, "notices/" + path.relative_to(notices).as_posix(), path)

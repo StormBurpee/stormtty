@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Offline tests of the locked notice/source packet; no binaries are executed."""
 import argparse
+import hashlib
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 spec = importlib.util.spec_from_file_location("shell_notices", Path(__file__).with_name("shell-notices.py"))
@@ -64,6 +67,82 @@ class NoticeTests(unittest.TestCase):
             source.write_bytes(b"tampered")
             with self.assertRaises(RuntimeError):
                 notices.checked_asset(source, "0" * 64)
+
+    def test_exact_notice_recovery_preserves_checkout(self):
+        original = b"Pinned vendor notice\nSecond line\n"
+        checksum = hashlib.sha256(original).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "notice"
+            for raw in (original, original.replace(b"\n", b"\r\n"),
+                        b"\xef\xbb\xbf" + original,
+                        b"\xef\xbb\xbf" + original.replace(b"\n", b"\r\n")):
+                with self.subTest(raw=raw):
+                    source.write_bytes(raw)
+                    self.assertEqual(notices.notice_bytes(source, checksum, len(original)), original)
+                    self.assertEqual(source.read_bytes(), raw)
+
+    def test_notice_recovery_requires_exact_hash_and_size(self):
+        original = b"Pinned vendor notice\n"
+        raw = original.replace(b"\n", b"\r\n")
+        checksum = hashlib.sha256(original).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "notice"
+            for data, pin, size in ((raw, "0" * 64, len(original)),
+                                    (raw, checksum, len(original) + 1),
+                                    (raw + b"tampered", checksum, len(original))):
+                with self.subTest(data=data, pin=pin, size=size):
+                    source.write_bytes(data)
+                    with self.assertRaises(RuntimeError) as caught:
+                        notices.notice_bytes(source, pin, size)
+                    self.assertIn(pin, str(caught.exception))
+                    self.assertIn(hashlib.sha256(data).hexdigest(), str(caught.exception))
+                    self.assertEqual(source.read_bytes(), data)
+            source.write_bytes(raw)
+            with self.assertRaises(RuntimeError):
+                notices.checked_asset(source, checksum, len(original))
+
+    def test_pinned_original_crlf_notice_is_preserved(self):
+        original = b"Original upstream CRLF\r\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "notice"
+            source.write_bytes(original)
+            self.assertEqual(notices.notice_bytes(source, hashlib.sha256(original).hexdigest(), len(original)), original)
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_overlay_and_full_source_packet_emit_exact_recovered_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            assets = root / "assets"
+            shutil.copytree(notices.ASSETS, assets)
+            source = assets / "texts/zsh/LICENCE"
+            original = source.read_bytes()
+            raw = b"\xef\xbb\xbf" + original.replace(b"\n", b"\r\n")
+            source.write_bytes(raw)
+            lock = notices.bootstrap.read_lock(notices.TOOLS / "shell-bootstrap.lock.json")
+            runtime = root / "runtime"
+            records = []
+            for package in lock["packages"]:
+                name = ".stormtty-packages/" + package["name"] + "/.BUILDINFO"
+                path = runtime / name
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"inert build evidence\n")
+                records.append({"path": name, "sha256": notices.bootstrap.digest(path), "bytes": path.stat().st_size})
+            (runtime / "stormtty-shell-manifest.json").write_text(json.dumps({
+                "lock_sha256": notices.bootstrap.digest(notices.TOOLS / "shell-bootstrap.lock.json"), "files": records}))
+            archive = root / "source-fixture.tar.zst"
+            archive.write_bytes(b"opaque unit-test source archive")
+            source_record = {"filename": archive.name, "bytes": archive.stat().st_size, "sha256": notices.bootstrap.digest(archive)}
+            output = root / "output"
+            args = argparse.Namespace(output=output, runtime=runtime, cache=root / "cache", source_packet=True, offline=True)
+            with mock.patch.object(notices, "ASSETS", assets), \
+                    mock.patch.object(notices, "source_records", return_value=[source_record]), \
+                    mock.patch.object(notices.bootstrap, "download", return_value=archive):
+                notices.emit(args)
+            self.assertEqual(source.read_bytes(), raw)
+            self.assertEqual((output / "runtime-notices/texts/zsh/LICENCE").read_bytes(), original)
+            with zipfile.ZipFile(output / "corresponding-source.zip") as bundle:
+                self.assertEqual(bundle.read("notices/texts/zsh/LICENCE"), original)
+                self.assertEqual(bundle.read("stormtty-packaging/tools/shell-notices/texts/zsh/LICENCE"), original)
 
     def test_existing_output_not_modified(self):
         with tempfile.TemporaryDirectory() as tmp:

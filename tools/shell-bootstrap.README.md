@@ -36,6 +36,12 @@ Each archive's exact byte count and SHA-256 is checked, including cached inputs.
 
 Extraction rejects absolute/traversing paths, Windows reserved names/ADS, case collisions, symlinks, special/sparse files, unexpected roots and duplicate files. Upstream tar hardlinks (including `zsh.exe`) are materialized as independent regular files only when they target an earlier verified same-package file. No Windows symlink privilege is needed. Entry/member/total-byte limits apply. Package `.INSTALL` files are retained under `.stormtty-packages/<name>/` as inert audit data, never run. A fresh temporary staging tree is renamed only after all verification/extraction succeeds.
 
+### Existing Windows checkout: exact notice-byte recovery
+
+Older Windows checkouts may retain CRLF-converted vendor notices even after pulling `.gitattributes`. The build now recovers their exact pinned bytes in memory: it tries the raw bytes first, then CRLF-to-LF and UTF-8 BOM-removal candidates, accepting a candidate only if **both the original SHA-256 and byte count match**. Runtime notices, build-tool license copies and both notice copies inside the full source ZIP receive those verified bytes. No manual checkout repair or cache deletion is needed for this case, and the checkout itself is never modified.
+
+Original upstream CRLF assets remain byte-exact because their raw pins are checked first. Unrelated edits still fail with expected/actual hashes and sizes; executable, package/archive and build-evidence validation never uses text recovery.
+
 ## Build-tool provenance and cache policy
 
 `tools/shell-zstd-bootstrap.lock.json` pins the [official facebook/zstd v1.5.7 Windows x64 release](https://github.com/facebook/zstd/releases/tag/v1.5.7), asset ID 233456224. ZIP SHA-256: `acb4e8111511749dc7a3ebedca9b04190e37a17afeb73f55d4425dbf0b90fad9` (1,747,181 bytes). The selected `zstd.exe` is independently pinned to `8076aae03feac7c66b319579e82172eed168deed2a3f25e5e2d3c60f55e84111` (1,601,409 bytes). PE inspection finds only Windows `KERNEL32.dll` and `msvcrt.dll` imports; no extra DLL is copied.
