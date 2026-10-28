@@ -39,12 +39,17 @@ public:
     // Existing profile IDs take precedence over discovery; only a selected
     // discovered profile is copied into the draft. Invalid candidates are ignored.
     void open(const Config&, std::span<const Profile> discovered = {});
+    // Fresh disk content is the editor/dirty baseline; the running value remains
+    // the rollback baseline. Opening never commits shell or shortcut changes.
+    void open(const Config& running, const Config& editor,
+              std::span<const Profile> discovered = {});
     void open_for_binding(const Config&, std::string_view command_id,
                           std::span<const Profile> discovered = {});
     bool capturing_shortcut() const noexcept { return !capture_command_.empty(); }
     bool is_open() const noexcept { return open_; }
     bool saving() const noexcept { return saving_; }
-    bool dirty() const { return draft_ != original_; }
+    bool dirty() const { return draft_ != initial_draft_; }
+    bool loaded_changes_from_disk() const noexcept { return loaded_changes_; }
     const Config& draft() const noexcept { return draft_; }
     const Config& original() const noexcept { return original_; }
     SettingsSection section() const noexcept { return section_; }
@@ -86,7 +91,7 @@ private:
     void assign_binding(const KeyChord&, bool confirm_terminal_override);
     const SettingsControl* hit(Point) const noexcept;
     Platform platform_;
-    Config original_, draft_;
+    Config original_, initial_draft_, draft_;
     std::vector<Profile> profiles_;
     std::vector<std::string> families_;
     Size viewport_{1024,768};
@@ -94,7 +99,7 @@ private:
     SettingsSection section_{SettingsSection::appearance};
     std::string focus_{"nav.appearance"}, hover_, pressed_, error_, capture_command_, material_status_;
     double scroll_{}, document_height_{};
-    bool open_{}, saving_{}, dragging_opacity_{}, high_contrast_{};
+    bool open_{}, saving_{}, dragging_opacity_{}, high_contrast_{}, loaded_changes_{};
     Color high_background_{0,0,0,255}, high_foreground_{255,255,255,255};
     Color high_highlight_{0,120,215,255}, high_highlight_text_{255,255,255,255};
     Color high_disabled_text_{128,128,128,255};

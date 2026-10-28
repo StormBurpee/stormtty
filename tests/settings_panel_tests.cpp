@@ -2,6 +2,8 @@
 #include "stormtty/settings_panel.hpp"
 #include <algorithm>
 #include <limits>
+#include <fstream>
+#include <chrono>
 #include <set>
 
 using namespace stormtty;
@@ -115,6 +117,46 @@ int main() {return run_core_tests("settings panel",[] {
         themes.persistence_result(true);themes.open(saved->config);CHECK(!themes.dirty() && themes.draft().theme==config.theme);
         themes.cancel();
     }
+
+    // Reopening reads new disk content without replacing the running Cancel
+    // baseline or committing external shell/binding changes during preview.
+    const auto lifecycle_path=std::filesystem::current_path()/("settings-editor-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".stormtty");
+    struct RemoveFixture {std::filesystem::path path;~RemoveFixture(){std::error_code ignored;std::filesystem::remove(path,ignored);}} remove_fixture{lifecycle_path};
+    const auto write_file=[&](std::string_view bytes) {std::ofstream file(lifecycle_path,std::ios::binary|std::ios::trunc);file.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));file.close();CHECK(file.good());};
+    auto disk_config=defaults;disk_config.theme=*find_builtin_theme("daylight");disk_config.font.size_dip=20;
+    disk_config.profiles.push_back({"external","External shell","external.exe",{},{},{}});disk_config.default_profile="external";
+    disk_config.bindings.push_back({"pane.split_right",{"F8",CommandModifier::control|CommandModifier::shift}});
+    write_file(serialize_config(disk_config,Platform::windows));
+    auto fresh_disk=load_config(lifecycle_path,Platform::windows);CHECK(fresh_disk);
+    SettingsPanel reopened;reopened.open(defaults,*fresh_disk.config);
+    CHECK(reopened.original()==defaults && reopened.draft()==*fresh_disk.config);
+    CHECK(!reopened.dirty() && reopened.loaded_changes_from_disk());
+    auto disk_preview=reopened.take_action();CHECK(disk_preview && disk_preview->kind==SettingsActionKind::preview && disk_preview->config==*fresh_disk.config);
+    WindowScene loaded_scene;reopened.append_scene(loaded_scene);
+    CHECK(std::any_of(loaded_scene.texts.begin(),loaded_scene.texts.end(),[](const auto& t){return t.text=="Loaded changes from disk";}));
+    activate(reopened,"font.increase");const auto editing=reopened.draft();CHECK(reopened.dirty());
+    reopened.open(defaults,defaults);CHECK(reopened.draft()==editing); // A repeated open never discards edits.
+    reopened.cancel();CHECK(reopened.take_action()->config==defaults);
+    CHECK(load_config(lifecycle_path,Platform::windows).config==fresh_disk.config); // Cancel never rewrites disk.
+    reopened.open(defaults,*fresh_disk.config);click(reopened,"save");
+    const auto adopt=reopened.take_action();CHECK(adopt && adopt->kind==SettingsActionKind::save && adopt->config==*fresh_disk.config);
+    reopened.persistence_result(true);reopened.open(adopt->config,*fresh_disk.config);
+    CHECK(!reopened.loaded_changes_from_disk() && !reopened.dirty() && !reopened.take_action());
+    reopened.cancel();reopened.take_action();
+    // A syntactically invalid file stays explicit; repair and reread needs no restart.
+    write_file("version = 1\n[font]\nsize_dip = nope\n");
+    const auto invalid_disk=load_config(lifecycle_path,Platform::windows);CHECK(!invalid_disk && !invalid_disk.errors.empty());CHECK(!reopened.is_open());
+    write_file(serialize_config(disk_config,Platform::windows));fresh_disk=load_config(lifecycle_path,Platform::windows);CHECK(fresh_disk);
+    reopened.open(defaults,*fresh_disk.config);CHECK(reopened.is_open());reopened.cancel();
+    // Custom selection restores the disk palette, while Cancel still restores
+    // a different running custom palette rather than silently losing either.
+    auto running_custom=defaults;running_custom.theme={"custom","#101010","#EFEFEF","#202020","#778899"};
+    auto disk_custom=running_custom;disk_custom.theme.accent="#123456";
+    reopened.open(running_custom,disk_custom);click(reopened,"appearance.theme.graphite");click(reopened,"appearance.theme.custom");
+    CHECK(reopened.draft().theme==disk_custom.theme);reopened.cancel();CHECK(reopened.take_action()->config==running_custom);
+    // Canonical binding order alone must not claim an external change.
+    const auto same_disk=parse_config(serialize_config(defaults,Platform::windows),Platform::windows);CHECK(same_disk);
+    reopened.open(defaults,*same_disk.config);CHECK(!reopened.loaded_changes_from_disk() && !reopened.take_action());reopened.cancel();
 
     // Shell selection preserves configured executable/arguments/environment.
     Profile git;git.id="git-bash";git.label="Git Bash";git.executable="C:\\Program Files\\Git\\bin\\bash.exe";git.arguments={"--login","-i"};git.environment["CHERE_INVOKING"]="1";

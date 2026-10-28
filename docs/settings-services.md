@@ -48,15 +48,22 @@ Primary sources checked October 28, 2026:
    exact owned bytes, identity, timestamp, and matching parsed Config together.
    Missing files return a default Config and an absent-file token without writes.
    Invalid files fail visibly rather than falling back to a writable default.
-2. Preview/Cancel are memory-only. Preserve the original host Config for Cancel.
-3. On explicit Save, call `save_settings_config(path, draft, token)` on a worker.
-   Do **not** silently refresh the token before saving stale edits. If the live
-   Config came from an earlier startup read, ensure that baseline still matches
-   the loaded file before opening the editor.
-4. Apply the whole draft and retain the new token **only on successful Save**.
-   Failure retains the active Config and shows the error; a conflict requires an
-   explicit reload/reopen to review disk changes. Never partially apply shortcuts
-   or profile selection on a failed save.
+2. Open the editor from that freshly parsed Config even when it differs from
+   the running Config. Keep the running value separately as the Cancel baseline;
+   the fresh disk value is the initial draft/dirty baseline. Missing files retain
+   the running defaults. Repeated open requests never replace an open draft.
+3. Preview/Cancel are memory-only and affect only theme, font and appearance.
+   Opening changed disk content previews those presentation fields and displays
+   “Loaded changes from disk.” Shell/profile and shortcut changes remain inactive
+   until Save. Cancel restores the prior running presentation without writing.
+4. On explicit Save, call `save_settings_config(path, draft, token)` on a worker.
+   Do **not** silently refresh the token before saving stale edits. A disk change
+   during editing still fails the exact bytes/identity/timestamp check.
+5. Apply the whole draft and retain the new token **only on successful Save**.
+   Failure preserves the open draft and shows the error; Cancel then reopen reads
+   the new disk value/token without a restart. Never partially apply shortcuts or
+   profile selection on a failed save. Invalid disk files fail explicitly, and
+   repairing the file permits the next open attempt without cached failure state.
 
 Persistence requires an absolute ordinary local drive path supplied by the host.
 Resolve relative CLI paths once before loading. UNC/network drives, device paths,
@@ -98,5 +105,9 @@ load, Unicode filenames, successful repeated saves and token stability, invalid
 draft retention, wrong-path tokens, external edits/deletion/replacement, read-only
 and sharing failures, hard links, optional privilege-dependent symlink fixtures,
 malformed/oversized input, unsafe path forms, temp cleanup, and bounded discovery.
+It also exercises actual external file edits through the shared editor: open and
+Cancel, explicit adoption on Save, changed-during-edit conflict with draft
+retention, Cancel/reopen/retry, and invalid-file repair. Portable panel tests cover
+the two independent baselines and fresh file reads; they are not native I/O proof.
 Git Bash launch/ConPTY/cwd behavior still requires a Windows runtime with Git for
 Windows installed; this test intentionally never executes discovered shells.

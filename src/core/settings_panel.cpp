@@ -58,14 +58,21 @@ std::string binding_label(const Config& config, std::string_view id, Platform pl
 
 SettingsPanel::SettingsPanel(Platform platform) : platform_(platform) {}
 void SettingsPanel::open(const Config& config, std::span<const Profile> discovered) {
+    open(config,config,discovered);
+}
+void SettingsPanel::open(const Config& running, const Config& config, std::span<const Profile> discovered) {
     // Repeated open requests must not erase an unsaved or in-flight draft.
     if (open_) return;
-    original_=config; draft_=config; profiles_.clear(); families_.clear(); pending_.reset();
+    original_=running; initial_draft_=config; draft_=config; profiles_.clear(); families_.clear(); pending_.reset();
     error_.clear(); capture_command_.clear(); terminal_override_.reset(); hover_.clear(); pressed_.clear();
     open_=true; saving_=false; dragging_opacity_=false; scroll_=0;
     section_=SettingsSection::appearance; focus_="nav.appearance";
     const auto valid=validate_config(config,platform_);
     if (!valid) error_=bounded_message(valid.error);
+    // Binding insertion order is not a disk change. Compare serialized meaning
+    // only for the informational status; persistence keeps its exact file token.
+    loaded_changes_=valid && serialize_config(config,platform_)!=serialize_config(running,platform_);
+    if (loaded_changes_) pending_=SettingsAction{SettingsActionKind::preview,draft_};
     for (const auto& profile:config.profiles) {
         if (profiles_.size()==64) break;
         profiles_.push_back(profile);
@@ -144,11 +151,11 @@ void SettingsPanel::rebuild_layout() {
     const double top=content_y-scroll_, right=content_x+content_w;
     if (section_==SettingsSection::appearance) {
         layout_.preview={content_x,top+40,content_w,38};
-        const auto count=builtin_themes().size()+(has_custom_theme(original_)?1:0);
+        const auto count=builtin_themes().size()+(has_custom_theme(initial_draft_)?1:0);
         const double theme_width=std::max(0.0,(content_w-(count-1)*6)/count);
         std::size_t theme_index=0;
         for (const auto& theme:builtin_themes()) add("appearance.theme."+theme.name,{content_x+theme_index++*(theme_width+6),top,theme_width,30},true);
-        if (has_custom_theme(original_)) add("appearance.theme.custom",{content_x+theme_index*(theme_width+6),top,theme_width,30},true);
+        if (has_custom_theme(initial_draft_)) add("appearance.theme.custom",{content_x+theme_index*(theme_width+6),top,theme_width,30},true);
         const double cw=std::min(content_w*0.49,230.0);
         add("font.family",{right-cw,top+94,cw,34},true);
         add("font.decrease",{right-118,top+150,32,32},true,draft_.font.size_dip>6);
@@ -212,7 +219,7 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     const auto before=draft_;
     if (id.starts_with("appearance.theme.")) {
         const auto name=id.substr(std::string_view("appearance.theme.").size());
-        if (name=="custom" && has_custom_theme(original_)) draft_.theme=original_.theme;
+        if (name=="custom" && has_custom_theme(initial_draft_)) draft_.theme=initial_draft_.theme;
         else if (const auto* theme=find_builtin_theme(name)) draft_.theme=*theme;
     } else if (id=="font.family") {
         const auto found=std::find(families_.begin(),families_.end(),draft_.font.family);
@@ -401,13 +408,13 @@ void SettingsPanel::request_save() {
 void SettingsPanel::cancel() {
     if (!open_ || saving_) return;
     pending_=SettingsAction{SettingsActionKind::cancel,original_};
-    draft_=original_;open_=false;capture_command_.clear();terminal_override_.reset();dragging_opacity_=false;pressed_.clear();++generation_;
+    draft_=original_;initial_draft_=original_;loaded_changes_=false;open_=false;capture_command_.clear();terminal_override_.reset();dragging_opacity_=false;pressed_.clear();++generation_;
 }
 std::optional<SettingsAction> SettingsPanel::take_action() {return std::exchange(pending_,std::nullopt);}
 void SettingsPanel::persistence_result(bool success,std::string error) {
     if (!open_ || !saving_) return;
     saving_=false;
-    if (success) {original_=draft_;open_=false;pending_.reset();}
+    if (success) {original_=draft_;initial_draft_=draft_;loaded_changes_=false;open_=false;pending_.reset();}
     else {error_=bounded_message(error.empty()?"Settings could not be saved. Your changes are still here.":std::move(error));focus_="save";}
     ++generation_;rebuild_layout();
 }
@@ -521,7 +528,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         content_box(preview,canvas,border,7,1);
         content_box({preview.x,preview.y+12,2,preview.height-24},accent,transparent,1);
         for (const auto& theme:builtin_themes()) button("appearance.theme."+theme.name,theme_title(theme.name),draft_.theme==theme);
-        if (has_custom_theme(original_)) button("appearance.theme.custom","Custom",draft_.theme==original_.theme);
+        if (has_custom_theme(initial_draft_)) button("appearance.theme.custom","Custom",draft_.theme==initial_draft_.theme);
         text({preview.x+16,preview.y+4,std::max(0.0,preview.width-32),30},">_  ABC abc 0123 {} [] -> !=",ink,float(std::clamp(draft_.font.size_dip,10.0,22.0)),false,draft_.font.family,true);
         const double cw=std::min(content.width*0.49,230.0), lw=std::max(0.0,content.width-cw-20);
         row_labels(90,"Terminal font","System fallback if not installed",lw);
@@ -597,7 +604,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             label({p.x+pad,layout_.footer.y+13,available,24},"Couldn't apply settings",{244,164,164,255},12,true);
             label({p.x+pad,layout_.footer.y+37,available,21},error_,muted,11);
         } else {
-            const std::string status=terminal_override_?format_key_chord(*terminal_override_,platform_)+" replaces terminal input":saving_?"Saving settings…":capturing_shortcut()?"Press a shortcut…":dirty()?"Unsaved changes":"No unsaved changes";
+            const std::string status=terminal_override_?format_key_chord(*terminal_override_,platform_)+" replaces terminal input":saving_?"Saving settings…":capturing_shortcut()?"Press a shortcut…":dirty()?"Unsaved changes":loaded_changes_?"Loaded changes from disk":"No unsaved changes";
             box({p.x+pad,layout_.footer.y+28,5,5},dirty()?accent:green,transparent,2.5);
             label({p.x+pad+14,layout_.footer.y+17,std::max(0.0,available-14),25},status,muted,12);
             label({p.x+pad+14,layout_.footer.y+42,std::max(0.0,available-14),18},terminal_override_?"Use shortcut to confirm · Esc cancels":capturing_shortcut()?"Esc to stop · Backspace to clear":platform_==Platform::macos?"Esc to cancel · Cmd+Enter to save":"Esc to cancel · Ctrl+Enter to save",subdued,10);
@@ -606,6 +613,8 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         label({p.x+pad,layout_.footer.y+2,std::max(0.0,p.width-2*pad),18},error_,{244,164,164,255},10);
     } else if (terminal_override_) {
         label({p.x+pad,layout_.footer.y+2,std::max(0.0,p.width-2*pad),18},format_key_chord(*terminal_override_,platform_)+" replaces terminal input",muted,10);
+    } else if (loaded_changes_ && !dirty()) {
+        label({p.x+pad,layout_.footer.y+2,std::max(0.0,p.width-2*pad),18},"Loaded changes from disk",muted,10);
     }
     button("cancel","Cancel");
     if (terminal_override_) button("binding.confirm","Use shortcut",false,true);

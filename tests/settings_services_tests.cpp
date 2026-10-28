@@ -1,5 +1,6 @@
 #include "core_test.hpp"
 #include "stormtty/settings_services.hpp"
+#include "stormtty/settings_panel.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -107,6 +108,59 @@ int main() { return run_core_tests("settings_services (Windows native)", [] {
     config.font.size_dip = 18;
     auto third = save_settings_config(path, config, *second.snapshot); CHECK(third);
     CHECK(load_settings_snapshot(path).config->font.size_dip == 18);
+    CHECK(!has_temporaries(directory.path));
+
+    // Actual external-file editor lifecycle: fresh disk draft, separate running
+    // rollback baseline, explicit adoption, and unchanged optimistic tokens.
+    const auto editor_path=directory.path/L"editor-lifecycle.stormtty";
+    auto running=defaults;SettingsPanel editor;
+    auto external=running;external.font.size_dip=22;external.theme=*find_builtin_theme("daylight");
+    external.profiles.push_back({"external","External shell","external.exe",{},{},{}});external.default_profile="external";
+    external.bindings.push_back({"pane.split_right",{"F8",CommandModifier::control|CommandModifier::shift}});
+    const auto commit_action=[&] {
+        editor.key({{"ENTER",CommandModifier::control}});
+        const auto action=editor.take_action();CHECK(action && action->kind==SettingsActionKind::save);return *action;
+    };
+    // Own Save -> reread -> reopen has no false "loaded from disk" status.
+    auto editor_missing=load_settings_snapshot(editor_path);CHECK(editor_missing);
+    auto editor_own=save_settings_config(editor_path,running,*editor_missing.snapshot);CHECK(editor_own);
+    auto editor_fresh=load_settings_snapshot(editor_path);CHECK(editor_fresh);
+    editor.open(running,*editor_fresh.config);CHECK(!editor.loaded_changes_from_disk() && !editor.take_action());editor.cancel();editor.take_action();
+    // Valid external edits can open immediately. Preview is reversible; shell and
+    // shortcut adoption remains the caller's explicit successful-Save operation.
+    write(editor_path,serialize_config(external,Platform::windows));
+    editor_fresh=load_settings_snapshot(editor_path);CHECK(editor_fresh);editor.open(running,*editor_fresh.config);
+    CHECK(editor.loaded_changes_from_disk() && !editor.dirty());
+    const auto loaded_preview=editor.take_action();CHECK(loaded_preview && loaded_preview->kind==SettingsActionKind::preview);
+    CHECK(editor.original()==running && loaded_preview->config.default_profile=="external");
+    editor.cancel();const auto rollback=editor.take_action();CHECK(rollback && rollback->config==running);
+    CHECK(read(editor_path)==serialize_config(external,Platform::windows));
+    // Reopen+Save adopts that disk value using the same exact freshly read token.
+    editor_fresh=load_settings_snapshot(editor_path);CHECK(editor_fresh);editor.open(running,*editor_fresh.config);
+    const auto adopt_external=commit_action();auto adopted=save_settings_config(editor_path,adopt_external.config,*editor_fresh.snapshot);CHECK(adopted);
+    editor.persistence_result(true);running=adopt_external.config;
+    editor_fresh=load_settings_snapshot(editor_path);CHECK(editor_fresh);editor.open(running,*editor_fresh.config);
+    CHECK(!editor.loaded_changes_from_disk() && !editor.dirty());editor.cancel();editor.take_action();
+    // A change DURING editing still conflicts. Failed Save preserves the draft;
+    // Cancel then reopen obtains a new token without restart or silent overwrite.
+    editor_fresh=load_settings_snapshot(editor_path);CHECK(editor_fresh);editor.open(running,*editor_fresh.config);
+    for (unsigned i=0;i<256 && editor.focused_control()!="font.increase";++i) editor.key({{"TAB"}});
+    CHECK(editor.focused_control()=="font.increase");editor.key({{"ENTER"}});const auto unsaved=editor.draft();
+    auto newer=external;newer.font.size_dip=28;write(editor_path,serialize_config(newer,Platform::windows));
+    const auto stale_action=commit_action();const auto stale_save=save_settings_config(editor_path,stale_action.config,*editor_fresh.snapshot);
+    CHECK(!stale_save && stale_save.conflict);editor.persistence_result(false,stale_save.error);
+    CHECK(editor.is_open() && editor.dirty() && editor.draft()==unsaved);
+    CHECK(read(editor_path)==serialize_config(newer,Platform::windows));
+    editor.cancel();CHECK(editor.take_action()->config==running);
+    editor_fresh=load_settings_snapshot(editor_path);CHECK(editor_fresh);editor.open(running,*editor_fresh.config);
+    CHECK(editor.draft().font.size_dip==28 && editor.loaded_changes_from_disk());
+    const auto recovered_action=commit_action();const auto recovered=save_settings_config(editor_path,recovered_action.config,*editor_fresh.snapshot);CHECK(recovered);
+    editor.persistence_result(true);running=recovered_action.config;
+    // Invalid-file reads do not create an editor/token. Repair permits next open.
+    write(editor_path,"version = 1\n[font]\nsize_dip = invalid\n");
+    const auto invalid_read=load_settings_snapshot(editor_path);CHECK(!invalid_read && !invalid_read.snapshot && !invalid_read.error.empty());CHECK(!editor.is_open());
+    write(editor_path,serialize_config(running,Platform::windows));editor_fresh=load_settings_snapshot(editor_path);CHECK(editor_fresh);
+    editor.open(running,*editor_fresh.config);CHECK(editor.is_open() && !editor.dirty());editor.cancel();editor.take_action();
     CHECK(!has_temporaries(directory.path));
 
     // Read-only files and concurrent writer handles fail safely.

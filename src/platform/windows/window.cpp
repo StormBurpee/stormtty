@@ -1203,11 +1203,6 @@ void NativeWindow::settings_completed() {
         if (!settings_open_requested_) return;
         settings_open_requested_=false;
         if (!completion->loaded) { show_error(completion->loaded.error); return; }
-        // The snapshot and parsed config come from one read. Refuse to edit an
-        // externally changed baseline rather than saving stale running values.
-        if (completion->loaded.snapshot->existed && !settings_baseline_matches(*completion->loaded.config,config_,Platform::windows)) {
-            show_error("The settings file changed since launch. Restart to load it before editing; nothing was overwritten."); return;
-        }
         if (modal_) { show_error("Settings are ready. Finish the current confirmation, then open Settings again."); return; }
         if (options_.smoke_settings && smoke_settings_stage_==1 && completion->loaded.snapshot->existed) {
             smoke_finish("The isolated Settings smoke path unexpectedly already exists."); return;
@@ -1218,11 +1213,15 @@ void NativeWindow::settings_completed() {
         palette_transition_=ChromeTransition{}; closing_palette_primitives_.clear(); closing_palette_texts_.clear();
         if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
         if (managed_shell_profile_) completion->shells.profiles.push_back(managed_zsh_profile_reference());
-        if (settings_binding_.empty()) settings_panel_.open(config_,completion->shells.profiles);
-        else settings_panel_.open_for_binding(config_,settings_binding_,completion->shells.profiles);
+        // Edit the latest valid disk value, but Cancel restores the running
+        // presentation. Keep the exact token from this read for atomic Save.
+        // Missing files retain running defaults (including managed shell setup).
+        const auto& editor=settings_snapshot_->existed?*completion->loaded.config:config_;
+        settings_panel_.open(config_,editor,completion->shells.profiles);
+        if (!settings_binding_.empty()) settings_panel_.open_for_binding(config_,settings_binding_,completion->shells.profiles);
         settings_panel_.resize({width_,height_}); context_menu_.resize({width_,height_}); settings_binding_.clear(); notice_.clear();
         if (tooltip_) SendMessageW(tooltip_,TTM_POP,0,0);
-        SetFocus(hwnd_); caret_schedule(); changed();
+        SetFocus(hwnd_); settings_input_changed(); caret_schedule(); changed();
     } else {
         if (completion->saved) {
             if (options_.smoke_settings) smoke_settings_file_owned_=true;

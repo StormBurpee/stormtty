@@ -33,7 +33,7 @@ void chrome_alignment_test() {
         require(left[3]==left[0] && right[3]==right[0],"Centered button contaminated subsequent leading label");
     }
 }
-void test(){
+void renderer_contract_test(){
     RendererOptions options;options.font.family="Menlo";options.background_opacity=.9f;options.image_cache_bytes=4096;
     Renderer renderer(nullptr,options);renderer.resize(256,160);
     auto frame=std::make_shared<RenderFrame>();frame->generation=1;frame->columns=12;frame->rows=4;frame->cell_width=16;frame->cell_height=24;
@@ -76,5 +76,5 @@ void test(){
     require(renderer.stats().image_cache_bytes<=options.image_cache_bytes,"Image cache exceeded budget");
 }
 }
-int main(){@autoreleasepool{try{RendererOptions layer_options;layer_options.font.family="Menlo";stormtty::test::chrome_layer_raster_tests(layer_options);test();chrome_alignment_test();std::cout<<"PASS native macOS CoreText/Metal offscreen raster/composition/readback\n";return 0;}
+int main(){@autoreleasepool{try{RendererOptions layer_options;layer_options.font.family="Menlo";stormtty::test::chrome_layer_raster_tests(layer_options);renderer_contract_test();chrome_alignment_test();std::cout<<"PASS native macOS CoreText/Metal offscreen raster/composition/readback\n";return 0;}
 catch(const std::exception& e){std::cerr<<"FAIL macOS renderer: "<<e.what()<<'\n';return 1;}}}

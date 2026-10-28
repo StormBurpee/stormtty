@@ -220,8 +220,9 @@ are in the [distribution packet guide](tools/shell-notices/REVIEW.md). See the
 
 The Windows host reads `%LOCALAPPDATA%\StormTTY\config.stormtty` if it exists.
 To use a different file, launch `stormtty.exe --config path\to\config.stormtty`.
-Use **Settings** to edit and save supported options, or edit the file directly
-and restart. Appearance previews can be cancelled; changing the default shell
+Use **Settings** to edit and save supported options. Reopening Settings reads
+valid external edits without requiring a restart. Cancel restores the running
+appearance; Save adopts the editor’s settings, including shell and shortcuts. Appearance previews can be cancelled; changing the default shell
 applies to new sessions, not processes already running. Saving detects external
 file changes rather than silently overwriting them.
 
