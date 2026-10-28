@@ -24,6 +24,7 @@
 #include "stormtty/settings_services.hpp"
 #include "stormtty/context_menu.hpp"
 #include "app_icons.hpp"
+#include "smoke_teardown_trace.hpp"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -164,7 +165,12 @@ struct ImmContext {
 };
 struct WindowClass {
     HINSTANCE instance{GetModuleHandleW(nullptr)}; ATOM atom{};
-    ~WindowClass() { if (atom) UnregisterClassW(L"StormTTY.NativeWindow", instance); }
+    bool smoke{};
+    ~WindowClass() {
+        windows::smoke_teardown_trace(smoke,"window class unregister begin");
+        if (atom) UnregisterClassW(L"StormTTY.NativeWindow", instance);
+        windows::smoke_teardown_trace(smoke,"window class unregister end");
+    }
 };
 
 template<class T> struct ComObject {
@@ -238,20 +244,25 @@ public:
         if (!project) throw std::runtime_error(project.error);
     }
     ~NativeWindow() {
+        windows::smoke_teardown_trace(options_.smoke_test,"window destructor body begin");
         wake_->window.store(nullptr, std::memory_order_release);
         for (auto& [id, session] : sessions_) { (void)id; session->request_close(); }
+        windows::smoke_teardown_trace(options_.smoke_test,"window destructor close requests complete");
         if (hwnd_) DestroyWindow(hwnd_);
+        windows::smoke_teardown_trace(options_.smoke_test,"window destructor HWND destruction complete");
         // The window is gone: never wait for local file I/O in a WndProc.
         if (settings_worker_.joinable()) {
             if (options_.smoke_test) std::fprintf(stderr,"Native CI settings worker reap begin after window destruction\n");
             settings_worker_.join();
             if (options_.smoke_test) std::fprintf(stderr,"Native CI settings worker reap end\n");
         }
+        windows::smoke_teardown_trace(options_.smoke_test,"window settings file cleanup begin");
         if (smoke_settings_file_owned_) {
             std::error_code ignored;
             std::filesystem::remove(options_.config_path,ignored);
             std::filesystem::remove(options_.config_path.parent_path(),ignored);
         }
+        windows::smoke_teardown_trace(options_.smoke_test,"window destructor body end; member destruction begin");
     }
     int run();
 private:
@@ -474,6 +485,7 @@ void NativeWindow::create() {
     dpi_ = GetDpiForWindow(hwnd_); scale_ = dpi_ / 96.0;
     RendererOptions options;
     options.force_warp = options_.smoke_test;
+    options.smoke_teardown_diagnostics = options_.smoke_test;
     options.font.family = config_.font.family;
     options.font.size_dip = static_cast<float>(config_.font.size_dip);
     options.font.ligatures = config_.font.ligatures;
@@ -524,7 +536,7 @@ void NativeWindow::create() {
     if (options_.smoke_test && !SetTimer(hwnd_,smoke_timeout_timer,20000,nullptr)) throw std::runtime_error("Could not start the native smoke deadline.");
 }
 int NativeWindow::run() {
-    WindowClass klass;
+    WindowClass klass; klass.smoke=options_.smoke_test;
     WNDCLASSEXW definition{}; definition.cbSize=sizeof(definition);
     definition.style = CS_DBLCLKS;
     definition.lpfnWndProc = procedure;
@@ -2862,5 +2874,12 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     return DefWindowProcW(hwnd_,message,wparam,lparam);
 }
 } // namespace
-int run_native_application(Config config, NativeRunOptions options) { NativeWindow window(std::move(config),std::move(options)); return window.run(); }
+int run_native_application(Config config, NativeRunOptions options) {
+    const bool smoke=options.smoke_test;
+    windows::SmokeTeardownEnd completed{smoke,"native application locals destroyed"};
+    NativeWindow window(std::move(config),std::move(options));
+    const int result=window.run();
+    windows::smoke_teardown_trace(smoke,"window run returned");
+    return result;
+}
 } // namespace stormtty

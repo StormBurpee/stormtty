@@ -33,6 +33,7 @@ struct RendererOptions {
     FontOptions font{};
     float background_opacity{1.0f}; // Only default backgrounds; text stays opaque.
     bool composition{true}; // Premultiplied DirectComposition, opaque HWND fallback.
+    bool smoke_teardown_diagnostics{}; // Explicit native smoke only; no normal-launch logging.
     bool force_warp{}; // Deterministic software device for native Windows CI.
     std::size_t shape_cache_bytes{16u * 1024u * 1024u};
     std::size_t image_cache_bytes{64u * 1024u * 1024u};
