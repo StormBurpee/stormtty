@@ -1,4 +1,5 @@
 #include "stormtty/process.hpp"
+#include "stormtty/terminal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -163,6 +164,9 @@ struct Capture {
     std::optional<ProcessExit> exit;
     std::size_t count{};
     bool slow{};
+    stormtty::ProcessGridSize initial_grid{};
+    struct ResizeEvent { std::size_t offset; stormtty::ProcessGridSize grid; };
+    std::vector<ResizeEvent> resizes;
     void append(std::string_view bytes) {
         {
             std::lock_guard lock(mutex);
@@ -173,9 +177,56 @@ struct Capture {
         cv.notify_all();
         if (slow) std::this_thread::sleep_for(1ms);
     }
+    void set_grid(stormtty::ProcessGridSize size) {
+        {
+            std::lock_guard lock(mutex);
+            if (output.empty() && resizes.empty()) initial_grid = size;
+            else {
+                require(resizes.size()<4096, "test resize-event budget exceeded");
+                resizes.push_back({output.size(), size});
+            }
+        }
+        cv.notify_all();
+    }
+    bool contains_terminal_text(std::string_view text, std::chrono::milliseconds timeout = 5s) {
+        // Construct, mutate, select and destroy on this calling test thread.
+        // The process output worker only copies bytes into the bounded capture.
+        std::unique_lock lock(mutex);
+        stormtty::TerminalOptions options;
+        options.size = {initial_grid.columns, initial_grid.rows, 8, 16};
+        stormtty::TerminalCore terminal(options);
+        std::size_t parsed{}, next_resize{};
+        return cv.wait_for(lock, timeout, [&] {
+            // Replay each geometry change at its captured byte boundary rather
+            // than interpreting all historical bytes at the newest width.
+            while (next_resize < resizes.size()) {
+                const auto& event=resizes[next_resize++];
+                if (parsed<event.offset) terminal.feed(std::string_view(output).substr(parsed,event.offset-parsed));
+                parsed=event.offset;
+                terminal.resize({event.grid.columns,event.grid.rows,8,16});
+            }
+            if (parsed < output.size()) {
+                terminal.feed(std::string_view(output).substr(parsed));
+                parsed = output.size();
+            }
+            const auto size=terminal.size();
+            terminal.select(0, 0, static_cast<std::uint16_t>(size.columns-1), static_cast<std::uint16_t>(size.rows-1));
+            // Selection formatting unwraps soft wraps but preserves hard line
+            // breaks; it does not invent text by stripping control sequences.
+            const auto visible = terminal.selection_text(2u * 1024u * 1024u);
+            terminal.clear_selection();
+            return visible.find(text) != std::string::npos;
+        });
+    }
     bool contains(std::string_view text, std::chrono::milliseconds timeout = 5s) {
+#ifdef _WIN32
+        return contains_terminal_text(text, timeout);
+#else
+        // A POSIX PTY is a byte stream, unlike ConPTY's console repaint stream.
+        // Preserve the existing byte-level assertions on Linux and macOS.
         std::unique_lock lock(mutex);
         return cv.wait_for(lock, timeout, [&] { return output.find(text) != std::string::npos; });
+#endif
     }
 };
 // Keep only the latest bounded synthetic test capture for failure diagnostics.
@@ -187,6 +238,7 @@ struct Session {
     std::unique_ptr<Process> process;
     Session(ProcessOptions options, bool slow = false, bool throw_output = false) {
         diagnostic_capture = capture;
+        capture->set_grid(options.grid);
         capture->slow = slow;
         auto c = capture;
         process = Process::start(std::move(options), {
@@ -248,7 +300,63 @@ public:
     }
 };
 #endif
+void semantic_capture_tests() {
+    // These synthetic VT tests run portably; only native Windows process
+    // assertions use this semantic path. POSIX process assertions remain raw.
+    {
+        Capture capture;
+        // Captured Windows ConPTY failure: it painted "A", emitted a title and
+        // mode updates, then painted "RG0=[]". The visible argument was intact.
+        capture.append("\x1b[?9001h\x1b[?1004h\x1b[?25l\x1b[2J\x1b[m\x1b[HA"
+                       "\x1b]0;C:\\stormtty\\process_tests.exe\x07"
+                       "\x1b[?25h\x1b[?9001l\x1b[?1004lRG0=[]\r\n");
+        require(capture.contains_terminal_text("ARG0=[]", 0ms), "semantic capture lost argument across OSC/mode updates");
+        require(!capture.contains_terminal_text("process_tests.exe", 0ms), "semantic capture exposed an OSC title as terminal text");
+    }
+    {
+        Capture capture;
+        capture.set_grid({16, 4});
+        capture.append("ARG\x1b["); // Deliberately split a CSI across callbacks.
+        std::jthread writer([&] {
+            std::this_thread::sleep_for(10ms);
+            capture.append("31m0\x1b[0m=\x1b[1;6H[value]\r\n");
+        });
+        require(capture.contains_terminal_text("ARG0=[value]", 1s), "semantic capture lost split CSI/SGR/cursor text");
+    }
+    {
+        Capture capture;
+        capture.append("WRONG-VALUE\x1b[1G\x1b[2KRIGHT-VALUE\r\n");
+        require(capture.contains_terminal_text("RIGHT-VALUE", 0ms), "semantic capture lost replacement text");
+        require(!capture.contains_terminal_text("WRONG-VALUE", 0ms), "semantic capture matched erased raw bytes");
+    }
+    {
+        Capture capture;
+        capture.set_grid({8, 4});
+        capture.append("CWD=[C:/long/path]\r\n");
+        require(capture.contains_terminal_text("CWD=[C:/long/path]", 0ms), "semantic capture did not unwrap soft wrap");
+        Capture hard_break;
+        hard_break.append("left\r\nright");
+        require(!hard_break.contains_terminal_text("leftright", 0ms), "semantic capture erased a hard line break");
+        Capture history;
+        history.set_grid({4, 4});
+        history.append("ABCDEFGH\x1b[2;1HX");
+        history.set_grid({8, 4});
+        require(history.contains_terminal_text("ABCDXFGH", 0ms), "semantic capture replayed historical bytes at the newest width");
+    }
+    {
+        Capture capture;
+        capture.set_grid({8, 4});
+        capture.append("SIZE:");
+        std::jthread writer([&] {
+            std::this_thread::sleep_for(10ms);
+            capture.set_grid({12, 4});
+            capture.append("\x1b[1;6H120\x1b[0m:\x1b[1;10H40");
+        });
+        require(capture.contains_terminal_text("SIZE:120:40", 1s), "semantic capture did not apply updated terminal geometry");
+    }
+}
 void run_tests(const std::string& executable) {
+    semantic_capture_tests();
     const auto options = [&](std::string mode) { ProcessOptions o; o.executable = executable; o.arguments = {std::move(mode)}; return o; };
 #ifdef _WIN32
     {
@@ -318,7 +426,12 @@ void run_tests(const std::string& executable) {
     {
         Session s(options("--child-resize")); require(s.capture->contains("READY"), "resize child not ready");
         require(!s.process->request_resize({0, 24}), "invalid resize accepted");
-        for (unsigned i = 0; i < 100; ++i) require(s.process->request_resize({static_cast<std::uint16_t>(80 + i), 30}), "resize rejected");
+        for (unsigned i = 0; i < 100; ++i) {
+            const stormtty::ProcessGridSize size{static_cast<std::uint16_t>(80+i),30};
+            s.capture->set_grid(size);
+            require(s.process->request_resize(size), "resize rejected");
+        }
+        s.capture->set_grid({120, 40});
         require(s.process->request_resize({120, 40}), "final resize rejected");
         bool resized = false;
         for (int i = 0; i < 50 && !resized; ++i) { send(*s.process, "q"); resized = s.capture->contains("SIZE:120:40", 50ms); }
