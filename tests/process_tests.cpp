@@ -80,6 +80,12 @@ std::string child_environment() {
     return value ? value : "<unset>";
 #endif
 }
+#ifdef _WIN32
+enum class ConsoleProbeExit : int {
+    success = 0, stdin_not_console = 40, stdout_not_console = 41,
+    stderr_not_console = 42, input_route_failed = 43
+};
+#endif
 int child_main(int argc, char** argv) {
     child_terminal_mode();
     std::string mode(argv[1]);
@@ -90,12 +96,14 @@ int child_main(int argc, char** argv) {
         const bool output_console = GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &output_mode) != FALSE;
         const bool error_console = GetConsoleMode(GetStdHandle(STD_ERROR_HANDLE), &error_mode) != FALSE;
         std::printf("CONSOLE-HANDLES:%d:%d:%d\n", input_console, output_console, error_console);
-        if (!input_console || !output_console || !error_console) return 42;
+        if (!input_console) return static_cast<int>(ConsoleProbeExit::stdin_not_console);
+        if (!output_console) return static_cast<int>(ConsoleProbeExit::stdout_not_console);
+        if (!error_console) return static_cast<int>(ConsoleProbeExit::stderr_not_console);
         std::fputs("STDOUT-VIA-CONPTY\n", stdout);
         std::fputs("STDERR-VIA-CONPTY\n", stderr);
-        if (std::getchar() != 'R') return 43;
+        if (std::getchar() != 'R') return static_cast<int>(ConsoleProbeExit::input_route_failed);
         std::fputs("STDIN-VIA-CONPTY\n", stdout);
-        return 0;
+        return static_cast<int>(ConsoleProbeExit::success);
     }
 #endif
     if (mode == "--child-exit") { std::fputs("STORM-TAIL-\xe2\x98\x83-\xf0\x9f\x8c\xa9\n", stdout); return 23; }
@@ -170,10 +178,15 @@ struct Capture {
         return cv.wait_for(lock, timeout, [&] { return output.find(text) != std::string::npos; });
     }
 };
+// Keep only the latest bounded synthetic test capture for failure diagnostics.
+// Raw ConPTY streams contain legitimate cursor/repaint sequences; an escaped
+// dump distinguishes transport loss from a too-strict textual assertion.
+std::shared_ptr<Capture> diagnostic_capture;
 struct Session {
     std::shared_ptr<Capture> capture{std::make_shared<Capture>()};
     std::unique_ptr<Process> process;
     Session(ProcessOptions options, bool slow = false, bool throw_output = false) {
+        diagnostic_capture = capture;
         capture->slow = slow;
         auto c = capture;
         process = Process::start(std::move(options), {
@@ -249,7 +262,9 @@ void run_tests(const std::string& executable) {
         const auto result = s.finish();
         require(parent.output_empty(), "ConPTY child output leaked into redirected parent stdout/stderr");
         require(ready && result.error.empty() && result.exit_code == 0, "redirected-parent ConPTY stdio regression failed");
-        require(s.capture->contains("CONSOLE-HANDLES:1:1:1", 0ms), "child standard handles are not all console handles");
+        // Exit 0 is possible only after all three GetConsoleMode probes and the
+        // input roundtrip succeed. ConPTY can insert repaint/control sequences
+        // between printf fragments, so the diagnostic is not a raw-byte oracle.
         require(s.capture->contains("STDERR-VIA-CONPTY", 0ms), "child stderr bypassed ConPTY");
         require(s.capture->contains("STDIN-VIA-CONPTY", 0ms), "child stdin bypassed ConPTY");
     }
@@ -389,5 +404,21 @@ int main(int argc, char** argv) {
         std::cout << "PASS: Linux forkpty process lifecycle tests (not Windows/macOS runtime qualification)\n";
 #endif
         return 0;
-    } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }
+    } catch (const std::exception& error) {
+        std::cerr << "FAIL: " << error.what() << '\n';
+        if (diagnostic_capture) {
+            std::lock_guard lock(diagnostic_capture->mutex);
+            const auto& bytes = diagnostic_capture->output;
+            const auto first = bytes.size() > 4096 ? bytes.size() - 4096 : 0;
+            std::cerr << "Captured PTY bytes (last " << bytes.size()-first << " of " << bytes.size() << "): ";
+            constexpr char hex[] = "0123456789ABCDEF";
+            for (std::size_t i=first;i<bytes.size();++i) {
+                const auto c=static_cast<unsigned char>(bytes[i]);
+                if (c>=0x20 && c<0x7f && c!='\\') std::cerr << static_cast<char>(c);
+                else std::cerr << "\\x" << hex[c>>4] << hex[c&15];
+            }
+            std::cerr << '\n';
+        }
+        return 1;
+    }
 }

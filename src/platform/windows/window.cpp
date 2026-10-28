@@ -1145,9 +1145,17 @@ void NativeWindow::capture_frame() {
     check(encoder->CreateNewFrame(frame.put(),nullptr));
     check(frame->Initialize(nullptr)); check(frame->SetSize(width,height));
     check(frame->SetResolution(dpi_,dpi_));
-    WICPixelFormatGUID format=GUID_WICPixelFormat32bppRGBA;
+    // WIC PNG's native 8-bit alpha format is BGRA. SetPixelFormat is an in/out
+    // negotiation, not a promise to accept the requested channel order.
+    WICPixelFormatGUID format=GUID_WICPixelFormat32bppBGRA;
     check(frame->SetPixelFormat(&format));
-    if (!IsEqualGUID(format,GUID_WICPixelFormat32bppRGBA)) throw std::runtime_error("PNG encoder did not accept the renderer RGBA format.");
+    if (IsEqualGUID(format,GUID_WICPixelFormat32bppBGRA)) {
+        // Renderer readback is already straight RGBA: swap R/B only. Alpha
+        // must remain unchanged; unpremultiplying twice corrupts translucent UI.
+        for (std::size_t i=0;i<pixels.size();i+=4) std::swap(pixels[i],pixels[i+2]);
+    } else if (!IsEqualGUID(format,GUID_WICPixelFormat32bppRGBA)) {
+        throw std::runtime_error("PNG encoder negotiated an unsupported pixel format.");
+    }
     check(frame->WritePixels(height,width*4,static_cast<UINT>(pixels.size()),pixels.data()));
     check(frame->Commit()); check(encoder->Commit());
 }
