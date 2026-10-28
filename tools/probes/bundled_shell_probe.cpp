@@ -1,0 +1,195 @@
+// Real Zsh -> StormTTY Process -> Session/libghostty qualification; no fake shell.
+#include "stormtty/session.hpp"
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <thread>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+namespace fs = std::filesystem;
+using namespace stormtty;
+using namespace std::chrono_literals;
+namespace {
+std::string utf8(const fs::path& p) {
+    auto text = p.generic_u8string();
+    return {reinterpret_cast<const char*>(text.data()), text.size()};
+}
+fs::path path_utf8(std::string_view text) {
+    return fs::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+}
+void require(bool ok, const char* what) { if (!ok) throw std::runtime_error(what); }
+std::string screen(const std::shared_ptr<Session>& session) {
+    std::string value;
+    if (const auto frame = session->frame()) for (const auto& row : frame->lines) {
+        for (const auto& cell : row->cells) if (cell.span != 0)
+            value += cell.grapheme.empty() ? " " : cell.grapheme;
+        value += '\n';
+    }
+    return value;
+}
+template<class F> bool until(F predicate, std::chrono::milliseconds timeout = 10s) {
+    const auto end = std::chrono::steady_clock::now() + timeout;
+    do { if (predicate()) return true; std::this_thread::sleep_for(20ms); }
+    while (std::chrono::steady_clock::now() < end);
+    return predicate();
+}
+void expect(const std::shared_ptr<Session>& session, std::string_view token) {
+    if (!until([&] { return screen(session).find(token) != std::string::npos; })) {
+        std::cerr << "Expected " << token << "\n" << screen(session)
+                  << "\nSession error: " << session->info().error << '\n';
+        throw std::runtime_error("shell marker not observed in real terminal frame");
+    }
+    std::cout << "[pass] " << token << '\n';
+}
+void key(const std::shared_ptr<Session>& s, Key k, std::uint16_t mods = 0) {
+    KeyInput input; input.key = k; input.modifiers = mods;
+    require(s->key(input) == SessionSendResult::accepted, "key rejected");
+}
+void command(const std::shared_ptr<Session>& s, std::string text) {
+    require(s->text(std::move(text)) == SessionSendResult::accepted, "command rejected");
+    key(s, Key::enter);
+}
+std::string inherited_path() {
+#ifdef _WIN32
+    const auto count = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+    if (!count) return {};
+    std::wstring wide(count, L'\0');
+    const auto length = GetEnvironmentVariableW(L"PATH", wide.data(), count);
+    if (!length || length >= count) throw std::runtime_error("PATH changed while reading");
+    const auto bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(),
+                                         static_cast<int>(length), nullptr, 0, nullptr, nullptr);
+    if (!bytes) throw std::runtime_error("PATH UTF-8 conversion failed");
+    std::string result(static_cast<std::size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), static_cast<int>(length),
+                        result.data(), bytes, nullptr, nullptr);
+    return result;
+#else
+    const auto path = std::getenv("PATH"); return path ? path : "";
+#endif
+}
+int native_handles() {
+#ifdef _WIN32
+    DWORD in{}, out{}, err{};
+    const bool good = GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &in) &&
+        GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &out) &&
+        GetConsoleMode(GetStdHandle(STD_ERROR_HANDLE), &err);
+    SetConsoleOutputCP(CP_UTF8);
+#else
+    const bool good = isatty(0) && isatty(1) && isatty(2);
+#endif
+    std::cout << (good ? "__STORMTTY_NATIVE_TTY_OK__\n" : "__STORMTTY_NATIVE_TTY_FAIL__\n") << std::flush;
+    return good ? 0 : 42;
+}
+}
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--native-handles") return native_handles();
+    if (argc < 4 || argc > 6) {
+        std::cerr << "usage: bundled_shell_probe SHELL_ABSOLUTE FIXTURE_ABSOLUTE SCRATCH_DIR [inbox | --packaged-provider ABSOLUTE_DIRECTORY]\n";
+        return 2;
+    }
+    std::cout << std::unitbuf;
+    std::shared_ptr<Session> session;
+    try {
+        const auto shell = fs::absolute(path_utf8(argv[1]));
+        const auto fixture = fs::absolute(path_utf8(argv[2]));
+        const auto scratch = fs::absolute(path_utf8(argv[3]));
+        // Require a new directory: never overwrite a user's files.
+        require(!fs::exists(scratch), "scratch directory must not exist");
+        const auto dotdir = scratch / "dotdir";
+        const auto home = scratch / "home";
+        const auto cwd = scratch / path_utf8("workspace caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84");
+        fs::create_directories(dotdir); fs::create_directories(home); fs::create_directories(cwd);
+        std::ofstream(dotdir / ".zshrc", std::ios::binary)
+            << "source -- \"$STORMTTY_PROBE_FIXTURE\"\n";
+        // A tripwire: HOME/.zshrc must not run in the managed private profile.
+        std::ofstream(home / ".zshrc", std::ios::binary) << "print GLOBAL_DOTFILE_WAS_READ\n";
+        ProcessOptions p; p.executable = utf8(shell); p.arguments = {"-d", "-i"};
+        p.working_directory = utf8(cwd); p.grid = {100, 30};
+        if (argc == 5) {
+            require(std::string_view(argv[4]) == "inbox", "unknown provider");
+            p.provider = ProcessProvider::windows_inbox_basic;
+        } else if (argc == 6) {
+            require(std::string_view(argv[4]) == "--packaged-provider", "unknown provider option");
+            const auto provider = path_utf8(argv[5]);
+            require(provider.is_absolute() && fs::is_directory(provider), "packaged provider directory must be absolute and exist");
+            p.provider = ProcessProvider::windows_packaged_experimental;
+            p.provider_directory = utf8(provider);
+        }
+#ifdef _WIN32
+        const auto path = utf8(shell.parent_path()) + ";" + inherited_path();
+        const auto sleep = shell.parent_path() / "sleep.exe";
+#else
+        const auto path = utf8(shell.parent_path()) + ":" + inherited_path();
+        const auto sleep = fs::path("/usr/bin/sleep");
+#endif
+        require(fs::is_regular_file(sleep), "candidate sleep executable missing");
+        p.environment = {{"STORMTTY_PROBE_SLEEP", utf8(sleep)}, {"ZDOTDIR", utf8(dotdir)}, {"HOME", utf8(home)},
+            {"STORMTTY_PROBE_FIXTURE", utf8(fixture)},
+            {"STORMTTY_PROBE_NATIVE", utf8(fs::absolute(path_utf8(argv[0])))},
+            {"PATH", path}, {"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"},
+            {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"},
+            {"MSYSTEM", "MSYS"}, {"MSYS", std::nullopt}, {"ENV", std::nullopt}, {"BASH_ENV", std::nullopt}};
+        TerminalOptions terminal; terminal.size = {100, 30, 8, 16};
+        const auto started = std::chrono::steady_clock::now();
+        session = Session::start(std::move(p), terminal);
+        expect(session, "__STORMTTY_READY__");
+        std::cout << "provider=" << session->diagnostics().provider << '\n';
+        std::cout << "startup_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count() << '\n';
+        require(screen(session).find("GLOBAL_DOTFILE_WAS_READ") == std::string::npos,
+                "managed profile sourced HOME/.zshrc");
+        command(session, "stormtty_probe_tty"); expect(session, "__STORMTTY_TTY_OK__");
+        command(session, "stormtty_probe_native"); expect(session, "__STORMTTY_NATIVE_TTY_OK__");
+        command(session, "stormtty_probe_unicode 'caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83'");
+        expect(session, "__STORMTTY_UNICODE:caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83__");
+        command(session, "stormtty_probe_cwd");
+        expect(session, "workspace caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84__");
+        require(until([&] { return session->info().working_directory.find("workspace") != std::string::npos; }),
+                "OSC 7 did not reach Session cwd metadata");
+        require(session->request_resize({111, 35, 8, 16}) == SessionSendResult::accepted,
+                "resize request rejected");
+        require(until([&] {
+            command(session, "stormtty_probe_size");
+            std::this_thread::sleep_for(80ms);
+            return screen(session).find("__STORMTTY_SIZE:111x35__") != std::string::npos;
+        }), "shell did not observe terminal resize");
+        command(session, "stormtty_probe_wait first"); expect(session, "__STORMTTY_WAITING:first__");
+        key(session, Key::c, Modifier::control);
+        command(session, "stormtty_probe_after_interrupt"); expect(session, "__STORMTTY_INTERRUPTED:130__");
+        // Clear old markers before another long-running real foreground job.
+        command(session, "printf '\\033[2J\\033[H'; stormtty_probe_wait second");
+        expect(session, "__STORMTTY_WAITING:second__");
+        key(session, Key::z, Modifier::control);
+        command(session, "stormtty_probe_job_stopped"); expect(session, "__STORMTTY_JOB_STOPPED__");
+        command(session, "bg; stormtty_probe_job_running"); expect(session, "__STORMTTY_JOB_RUNNING__");
+        command(session, "fg"); std::this_thread::sleep_for(200ms);
+        key(session, Key::c, Modifier::control);
+        command(session, "stormtty_probe_after_interrupt"); expect(session, "__STORMTTY_INTERRUPTED:130__");
+        std::cout << "provider=" << session->diagnostics().provider << "\n" << screen(session);
+        command(session, "stormtty_probe_exit");
+        require(session->wait_closed(10s), "zsh natural exit did not close Session");
+        require(session->info().state == SessionState::exited, "zsh exited in failed state");
+        require(session->info().exit_code == 37, "zsh exit status lost");
+#ifdef _WIN32
+        std::cout << "PASS native Windows bundled-shell candidate through Process/Session\n";
+#else
+        std::cout << "PASS POSIX probe mechanics only; NOT Windows bundled-shell qualification\n";
+#endif
+        return 0;
+    } catch (const std::exception& e) {
+        if (session) { session->request_close(); (void)session->wait_closed(10s); }
+        std::cerr << "FAIL: " << e.what() << '\n'; return 1;
+    }
+}

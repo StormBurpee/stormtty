@@ -1,0 +1,339 @@
+{
+  "schema": 1,
+  "bundle_id": "zsh-msys2-x86_64-20261028-r1",
+  "platform": "windows-x86_64",
+  "qualification_only": true,
+  "default_activation_allowed": false,
+  "upstream_zsh": {
+    "version": "5.9.2",
+    "url": "https://www.zsh.org/pub/zsh-5.9.2.tar.xz",
+    "sha256": "36fa734374b44783582cec09bcd67822e2f992c779ec1624ab5596df078d2f81"
+  },
+  "packages": [
+    {
+      "name": "zsh",
+      "version": "5.9.2-1",
+      "filename": "zsh-5.9.2-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/zsh-5.9.2-1-x86_64.pkg.tar.zst",
+      "bytes": 2316366,
+      "sha256": "9a134200a152d90a0f1820d6aa74c3369d8539c068b523852549d74b16739fa8",
+      "license": "spdx:Zsh",
+      "source": "zsh-5.9.2-1.src.tar.zst"
+    },
+    {
+      "name": "ncurses",
+      "version": "6.6-2",
+      "filename": "ncurses-6.6-2-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/ncurses-6.6-2-x86_64.pkg.tar.zst",
+      "bytes": 1286284,
+      "sha256": "828c92f09b17f00d3b49362fcfa4affa58e5e50e238f290ea36eb7a690da3acb",
+      "license": "spdx:MIT",
+      "source": "ncurses-6.6-2.src.tar.zst"
+    },
+    {
+      "name": "gcc-libs",
+      "version": "16.2.0-1",
+      "filename": "gcc-libs-16.2.0-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/gcc-libs-16.2.0-1-x86_64.pkg.tar.zst",
+      "bytes": 1080310,
+      "sha256": "50e1bbbb1b4186ba1ed8c08cdbb5c0a8c2343e4b5747bace24273e26fb148471",
+      "license": "spdx:LGPL-2.1-or-later AND GPL-3.0-or-later WITH GCC-exception-3.1 AND GFDL-1.3-or-later",
+      "source": "gcc-16.2.0-1.src.tar.zst"
+    },
+    {
+      "name": "libpcre2_8",
+      "version": "10.49-1",
+      "filename": "libpcre2_8-10.49-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/libpcre2_8-10.49-1-x86_64.pkg.tar.zst",
+      "bytes": 151223,
+      "sha256": "2de42bf4656e3952a72809663e85899be76c7020e016687055ac0acd05145a3b",
+      "license": "spdx:BSD-3-Clause WITH PCRE2-exception",
+      "source": "pcre2-10.49-1.src.tar.zst"
+    },
+    {
+      "name": "libiconv",
+      "version": "1.19-1",
+      "filename": "libiconv-1.19-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/libiconv-1.19-1-x86_64.pkg.tar.zst",
+      "bytes": 718353,
+      "sha256": "0fa55ea2a6ccf97cf8c58b24b2615815e15e16e6e4e888091c263c2c83c5313d",
+      "license": "LGPL",
+      "source": "libiconv-1.19-1.src.tar.zst"
+    },
+    {
+      "name": "msys2-runtime",
+      "version": "3.6.11-4",
+      "filename": "msys2-runtime-3.6.11-4-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-runtime-3.6.11-4-x86_64.pkg.tar.zst",
+      "bytes": 2068768,
+      "sha256": "7b1c4b625483ceff9a87f2dfcf3659704dc3da655a0ad414ecb7d9175e7d3ba0",
+      "license": "spdx:GPL-3.0-or-later",
+      "source": "msys2-runtime-3.6.11-4.src.tar.zst"
+    },
+    {
+      "name": "bash",
+      "version": "5.3.20-2",
+      "filename": "bash-5.3.20-2-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/bash-5.3.20-2-x86_64.pkg.tar.zst",
+      "bytes": 2579823,
+      "sha256": "0951e809c552dd7dd2835df1b2d590822187f14e717d809e942e4eb677d0adfd",
+      "license": "spdx:GPL-3.0-or-later",
+      "source": "bash-5.3.20-2.src.tar.zst"
+    },
+    {
+      "name": "coreutils",
+      "version": "8.32-5",
+      "filename": "coreutils-8.32-5-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/coreutils-8.32-5-x86_64.pkg.tar.zst",
+      "bytes": 2755209,
+      "sha256": "62dfee1c39fd15f99c39802b35e82643bc14fffc16d6c76d4001caa385ec77e3",
+      "license": "GPL3",
+      "source": "coreutils-8.32-5.src.tar.zst"
+    },
+    {
+      "name": "gmp",
+      "version": "6.3.0-2",
+      "filename": "gmp-6.3.0-2-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/gmp-6.3.0-2-x86_64.pkg.tar.zst",
+      "bytes": 396914,
+      "sha256": "f84536138e618d47a1df2da83916cfebbd449f159ffad52f994a71060a41cf34",
+      "license": "LGPL3",
+      "source": "gmp-6.3.0-2.src.tar.zst"
+    },
+    {
+      "name": "libintl",
+      "version": "0.22.5-1",
+      "filename": "libintl-0.22.5-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/libintl-0.22.5-1-x86_64.pkg.tar.zst",
+      "bytes": 50537,
+      "sha256": "336d66b9d95cf9c1804958f8e260762a3e83bf158ed5981f783bc772a31073cf",
+      "license": "GPL",
+      "source": "gettext-0.22.5-1.src.tar.zst"
+    },
+    {
+      "name": "grep",
+      "version": "1~3.0-7",
+      "filename": "grep-1~3.0-7-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/grep-1~3.0-7-x86_64.pkg.tar.zst",
+      "bytes": 249241,
+      "sha256": "2909b3bbef8d33d66980339fb7bd2d3d9145bae0f04191e6671df39868aea427",
+      "license": "GPL3",
+      "source": "grep-1~3.0-7.src.tar.zst"
+    },
+    {
+      "name": "libpcre",
+      "version": "8.45-5",
+      "filename": "libpcre-8.45-5-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/libpcre-8.45-5-x86_64.pkg.tar.zst",
+      "bytes": 96135,
+      "sha256": "b4dc2eb7795cbacaa683101d720fa67f536262497a1d89934a58f5dab8d17d17",
+      "license": "BSD",
+      "source": "pcre-8.45-5.src.tar.zst"
+    },
+    {
+      "name": "sed",
+      "version": "4.9-1",
+      "filename": "sed-4.9-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/sed-4.9-1-x86_64.pkg.tar.zst",
+      "bytes": 249918,
+      "sha256": "3748af28f69e946ec5a42e6670c9bbf6da7352dc93baaa537f69e99c5483b9fc",
+      "license": "GPL3",
+      "source": "sed-4.9-1.src.tar.zst"
+    },
+    {
+      "name": "findutils",
+      "version": "4.11.0-2",
+      "filename": "findutils-4.11.0-2-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/findutils-4.11.0-2-x86_64.pkg.tar.zst",
+      "bytes": 582781,
+      "sha256": "f19d3c6b1b073d4c5759ae83f5639d11a5f0227b772f7d86d600db573d9d5d32",
+      "license": "spdx:GPL-3.0-or-later",
+      "source": "findutils-4.11.0-2.src.tar.zst"
+    },
+    {
+      "name": "less",
+      "version": "710-1",
+      "filename": "less-710-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/less-710-1-x86_64.pkg.tar.zst",
+      "bytes": 156690,
+      "sha256": "894a643ecd01861490e5767873d67b55cd5a2faf2c77b0b24a62dbba7bd038fd",
+      "license": "spdx:GPL-3.0-or-later",
+      "source": "less-710-1.src.tar.zst"
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.2-1",
+      "filename": "zlib-1.3.2-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/zlib-1.3.2-1-x86_64.pkg.tar.zst",
+      "bytes": 52245,
+      "sha256": "a04aa79996c57f0db936be66cf94326d7e67e9cd8dbffe4cf6e97693d0a1d9ef",
+      "license": "custom",
+      "source": "zlib-1.3.2-1.src.tar.zst"
+    },
+    {
+      "name": "libzstd",
+      "version": "1.5.7-1",
+      "filename": "libzstd-1.5.7-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/libzstd-1.5.7-1-x86_64.pkg.tar.zst",
+      "bytes": 399681,
+      "sha256": "5e370b2e725a0a7e5ff58d84653c9a0cd5a10b9cfe930f2d949a28ad2a11c1f2",
+      "license": "BSD",
+      "source": "zstd-1.5.7-1.src.tar.zst"
+    }
+  ],
+  "sources": [
+    {
+      "filename": "zsh-5.9.2-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/zsh-5.9.2-1.src.tar.zst",
+      "bytes": 6527764,
+      "sha256": "a6f0132ce5e167de84e72b9551d738fefb871bda2e7cc26ff85bff41147ae5f1",
+      "packages": [
+        "zsh"
+      ]
+    },
+    {
+      "filename": "ncurses-6.6-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/ncurses-6.6-2.src.tar.zst",
+      "bytes": 3785750,
+      "sha256": "f5df12bd297e6b6930e2aa68e8014347b2193592645d93acce6774e05cbf15e6",
+      "packages": [
+        "ncurses"
+      ]
+    },
+    {
+      "filename": "gcc-16.2.0-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/gcc-16.2.0-1.src.tar.zst",
+      "bytes": 107239619,
+      "sha256": "19c927f27da78aad25a449a4e6e3bfe8650541cc09ac2e701a4ec4d7e61137b9",
+      "packages": [
+        "gcc-libs"
+      ]
+    },
+    {
+      "filename": "pcre2-10.49-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/pcre2-10.49-1.src.tar.zst",
+      "bytes": 2183626,
+      "sha256": "2ea315e233443321a6581ddaefc057289f91fdd4b396c1d0dffae5320e064e4b",
+      "packages": [
+        "libpcre2_8"
+      ]
+    },
+    {
+      "filename": "libiconv-1.19-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/libiconv-1.19-1.src.tar.zst",
+      "bytes": 5133707,
+      "sha256": "5a8bcd3242e2be94fffd9f03fadcda8d9fd64047430050c5cbd214cd3bf7f0a7",
+      "packages": [
+        "libiconv"
+      ]
+    },
+    {
+      "filename": "msys2-runtime-3.6.11-4.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/msys2-runtime-3.6.11-4.src.tar.zst",
+      "bytes": 128907415,
+      "sha256": "4b178dfb5b77bce293706dcfabea673b77d8da061a4725bdf4cd94f17533c204",
+      "packages": [
+        "msys2-runtime"
+      ]
+    },
+    {
+      "filename": "bash-5.3.20-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/bash-5.3.20-2.src.tar.zst",
+      "bytes": 11344878,
+      "sha256": "31d7d05005a69f5297c17cd27592bc7a6d3a2bf3dbd8948ada6f8ed4bccd7ac7",
+      "packages": [
+        "bash"
+      ]
+    },
+    {
+      "filename": "coreutils-8.32-5.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/coreutils-8.32-5.src.tar.zst",
+      "bytes": 5561991,
+      "sha256": "2b8689413bc50367a9995adf50ea84cd3caaff0ec68a8f32d8328842c3f83835",
+      "packages": [
+        "coreutils"
+      ]
+    },
+    {
+      "filename": "gmp-6.3.0-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/gmp-6.3.0-2.src.tar.zst",
+      "bytes": 2096699,
+      "sha256": "02356ca25ce362edb883ce7c060050de2cec5f2b1227a1c56ef7c0a0f99ff667",
+      "packages": [
+        "gmp"
+      ]
+    },
+    {
+      "filename": "gettext-0.22.5-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/gettext-0.22.5-1.src.tar.zst",
+      "bytes": 21732949,
+      "sha256": "e07a0b3e6716aae86dc0edd2dcdc8864731d56051345592b53659a3840ccfbd8",
+      "packages": [
+        "libintl"
+      ]
+    },
+    {
+      "filename": "grep-1~3.0-7.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/grep-1~3.0-7.src.tar.zst",
+      "bytes": 1378706,
+      "sha256": "acba43b9b2c3eb393f9a75d02a1eca34fa23d959541150a7ac4ffbafce3cae4e",
+      "packages": [
+        "grep"
+      ]
+    },
+    {
+      "filename": "pcre-8.45-5.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/pcre-8.45-5.src.tar.zst",
+      "bytes": 1577595,
+      "sha256": "f7104aa31f29655689b404ead9923332e2fa6aadfe97c060d0dfc02f4661d6b5",
+      "packages": [
+        "libpcre"
+      ]
+    },
+    {
+      "filename": "sed-4.9-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/sed-4.9-1.src.tar.zst",
+      "bytes": 1399712,
+      "sha256": "a9686da7c1f3cb2ba7ae5f20f30d9ef38f7bba993f9c777b43bd13c7fbd7cc58",
+      "packages": [
+        "sed"
+      ]
+    },
+    {
+      "filename": "findutils-4.11.0-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/findutils-4.11.0-2.src.tar.zst",
+      "bytes": 2454027,
+      "sha256": "92edf442f61f8873318811a688ba327a0d2878a63a9ed21992b5cce12b0ae146",
+      "packages": [
+        "findutils"
+      ]
+    },
+    {
+      "filename": "less-710-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/less-710-1.src.tar.zst",
+      "bytes": 1159335,
+      "sha256": "115d438589a12bbc1ebf4fc9c88d0e465b1650a0b272f76b2df06d993832990c",
+      "packages": [
+        "less"
+      ]
+    },
+    {
+      "filename": "zlib-1.3.2-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/zlib-1.3.2-1.src.tar.zst",
+      "bytes": 1322579,
+      "sha256": "b3ec151674ce25015b16b28394d679ac0eedee03d02be33f93367c3a2b4d426d",
+      "packages": [
+        "zlib"
+      ]
+    },
+    {
+      "filename": "zstd-1.5.7-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/zstd-1.5.7-1.src.tar.zst",
+      "bytes": 2401343,
+      "sha256": "19e11d517b005cba22d0f04969a74ffa08443429ff9dc80596d323b9483534f5",
+      "packages": [
+        "libzstd"
+      ]
+    }
+  ]
+}

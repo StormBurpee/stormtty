@@ -206,6 +206,27 @@ void enforce_custom_frame_style(HWND window, bool diagnostics) {
 class NativeWindow final {
 public:
     explicit NativeWindow(Config config, NativeRunOptions options) : config_(std::move(config)), options_(std::move(options)), wake_(std::make_shared<WakeState>()) {
+        if (!options_.shell_runtime_directory.empty()) {
+            const auto& root=options_.shell_runtime_directory;
+            Profile managed;
+            managed.id="stormtty-managed-zsh"; managed.label="Zsh · managed";
+            managed.executable=narrow((root/L"usr"/L"bin"/L"zsh.exe").wstring());
+            managed.arguments={"-d","-i"}; // Skip optional global rc files; actual interactive Zsh.
+            std::string child_path=narrow((root/L"usr"/L"bin").wstring());
+            const auto count=GetEnvironmentVariableW(L"PATH",nullptr,0);
+            if (count) {
+                if (count>32767) throw std::runtime_error("Inherited PATH exceeds the supported child environment bound.");
+                std::wstring inherited(count,L'\0');
+                const auto written=GetEnvironmentVariableW(L"PATH",inherited.data(),count);
+                if (written>=count) throw std::runtime_error("Inherited PATH changed while preparing the managed shell.");
+                inherited.resize(written);
+                if (!inherited.empty()) child_path+=';'+narrow(inherited);
+            }
+            managed.environment={{"ZDOTDIR",narrow((root/L"stormtty"/L"zsh").generic_wstring())},
+                {"STORMTTY_SESSION_ID","managed"},{"TERM","xterm-256color"},{"COLORTERM","truecolor"},
+                {"LANG","C.UTF-8"},{"MSYSTEM","MSYS"},{"PATH",std::move(child_path)}};
+            managed_shell_profile_=std::move(managed);
+        }
         std::string directory;
         for (const auto& profile:config_.profiles) if (profile.id==config_.default_profile) { directory=profile.working_directory; break; }
         if (directory.empty()) directory=narrow(std::filesystem::current_path().wstring());
@@ -219,7 +240,11 @@ public:
         for (auto& [id, session] : sessions_) { (void)id; session->request_close(); }
         if (hwnd_) DestroyWindow(hwnd_);
         // The window is gone: never wait for local file I/O in a WndProc.
-        if (settings_worker_.joinable()) settings_worker_.join();
+        if (settings_worker_.joinable()) {
+            if (options_.smoke_test) std::fprintf(stderr,"Native CI settings worker reap begin after window destruction\n");
+            settings_worker_.join();
+            if (options_.smoke_test) std::fprintf(stderr,"Native CI settings worker reap end\n");
+        }
         if (smoke_settings_file_owned_) {
             std::error_code ignored;
             std::filesystem::remove(options_.config_path,ignored);
@@ -253,6 +278,7 @@ private:
     bool smoke_frame_ready() const;
     void smoke_progress(bool presented = false);
     void smoke_finish(std::string_view error = {});
+    void smoke_settings_stage(unsigned stage);
     void capture_frame();
     void submit(std::function<SessionSendResult()> action, std::size_t bytes = 64);
     void drain_input();
@@ -262,6 +288,7 @@ private:
     Session* active_session() const;
     Session* session_for(PaneId) const;
     SessionId new_session();
+    const std::string& session_profile_id() const { return managed_shell_profile_?managed_shell_profile_->id:config_.default_profile; }
     void new_tab();
     void split(Direction);
     void close_pane(PaneId, bool approved = false);
@@ -306,6 +333,7 @@ private:
     }
     Config config_;
     NativeRunOptions options_;
+    std::optional<Profile> managed_shell_profile_; // Per-launch only, never serialized into user Config.
     SettingsPanel settings_panel_{Platform::windows};
     std::thread settings_worker_;
     bool settings_job_{}, settings_open_requested_{};
@@ -320,6 +348,7 @@ private:
     bool smoke_marker_presented_{}, smoke_finished_{};
     int exit_code_{};
     unsigned smoke_modal_stage_{}, smoke_settings_stage_{};
+    ULONGLONG smoke_started_at_{};
     bool smoke_settings_file_owned_{};
     Config smoke_settings_original_;
     std::shared_ptr<Session> smoke_settings_actor_;
@@ -402,6 +431,11 @@ private:
 };
 
 void NativeWindow::create() {
+    if (options_.smoke_test) {
+        smoke_started_at_=GetTickCount64();
+        std::fprintf(stderr,"Native CI smoke startup: settings=%d managed_zsh=%d packaged_console=%d\n",
+            options_.smoke_settings,managed_shell_profile_.has_value(),!options_.console_runtime_directory.empty());
+    }
     hwnd_ = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, L"StormTTY.NativeWindow", L"StormTTY", WS_OVERLAPPEDWINDOW & ~WS_CAPTION,
                            CW_USEDEFAULT, CW_USEDEFAULT, 1100, 720, nullptr, nullptr, GetModuleHandleW(nullptr), this);
     if (!hwnd_) throw std::runtime_error("Could not create the native StormTTY window.");
@@ -489,8 +523,11 @@ int NativeWindow::run() {
                 // Explicit test-mode post-loop cleanup only. No WndProc or
                 // normal UI close ever waits for process/actor shutdown.
                 if (options_.smoke_test) for (const auto& [id,session]:smoke_sessions_) {
-                    (void)id; if (!session->wait_closed(std::chrono::seconds(5))) code=3;
+                    std::fprintf(stderr,"Native CI cleanup begin: session=%llu elapsed_ms=%llu\n",static_cast<unsigned long long>(id.value),GetTickCount64()-smoke_started_at_);
+                    if (!session->wait_closed(std::chrono::seconds(5))) code=3;
+                    std::fprintf(stderr,"Native CI cleanup end: session=%llu code=%d\n",static_cast<unsigned long long>(id.value),code);
                 }
+                if (options_.smoke_test) std::fprintf(stderr,"Native CI loop exit: code=%d settings_worker_joinable=%d\n",code,settings_worker_.joinable());
                 return code;
             }
             if (message.hwnd == hwnd_ && key_message(message)) continue;
@@ -656,10 +693,16 @@ SessionId NativeWindow::new_session() {
     // Empty opt-in preserves ProcessOptions' platform-default/system provider.
     // This single factory covers tabs, splits, new projects and smoke actors;
     // Settings never persists or changes the per-launch provider selection.
-    for (const auto& profile : config_.profiles) if (profile.id == config_.default_profile) {
-        process.executable = profile.executable; process.arguments = profile.arguments; process.working_directory = profile.working_directory;
-        for (const auto& [name, value] : profile.environment) process.environment.push_back({name, value});
-        break;
+    const Profile* selected=managed_shell_profile_?&*managed_shell_profile_:nullptr;
+    if (!selected) for (const auto& profile:config_.profiles) if (profile.id==config_.default_profile) { selected=&profile; break; }
+    if (selected) {
+        process.executable=selected->executable; process.arguments=selected->arguments; process.working_directory=selected->working_directory;
+        for (const auto& [name,value]:selected->environment) process.environment.push_back({name,value});
+    }
+    if (managed_shell_profile_) {
+        // Child environment only. HOME is deliberately inherited unchanged;
+        // existing user startup hooks must not override this managed preset.
+        for (const char* name:{"MSYS","ENV","BASH_ENV"}) process.environment.push_back({name,std::nullopt});
     }
     if (const auto* project=projects_.active(); project && !project->metadata.working_directory.empty()) process.working_directory=project->metadata.working_directory;
     // The built-in alias is resolved only against the trusted system directory,
@@ -667,7 +710,7 @@ SessionId NativeWindow::new_session() {
     // absolute and are validated by the process transport.
     std::string alias=process.executable;
     for (auto& character:alias) if (character>='A' && character<='Z') character=static_cast<char>(character-'A'+'a');
-    if (options_.smoke_test || alias.empty() || alias=="cmd.exe" || alias=="cmd") {
+    if (!managed_shell_profile_ && (options_.smoke_test || alias.empty() || alias=="cmd.exe" || alias=="cmd")) {
         std::array<wchar_t, MAX_PATH + 1> directory{};
         const UINT length = GetSystemDirectoryW(directory.data(), static_cast<UINT>(directory.size()));
         if (!length || length >= directory.size()) throw std::runtime_error("Could not discover the Windows system shell.");
@@ -690,7 +733,7 @@ SessionId NativeWindow::new_session() {
 }
 void NativeWindow::new_tab() {
     const auto id = new_session();
-    auto result = workspace().create_tab(id, config_.default_profile);
+    auto result = workspace().create_tab(id, session_profile_id());
     if (!result) { sessions_.at(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
     changed(true);
 }
@@ -698,7 +741,7 @@ void NativeWindow::split(Direction direction) {
     const auto active = workspace().active_pane();
     if (!active) return;
     const auto id = new_session();
-    auto result = workspace().split(active, direction, id, config_.default_profile);
+    auto result = workspace().split(active, direction, id, session_profile_id());
     if (!result) { sessions_.at(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
     activate(*result.value); changed(true);
 }
@@ -875,8 +918,8 @@ std::string NativeWindow::pane_title(PaneId id, bool full) const {
     const auto* pane = workspace().pane(id);
     if (!pane) return {};
     std::string result = pane->title;
-    const Profile* profile = nullptr;
-    for (const auto& candidate : config_.profiles) if (candidate.id == pane->profile) { profile = &candidate; break; }
+    const Profile* profile = managed_shell_profile_ && pane->profile==managed_shell_profile_->id?&*managed_shell_profile_:nullptr;
+    if (!profile) for (const auto& candidate : config_.profiles) if (candidate.id == pane->profile) { profile = &candidate; break; }
     if (result.empty()) result = profile && !profile->label.empty() ? profile->label : "Terminal";
     // Only replace an exact executable path, never arbitrary OSC text or a user
     // rename. The untouched title remains available in the native tooltip.
@@ -1042,7 +1085,9 @@ void NativeWindow::settings_completed() {
             try { preview_settings(completion->candidate); }
             catch (const std::exception& error) { apply_error=error.what(); }
             config_=std::move(completion->candidate);
-            notice_=apply_error.empty()?"Settings saved. Your default shell applies to new tabs and panes.":
+            notice_=apply_error.empty()?(managed_shell_profile_?
+                "Settings saved. --shell-runtime keeps managed Zsh for this launch; the saved shell applies without that override.":
+                "Settings saved. Your default shell applies to new tabs and panes."):
                 "Settings saved, but presentation could not update. Restart to apply: "+apply_error;
         } else settings_panel_.persistence_result(false,completion->saved.error);
         caret_schedule(true); changed(true);
@@ -1983,6 +2028,11 @@ bool NativeWindow::smoke_frame_ready() const {
     }
     return true;
 }
+void NativeWindow::smoke_settings_stage(unsigned stage) {
+    smoke_settings_stage_=stage;
+    if (options_.smoke_settings) std::fprintf(stderr,"Native CI settings stage=%u elapsed_ms=%llu job_pending=%d panel_open=%d saving=%d\n",
+        stage,GetTickCount64()-smoke_started_at_,settings_job_,settings_panel_.is_open(),settings_panel_.saving());
+}
 void NativeWindow::smoke_progress(bool presented) {
     if (!options_.smoke_test || smoke_finished_) return;
     if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
@@ -1992,7 +2042,7 @@ void NativeWindow::smoke_progress(bool presented) {
         if (smoke_settings_stage_==0) {
             if (info.state!=SessionState::running || !info.bytes_received) return;
             smoke_settings_original_=config_; smoke_settings_actor_=sessions_.at(workspace().pane(workspace().active_pane())->session);
-            open_settings(); smoke_settings_stage_=1; return;
+            open_settings(); smoke_settings_stage(1); return;
         }
         if (smoke_settings_stage_==1) {
             if (settings_job_) return;
@@ -2006,7 +2056,7 @@ void NativeWindow::smoke_progress(bool presented) {
             const Point point{found->bounds.x+found->bounds.width/2,found->bounds.y+found->bounds.height/2};
             pointer_down(point,false); pointer_up(point);
             if (config_.font.size_dip!=smoke_settings_original_.font.size_dip+1 || config_.default_profile!=smoke_settings_original_.default_profile) { smoke_finish("Settings preview did not apply only reversible presentation."); return; }
-            smoke_settings_stage_=2; return;
+            smoke_settings_stage(2); return;
         }
         if (smoke_settings_stage_==2) {
             if (!presented) return;
@@ -2020,7 +2070,7 @@ void NativeWindow::smoke_progress(bool presented) {
             popup_menu({12,48});
             const Point outside{width_-2,height_-2}; pointer_down(outside,false); pointer_up(outside);
             if (context_menu_.is_open() || drag_!=Drag::none || GetCapture()==hwnd_) { smoke_finish("Menu outside click did not dismiss without starting terminal selection."); return; }
-            open_settings("pane.split_right"); smoke_settings_stage_=3; return;
+            open_settings("pane.split_right"); smoke_settings_stage(3); return;
         }
         if (smoke_settings_stage_==3) {
             if (settings_job_) return;
@@ -2031,7 +2081,7 @@ void NativeWindow::smoke_progress(bool presented) {
             if (!settings_panel_.saving() || !settings_job_) { smoke_finish("Settings Save did not enter nonblocking pending state."); return; }
             message(WM_CLOSE,0,0);
             if (!hwnd_ || !settings_panel_.saving()) { smoke_finish("Pending Save allowed stale close/cancel."); return; }
-            smoke_settings_stage_=4; return;
+            smoke_settings_stage(4); return;
         }
         if (smoke_settings_stage_==4) {
             if (settings_job_) return;
@@ -2041,7 +2091,7 @@ void NativeWindow::smoke_progress(bool presented) {
                 sessions_.size()!=1 || sessions_.begin()->second!=smoke_settings_actor_ || workspace().state().panes.size()!=1) {
                 smoke_finish("Saved shortcut or original actor identity was not retained."); return;
             }
-            smoke_settings_stage_=5;
+            smoke_settings_stage(5);
         }
     }
     if (options_.smoke_modal && smoke_modal_stage_<2) {
@@ -2097,7 +2147,9 @@ void NativeWindow::smoke_progress(bool presented) {
         if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; }
         if (!smoke_commands_sent_.contains(id) && info.state==SessionState::running && info.bytes_received) {
             smoke_commands_sent_.insert(id);
-            const std::string command="echo " + std::string(smoke_marker) + " & exit /b 0";
+            const std::string command=managed_shell_profile_?
+                "[[ $ZSH_VERSION == 5.9.2 && ${STORMTTY_MANAGED_ZSH-} == 1 ]] && print -r -- " + std::string(smoke_marker) + "; exit $?":
+                "echo " + std::string(smoke_marker) + " & exit /b 0";
             submit([session,command] { return session->text(command); },command.size());
             KeyInput enter; enter.key=Key::enter;
             submit([session,enter] { return session->key(enter); });
@@ -2148,11 +2200,13 @@ void NativeWindow::smoke_finish(std::string_view error) {
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
+        if (managed_shell_profile_) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
         if (options_.smoke_settings) std::fprintf(stderr,"Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, preview rollback, custom system menu/outside-click routing, explicit atomic shortcut Save, original live actor retained. Not physical UI/accessibility QA.\n");
         if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts, original live actor identity across activation/retirement, hidden real output, scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
         if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());
-    } else std::fprintf(stderr,"Native CI smoke failed: %.*s\n",static_cast<int>(error.size()),error.data());
+    } else std::fprintf(stderr,"Native CI smoke failed: %.*s Settings stage=%u elapsed_ms=%llu job_pending=%d saving=%d\n",
+        static_cast<int>(error.size()),error.data(),smoke_settings_stage_,GetTickCount64()-smoke_started_at_,settings_job_,settings_panel_.saving());
     if (hwnd_) DestroyWindow(hwnd_);
 }
 

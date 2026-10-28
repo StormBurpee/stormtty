@@ -58,8 +58,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             else if (argument == L"--smoke-projects") { options.smoke_projects=true; ++smoke_modes; }
             else if (argument == L"--smoke-settings") { options.smoke_settings=true; ++smoke_modes; }
             else if (argument == L"--capture" && i+1<args.count) options.capture_path=args.values[++i];
-            else if (argument == L"--console-runtime" && i+1<args.count) {
-                if (!options.console_runtime_directory.empty()) throw std::invalid_argument("Specify --console-runtime only once.");
+            else if ((argument == L"--console-runtime" || argument == L"--shell-runtime") && i+1<args.count) {
+                const bool shell_runtime=argument==L"--shell-runtime";
+                auto& selected=shell_runtime?options.shell_runtime_directory:options.console_runtime_directory;
+                if (!selected.empty()) throw std::invalid_argument(shell_runtime?"Specify --shell-runtime only once.":"Specify --console-runtime only once.");
                 const std::filesystem::path directory(args.values[++i]);
                 const auto& path=directory.native();
                 // Match the provider's local-drive trust boundary; never resolve
@@ -68,11 +70,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                     ((path[0]>=L'A' && path[0]<=L'Z') || (path[0]>=L'a' && path[0]<=L'z')) &&
                     path[1]==L':' && (path[2]==L'\\' || path[2]==L'/');
                 if (!directory.is_absolute() || !local_drive || path.size()>=32767)
-                    throw std::invalid_argument("--console-runtime requires an absolute local drive directory, such as C:\\runtime. UNC/device/relative paths are not accepted.");
-                options.console_runtime_directory=directory.lexically_normal();
+                    throw std::invalid_argument(shell_runtime?
+                        "--shell-runtime requires an absolute local drive root. UNC/device/relative paths are not accepted.":
+                        "--console-runtime requires an absolute local drive directory. UNC/device/relative paths are not accepted.");
+                selected=directory.lexically_normal();
             }
             else if (argument == L"--help") {
-                constexpr std::string_view help="StormTTY [--config path] [--console-runtime absolute-directory]\n\n"
+                constexpr std::string_view help="StormTTY [--config path] [--console-runtime absolute-directory]\n         [--shell-runtime absolute-root]\n\n"
                     "Verification modes (choose one):\n"
                     "--smoke [--capture frame.png]\n"
                     "--smoke-layout --capture layout.png\n"
@@ -83,12 +87,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                     "Microsoft ConPTY runtime (1.25.260930003). No system fallback on failure.\n"
                     "It can also be combined with any verification mode above.\n"
                     "Without it, Windows system ConPTY remains the default.\n\n"
+                    "--shell-runtime opts this launch into staged upstream Zsh 5.9.2 with\n"
+                    "StormTTY's managed preset (root/usr/bin/zsh.exe and root/stormtty/zsh/.zshrc).\n"
+                    "It keeps HOME/project folders, writes no user dotfiles or history, and\n"
+                    "does not change the saved default shell. Smoke uses real Zsh, not cmd.\n\n"
                     "Ctrl+Shift+P opens commands.\nCtrl+Shift+T creates a tab.\n"
                     "Ctrl+Tab changes tabs.\nCtrl+Shift+V pastes.\nAlt+Space opens the system menu.";
                 if (smoke) { std::fprintf(stdout,"%.*s\n",static_cast<int>(help.size()),help.data()); return 0; }
                 return stormtty::show_startup_notice("StormTTY controls",help,stormtty::StartupNoticeKind::information)==0?0:1;
             } else throw std::runtime_error("Unknown or incomplete option. Use --help for supported options.");
         }
+        // Explicit startup validation precedes any HWND or session. Never probe
+        // runtime files from the UI/session factory or silently use a bare shell.
+        if (!options.shell_runtime_directory.empty() &&
+            (!std::filesystem::is_regular_file(options.shell_runtime_directory/L"usr"/L"bin"/L"zsh.exe") ||
+             !std::filesystem::is_regular_file(options.shell_runtime_directory/L"stormtty"/L"zsh"/L".zshrc")))
+            throw std::invalid_argument("The staged shell runtime must contain usr/bin/zsh.exe and StormTTY's stormtty/zsh/.zshrc preset. No fallback shell was launched.");
         if (smoke_modes>1) throw std::invalid_argument("Choose only one native smoke scenario.");
         if (smoke && required) throw std::runtime_error("Smoke mode does not load user configuration or profile scripts.");
         if (!smoke && !options.capture_path.empty()) throw std::runtime_error("--capture is available only with explicit --smoke mode.");

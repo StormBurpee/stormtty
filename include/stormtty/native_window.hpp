@@ -79,6 +79,8 @@ struct NativeRunOptions {
     // Explicit per-launch experimental opt-in; never persisted or selected by default.
     // Windows transport verifies the pinned runtime and actual console host.
     std::filesystem::path console_runtime_directory;
+    // Opt-in staged upstream Zsh + StormTTY preset; no persisted/default shell change.
+    std::filesystem::path shell_runtime_directory;
 };
 int run_native_application(Config config, NativeRunOptions options = {});
 
