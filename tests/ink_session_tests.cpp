@@ -18,6 +18,13 @@ using namespace stormtty;
 using namespace std::chrono_literals;
 
 namespace {
+std::string experimental_provider_directory;
+void select_experimental_provider(ProcessOptions& options) {
+    if (!experimental_provider_directory.empty()) {
+        options.provider = ProcessProvider::windows_packaged_experimental;
+        options.provider_directory = experimental_provider_directory;
+    }
+}
 void check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
@@ -164,6 +171,7 @@ public:
                    TerminalSize initial_size = {80, 24, 8, 16})
         : scenario(mode_name(mode)), expected_alternate(mode != FixtureMode::primary), expected_fullscreen(mode == FixtureMode::fullscreen) {
         ProcessOptions process;
+        select_experimental_provider(process);
         process.executable = node;
         process.arguments = {fixture};
         if (expected_alternate) {
@@ -412,6 +420,7 @@ int transport_probe(const std::string& node, const std::string& fixture, const s
             const auto source_path = directory / (stem + "-stdout-live.bin");
             check(!std::filesystem::exists(source_path), "Refusing to replace an existing stdout capture");
             ProcessOptions options;
+            select_experimental_provider(options);
             options.executable = node;
             const auto source_utf8 = source_path.u8string();
             options.arguments = {fixture, "--alternate-screen", "--incremental", "--fullscreen",
@@ -528,13 +537,38 @@ int static_margin_probe(const std::string& node, const std::string& fixture) {
 
 int main(int argc, char** argv) {
     try {
+        if (argc >= 5 && std::string_view(argv[argc - 2]) == "--packaged-provider") {
+            experimental_provider_directory = argv[argc - 1];
+            check(utf8_path(experimental_provider_directory).is_absolute(), "Experimental provider directory must be absolute");
+            argc -= 2;
+        }
         check(argc == 3 || argc == 4 || argc == 5,
-            "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs> [all|primary|fullscreen|compact-alt|host-close|static-margin-probe|transport-probe <absolute-capture-dir>]");
+            "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs> [all|primary|fullscreen|compact-alt|host-close|static-margin-probe|transport-probe <absolute-capture-dir>|provider-missing-host] [--packaged-provider <absolute-verified-dir>]");
         check(utf8_path(argv[1]).is_absolute(), "Node executable path must be absolute");
         check(utf8_path(argv[2]).is_absolute(), "Ink fixture path must be absolute");
         check(std::filesystem::is_regular_file(utf8_path(argv[1])), "Node executable is missing");
         check(std::filesystem::is_regular_file(utf8_path(argv[2])), "Ink fixture is missing");
         const std::string_view mode = argc >= 4 ? argv[3] : "all";
+        if (mode == "provider-missing-host") {
+            check(!experimental_provider_directory.empty(), "Missing-host probe requires explicit packaged provider");
+            const auto directory = utf8_path(experimental_provider_directory);
+            check(std::filesystem::is_regular_file(directory / "conpty.dll") &&
+                  !std::filesystem::exists(directory / "OpenConsole.exe"), "Use a directory containing DLL only");
+            ProcessOptions options; select_experimental_provider(options); options.executable = argv[1];
+            options.arguments = {argv[2]};
+            struct Result { std::mutex mutex; std::size_t bytes{}; std::optional<ProcessExit> exit; };
+            auto result = std::make_shared<Result>();
+            auto process = Process::start(std::move(options), {
+                [result](std::string_view bytes, std::stop_token) { std::lock_guard lock(result->mutex); result->bytes += bytes.size(); },
+                [result](ProcessExit exit) { std::lock_guard lock(result->mutex); result->exit = std::move(exit); }});
+            check(process->wait_for_exit(5s), "Missing-host probe did not terminate");
+            std::lock_guard lock(result->mutex);
+            check(result->exit && !result->exit->exit_code && result->bytes == 0 &&
+                  result->exit->error.find("Open pinned ConPTY file failed") != std::string::npos,
+                  "Missing host was not rejected before child launch");
+            std::cout << "Missing packaged host rejected before child launch; no inbox fallback\n";
+            return 0;
+        }
         if (mode == "transport-probe") {
             check(argc == 5, "transport-probe requires an absolute fresh capture directory");
             return transport_probe(argv[1], argv[2], argv[4]);

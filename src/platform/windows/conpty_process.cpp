@@ -14,6 +14,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <bcrypt.h>
+#include <tlhelp32.h>
+#include <set>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -126,25 +129,132 @@ struct Attributes {
     Attributes(const Attributes&) = delete;
     Attributes& operator=(const Attributes&) = delete;
 };
+// Serializes host creation/identity verification across our Process instances.
+// Unrelated concurrent direct-child launches make experimental verification fail
+// closed. This is intentionally an isolated qualification path, not a default.
+std::mutex provider_launch_mutex;
+struct Module {
+    HMODULE value{};
+    ~Module() { if (value) FreeLibrary(value); }
+    Module() = default;
+    Module(const Module&) = delete;
+    Module& operator=(const Module&) = delete;
+};
+std::set<DWORD> direct_children() {
+    Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (snapshot.value == INVALID_HANDLE_VALUE) throw win_error("Process snapshot");
+    PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry);
+    std::set<DWORD> result;
+    if (!Process32FirstW(snapshot.value, &entry)) throw win_error("Process32FirstW");
+    do { if (entry.th32ParentProcessID == GetCurrentProcessId()) result.insert(entry.th32ProcessID); }
+    while (Process32NextW(snapshot.value, &entry));
+    if (GetLastError() != ERROR_NO_MORE_FILES) throw win_error("Process32NextW");
+    return result;
+}
+std::wstring normalized_path(std::wstring path) {
+    if (path.starts_with(L"\\\\?\\")) path.erase(0, 4);
+    for (auto& c : path) if (c == L'/') c = L'\\';
+    return path;
+}
+void verify_pinned_file(const std::wstring& path, const char* expected, Handle& lock) {
+    // Deny modification/deletion until the module and its host have closed.
+    lock.reset(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (lock.value == INVALID_HANDLE_VALUE) throw win_error("Open pinned ConPTY file");
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!GetFileInformationByHandle(lock.value, &info)) throw win_error("Inspect pinned ConPTY file");
+    if (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+        throw std::runtime_error("ConPTY file must be a regular non-reparse file");
+    if (info.nFileSizeHigh || !info.nFileSizeLow || info.nFileSizeLow > 2 * 1024 * 1024)
+        throw std::runtime_error("Invalid pinned ConPTY file size");
+    std::vector<unsigned char> bytes(info.nFileSizeLow);
+    DWORD read{};
+    if (!ReadFile(lock.value, bytes.data(), info.nFileSizeLow, &read, nullptr) || read != info.nFileSizeLow)
+        throw win_error("Read pinned ConPTY file");
+    Module crypto;
+    crypto.value = LoadLibraryExW(L"bcrypt.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!crypto.value) throw win_error("Load system bcrypt");
+    const auto open = reinterpret_cast<decltype(&BCryptOpenAlgorithmProvider)>(GetProcAddress(crypto.value, "BCryptOpenAlgorithmProvider"));
+    const auto hash = reinterpret_cast<decltype(&BCryptHash)>(GetProcAddress(crypto.value, "BCryptHash"));
+    const auto close = reinterpret_cast<decltype(&BCryptCloseAlgorithmProvider)>(GetProcAddress(crypto.value, "BCryptCloseAlgorithmProvider"));
+    if (!open || !hash || !close) throw std::runtime_error("System SHA256 APIs unavailable");
+    BCRYPT_ALG_HANDLE algorithm{};
+    if (open(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) throw std::runtime_error("Open SHA256 failed");
+    std::array<unsigned char,32> digest{};
+    const auto status = hash(algorithm, nullptr, 0, bytes.data(), read, digest.data(), static_cast<ULONG>(digest.size()));
+    close(algorithm, 0);
+    if (status < 0) throw std::runtime_error("SHA256 failed");
+    constexpr char hex[] = "0123456789abcdef";
+    std::string actual;
+    for (auto c : digest) { actual += hex[c >> 4]; actual += hex[c & 15]; }
+    if (actual != expected) throw std::runtime_error("Pinned ConPTY SHA256 mismatch");
+}
 struct Provider {
     using Create = HRESULT (WINAPI*)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
     using Resize = HRESULT (WINAPI*)(HPCON, COORD);
     using Close = void (WINAPI*)(HPCON);
+    std::unique_lock<std::mutex> launch_lock{provider_launch_mutex};
+    Handle dll_lock, host_lock, verified_host;
+    Module module; // Released before pinned file locks, after HPCON lifetime.
     Create create{};
     Resize resize{};
     Close close{};
-    explicit Provider(ProcessProvider selection) {
-        if (selection != ProcessProvider::windows_inbox_basic && selection != ProcessProvider::platform_default)
-            throw std::invalid_argument("unsupported Windows process provider");
-        // System module only. Never search CWD/PATH for conpty.dll or substitute
-        // a downloaded DLL for Windows components. Bundled support remains gated
-        // on signature, host-image and runtime qualification (see baseline ADR).
-        HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
-        if (!kernel) throw win_error("GetModuleHandleW(kernel32)");
-        create = reinterpret_cast<Create>(GetProcAddress(kernel, "CreatePseudoConsole"));
-        resize = reinterpret_cast<Resize>(GetProcAddress(kernel, "ResizePseudoConsole"));
-        close = reinterpret_cast<Close>(GetProcAddress(kernel, "ClosePseudoConsole"));
-        if (!create || !resize || !close) throw std::runtime_error("Inbox ConPTY APIs are unavailable on this Windows version");
+    bool packaged{};
+    std::wstring host_path;
+    std::set<DWORD> children_before;
+    explicit Provider(const ProcessOptions& options) {
+        packaged = options.provider == ProcessProvider::windows_packaged_experimental;
+        if (packaged) {
+#if !defined(_M_X64) && !defined(__x86_64__)
+            throw std::runtime_error("Experimental pinned ConPTY package is x64-only");
+#endif
+            auto directory = widen(options.provider_directory);
+            if (!absolute_path(directory) || directory.starts_with(L"\\\\"))
+                throw std::invalid_argument("Packaged ConPTY requires an absolute local drive directory");
+            while (!directory.empty() && (directory.back() == L'\\' || directory.back() == L'/')) directory.pop_back();
+            host_path = directory + L"\\OpenConsole.exe";
+            const auto dll_path = directory + L"\\conpty.dll";
+            // Host is checked first: missing packaging fails before any DLL code
+            // executes or pseudoconsole/child is created. No fallback is allowed.
+            verify_pinned_file(host_path, "3d66b23d0a71bb8eed2b77edc8b9df9bf54ce6c8fb74c863a30e760997f80586", host_lock);
+            verify_pinned_file(dll_path, "feeef341d891643c62d30b6b07800bc70f0bc148f44cb8c3bee84aa557ae805a", dll_lock);
+            std::array<wchar_t,32768> final_path{};
+            const DWORD length = GetFinalPathNameByHandleW(host_lock.value, final_path.data(), static_cast<DWORD>(final_path.size()), FILE_NAME_NORMALIZED);
+            if (!length || length >= final_path.size()) throw win_error("Resolve pinned OpenConsole path");
+            host_path = normalized_path(std::wstring(final_path.data(), length));
+            module.value = LoadLibraryExW(dll_path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (!module.value) throw win_error("Load pinned ConPTY DLL");
+            create = reinterpret_cast<Create>(GetProcAddress(module.value, "ConptyCreatePseudoConsole"));
+            resize = reinterpret_cast<Resize>(GetProcAddress(module.value, "ConptyResizePseudoConsole"));
+            close = reinterpret_cast<Close>(GetProcAddress(module.value, "ConptyClosePseudoConsole"));
+            children_before = direct_children();
+        } else {
+            if (options.provider != ProcessProvider::windows_inbox_basic && options.provider != ProcessProvider::platform_default)
+                throw std::invalid_argument("unsupported Windows process provider");
+            if (!options.provider_directory.empty()) throw std::invalid_argument("Provider directory requires explicit experimental selection");
+            HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+            if (!kernel) throw win_error("GetModuleHandleW(kernel32)");
+            create = reinterpret_cast<Create>(GetProcAddress(kernel, "CreatePseudoConsole"));
+            resize = reinterpret_cast<Resize>(GetProcAddress(kernel, "ResizePseudoConsole"));
+            close = reinterpret_cast<Close>(GetProcAddress(kernel, "ClosePseudoConsole"));
+        }
+        if (!create || !resize || !close) throw std::runtime_error("Selected ConPTY provider APIs unavailable");
+    }
+    void verify_host() {
+        if (packaged) {
+            const auto after = direct_children();
+            std::vector<DWORD> added;
+            std::set_difference(after.begin(), after.end(), children_before.begin(), children_before.end(), std::back_inserter(added));
+            if (added.size() != 1) throw std::runtime_error("Experimental ConPTY host identity ambiguous; use isolated diagnostic process");
+            verified_host.reset(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, added.front()));
+            if (!verified_host.value) throw win_error("Open ConPTY host identity");
+            std::array<wchar_t,32768> image{}; DWORD length = static_cast<DWORD>(image.size());
+            if (!QueryFullProcessImageNameW(verified_host.value, 0, image.data(), &length)) throw win_error("Read ConPTY host image");
+            const auto actual = normalized_path(std::wstring(image.data(), length));
+            if (CompareStringOrdinal(actual.c_str(), -1, host_path.c_str(), -1, TRUE) != CSTR_EQUAL)
+                throw std::runtime_error("ConPTY host image mismatch: inbox fallback is forbidden");
+        }
+        launch_lock.unlock();
     }
 };
 struct PseudoConsole {
@@ -313,7 +423,7 @@ finished:
         // scope's catch always drains before HPCON destruction, including setup
         // failure after resource acquisition and suspended-child/job failures.
         try {
-            Provider provider(options.provider);
+            Provider provider(options);
             PseudoConsole console(provider);
             try {
                 auto executable = widen(options.executable);
@@ -328,8 +438,8 @@ finished:
                 auto environment = make_environment(options);
                 {
                     std::lock_guard lock(mutex);
-                    diagnostic.provider = "Windows ConPTY (system)";
-                    diagnostic.detail = "kernel32 Create/Resize/ClosePseudoConsole; OS-managed conhost. Bundled Microsoft.Windows.Console.ConPTY is NOT in use. Kitty/Ink/graphics transport remains unverified.";
+                    diagnostic.provider = provider.packaged ? "Windows ConPTY (packaged experimental, host verification pending)" : "Windows ConPTY (system)";
+                    diagnostic.detail = provider.packaged ? "Experimental pinned provider loaded; host identity has not yet been verified." : "kernel32 Create/Resize/ClosePseudoConsole; OS-managed conhost. Bundled Microsoft.Windows.Console.ConPTY is NOT in use. Kitty/Ink/graphics transport remains unverified.";
                 }
                 if (!closing.load()) {
                     HANDLE r{}, w{};
@@ -348,6 +458,13 @@ finished:
                     HRESULT hr = provider.create({static_cast<SHORT>(options.grid.columns), static_cast<SHORT>(options.grid.rows)},
                                                  input_read.value, output_write.value, 0, &console.value);
                     if (FAILED(hr)) throw win_error("CreatePseudoConsole", static_cast<DWORD>(hr));
+                    provider.verify_host();
+                    if (provider.packaged) {
+                        std::lock_guard lock(mutex);
+                        diagnostic.provider = "Windows ConPTY (packaged experimental 1.25.260930003; OpenConsole identity verified)";
+                        diagnostic.detail = "Pinned x64 DLL/host SHA256 verified; matching direct-child image verified; flags=0; isolated diagnostic only; advanced protocols unverified.";
+                        diagnostic.bundled_provider = true;
+                    }
                     Attributes attributes;
                     if (!UpdateProcThreadAttribute(attributes.value, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
                                                    console.value, sizeof(console.value), nullptr, nullptr))

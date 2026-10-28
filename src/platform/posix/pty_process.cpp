@@ -118,8 +118,8 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
             throw std::invalid_argument("working_directory must be absolute");
         if (!valid_grid(options.grid) || !options.input_capacity_bytes)
             throw std::invalid_argument("invalid process grid/input capacity");
-        if (options.provider == ProcessProvider::windows_inbox_basic)
-            throw std::invalid_argument("Windows inbox provider is unavailable on POSIX");
+        if (options.provider != ProcessProvider::platform_default || !options.provider_directory.empty())
+            throw std::invalid_argument("Windows providers are unavailable on POSIX");
         std::vector<std::string> args{options.executable};
         for (const auto& arg : options.arguments) { validate_text(arg); args.push_back(arg); }
         std::vector<char*> argv;

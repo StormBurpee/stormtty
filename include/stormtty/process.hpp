@@ -24,7 +24,7 @@ struct ProcessEnvironmentEntry {
     std::optional<std::string> value;
 };
 
-enum class ProcessProvider { platform_default, windows_inbox_basic };
+enum class ProcessProvider { platform_default, windows_inbox_basic, windows_packaged_experimental };
 enum class ProcessState { starting, running, close_requested, draining, exited, failed };
 enum class ProcessSendResult { accepted, would_block, closed, too_large };
 
@@ -39,6 +39,9 @@ struct ProcessOptions {
     ProcessGridSize grid;
     std::size_t input_capacity_bytes{1024 * 1024};
     ProcessProvider provider{ProcessProvider::platform_default};
+    // Explicit isolated qualification only; never selected by default. Requires
+    // the pinned, signature-verified official x64 package in an absolute directory.
+    std::string provider_directory;
 };
 
 struct ProcessExit {

@@ -95,3 +95,48 @@ node tests/ink/conpty-el-regression/replay-xterm.cjs \
 
 This diagnostic records known differences; the existing Ink acceptance tests
 remain strict and unchanged.
+
+## Explicit experimental provider qualification
+
+An opt-in implementation now exists; it does **not** change the product default.
+On an isolated native Windows x64 CI runner, prepare a fresh job-private path:
+
+```powershell
+./tools/prepare-conpty-probe.ps1 -Destination "$PWD/conpty-probe"
+# Stop if preparation/signature validation failed. Never continue from a partial path.
+$provider = "$PWD/conpty-probe"
+$node = (Get-Command node).Source
+$fixture = "$PWD/tests/ink/fixture.mjs"
+./build-msvc/ink_session_tests.exe $node $fixture provider-missing-host --packaged-provider "$provider/missing-host"
+./build-msvc/ink_session_tests.exe $node $fixture static-margin-probe --packaged-provider $provider
+./build-msvc/ink_session_tests.exe $node $fixture transport-probe "$PWD/packaged-captures" --packaged-provider $provider
+./build-msvc/ink_session_tests.exe $node $fixture primary --packaged-provider $provider
+./build-msvc/ink_session_tests.exe $node $fixture fullscreen --packaged-provider $provider
+./build-msvc/ink_session_tests.exe $node $fixture compact-alt --packaged-provider $provider
+./build-msvc/ink_session_tests.exe $node $fixture host-close --packaged-provider $provider
+```
+
+CI must record each exit status separately and retain strict failures; a successful
+negative packaging test is not Ink qualification. Ordinary invocations remain
+inbox. Use fresh capture directories. Never put either binary in system folders
+or global PATH. The package is acquired only from its exact official NuGet URL;
+its published catalog SHA512 was independently matched during preparation of this
+experiment. The script pins the resulting archive and binary SHA256 values,
+requires NuGet signature validation, then validates Microsoft Authenticode on
+both extracted binaries before use.
+
+The runtime separately verifies the pinned file hashes and holds handles denying
+modification/deletion throughout use. It loads the absolute DLL with restricted
+DLL search flags, pairs all HPCON operations with that module, and verifies a new
+direct child's executable image is the expected OpenConsole before launching the
+fixture. No private HPCON structure layout is read. Our Process host creations
+are serialized during this check; another unrelated concurrent direct-child
+launch causes a fail-closed ambiguity error. This is deliberately an isolated
+qualification mechanism, not a general production concurrent-process discovery
+contract. A missing host is rejected before DLL execution or child creation.
+
+A provider-directory argument with a nonexperimental provider is rejected.
+POSIX rejects Windows provider selection. `bundled_provider` is set only after
+host verification; advanced protocol qualification remains false. No signatures
+or Windows runtime behavior are claimed verified by the Linux cross-compilation
+checks. The signature gate and actual native executions must pass in Windows CI.

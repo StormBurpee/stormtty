@@ -93,6 +93,30 @@ jobs:
             for i in range(0,len(data),4096): print(data[i:i+4096],flush=True)
             print('INK_CAPTURE_BASE64_END',flush=True)
           raise SystemExit(1 if probe.returncode or install.returncode or replay else 0)
+      - name: Verify explicit packaged console dependency
+        id: packaged_console
+        if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
+        shell: pwsh
+        run: ./tools/prepare-conpty-probe.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'stormtty-conpty-qualified')
+      - name: Compare packaged console without changing defaults
+        if: always() && runner.os == 'Windows' && steps.packaged_console.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,subprocess,shutil
+          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
+          base=[str(pathlib.Path('build/ink_session_tests.exe').resolve()),shutil.which('node'),str(pathlib.Path('tests/ink/fixture.mjs').resolve())]
+          failures=[]
+          cases=['provider-missing-host','static-margin-probe','primary','fullscreen','compact-alt','host-close','transport-probe']
+          for case in cases:
+            args=base+[case]
+            if case=='transport-probe': args.append(str(pathlib.Path('build/artifacts/ink-packaged-transport').resolve()))
+            args+=['--packaged-provider',str(provider/'missing-host' if case=='provider-missing-host' else provider)]
+            print('PACKAGED_CONSOLE_CASE='+case,flush=True)
+            result=subprocess.run(args,timeout=120)
+            print('PACKAGED_CONSOLE_RESULT='+case+':'+str(result.returncode),flush=True)
+            if result.returncode: failures.append(case)
+          print('Packaged comparison failures: '+repr(failures),flush=True)
+          raise SystemExit(1 if failures else 0)
       - name: Collect targeted macOS GUI failure evidence
         if: always() && runner.os == 'macOS' && steps.build.outcome == 'success' && steps.native_tests.outcome == 'failure'
         run: python tools/macos-crash-evidence.py
@@ -125,6 +149,7 @@ jobs:
             build/artifacts/macos-debugger.log
             build/artifacts/stormtty-crash.*
             build/artifacts/ink-transport/*.bin
+            build/artifacts/ink-packaged-transport/*.bin
             .deps/ghostty-native/stormtty-build.json
             .deps/ghostty-native/stormtty-bootstrap.lock.json
           if-no-files-found: warn
