@@ -2333,6 +2333,30 @@ void NativeWindow::smoke_progress(bool presented) {
         }
     }
     if (options_.smoke_modal && smoke_modal_stage_<2) {
+        const auto verify_activation_routing=[&] {
+            const auto style=GetWindowLongPtrW(hwnd_,GWL_STYLE), extended=GetWindowLongPtrW(hwnd_,GWL_EXSTYLE);
+            const auto focused=focused_session_;const bool modal_open=modal_.has_value();
+            RECT client{};GetClientRect(hwnd_,&client);
+            // Exercise the actual WndProc's default no-paint activation path.
+            // These synthetic messages do not prove desktop blur or activation.
+            const auto inactive=SendMessageW(hwnd_,WM_NCACTIVATE,FALSE,0);
+            SendMessageW(hwnd_,WM_NCACTIVATE,TRUE,0);
+            RECT after{};GetClientRect(hwnd_,&after);
+            const auto hit=[&](Rect bounds) {
+                POINT p{static_cast<LONG>(std::lround((bounds.x+bounds.width/2)*scale_)),static_cast<LONG>(std::lround((bounds.y+bounds.height/2)*scale_))};
+                ClientToScreen(hwnd_,&p);return SendMessageW(hwnd_,WM_NCHITTEST,0,MAKELPARAM(p.x,p.y));
+            };
+            constexpr LONG_PTR required=WS_THICKFRAME|WS_SYSMENU|WS_MINIMIZEBOX|WS_MAXIMIZEBOX;
+            const bool valid=inactive!=FALSE && !(style&WS_CAPTION) && !(required&~style) &&
+                (extended&WS_EX_NOREDIRECTIONBITMAP) && style==GetWindowLongPtrW(hwnd_,GWL_STYLE) &&
+                extended==GetWindowLongPtrW(hwnd_,GWL_EXSTYLE) && EqualRect(&client,&after) &&
+                modal_open==modal_.has_value() && focused_session_==focused &&
+                hit(chrome_.maximize)==HTMAXBUTTON && hit(chrome_.drag)==HTCAPTION &&
+                !chrome_.tabs.empty() && hit(chrome_.tabs.front().bounds)==HTCLIENT;
+            if(!valid)std::fprintf(stderr,"Native activation routing failed: modal=%u inactive_result=%lld style=0x%08lx exstyle=0x%08lx\n",
+                unsigned(modal_open),static_cast<long long>(inactive),static_cast<unsigned long>(style),static_cast<unsigned long>(extended));
+            return valid;
+        };
         auto* active=active_session(); const auto info=active?active->info():SessionInfo{};
         if (smoke_modal_stage_==0 && info.state==SessionState::running && info.bytes_received) {
             const auto styles=GetWindowLongPtrW(hwnd_,GWL_STYLE);
@@ -2342,13 +2366,17 @@ void NativeWindow::smoke_progress(bool presented) {
                     static_cast<unsigned long>(styles),static_cast<unsigned long>(styles&WS_CAPTION),static_cast<unsigned long>(required&~styles));
                 smoke_finish("Custom frame style invariants failed after activation; see style masks."); return;
             }
+            if(!verify_activation_routing()) {smoke_finish("No-paint activation changed native frame geometry, styles, caption routing or terminal focus.");return;}
             const auto original=workspace().active_pane(); const auto original_session=workspace().pane(original)->session;
             close_pane(original);
             if (!modal_ || modal_focus_.activate()!=ModalDecision::cancel || focused_session_) { smoke_finish("Modal did not default to Cancel and remove terminal focus."); return; }
+            if(!verify_activation_routing()) {smoke_finish("No-paint activation broke styled modal trapping or native caption routing.");return;}
             MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam='X';
             if (!key_message(key)) { smoke_finish("Modal printable key leaked to terminal routing."); return; }
             key.wParam=VK_ESCAPE; key_message(key);
             if (modal_ || !workspace().pane(original) || focused_session_!=original_session) { smoke_finish("Escape did not restore terminal focus without closing."); return; }
+            if(!verify_activation_routing()) {smoke_finish("No-paint activation broke focus restoration after modal Cancel.");return;}
+            std::fprintf(stderr,"Native activation smoke: inactive/active no-paint dispatch preserves caption-free styles, immutable presentation style, client geometry, Snap hit target and modal focus. Synthetic routing is not desktop material verification.\n");
             close_pane(original); key.wParam=VK_RETURN; key_message(key);
             if (modal_ || !workspace().pane(original)) { smoke_finish("Default Enter did not cancel destructive close."); return; }
             new_tab(); const auto disposable=workspace().pane(workspace().active_pane())->session;
@@ -2558,8 +2586,10 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_NCPAINT: return 0;
     case WM_NCACTIVATE:
         changed();
-        if (IsIconic(hwnd_)) return DefWindowProcW(hwnd_,message,wparam,-1);
-        return TRUE; // Accept activation; our client renderer owns every caption pixel.
+        // Preserve default activation bookkeeping without repainting a native
+        // caption. The user's hardware A/B confirmed that swallowing this
+        // processing left the system backdrop visually solid on their machine.
+        return DefWindowProcW(hwnd_,message,wparam,-1);
     case WM_NCHITTEST: {
         const auto p=point(lparam,true);
         if (context_menu_.is_open() || settings_loading()) return HTCLIENT;
