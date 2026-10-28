@@ -98,6 +98,33 @@ struct ManagedSessionProbe {
     ~ManagedSessionProbe() { if (session) { session->request_close(); (void)session->wait_closed(8s); } }
     void expect(std::string_view token) { check(until([&] { return screen(session).find(token) != std::string::npos; })); }
     void absent(std::string_view token) { check(until([&] { return screen(session).find(token) == std::string::npos; })); }
+    void selected(std::string_view path) {
+        // The walker and query matcher run asynchronously. Prompt visibility
+        // alone does not mean Enter can accept a candidate. Observe the actual
+        // selected row, with a fixed fixture-only ASCII pointer, before accepting.
+        check(until([&] {
+            const auto value = screen(session);
+            if (value.find("QFZF_SELECT:") == std::string::npos) return false;
+            std::size_t start{};
+            while (start < value.size()) {
+                const auto end = value.find('\n', start);
+                auto line = value.substr(start, end == std::string::npos ? end : end - start);
+                const auto first = line.find_first_not_of(' ');
+                if (first != std::string::npos && line[first] == '>') {
+                    line.erase(0, first + 1);
+                    const auto item = line.find_first_not_of(' ');
+                    if (item != std::string::npos) {
+                        line.erase(0, item);
+                        line.erase(line.find_last_not_of(' ') + 1);
+                        if (line == path || line == std::string(path) + "/") return true;
+                    }
+                }
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+            return false;
+        }));
+    }
     void text(std::string value) { check(session->text(std::move(value)) == SessionSendResult::accepted); }
     void key(Key value, std::uint16_t mods = 0) { KeyInput input; input.key = value; input.modifiers = mods; if (value == Key::t) input.unshifted_codepoint = 't'; if (value == Key::r) input.unshifted_codepoint = 'r'; if (value == Key::c) input.unshifted_codepoint = 'c'; if (value == Key::u) input.unshifted_codepoint = 'u'; check(session->key(input) == SessionSendResult::accepted); }
     void command(std::string value) { text(std::move(value)); key(Key::enter); ++sequence; }
@@ -112,7 +139,7 @@ struct ManagedSessionProbe {
     }
 };
 const char config[] = R"ZSH(bindkey -e
-export FZF_DEFAULT_OPTS='--height=12 --layout=reverse --no-mouse --prompt=QFZF_SELECT:'
+export FZF_DEFAULT_OPTS='--height=12 --layout=reverse --no-mouse --no-scrollbar --pointer=> --prompt=QFZF_SELECT:'
 export FZF_CTRL_T_COMMAND='printf "%s\n" "qualification_unique_completion.txt"'
 export FZF_ALT_C_COMMAND='printf "%s\n" "navigation space é"'
 typeset -g _qual_config=73
@@ -196,12 +223,12 @@ int main() {
         phase = 12;
         command("unset FZF_CTRL_T_COMMAND FZF_ALT_C_COMMAND FZF_DEFAULT_COMMAND; print -r -- QDEFAULTS$((70+1))", "QDEFAULTS71");
         shell.text("_qwalker="); shell.key(Key::t, control); shell.expect("QFZF_SELECT:");
-        shell.text("walker_unique_file"); shell.key(Key::enter); shell.absent("QFZF_SELECT:"); shell.key(Key::enter);
+        shell.text("walker_unique_file"); shell.selected("walker space é/nested 路径/walker_unique_file.txt"); shell.key(Key::enter); shell.absent("QFZF_SELECT:"); shell.key(Key::enter);
         command("[[ $_qwalker == 'walker space é/nested 路径/walker_unique_file.txt' && -f $_qwalker ]] && print -r -- QWALKER$((70+2))", "QWALKER72");
         phase = 131;
         shell.key(Key::c, alt); shell.expect("QFZF_SELECT:");
         phase = 132;
-        shell.text("nested 路径"); shell.key(Key::enter); shell.absent("QFZF_SELECT:");
+        shell.text("nested 路径"); shell.selected("walker space é/nested 路径"); shell.key(Key::enter); shell.absent("QFZF_SELECT:");
         phase = 133;
         // Numeric-only diagnostics distinguish a selection/path contract failure
         // from a final prompt or process teardown failure. Never print frames.

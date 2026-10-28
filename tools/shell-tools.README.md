@@ -105,7 +105,7 @@ packet. It does not replace existing base-runtime notices or claim source is pub
 
 ## Tests and honest performance scope
 
-12 Linux tests cover opt-outs, no zoxide invocation during startup, ephemeral
+14 Linux tests cover opt-outs, no zoxide invocation during startup, ephemeral
 behavior, retained overrides, z/zi and previous-directory behavior, conversion
 arguments, spaces/Unicode and literal command-substitution/backtick filename data,
 nonduplicating hooks, corrupt cache, traversal, Windows aliases, foreign-prefix
@@ -142,7 +142,7 @@ ptrace process trace was unavailable on this executor; it is not claimed verifie
    on navigation. Confirm no network access while disconnected.
 8. Complete static notices/source review separately before any public binary release.
 
-## Native probe added, not yet executed
+## Native probe and first Windows evidence
 
 `tests/shell_navigation_probe.cpp` builds as `shell_navigation_probe.exe`. The
 native workflow invokes it only after the real managed OMZ private-state gate
@@ -155,8 +155,9 @@ The probe creates only isolated synthetic known-folder fixtures and exercises:
 - Unmodified native `zoxide init zsh --hook pwd` captured to the synthetic
   `build/artifacts/shell-tools-zoxide-init.zsh` for exact template comparison.
 
-Only cross-compilation has passed so far. This test is not a claim of complete
-widget/keymap compatibility, physical feel, Windows timing or native qualification.
+The first Windows run below reached the final walker check but failed. This test
+is not a claim of complete widget/keymap compatibility, physical feel, Windows
+performance or completed native qualification.
 The separate checklist above remains the full activation/release review scope.
 
 ## History-widget support closure
@@ -167,7 +168,8 @@ mpfr 4.2.2-1 (about 2.3 MB additional compressed binaries). Existing bash, libin
 ncurses, gmp, GCC support and MSYS runtime pins are unchanged. The three detached
 binary signatures verified with the official MSYS2 development key fingerprint
 5F944B027F7FE2091985AA2EFA11531AA0AA7F57. Static PE imports match this closure;
-native load proof is still pending.
+native awk execution passed in the first Windows run below; full release
+qualification remains pending.
 
 Matching source archives and exact gawk/MPFR/readline notice assets are pinned.
 Readline source is already in the base supplemental inventory and is deduplicated
@@ -179,5 +181,38 @@ not substituted for the unfinished Go/Rust compiler/static notice review.
 
 The native navigation probe now explicitly requires absent Perl and working awk
 on its clean PATH, exercises Ctrl-R, and also tests default fzf Ctrl-T/Alt-C walkers
-with exact nested-space/Unicode path assertions. These are native tests to run,
-not passed results.
+with exact nested-space/Unicode path assertions. The final default Alt-C case
+failed in the first native run; it remains a blocking qualification check.
+
+
+### First native run: partial evidence, not qualification
+
+[Run 40784574566](https://github.com/StormBurpee/stormtty/actions/runs/40784574566)
+tested commit `52622928af2208eb9a49bc60c4e692521ef12127` on Windows 2025 with both
+inbox and packaged ConPTY. Both probes returned `code=1 phase=13 checks=152`.
+Earlier required phases passed: exact versions and awk with Perl absent, upstream
+widget selection/cancellation and history replay, z/zi navigation, literal-path
+safety, private database location, fuzzy Tab, and the default Ctrl-T nested Unicode
+file. The final default Alt-C directory selection/teardown sequence is unresolved;
+numeric-only subphase diagnostics are being added without relaxing its assertion.
+
+The same run captured **unmodified** `zoxide 0.10.0 init zsh --hook pwd` output in
+`evidence-windows-2025` artifact `12859197845`, member
+`build/artifacts/shell-tools-zoxide-init.zsh` (4732 bytes):
+
+- Artifact ZIP SHA-256: `98d6e2b3bea32575559c552351b0042e44a0df5676825be9dd026283183cc3ae`
+- Init file SHA-256: `850a0e63991fcf5b073427a7dccd0c9e4de64f92161680772a4fd4c79389e08a`
+
+Its Windows pwd function is verbatim:
+
+```zsh
+function __zoxide_pwd() {
+    \command cygpath -w "\builtin pwd -L"
+}
+```
+
+This is captured generated text, not evidence that evaluating that unmodified
+function works. StormTTY does not evaluate it: its maintained adapter converts
+`$PWD` explicitly, and the adapter's native navigation/private-state phases passed.
+The full upstream template, other options and release checklist still require
+review. Probe startup samples are not a controlled tools-on/tools-off benchmark.
