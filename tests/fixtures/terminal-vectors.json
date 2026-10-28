@@ -1,0 +1,511 @@
+{
+  "schema_version": 1,
+  "status": "inert_fixture_design_not_executed",
+  "coordinate_convention": "All explicit coordinates and row indices are 1-based; grid=[columns,rows].",
+  "encoding": "JSON write strings decode to UTF-8 bytes; write_hex is raw bytes. Never display decoded writes in an untrusted host terminal.",
+  "initial_state": "Fresh reset terminal per case; active screen main; modes default unless specified.",
+  "chunking": [
+    "whole",
+    "each_byte",
+    "each_escape_and_utf8_boundary",
+    "seeded_random"
+  ],
+  "cases": [
+    {
+      "id": "cursor_erase_attributes",
+      "grid": [
+        12,
+        4
+      ],
+      "steps": [
+        {
+          "write": "\u001b[2J\u001b[HABCDE\rXY\u001b[3G\u001b[K",
+          "expect": {
+            "row_1_text": "XY",
+            "cursor_1based": [
+              1,
+              3
+            ]
+          }
+        },
+        {
+          "write": "\u001b[2;2H\u001b[38;2;12;34;56m\u001b[48;2;65;43;21mT\u001b[0m",
+          "expect": {
+            "cell_2_2": "T",
+            "fg_rgb": [
+              12,
+              34,
+              56
+            ],
+            "bg_rgb": [
+              65,
+              43,
+              21
+            ],
+            "cursor_1based": [
+              2,
+              3
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "alternate_screen_restore",
+      "grid": [
+        12,
+        4
+      ],
+      "steps": [
+        {
+          "write": "MAIN\u001b[?1049h\u001b[2J\u001b[HALT",
+          "expect": {
+            "screen": "alternate",
+            "row_1_text": "ALT"
+          }
+        },
+        {
+          "write": "\u001b[?1049l",
+          "expect": {
+            "screen": "main",
+            "row_1_text": "MAIN",
+            "cursor_1based": [
+              1,
+              5
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "margin_origin_scroll",
+      "grid": [
+        8,
+        5
+      ],
+      "steps": [
+        {
+          "write": "\u001b[1;1HTOP\u001b[5;1HBOTTOM\u001b[2;4r\u001b[?6h\u001b[1;1HA\r\nB\r\nC\r\nD",
+          "assert": [
+            "Rows outside scrolling region retain TOP and BOTTOM",
+            "Rows 2,3,4 begin B,C,D respectively",
+            "Origin-relative cursor query agrees with declared mode"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unicode_combining_wide",
+      "grid": [
+        16,
+        3
+      ],
+      "steps": [
+        {
+          "write": "Ae\u0301\u754cB",
+          "expect": {
+            "logical_text": "Ae\u0301\u754cB",
+            "cursor_1based": [
+              1,
+              6
+            ]
+          },
+          "assert": [
+            "Combining mark shares base cell; wide glyph owns two cells",
+            "Copy returns original codepoints, not presentation glyphs"
+          ]
+        },
+        {
+          "write": "\u001b[1;4HX",
+          "assert": [
+            "Overwriting trailing half of wide glyph clears/repairs its other half; no orphan spacer"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "emoji_width_contract",
+      "grid": [
+        20,
+        4
+      ],
+      "steps": [
+        {
+          "write": "\u2764\ufe0e|\u2764\ufe0f|\ud83d\udc4d\ud83c\udffd|\ud83d\udc69\u200d\ud83d\udcbb|\ud83c\uddef\ud83c\uddf5|\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66",
+          "assert": [
+            "Copy preserves complete sequences",
+            "Cell widths match pinned Unicode/width policy",
+            "No split grapheme in selection; glyph appearance checked on physical Windows"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "resize_scrollback",
+      "grid": [
+        8,
+        3
+      ],
+      "setup": {
+        "resize_pull_scrollback": false,
+        "scrollback_max_lines": 10
+      },
+      "steps": [
+        {
+          "write": "01abcdef\r\n02abcdef\r\n03abcdef\r\n04abcdef"
+        },
+        {
+          "action": "resize",
+          "grid": [
+            5,
+            3
+          ]
+        },
+        {
+          "action": "resize",
+          "grid": [
+            12,
+            6
+          ],
+          "assert": [
+            "Lines entirely in scrollback are not pulled back into viewport",
+            "Cursor and native GetConsoleScreenBufferInfo agree on Windows",
+            "Selected logical text has no invented hard linebreaks"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "paste_atomic_safe",
+      "grid": [
+        40,
+        5
+      ],
+      "steps": [
+        {
+          "write": "\u001b[?2004h"
+        },
+        {
+          "action": "user_paste",
+          "text": "alpha\nbeta\u754c",
+          "expect_pty_write": "\u001b[200~alpha\nbeta\u754c\u001b[201~"
+        },
+        {
+          "action": "user_paste",
+          "text": "x\u001b[201~y",
+          "assert": [
+            "Refused with no bytes written before explicit unsafe-paste approval; never silently executes as keys"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "focus_mode",
+      "grid": [
+        40,
+        5
+      ],
+      "steps": [
+        {
+          "write": "\u001b[?1004h"
+        },
+        {
+          "action": "focus_loss",
+          "expect_pty_write": "\u001b[O"
+        },
+        {
+          "action": "focus_gain",
+          "expect_pty_write": "\u001b[I"
+        },
+        {
+          "write": "\u001b[?1004l"
+        },
+        {
+          "action": "focus_loss",
+          "expect_pty_write": ""
+        }
+      ]
+    },
+    {
+      "id": "mouse_sgr",
+      "grid": [
+        80,
+        24
+      ],
+      "steps": [
+        {
+          "write": "\u001b[?1000h\u001b[?1006h"
+        },
+        {
+          "action": "mouse_press",
+          "button": "left",
+          "cell_1based": [
+            5,
+            7
+          ],
+          "expect_pty_write": "\u001b[<0;7;5M"
+        },
+        {
+          "action": "mouse_release",
+          "button": "left",
+          "cell_1based": [
+            5,
+            7
+          ],
+          "expect_pty_write": "\u001b[<0;7;5m"
+        },
+        {
+          "action": "mouse_wheel",
+          "direction": "up",
+          "cell_1based": [
+            5,
+            7
+          ],
+          "expect_pty_write": "\u001b[<64;7;5M"
+        }
+      ]
+    },
+    {
+      "id": "keyboard_modes",
+      "grid": [
+        80,
+        24
+      ],
+      "steps": [
+        {
+          "action": "key_press",
+          "key": "ArrowUp",
+          "expect_pty_write": "\u001b[A"
+        },
+        {
+          "write": "\u001b[?1h"
+        },
+        {
+          "action": "key_press",
+          "key": "ArrowUp",
+          "expect_pty_write": "\u001bOA"
+        },
+        {
+          "write": "\u001b[?u",
+          "assert": [
+            "Kitty support query responds truthfully and reaches native Node before Ink auto-detection deadline"
+          ]
+        },
+        {
+          "write": "\u001b[>1u"
+        },
+        {
+          "action": "key_press",
+          "key": "Escape",
+          "expect_pty_write": "\u001b[27u"
+        },
+        {
+          "write": "\u001b[<u",
+          "assert": [
+            "Prior keyboard protocol state restored"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sync_frame_atomic",
+      "grid": [
+        20,
+        4
+      ],
+      "steps": [
+        {
+          "write": "FRAME_A"
+        },
+        {
+          "action": "present_checkpoint",
+          "expect_visible": "FRAME_A"
+        },
+        {
+          "write": "\u001b[?2026h\u001b[2J\u001b[HFRAME_B",
+          "expect_visible": "FRAME_A"
+        },
+        {
+          "write": "\u001b[?2026l",
+          "expect_visible": "FRAME_B"
+        },
+        {
+          "write": "\u001b[?2026h\u001b[2J\u001b[HFRAME_C"
+        },
+        {
+          "action": "advance_clock_ms",
+          "value": 1001,
+          "assert": [
+            "Host releases abandoned hold within declared timeout",
+            "Further valid text paints; repeated DECSET cannot extend deadline indefinitely"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "kitty_direct_animation",
+      "grid": [
+        20,
+        4
+      ],
+      "setup": {
+        "kitty_storage_enabled": true
+      },
+      "source": "Adapted from pinned Ghostty example/c-vt-kitty-graphics/src/main.c animation example",
+      "steps": [
+        {
+          "write": "\u001b_Ga=T,f=32,i=2,s=1,v=1,q=2;/wAA/w==\u001b\\\u001b_Ga=f,f=32,i=2,s=1,v=1,z=40,q=2;AAD//w==\u001b\\\u001b_Ga=a,i=2,r=1,z=30,q=2\u001b\\\u001b_Ga=a,i=2,s=3,q=2\u001b\\"
+        },
+        {
+          "action": "animation_tick_at_ms",
+          "value": 0,
+          "expect_rgb": [
+            255,
+            0,
+            0
+          ]
+        },
+        {
+          "action": "animation_tick_at_ms",
+          "value": 30,
+          "expect_rgb": [
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "action": "animation_tick_at_ms",
+          "value": 70,
+          "expect_rgb": [
+            255,
+            0,
+            0
+          ]
+        },
+        {
+          "write": "\u001b_Ga=a,i=2,s=1,q=2\u001b\\",
+          "assert": [
+            "No periodic animation redraw scheduled after stop",
+            "Image generation changes on each frame; texture must not remain stale"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "kitty_png",
+      "grid": [
+        20,
+        4
+      ],
+      "setup": {
+        "kitty_storage_enabled": true,
+        "bounded_png_decoder_installed": true
+      },
+      "steps": [
+        {
+          "write": "\u001b_Ga=T,f=100,q=1;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==\u001b\\",
+          "assert": [
+            "A decoded 1x1 pixel image is placed and painted; PNG path is not silently unsupported"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "osc52_permission",
+      "grid": [
+        20,
+        4
+      ],
+      "setup": {
+        "clipboard_read": "deny",
+        "clipboard_write": "deny",
+        "initial_clipboard": "PRIVATE_SENTINEL"
+      },
+      "steps": [
+        {
+          "write": "\u001b]52;c;?\u001b\\",
+          "assert": [
+            "No PRIVATE_SENTINEL in response, logs or notification previews"
+          ]
+        },
+        {
+          "write": "\u001b]52;c;U1RPUk1UVFk=\u001b\\",
+          "assert": [
+            "Clipboard remains PRIVATE_SENTINEL without approval",
+            "No blocking modal from parser callback; pending dialog cannot retain borrowed request pointers"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "link_no_execution",
+      "grid": [
+        40,
+        4
+      ],
+      "steps": [
+        {
+          "write": "\u001b]8;;https://example.invalid/fixture\u001b\\SAFE LABEL\u001b]8;;\u001b\\",
+          "assert": [
+            "No network/open side effect from parsing; only explicit click may request opening"
+          ]
+        },
+        {
+          "write": "\u001b]8;;javascript:alert(1)\u001b\\UNSAFE LABEL\u001b]8;;\u001b\\",
+          "assert": [
+            "Rejected on activation; never delegated to shell or generic protocol handler"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "malformed_recovery",
+      "grid": [
+        20,
+        4
+      ],
+      "steps": [
+        {
+          "write_hex": "f0288c28",
+          "assert": [
+            "Invalid UTF-8 follows declared replacement policy without crash"
+          ]
+        },
+        {
+          "write": "\u001b]9999;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\u001b\\\u001b[2J\u001b[HRECOVERED",
+          "expect": {
+            "row_1_text": "RECOVERED"
+          },
+          "assert": [
+            "Unknown sequence has no effect beyond bounded parser state; parser recovers"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "host_lifecycle_backpressure",
+      "level": "Windows_runtime",
+      "recipe": [
+        "Launch native child with test-control readiness channel and expected exit code 37",
+        "Stream numbered output above queue capacity while injecting valid keys and a 1 MiB paste to a slow reader",
+        "Resize repeatedly, then close while child continues writing; capture stacks on 5-second watchdog",
+        "Assert ordering, bounded memory, responsive unrelated pane, final allowed drain and no live orphan handles/processes",
+        "Repeat with child exit before first read and resize after exit"
+      ],
+      "status": "plan_only"
+    },
+    {
+      "id": "ink_lab",
+      "level": "Windows_runtime_and_physical",
+      "recipe": [
+        "Native Windows Node; pinned Ink 8.0.0/React 19.3/compatible Node >=22",
+        "TTY+raw input; interactive default with no CI env plus explicit-interactive CI lane",
+        "Spinner/progress/static log/focus/text input; 30 and 60 requested FPS; exact viewport-fill resize",
+        "Kitty auto/off, bracketed paste usePaste/useInput separation, suspend child/resume, exit/error/unmount cleanup",
+        "Negative control noninteractive snapshot does not count as TUI compatibility"
+      ],
+      "status": "plan_only"
+    }
+  ]
+}

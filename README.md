@@ -1,6 +1,6 @@
 # StormTTY
 
-An owned, Windows-native terminal built around a pinned libghostty-vt engine and a purpose-built Windows application.
+An owned, native terminal for Windows and macOS, with Windows first. Built around a pinned libghostty-vt engine and a purpose-built Windows application.
 
 ## Direction
 

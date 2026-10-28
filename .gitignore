@@ -1,0 +1,15 @@
+/build*/
+/.deps/
+/.cache/
+/.vs/
+/artifacts/
+*.user
+*.suo
+*.pdb
+*.obj
+*.exe
+*.dll
+*.lib
+*.a
+__pycache__/
+node_modules/

@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080" role="img" aria-label="StormTTY Instrument — static native-window design concept, not an application screenshot">
+<title>StormTTY Instrument — static native-window design concept, not an application screenshot</title>
+<defs><filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feGaussianBlur in="SourceAlpha" stdDeviation="12"/><feOffset dx="0" dy="8"/><feComponentTransfer><feFuncA type="linear" slope="0.18"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+<rect x="0" y="0" width="1600" height="1080" rx="0" fill="#E7EBEF" />
+<text x="48" y="61" fill="#26313C" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="28" font-weight="600" >Instrument</text>
+<text x="48" y="91" fill="#5F6D7B" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="14" font-weight="400" >One integrated top band. Real terminal content. Nothing competing with the work.</text>
+<text x="1552" y="59" fill="#26313C" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="14" font-weight="600" text-anchor="end">StormTTY</text>
+<text x="1552" y="83" fill="#5F6D7B" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="12" font-weight="400" text-anchor="end">Design council / 28 October 2026</text>
+<rect x="48" y="128" width="1504" height="824" rx="10" fill="#17191D" filter="url(#shadow)"/>
+<defs><clipPath id="window"><rect x="48" y="128" width="1504" height="824" rx="10"/></clipPath></defs><g clip-path="url(#window)">
+<rect x="48" y="128" width="1504" height="40" rx="0" fill="#22252B" />
+<path d="M64 142 l5 5 -5 5" stroke="#A4ADB9" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M74 152 L80 152" stroke="#A4ADB9" stroke-width="1.5" fill="none" stroke-linecap="round" />
+<rect x="96" y="132" width="204" height="32" rx="6" fill="#17191D" />
+<text x="110" y="153" fill="#ECEEF2" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="13" font-weight="600" >Source review</text>
+<path d="M278 144 L285 151" stroke="#A4ADB9" stroke-width="1" fill="none" stroke-linecap="round" />
+<path d="M285 144 L278 151" stroke="#A4ADB9" stroke-width="1" fill="none" stroke-linecap="round" />
+<text x="318" y="153" fill="#A4ADB9" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="13" font-weight="400" >PowerShell</text>
+<path d="M442 142 L442 154" stroke="#A4ADB9" stroke-width="1.2" fill="none" stroke-linecap="round" />
+<path d="M436 148 L448 148" stroke="#A4ADB9" stroke-width="1.2" fill="none" stroke-linecap="round" />
+<rect x="1374" y="137" width="22" height="22" rx="4" fill="none" stroke="#464E5C" stroke-width="1" />
+<path d="M1380 143 L1390 143" stroke="#A4ADB9" stroke-width="1" fill="none" stroke-linecap="round" />
+<path d="M1380 148 L1390 148" stroke="#A4ADB9" stroke-width="1" fill="none" stroke-linecap="round" />
+<path d="M1380 153 L1386 153" stroke="#A4ADB9" stroke-width="1" fill="none" stroke-linecap="round" />
+<path d="M1432 148 L1442 148" stroke="#A4ADB9" stroke-width="1" fill="none" stroke-linecap="round" />
+<rect x="1478" y="143" width="10" height="10" rx="0" fill="none" stroke="#A4ADB9" stroke-width="1" />
+<path d="M1524 143 L1534 153" stroke="#A4ADB9" stroke-width="1" fill="none" stroke-linecap="round" />
+<path d="M1534 143 L1524 153" stroke="#A4ADB9" stroke-width="1" fill="none" stroke-linecap="round" />
+<rect x="48" y="168" width="916" height="24" rx="0" fill="#22252B" />
+<rect x="965" y="168" width="587" height="24" rx="0" fill="#22252B" />
+<rect x="60" y="175" width="2" height="10" rx="1" fill="#A7C4D2" />
+<text x="71" y="184" fill="#ECEEF2" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="12" font-weight="400" >ghostty-reference</text>
+<text x="896" y="184" fill="#A4ADB9" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="12" font-weight="400" >bash</text>
+<circle cx="940" cy="180" r="1" fill="#A4ADB9"/>
+<circle cx="944" cy="180" r="1" fill="#A4ADB9"/>
+<circle cx="948" cy="180" r="1" fill="#A4ADB9"/>
+<text x="978" y="184" fill="#A4ADB9" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="12" font-weight="400" >stormtty</text>
+<text x="1484" y="184" fill="#A4ADB9" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="12" font-weight="400" >bash</text>
+<circle cx="1528" cy="180" r="1" fill="#A4ADB9"/>
+<circle cx="1532" cy="180" r="1" fill="#A4ADB9"/>
+<circle cx="1536" cy="180" r="1" fill="#A4ADB9"/>
+<path d="M964.5 168 L964.5 952" stroke="#748391" stroke-width="1" fill="none" stroke-linecap="round" />
+<text x="64" y="217" fill="#A4ADB9" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >/workspace/shared/ghostty-reference</text>
+<text x="64" y="240" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >$ ls src/terminal | head -18</text>
+<text x="64" y="286" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >PageList.zig</text>
+<text x="64" y="309" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >Parser.zig</text>
+<text x="64" y="332" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >Screen.zig</text>
+<text x="64" y="355" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >ScreenSet.zig</text>
+<rect x="62" y="361" width="126" height="23" rx="1" fill="#3A4F5B" />
+<text x="64" y="378" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >Selection.zig</text>
+<text x="64" y="401" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >SelectionGesture.zig</text>
+<text x="64" y="424" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >StringMap.zig</text>
+<text x="64" y="447" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >Tabstops.zig</text>
+<text x="64" y="470" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >Terminal.zig</text>
+<text x="64" y="493" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >UTF8Decoder.zig</text>
+<text x="64" y="516" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >ansi.zig</text>
+<text x="64" y="539" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >apc</text>
+<text x="64" y="562" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >apc.zig</text>
+<text x="64" y="585" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >bitmap_allocator.zig</text>
+<text x="64" y="608" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >build_options.zig</text>
+<text x="64" y="631" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >c</text>
+<text x="64" y="654" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >charsets.zig</text>
+<text x="64" y="677" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >clipboard.zig</text>
+<text x="64" y="723" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >$ ls include/ghostty</text>
+<text x="64" y="746" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >vt</text>
+<text x="64" y="769" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >vt.h</text>
+<text x="64" y="815" fill="#A7C4D2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >$</text>
+<rect x="83" y="800" width="8" height="19" rx="0" fill="#A7C4D2" />
+<text x="980" y="217" fill="#A4ADB9" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >/workspace/shared/stormtty</text>
+<text x="980" y="240" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" ></text>
+<text x="980" y="263" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >$ pwd</text>
+<text x="980" y="286" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >/workspace/shared/stormtty</text>
+<text x="980" y="309" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" ></text>
+<text x="980" y="332" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >$ git status --short --branch</text>
+<text x="980" y="355" fill="#A4ADB9" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >## No commits yet on main...origin/main [gone]</text>
+<text x="980" y="378" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" ></text>
+<text x="980" y="401" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >$ ls -a</text>
+<text x="980" y="424" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >.</text>
+<text x="980" y="447" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >..</text>
+<text x="980" y="470" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >.git</text>
+<text x="980" y="493" fill="#ECEEF2" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" ></text>
+<text x="980" y="516" fill="#A4ADB9" font-family="Cascadia Mono,DejaVu Sans Mono,monospace" font-size="15" font-weight="400" >$</text>
+</g>
+<rect x="48.5" y="128.5" width="1503" height="823" rx="10" fill="none" stroke="#596573" stroke-width="0.8" />
+<text x="48" y="997" fill="#26313C" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="15" font-weight="600" >The window is the interface.</text>
+<text x="48" y="1022" fill="#5F6D7B" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="13" font-weight="400" >Custom chrome, native Windows behavior; no sidebar or permanent status bar.</text>
+<text x="1552" y="997" fill="#26313C" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="13" font-weight="500" text-anchor="end">Static vector concept — not a native app screenshot</text>
+<text x="1552" y="1022" fill="#5F6D7B" font-family="Segoe UI Variable Text,DejaVu Sans,sans-serif" font-size="12" font-weight="400" text-anchor="end">Shell excerpts captured read-only. DejaVu rendering stand-ins for Windows fonts.</text>
+</svg>
