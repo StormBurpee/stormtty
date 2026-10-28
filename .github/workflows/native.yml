@@ -249,6 +249,29 @@ jobs:
             print('DEVELOPER_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
             if code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
+      - name: Repeat owned Windows settings teardown
+        if: always() && runner.os == 'Windows' && steps.developer_shell_build.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,importlib.util,sys,json
+          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
+          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
+          runtime=pathlib.Path('.deps/stormtty-shell').resolve()
+          failures=[]
+          for mode,count in [('explicit',10),('default',3)]:
+            for index in range(count):
+              name='teardown-'+mode+'-'+str(index+1)
+              capture=pathlib.Path('build/artifacts')/(name+'.png')
+              args=[str(pathlib.Path('build/stormtty.exe').resolve()),'--smoke-settings','--console-runtime',str(provider),'--capture',str(capture.resolve())]
+              if mode=='explicit': args+=['--shell-runtime',str(runtime)]
+              print('TEARDOWN_CASE='+name,flush=True)
+              result=runner.run_owned(args,timeout=30,output_dir=pathlib.Path('build/artifacts'))
+              print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+              print('TEARDOWN_RESULT='+json.dumps({'case':name,**result.metadata()},sort_keys=True),flush=True)
+              if result.exit_code: failures.append(name)
+          print('TEARDOWN_FAILURES='+json.dumps(failures),flush=True)
+          raise SystemExit(1 if failures else 0)
       - name: Collect targeted macOS GUI failure evidence
         if: always() && runner.os == 'macOS' && steps.build.outcome == 'success' && steps.native_tests.outcome == 'failure'
         run: python tools/macos-crash-evidence.py
