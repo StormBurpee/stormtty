@@ -47,6 +47,6 @@ if(STORMTTY_BUNDLE_ZSH OR STORMTTY_DEVELOPER_SHELL_RUNTIME)
     target_compile_definitions(stormtty PRIVATE STORMTTY_HAS_BUNDLED_SHELL_RUNTIME=1)
     message(STATUS "Bundled Zsh enabled for fresh app launches; existing saved shell choices win. No launch-time downloads.")
     # This local install layout is not a public redistribution/source approval.
-    install(CODE "execute_process(COMMAND \"${Python3_EXECUTABLE}\" \"${_shell_stager}\" --source \"${_shell_source}\" --lock \"${_shell_lock}\" --preset \"${_shell_preset}\" RESULT_VARIABLE result)\nif(NOT result EQUAL 0)\nmessage(FATAL_ERROR \"Bundled runtime validation failed; install stopped\")\nendif()")
+    install(CODE "execute_process(COMMAND [==[${Python3_EXECUTABLE}]==] [==[${_shell_stager}]==] --source [==[${_shell_source}]==] --lock [==[${_shell_lock}]==] --preset [==[${_shell_preset}]==] RESULT_VARIABLE result)\nif(NOT result EQUAL 0)\nmessage(FATAL_ERROR \"Bundled runtime validation failed; install stopped\")\nendif()")
     install(DIRECTORY "${_shell_source}/" DESTINATION runtimes/zsh)
 endif()

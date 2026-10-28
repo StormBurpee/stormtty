@@ -240,7 +240,8 @@ void add_first(ShellDiscoveryResult& result, const char* id, const char* label,
         profile.id = id; profile.label = label; profile.executable = utf8(candidate.wstring());
         if (profile.executable.empty() || profile.executable.size() > 4096) continue;
         if (bash) { profile.arguments = {"--login", "-i"}; profile.environment.emplace("CHERE_INVOKING", "1"); }
-        else if (std::string_view(id) != "windows-cmd") profile.arguments = {"-NoLogo"};
+        else if (std::string_view(id) == "windows-cmd") profile.arguments = {"/d"}; // Match builtin alias: never run Cmd AutoRun hooks.
+        else profile.arguments = {"-NoLogo"};
         // Blank cwd inherits the host-selected project/current directory.
         result.profiles.push_back(std::move(profile));
         return;
@@ -248,7 +249,7 @@ void add_first(ShellDiscoveryResult& result, const char* id, const char* label,
 }
 }
 
-ShellDiscoveryResult discover_windows_shells() {
+ShellDiscoveryResult discover_windows_shells(std::span<const Profile> configured) {
     ShellDiscoveryResult result;
     try {
         std::vector<wchar_t> system(max_path_chars + 1);
@@ -256,6 +257,21 @@ ShellDiscoveryResult discover_windows_shells() {
         if (count && count < system.size()) {
             const std::filesystem::path root(std::wstring(system.data(), count));
             add_first(result, "windows-cmd", "Command Prompt", {root / L"cmd.exe"});
+            // This candidate was just created from GetSystemDirectoryW, not an
+            // arbitrary caller's Profile ID or basename. Match the host's exact
+            // builtin alias policy, including /d injection, before hiding it.
+            std::erase_if(result.profiles,[&](const Profile& candidate) {
+                if (candidate.id!="windows-cmd") return false;
+                return std::any_of(configured.begin(),configured.end(),[&](const Profile& existing) {
+                    auto alias=existing.executable;
+                    for (auto& c:alias) if(c>='A' && c<='Z') c=static_cast<char>(c-'A'+'a');
+                    if (alias!="cmd" && alias!="cmd.exe") return false;
+                    auto arguments=existing.arguments;
+                    if (std::find(arguments.begin(),arguments.end(),"/d")==arguments.end()) arguments.insert(arguments.begin(),"/d");
+                    return arguments==candidate.arguments && existing.environment==candidate.environment &&
+                        existing.working_directory==candidate.working_directory;
+                });
+            });
             add_first(result, "windows-powershell", "Windows PowerShell", {root / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe"});
         }
         std::vector<std::filesystem::path> powershell, git;
@@ -400,7 +416,7 @@ ConfigSaveResult save_settings_config(const std::filesystem::path& input, const 
 
 #else
 namespace stormtty {
-ShellDiscoveryResult discover_windows_shells() { return {{}, {"Windows shell discovery is unavailable on this platform."}}; }
+ShellDiscoveryResult discover_windows_shells(std::span<const Profile> configured) { return {{}, {"Windows shell discovery is unavailable on this platform."}}; }
 SettingsSnapshotResult load_settings_snapshot(const std::filesystem::path&) { return {{}, {}, "Windows settings persistence is unavailable on this platform."}; }
 ConfigSaveResult save_settings_config(const std::filesystem::path&, const Config&, const ConfigFileSnapshot&) {
     return {{}, "Windows settings persistence is unavailable on this platform.", false};

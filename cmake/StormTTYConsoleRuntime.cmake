@@ -25,7 +25,7 @@ if(STORMTTY_BUNDLE_CONPTY)
     add_dependencies(stormtty stormtty_console_runtime)
     target_compile_definitions(stormtty PRIVATE STORMTTY_HAS_BUNDLED_CONPTY_RUNTIME=1)
     # Install validates the exact staged artifacts with Windows trust again.
-    install(CODE "execute_process(COMMAND \"${Python3_EXECUTABLE}\" \"${_conpty_prepare}\" --destination \"$<TARGET_FILE_DIR:stormtty>/${_conpty_relative}\" --cache \"${STORMTTY_CONPTY_CACHE}\" --verify-only RESULT_VARIABLE result)\nif(NOT result EQUAL 0)\nmessage(FATAL_ERROR \"Private ConPTY validation failed; install stopped\")\nendif()")
+    install(CODE "execute_process(COMMAND [==[${Python3_EXECUTABLE}]==] [==[${_conpty_prepare}]==] --destination [==[$<TARGET_FILE_DIR:stormtty>/${_conpty_relative}]==] --cache [==[${STORMTTY_CONPTY_CACHE}]==] --verify-only RESULT_VARIABLE result)\nif(NOT result EQUAL 0)\nmessage(FATAL_ERROR \"Private ConPTY validation failed; install stopped\")\nendif()")
     install(DIRECTORY "$<TARGET_FILE_DIR:stormtty>/${_conpty_relative}/" DESTINATION "${_conpty_relative}")
     message(STATUS "Private ConPTY preview will be bundled; System remains the default. Native AMD64 only; no launch-time downloads.")
 endif()

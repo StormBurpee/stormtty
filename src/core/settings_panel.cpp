@@ -154,7 +154,7 @@ void SettingsPanel::rebuild_layout() {
     }
     layout_.content={content_x,content_y,content_w,std::max(0.0,layout_.footer.y-content_y-16)};
     document_height_=section_==SettingsSection::appearance?448.0:
-        section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?162.0:0.0):72.0+command_registry().size()*60.0;
+        section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
     const double top=content_y-scroll_, right=content_x+content_w;
     if (section_==SettingsSection::appearance) {
@@ -177,7 +177,7 @@ void SettingsPanel::rebuild_layout() {
         }
         add("appearance.motion",{right-cw,top+406,cw,34},true);
     } else if (section_==SettingsSection::shell) {
-        const double offset=platform_==Platform::windows?162.0:0.0;
+        const double offset=platform_==Platform::windows?142.0:0.0;
         if (platform_==Platform::windows) {
             const double half=std::max(0.0,(content_w-8)/2);
             add("console.system",{content_x,top+48,half,34},true);
@@ -535,7 +535,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
     }
     const auto& content=layout_.content;
     const std::string title=section_==SettingsSection::appearance?"Appearance":section_==SettingsSection::shell?(platform_==Platform::windows?"Shell and console":"Default shell"):"Keyboard shortcuts";
-    const std::string subtitle=section_==SettingsSection::appearance?"Font, transparency and motion.":section_==SettingsSection::shell?"Choose the shell for new tabs and panes.":"Assign shortcuts to terminal actions.";
+    const std::string subtitle=section_==SettingsSection::appearance?"Font, transparency and motion.":section_==SettingsSection::shell?"For new tabs and panes":"Assign shortcuts to terminal actions.";
     label({content.x,content.y-61,content.width,28},title,ink,21,true);
     label({content.x,content.y-31,content.width,20},subtitle,muted,12);
     const double top=content.y-scroll_, right=content.x+content.width;
@@ -584,13 +584,13 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         button("appearance.motion",motion+"   ›");
     } else if (section_==SettingsSection::shell) {
         if (platform_==Platform::windows) {
-            row_labels(0,"Console backend","Save applies to new sessions; existing sessions keep their backend.",content.width);
+            row_labels(0,"Console backend","Existing sessions keep their backend.",content.width);
             button("console.system","System",draft_.windows_console_backend==WindowsConsoleBackend::system);
             button("console.bundled","Bundled (preview)",draft_.windows_console_backend==WindowsConsoleBackend::bundled_preview);
-            label({content.x,top+88,content.width,18},"Preview: native AMD64 only; resize compatibility is not fully qualified.",subdued,11,false,true);
-            label({content.x,top+108,content.width,18},console_backend_status_.empty()?
-                (bundled_console_available_?"Private bundled runtime available.":"Bundled runtime unavailable. Select System to recover."):console_backend_status_,subdued,11,false,true);
-            label({content.x,top+138,content.width,20},"Default shell",ink,13,true,true);
+            // The host supplies one status line with version/qualification or recovery details.
+            label({content.x,top+88,content.width,18},console_backend_status_.empty()?
+                (bundled_console_available_?"Preview · native AMD64 · resize unqualified":"Bundled runtime unavailable. Select System to recover."):console_backend_status_,subdued,11,false,true);
+            label({content.x,top+118,content.width,20},"Default shell",ink,13,true,true);
         }
         for (const auto& profile:profiles_) {
             const auto* c=find_control(layout_,"shell:"+profile.id);if (!c || !c->visible) continue;

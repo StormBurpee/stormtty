@@ -14,7 +14,9 @@ struct ShellDiscoveryResult {
     std::vector<Profile> profiles;
     std::vector<std::string> warnings;
 };
-ShellDiscoveryResult discover_windows_shells();
+// Configured profiles are never changed. Only the verified builtin Cmd
+// candidate is hidden when its effective launch policy is already represented.
+ShellDiscoveryResult discover_windows_shells(std::span<const Profile> configured = {});
 
 // An owned optimistic-concurrency token. Keep the token from the SAME read that
 // supplied the editor's Config; never refresh it silently before saving edits.

@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -39,7 +40,13 @@ class PackagingTests(unittest.TestCase):
             with zipfile.ZipFile(self.archive, "w") as archive:
                 archive.writestr("runtimes/win-x64/native/conpty.dll", self.data if data is None else data)
                 for name, content in extras:
-                    archive.writestr(name, content)
+                    # ZipInfo.__init__ normalizes native backslashes on Windows.
+                    # Restore the exact hostile archive spelling after creation
+                    # so this tests extraction, not host-side fixture sanitizing.
+                    entry = zipfile.ZipInfo(name) if isinstance(name, str) else name
+                    if isinstance(name, str):
+                        entry.filename = name
+                    archive.writestr(entry, content)
 
     def test_allowlist_extracts_only_expected_file(self):
         self.write_archive([("unselected.txt", b"not copied")])
@@ -53,9 +60,13 @@ class PackagingTests(unittest.TestCase):
             bootstrap.extract(self.archive, self.output, self.lock)
 
     def test_rejects_archive_traversal_absolute_backslash_drive(self):
-        for name in ("../escape", "/absolute", "C:/drive", "back\\slash"):
+        for name in ("../escape", "/absolute", "C:/drive", "back\\slash", "nul\0suffix",
+                     "runtimes/win-x64/native/conpty.dll\0alias") :
             with self.subTest(name=name):
                 self.write_archive([(name, b"bad")])
+                with zipfile.ZipFile(self.archive) as archive:
+                    self.assertIn(name, [entry.orig_filename for entry in archive.infolist()],
+                                  "Fixture did not preserve the original malicious filename")
                 with self.assertRaisesRegex(RuntimeError, "unsafe"):
                     bootstrap.extract(self.archive, self.output, self.lock)
 
@@ -160,6 +171,44 @@ class PackagingTests(unittest.TestCase):
         with mock.patch.object(bootstrap.subprocess, "run", side_effect=bootstrap.subprocess.CalledProcessError(1, "trust")), \
              self.assertRaises(bootstrap.subprocess.CalledProcessError):
             bootstrap.verify_authenticode(self.output, self.root / "powershell.exe")
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake not installed; native install lane also checks this")
+    def test_generated_install_scripts_preserve_windows_path_bytes(self):
+        source = self.root / "cmake source"
+        build = self.root / "cmake build"
+        source.mkdir()
+        repo = bootstrap.TOOLS.parent
+        install_lines = []
+        for module in ("StormTTYDeveloperShell.cmake", "StormTTYConsoleRuntime.cmake"):
+            install_lines += [line.strip() for line in (repo / "cmake" / module).read_text().splitlines()
+                              if line.strip().startswith("install(CODE ")]
+        # Execute the real generated install code with only the subprocess
+        # primitive mocked. No downloaded runtime or Windows trust is involved.
+        fixture = r"""cmake_minimum_required(VERSION 3.24)
+project(InstallQuoteRegression NONE)
+set(Python3_EXECUTABLE [==[C:\hostedtoolcache\windows\Python\3.12.10\x64/python.exe]==])
+set(_shell_stager "stage shell.py")
+set(_shell_source "source")
+set(_shell_lock "lock")
+set(_shell_preset "preset")
+set(_conpty_prepare "prepare console.py")
+set(_conpty_relative "runtimes/conpty")
+set(STORMTTY_CONPTY_CACHE [==[C:\build cache\conpty]==])
+add_executable(stormtty IMPORTED)
+set_target_properties(stormtty PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/stormtty.exe")
+install(CODE [====[
+function(execute_process)
+    if(NOT "${ARGV1}" STREQUAL [==[C:\hostedtoolcache\windows\Python\3.12.10\x64/python.exe]==])
+        message(FATAL_ERROR "Interpreter path changed")
+    endif()
+    set(result 0 PARENT_SCOPE)
+endfunction()
+]====])
+"""
+        (source / "CMakeLists.txt").write_text(fixture + "\n".join(install_lines) + "\n")
+        for args in (["-S", str(source), "-B", str(build)], ["--install", str(build)]):
+            result = bootstrap.subprocess.run([shutil.which("cmake"), *args], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def publication_fixture(self, repair):
         transaction = self.root / "transaction"

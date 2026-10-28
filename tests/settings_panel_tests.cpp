@@ -62,6 +62,12 @@ int main() {return run_core_tests("settings panel",[] {
     CHECK(backend_preview && backend_preview->kind==SettingsActionKind::preview);
     WindowScene backend_scene;backend.append_scene(backend_scene);
     CHECK(std::any_of(backend_scene.texts.begin(),backend_scene.texts.end(),[](const auto& t){return t.text.starts_with("Diagnostic CLI override active");}));
+    backend.set_console_backend_status(true,"Preview · native AMD64 · resize unqualified · ConPTY 1.25.260930003");
+    WindowScene concise_backend;backend.append_scene(concise_backend);
+    CHECK(std::count_if(concise_backend.texts.begin(),concise_backend.texts.end(),[](const auto& t){return t.text=="For new tabs and panes";})==1);
+    CHECK(std::count_if(concise_backend.texts.begin(),concise_backend.texts.end(),[](const auto& t){return t.text.find("1.25.260930003")!=std::string::npos;})==1);
+    CHECK(std::count_if(concise_backend.texts.begin(),concise_backend.texts.end(),[](const auto& t){return t.text.find("unqualified")!=std::string::npos;})==1);
+    CHECK(std::none_of(concise_backend.texts.begin(),concise_backend.texts.end(),[](const auto& t){return t.text.find("Save applies")!=std::string::npos || t.text.find("not fully qualified")!=std::string::npos;}));
     backend.cancel();const auto backend_cancel=backend.take_action();
     CHECK(backend_cancel && backend_cancel->kind==SettingsActionKind::cancel && backend_cancel->config==defaults);
     backend.open(defaults);activate(backend,"nav.shell");activate(backend,"console.bundled");activate(backend,"save");
@@ -201,6 +207,20 @@ int main() {return run_core_tests("settings panel",[] {
     const auto same_disk=parse_config(serialize_config(defaults,Platform::windows),Platform::windows);CHECK(same_disk);
     reopened.open(defaults,*same_disk.config);CHECK(!reopened.loaded_changes_from_disk() && !reopened.take_action());reopened.cancel();
 
+    // Portable discovery candidates have no trusted system identity. Never merge
+    // distinct profiles by cmd.exe basename, a claimed Windows ID, or label.
+    auto custom_command=defaults;custom_command.profiles.front().executable="C:\\Tools\\cmd.exe";
+    Profile candidate_command;candidate_command.id="windows-cmd";candidate_command.label="Command Prompt";
+    candidate_command.executable="C:\\OtherWindows\\System32\\cmd.exe";
+    const std::vector command_candidates{candidate_command};
+    for (const bool alias_with_args:{false,true}) {
+        if (alias_with_args) {custom_command.profiles.front().executable="cmd.exe";custom_command.profiles.front().arguments={"/k","echo custom"};}
+        SettingsPanel custom_shells;custom_shells.open(custom_command,command_candidates);activate(custom_shells,"nav.shell");
+        CHECK(item(custom_shells,"shell:default").enabled && item(custom_shells,"shell:windows-cmd").enabled);
+        activate(custom_shells,"shell:windows-cmd");CHECK(custom_shells.draft().profiles.size()==2);
+        CHECK(custom_shells.draft().profiles.front()==custom_command.profiles.front());
+        CHECK(custom_shells.draft().profiles.back()==candidate_command);
+    }
     // Shell selection preserves configured executable/arguments/environment.
     Profile git;git.id="git-bash";git.label="Git Bash";git.executable="C:\\Program Files\\Git\\bin\\bash.exe";git.arguments={"--login","-i"};git.environment["CHERE_INVOKING"]="1";
     auto invalid=git;invalid.id="bad shell";

@@ -142,9 +142,13 @@ def extract(package: Path, destination: Path, lock: dict) -> None:
             raise RuntimeError("Too many entries in ConPTY archive")
         names = set()
         for entry in entries:
-            name = entry.filename
+            # ZipInfo normalizes Windows separators and truncates at NUL on
+            # read. Validate the original central-directory spelling first;
+            # otherwise a hostile name can alias an allowlisted payload.
+            name = entry.orig_filename
             path = PurePosixPath(name)
-            if name in names or path.is_absolute() or ".." in path.parts or "\\" in name or ":" in name:
+            if (name != entry.filename or "\0" in name or len(name) > 1024 or
+                    name in names or path.is_absolute() or ".." in path.parts or "\\" in name or ":" in name):
                 raise RuntimeError(f"Duplicate/unsafe archive entry: {name}")
             names.add(name)
             kind = stat.S_IFMT(entry.external_attr >> 16)

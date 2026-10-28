@@ -1286,9 +1286,13 @@ void NativeWindow::open_settings(std::string binding) {
     settings_binding_=std::move(binding); settings_open_requested_=true;
     settings_job_=true;
     try {
-        settings_worker_=std::thread([shared,path] {
+        settings_worker_=std::thread([shared,path,configured=config_.profiles] {
             SettingsCompletion result; result.kind=SettingsCompletion::Kind::load;
-            try { result.loaded=load_settings_snapshot(path); result.shells=discover_windows_shells(); }
+            try {
+                result.loaded=load_settings_snapshot(path);
+                if (result.loaded) result.shells=discover_windows_shells(
+                    result.loaded.snapshot->existed?result.loaded.config->profiles:configured);
+            }
             catch (const std::exception& e) { result.loaded.error=e.what(); }
             catch (...) { result.loaded.error="Settings discovery failed unexpectedly."; }
             { std::lock_guard lock(shared->mutex); shared->settings=std::move(result); }
@@ -1329,12 +1333,12 @@ void NativeWindow::settings_completed() {
         if (!settings_binding_.empty()) settings_panel_.open_for_binding(config_,settings_binding_,completion->shells.profiles);
         settings_panel_.set_console_backend_status(bundled_console_runtime_present(),
             !options_.console_runtime_directory.empty()?
-                "--console-runtime overrides this launch. Saved choice applies without that flag.":
+                "CLI override active · saved choice applies without flag · resize unqualified":
             !native_amd64_console_supported()?
-                "Bundled preview supports native AMD64 Windows only (not ARM64/emulation).":
+                "Preview requires native AMD64 · resize unqualified":
             bundled_console_runtime_present()?
-                "Pinned Microsoft ConPTY 1.25.260930003. Compact resize remains unqualified.":
-                "Bundle unavailable. Rebuild/copy runtimes/conpty beside StormTTY, or select System.");
+                "Preview · native AMD64 · resize unqualified · ConPTY 1.25.260930003":
+                "Bundle unavailable · select System to recover · preview resize unqualified");
         settings_panel_.resize({width_,height_}); context_menu_.resize({width_,height_}); settings_binding_.clear(); notice_.clear();
         if (tooltip_) SendMessageW(tooltip_,TTM_POP,0,0);
         SetFocus(hwnd_); settings_input_changed(); caret_schedule(); changed();

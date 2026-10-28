@@ -162,7 +162,11 @@ void verify_pinned_file(const std::wstring& path, const char* expected, Handle& 
     // Deny modification/deletion until the module and its host have closed.
     lock.reset(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (lock.value == INVALID_HANDLE_VALUE) throw std::runtime_error("Bundled console runtime is missing or inaccessible. Restore runtimes/conpty beside StormTTY, or select System in Settings. No fallback was launched.");
+    if (lock.value == INVALID_HANDLE_VALUE) {
+        const auto diagnostic=win_error("Open pinned ConPTY file");
+        throw std::runtime_error(std::string(diagnostic.what())+
+            ". Bundled console runtime is missing or inaccessible. Restore runtimes/conpty beside StormTTY, or select System in Settings. No fallback was launched.");
+    }
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(lock.value, &info)) throw win_error("Inspect pinned ConPTY file");
     if (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))

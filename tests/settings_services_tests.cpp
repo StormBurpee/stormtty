@@ -246,6 +246,25 @@ int main() { return run_core_tests("settings_services (Windows native)", [] {
         }
     }
     CHECK(ids.contains("windows-cmd"));
+    const auto has_cmd=[](const ShellDiscoveryResult& result) {
+        return std::any_of(result.profiles.begin(),result.profiles.end(),[](const auto& p){return p.id=="windows-cmd";});
+    };
+    const auto cmd=std::find_if(discovered.profiles.begin(),discovered.profiles.end(),[](const auto& p){return p.id=="windows-cmd";});
+    CHECK(cmd->arguments==std::vector<std::string>{"/d"});
+    const auto preserved=defaults;
+    CHECK(!has_cmd(discover_windows_shells(defaults.profiles)));
+    auto equivalent=defaults.profiles;
+    equivalent.front().arguments={"/d"}; equivalent.front().executable="CMD.EXE";
+    CHECK(!has_cmd(discover_windows_shells(equivalent)));
+    auto distinct=defaults.profiles; distinct.front().arguments={"/q"};
+    CHECK(has_cmd(discover_windows_shells(distinct)));
+    distinct=defaults.profiles; distinct.front().environment["CUSTOM"]="1";
+    CHECK(has_cmd(discover_windows_shells(distinct)));
+    distinct=defaults.profiles; distinct.front().working_directory="C:\\custom";
+    CHECK(has_cmd(discover_windows_shells(distinct)));
+    distinct=defaults.profiles; distinct.front().executable="C:\\custom\\cmd.exe";
+    CHECK(has_cmd(discover_windows_shells(distinct)));
+    CHECK(defaults==preserved);
     CHECK(defaults.default_profile == "default" && defaults.profiles.size() == 1);
     CHECK(!has_temporaries(directory.path));
 }); }
