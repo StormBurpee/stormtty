@@ -4,7 +4,9 @@ This standalone executable is **not StormTTY's renderer**, is not linked into th
 application, and has no production settings/configuration change. It qualifies a
 possible backend before any renderer migration. No native compilation or physical
 visual success is claimed by the initial source delivery; the authoring environment
-has Linux/Zig GNU toolchains, not Microsoft SDK/C++/WinRT headers.
+has Linux/Zig GNU toolchains, not Microsoft SDK/C++/WinRT headers. The attempted
+Zig syntax check stops in dispatcherqueue.h because windows.system.h is absent;
+this is an unsupported-toolchain blocker, not a native compile pass.
 
 ## Contract and limits
 

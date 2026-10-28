@@ -26,11 +26,12 @@
 namespace wc = winrt::Windows::UI::Composition;
 namespace wf = winrt::Windows::Foundation;
 namespace wg = winrt::Windows::Graphics::Effects;
+namespace effect_abi = ABI::Windows::Graphics::Effects;
 using winrt::check_hresult;
 
 // Native effect metadata, not an ID2D1Effect instance or Win2D runtime object.
 struct Gaussian final : winrt::implements<Gaussian, wg::IGraphicsEffect,
-    wg::IGraphicsEffectSource, IGraphicsEffectD2D1Interop> {
+    wg::IGraphicsEffectSource, effect_abi::IGraphicsEffectD2D1Interop> {
     winrt::hstring name{L"Blur"};
     wg::IGraphicsEffectSource source{nullptr};
     winrt::hstring Name() const { return name; }
@@ -39,11 +40,11 @@ struct Gaussian final : winrt::implements<Gaussian, wg::IGraphicsEffect,
         if (!value) return E_POINTER; *value = CLSID_D2D1GaussianBlur; return S_OK;
     }
     HRESULT __stdcall GetNamedPropertyMapping(LPCWSTR property, UINT* index,
-        GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override {
+        effect_abi::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override {
         if (!property || !index || !mapping) return E_POINTER;
         if (wcscmp(property, L"BlurAmount") != 0) return E_INVALIDARG;
         *index = D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION;
-        *mapping = GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT; return S_OK;
+        *mapping = effect_abi::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT; return S_OK;
     }
     HRESULT __stdcall GetPropertyCount(UINT* value) noexcept override {
         if (!value) return E_POINTER; *value = 3; return S_OK;
