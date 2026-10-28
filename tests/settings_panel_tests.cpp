@@ -27,7 +27,10 @@ void validate_scene(const WindowScene& scene,double width,double height,double s
     for (const auto& primitive:scene.primitives) {
         const auto& r=primitive.rect;
         CHECK(std::isfinite(r.x) && std::isfinite(r.y) && std::isfinite(r.width) && std::isfinite(r.height));
-        CHECK(r.x>=0 && r.y>=0 && r.width>0 && r.height>0);
+        if (primitive.kind==ChromePrimitiveKind::line) {
+            CHECK(r.x>=0 && r.y>=0 && r.x<=width*scale && r.y<=height*scale);
+            CHECK(r.x+r.width>=0 && r.y+r.height>=0);
+        } else CHECK(r.x>=0 && r.y>=0 && r.width>0 && r.height>0);
         CHECK(r.x+r.width<=width*scale+0.02 && r.y+r.height<=height*scale+0.02);
     }
     for (const auto& text:scene.texts) {
@@ -53,6 +56,13 @@ int main() {return run_core_tests("settings panel",[] {
     CHECK(panel.draft()==defaults && !panel.dirty());
     CHECK(std::any_of(material_scene.texts.begin(),material_scene.texts.end(),[](const auto& t){return t.text=="Save changes" && t.alignment==ChromeTextAlignment::center;}));
     CHECK(std::any_of(material_scene.texts.begin(),material_scene.texts.end(),[](const auto& t){return t.text=="Appearance" && t.alignment==ChromeTextAlignment::leading;}));
+    CHECK(std::none_of(material_scene.texts.begin(),material_scene.texts.end(),[](const auto& t){return t.text=="S" || t.text=="Local preferences" || t.text=="Applies to StormTTY." || t.text=="Your sessions keep running.";}));
+    CHECK(std::any_of(material_scene.primitives.begin(),material_scene.primitives.end(),[](const auto& p){return p.kind==ChromePrimitiveKind::line;}));
+    const auto font_value=std::find_if(material_scene.texts.begin(),material_scene.texts.end(),[](const auto& t){return t.text=="15";});
+    CHECK(font_value!=material_scene.texts.end() && font_value->alignment==ChromeTextAlignment::center);
+    const auto decrease=item(panel,"font.decrease").bounds,increase=item(panel,"font.increase").bounds;
+    CHECK(near(font_value->rect.x+font_value->rect.width/2,(decrease.x+decrease.width+increase.x)/2));
+    CHECK(near(font_value->rect.y+font_value->rect.height/2,decrease.y+decrease.height/2));
     // Semantic controls are unique and every field fits the ordinary modal.
     std::set<std::string> ids;
     for (const auto& c:panel.layout().controls) {CHECK(ids.insert(c.id).second);CHECK(c.visible);}
@@ -84,6 +94,27 @@ int main() {return run_core_tests("settings panel",[] {
     CHECK(panel.pointer_down({0,0}));CHECK(panel.pointer_up({0,0}));CHECK(panel.is_open());
     CHECK(panel.key({{"ESCAPE"}}));CHECK(!panel.is_open());CHECK(panel.draft()==defaults);
     const auto cancel=panel.take_action();CHECK(cancel && cancel->kind==SettingsActionKind::cancel && cancel->config==defaults);
+
+    // Named themes change the actual draft and sample palette, remain reversible,
+    // and preserve existing customized palettes until an explicit selection.
+    for (const auto platform:{Platform::windows,Platform::macos}) {
+        SettingsPanel themes(platform);auto config=default_config(platform);themes.open(config);
+        for (const auto& theme:builtin_themes()) {
+            click(themes,"appearance.theme."+theme.name);CHECK(themes.draft().theme==theme);
+            if (theme!=config.theme) {const auto action=themes.take_action();CHECK(action && action->kind==SettingsActionKind::preview && action->config.theme==theme);}
+            WindowScene themed;themes.append_scene(themed);
+            const auto sample=std::find_if(themed.texts.begin(),themed.texts.end(),[](const auto& t){return t.text==">_  ABC abc 0123 {} [] -> !=";});
+            CHECK(sample!=themed.texts.end());
+            if (theme.name=="daylight") CHECK(sample->color==Color{35,43,51,255});
+        }
+        focus(themes,"appearance.theme.daylight");CHECK(themes.key({{"LEFT"}}));CHECK(themes.draft().theme.name=="instrument");
+        themes.cancel();CHECK(themes.take_action()->config.theme==config.theme);
+        config.theme.accent="#123456";themes.open(config);click(themes,"appearance.theme.daylight");
+        CHECK(themes.draft().theme.name=="daylight");click(themes,"appearance.theme.custom");CHECK(themes.draft().theme==config.theme);
+        click(themes,"save");const auto saved=themes.take_action();CHECK(saved && saved->kind==SettingsActionKind::save);
+        themes.persistence_result(true);themes.open(saved->config);CHECK(!themes.dirty() && themes.draft().theme==config.theme);
+        themes.cancel();
+    }
 
     // Shell selection preserves configured executable/arguments/environment.
     Profile git;git.id="git-bash";git.label="Git Bash";git.executable="C:\\Program Files\\Git\\bin\\bash.exe";git.arguments={"--login","-i"};git.environment["CHERE_INVOKING"]="1";
@@ -130,6 +161,9 @@ int main() {return run_core_tests("settings panel",[] {
         const KeyChord alt_bracket{"]",CommandModifier::alt};
         CHECK(shortcuts.key({alt_bracket}));CHECK(shortcuts.capturing_shortcut());CHECK(shortcuts.draft()==original);CHECK(shortcuts.error().empty());
         CHECK(item(shortcuts,"binding.confirm").visible);
+        shortcuts.resize({480,480});WindowScene warning;shortcuts.append_scene(warning);
+        CHECK(std::any_of(warning.texts.begin(),warning.texts.end(),[](const auto& t){return t.text.ends_with(" replaces terminal input");}));
+        shortcuts.resize({1024,768});
         for (int repeat=0;repeat<5;++repeat) CHECK(shortcuts.key({alt_bracket}));
         CHECK(shortcuts.draft()==original);
         CHECK(shortcuts.key({{"TAB"}}));CHECK(shortcuts.focused_control()=="binding.confirm");
@@ -168,8 +202,14 @@ int main() {return run_core_tests("settings panel",[] {
     WindowScene hidden;const auto panel_bounds=bounds.layout().panel;
     hidden.texts.push_back({{float(panel_bounds.x+20),float(panel_bounds.y+20),100,20},"SHOULD NOT LEAK"});
     hidden.texts.push_back({{0,0,10,10},"outside"});bounds.append_scene(hidden);
-    CHECK(std::none_of(hidden.texts.begin(),hidden.texts.end(),[](const auto& t){return t.text=="SHOULD NOT LEAK";}));
-    CHECK(hidden.texts.front().text=="outside" && hidden.texts.front().color.a<128);
+    CHECK(hidden.texts[0].text=="SHOULD NOT LEAK" && hidden.texts[0].color.a==255 && hidden.texts[0].z.layer==ChromeLayer::base);
+    CHECK(hidden.texts[1].text=="outside" && hidden.texts[1].color.a==255);
+    for (std::size_t i=2;i<hidden.texts.size();++i) CHECK(hidden.texts[i].z.layer==ChromeLayer::settings);
+    for (const auto& primitive:hidden.primitives) CHECK(primitive.z.layer==ChromeLayer::settings);
+    const auto paint=chrome_paint_order(hidden);
+    const auto underlying=std::find_if(paint.begin(),paint.end(),[](const auto& item){return item.kind==ChromeDrawKind::text && item.index==0;});
+    const auto scrim=std::find_if(paint.begin(),paint.end(),[](const auto& item){return item.kind==ChromeDrawKind::primitive && item.index==0;});
+    CHECK(underlying<scrim);
     CHECK(std::any_of(hidden.primitives.begin(),hidden.primitives.end(),[](const auto& p){return p.background_replace;}));
     // Actual OS high-contrast colors, including a light background, replace
     // every decorative paint. HighlightText remains readable on selected rows.
@@ -192,6 +232,13 @@ int main() {return run_core_tests("settings panel",[] {
         const auto save_text=std::find_if(high.texts.begin(),high.texts.end(),[](const auto& t){return t.text=="Save changes";});
         CHECK(save_text!=high.texts.end() && save_text->color==highlight_text);
     }
+    // High contrast remains semantic even if a custom theme aliases every color.
+    auto monochrome=defaults;monochrome.theme={"custom","#000000","#000000","#000000","#000000"};
+    SettingsPanel contrast;contrast.open(monochrome);contrast.set_high_contrast(true,{0,0,0,255},{255,255,255,255},{0,72,64,255},{255,245,200,255});
+    WindowScene contrast_scene;contrast.append_scene(contrast_scene);
+    const auto contrast_sample=std::find_if(contrast_scene.texts.begin(),contrast_scene.texts.end(),[](const auto& t){return t.text==">_  ABC abc 0123 {} [] -> !=";});
+    CHECK(contrast_sample!=contrast_scene.texts.end() && contrast_sample->color==Color{255,255,255,255});
+    CHECK(contrast.draft()==monochrome);
     click(bounds,"save");CHECK(bounds.saving());WindowScene saving;bounds.append_scene(saving);
     const auto disabled_label=std::find_if(saving.texts.begin(),saving.texts.end(),[](const auto& t){return t.text=="Saving…";});
     CHECK(disabled_label!=saving.texts.end() && disabled_label->color==Color{135,115,130,255});

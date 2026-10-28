@@ -151,6 +151,10 @@ public:
     void feed(std::string_view bytes);
     void feed(std::span<const std::uint8_t> bytes);
     void resize(TerminalSize size);
+    // Actor-only appearance update. Changes configured opaque RGB defaults,
+    // preserving explicit ANSI/RGB cells and terminal-origin OSC overrides.
+    // OSC 110/111 resets subsequently resolve to these latest defaults.
+    void set_default_colors(Color foreground, Color background);
     // Encoders return exact PTY bytes. Empty means intentionally suppressed.
     std::string encode_key(const KeyInput& event);
     std::string encode_mouse(const MouseInput& event);

@@ -45,9 +45,9 @@ struct ContextMenuLayout { std::vector<ContextMenuPanelLayout> panels; };
 // process launch or platform I/O. All geometry/input is DIP. All transitions are
 // immediate (including reduced motion). Hosts intercept ALL input while open,
 // dismiss on focus loss, and restore prior focus after consuming take_action().
-// Append after other UI, since covered chrome labels must be removed from the
-// renderer's separate text pass. Host validates any captured pane/tab/project
-// identity again before executing the owned selected ID.
+// Every panel uses the shared context-menu layer and increasing nested depth;
+// appending never edits underlying chrome. Host validates any captured
+// pane/tab/project identity again before executing the owned selected ID.
 class ContextMenu {
 public:
     static constexpr std::size_t maximum_items = 512;

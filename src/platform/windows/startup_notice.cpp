@@ -172,16 +172,16 @@ private:
     bool create_controls() noexcept {
         const auto instance = GetModuleHandleW(nullptr);
         title_control_ = CreateWindowExW(0, L"STATIC", title_.c_str(), WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
-            0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(title_id), instance, nullptr);
+            0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(title_id)), instance, nullptr);
         // An actual read-only EDIT retains text selection, Ctrl+C, and the
         // platform's accessibility provider; only its presentation is replaced.
         body_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL,
-            0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(body_id), instance, nullptr);
+            0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(body_id)), instance, nullptr);
         close_ = CreateWindowExW(0, L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-            0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(close_id), instance, nullptr);
+            0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(close_id)), instance, nullptr);
         chrome_close_ = CreateWindowExW(0, L"BUTTON", L"Close window", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-            0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(chrome_close_id), instance, nullptr);
+            0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(chrome_close_id)), instance, nullptr);
         if (!title_control_ || !body_ || !close_ || !chrome_close_) return false;
         SendMessageW(body_, EM_SETLIMITTEXT, body_byte_limit * 2, 0);
         SetWindowLongPtrW(body_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));

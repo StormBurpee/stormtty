@@ -3,6 +3,7 @@
 #include "stormtty/commands.hpp"
 #include <filesystem>
 #include <map>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -61,6 +62,9 @@ struct ConfigParseResult {
     std::vector<ConfigError> errors;
     explicit operator bool() const noexcept { return config.has_value() && errors.empty(); }
 };
+// Shared named palettes; config parsing and the Settings selector use one source.
+std::span<const Theme> builtin_themes();
+const Theme* find_builtin_theme(std::string_view name);
 Config default_config(Platform);
 // Strict bounded declarative StormTTY config v1. See config_format_documentation().
 // No includes, interpolation, script execution or silent partial reloads.

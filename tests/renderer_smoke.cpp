@@ -1,5 +1,6 @@
 // Native Windows runtime test. Cross-compiling this file is NOT a passing test.
 #include "stormtty/renderer.hpp"
+#include "chrome_layer_raster.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -503,6 +504,8 @@ int main() {
         const auto previous_directory=std::filesystem::current_path();
         struct RestoreDirectory {std::filesystem::path path;~RestoreDirectory(){std::error_code ignored;std::filesystem::current_path(path,ignored);}} restore{previous_directory};
         std::filesystem::current_path(std::filesystem::temp_directory_path());
+        RendererOptions layer_options;layer_options.force_warp=true;layer_options.font.family="Consolas";
+        stormtty::test::chrome_layer_raster_tests(layer_options);
         native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();
         std::cout<<"PASS Windows WARP renderer: HWND/DComp style lifecycle and fallback, private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
         return 0;

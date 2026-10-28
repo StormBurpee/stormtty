@@ -154,10 +154,14 @@ different shell; StormTTY does not replace or emulate the shell itself.
 Use **Show commands** for splits, pane focus and movement, pane zoom, tab
 renaming, split equalization and fullscreen. The command palette also shows
 unavailable actions with a reason. Select an action and press **Alt+Enter** to
-assign and save its shortcut. Conflicting or reserved shortcuts are rejected.
+assign and save its shortcut. Conflicts and OS-reserved shortcuts are rejected. Terminal keys such as `Alt+]`
+require **Use shortcut** confirmation before they can override shell input.
 
-**Settings** includes appearance previews, font controls, shell selection and
-shortcut editing. Close confirmations, context menus and settings share the
+**Settings** includes Graphite, Instrument and Daylight themes, live appearance
+previews, font controls, shell selection and shortcut editing. Cancel restores
+the original palette; Save persists it. Existing terminal applications keep
+their own OSC color overrides and explicit ANSI/RGB colors. Exited sessions
+retain their final frame. Close confirmations, context menus and settings share the
 app's renderer-owned interface. Find-in-terminal has a tested core search service,
 but its user-facing command is not enabled yet.
 

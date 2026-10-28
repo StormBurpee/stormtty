@@ -198,6 +198,25 @@ int main() {
     require(!settings_baseline_matches(changed_settings,save->config,Platform::windows),"external binding change still rejects stale running baseline");
     settings.open(*saved_reference.config,std::span<const Profile>(&managed,1));
     require(has_managed_zsh_selection(settings.draft()) && !settings.dirty(),"next Settings open retains managed choice");
-    settings.cancel();
+    settings.cancel();settings.take_action();
+    // Repeated saves canonicalize binding order, themes and sub-70% opacity.
+    // Exact file-identity/byte conflict checks remain in Settings services.
+    auto running=*saved_reference.config;
+    for (unsigned iteration=0;iteration<12;++iteration) {
+        settings.open(running);
+        activate("appearance.theme."+builtin_themes()[iteration%builtin_themes().size()].name);
+        for (unsigned i=0;i<256 && settings.focused_control()!="appearance.opacity";++i) settings.key({{"TAB"}});
+        settings.key({{"HOME"}});
+        for (unsigned step=0;step<iteration;++step) settings.key({{"RIGHT"}});
+        settings.key({{"ENTER",CommandModifier::control}});
+        const auto action=settings.take_action();require(action && action->kind==SettingsActionKind::save,"repeated save action");
+        const auto on_disk=parse_config(serialize_config(action->config,Platform::windows),Platform::windows);
+        require(on_disk && settings_baseline_matches(*on_disk.config,action->config,Platform::windows),"repeated Save-to-reopen keeps matching baseline");
+        settings.persistence_result(true);running=action->config;
+        settings.open(running);require(settings.is_open() && !settings.dirty(),"repeated reopen available without restart");
+        settings.cancel();settings.take_action();
+        auto externally_changed=*on_disk.config;externally_changed.theme.accent="#123456";
+        require(!settings_baseline_matches(externally_changed,running,Platform::windows),"external theme edit is still rejected");
+    }
     std::cout << "window geometry, input and managed shell profile tests passed\n";
 }

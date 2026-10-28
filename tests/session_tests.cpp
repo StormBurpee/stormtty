@@ -14,6 +14,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 using namespace stormtty;
 using namespace std::chrono_literals;
@@ -47,10 +49,15 @@ int child(std::string_view mode) {
         SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), output_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 #endif
     if(mode=="echo") {
-        std::cout << "\x1b[31mREADY\x1b[0m\r\n" << std::flush;
+#ifdef _WIN32
+        const auto identity=std::to_string(GetCurrentProcessId());
+#else
+        const auto identity=std::to_string(getpid());
+#endif
+        std::cout << "\x1b[31mREADY:" << identity << "\x1b[0m\r\n" << std::flush;
         std::string line; std::getline(std::cin,line);
         if(!line.empty()&&line.back()=='\r')line.pop_back();
-        std::cout << "GOT:" << line << "\r\n" << std::flush;
+        std::cout << "GOT:" << line << " PID:" << identity << "\r\n" << std::flush;
         return 7;
     }
     if(mode=="flood") {
@@ -70,13 +77,39 @@ int main(int argc,char** argv) {
             auto session=Session::start(p,t,[wakes]{wakes->signal();});
             check(await([&]{return frame_text(session->frame()).find("READY")!=std::string::npos;},wakes),"real child output did not reach frame");
             const auto original=session->frame();
+            const auto initial_text=frame_text(original);
+            const auto identity_start=initial_text.find("READY:")+6;
+            const auto identity=initial_text.substr(identity_start,initial_text.find_first_of(" \r\n",identity_start)-identity_start);
+            const auto sent_before=session->info().bytes_sent;
+            const Color preview_fg{224,225,226,255}, preview_bg{16,17,18,255};
+            check(session->set_default_colors(preview_fg,preview_bg)==SessionSendResult::accepted,"live theme not accepted");
+            check(await([&]{auto f=session->frame();return f && f->foreground==preview_fg && f->background==preview_bg;},wakes),"live theme did not repaint existing session");
+            const auto preview=session->frame();
+            check(preview->lines[0]->cells[0].foreground==original->lines[0]->cells[0].foreground,"explicit ANSI foreground changed");
+            // Rapid previews use one separately bounded latest-value slot. Neither
+            // obsolete previews nor the final Cancel can displace PTY input.
+            for (unsigned i=0;i<2000;++i) {
+                const Color fg{static_cast<std::uint8_t>(180+i%50),225,226,255};
+                check(session->set_default_colors(fg,preview_bg)==SessionSendResult::accepted,"rapid theme update was backpressured");
+            }
+            check(session->set_default_colors(original->foreground,original->background)==SessionSendResult::accepted,"theme cancel not accepted");
+            check(await([&]{auto f=session->frame();return f && f->generation>preview->generation && f->foreground==original->foreground && f->background==original->background;},wakes),"latest theme cancel was lost or reordered");
+            check(session->info().bytes_sent==sent_before,"display-only update wrote PTY bytes");
+            check(frame_text(session->frame())==initial_text,"theme update changed terminal content");
+            check(original->background!=preview->background && preview->background==preview_bg,"old theme snapshot mutated");
+            bool rejected{};
+            try { session->set_default_colors({1,2,3,1},preview_bg); } catch(const std::invalid_argument&) { rejected=true; }
+            check(rejected,"non-opaque session theme accepted");
             check(session->text("hello")==SessionSendResult::accepted,"text not accepted");
             KeyInput enter;enter.key=Key::enter;
             check(session->key(enter)==SessionSendResult::accepted,"enter not accepted");
             check(session->wait_closed(5s),"natural child exit did not close actor");
             check(session->info().state==SessionState::exited,"natural child exit state");
             check(session->info().exit_code==7,"exit code lost");
-            check(frame_text(session->frame()).find("GOT:hello")!=std::string::npos,"input/last output ordering failed");
+            check(frame_text(session->frame()).find("GOT:hello PID:"+identity)!=std::string::npos,"input ordering or child identity changed during theme preview");
+            const auto exited_frame=session->frame();
+            check(session->set_default_colors(preview_fg,preview_bg)==SessionSendResult::closed,"exited session accepted a theme update");
+            check(session->frame()==exited_frame,"exited session final frame changed");
             check(frame_text(original).find("READY")!=std::string::npos,"published old frame invalidated");
             check(session->text("late")==SessionSendResult::closed,"closed input accepted");
             session->request_close();session->request_close();

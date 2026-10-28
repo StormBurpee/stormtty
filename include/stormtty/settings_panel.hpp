@@ -13,7 +13,7 @@ enum class SettingsSection { appearance, shell, shortcuts };
 enum class SettingsActionKind { preview, save, cancel };
 struct SettingsAction {
     SettingsActionKind kind{};
-    // Owned. Preview only reversible font/appearance; commit profiles/bindings
+    // Owned. Preview only reversible theme/font/appearance; commit profiles/bindings
     // after persistence. Cancel carries the original for preview rollback.
     Config config;
 };
@@ -28,7 +28,7 @@ struct SettingsPanelLayout {
     bool compact{};
 };
 
-// Portable nonblocking modal. The host owns persistence, font/material preview,
+// Portable nonblocking modal. The host owns persistence, theme/font/material preview,
 // OS input capture and focus restoration; this class never launches a shell.
 // While is_open(), intercept ALL keyboard/text/mouse/IME input before the VT or
 // workspace route, not only inputs that change this model. Geometry is DIP;

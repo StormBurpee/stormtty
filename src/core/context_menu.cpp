@@ -19,10 +19,6 @@ bool contains(Rect a,Rect b) {
     return b.width>0 && b.height>0 && b.x>=a.x-0.01 && b.y>=a.y-0.01 &&
         b.x+b.width<=a.x+a.width+0.01 && b.y+b.height<=a.y+a.height+0.01;
 }
-bool intersects(Rect a,Rect b) {
-    return a.width>0 && a.height>0 && b.width>0 && b.height>0 &&
-        a.x<b.x+b.width && a.x+a.width>b.x && a.y<b.y+b.height && a.y+a.height>b.y;
-}
 Rect intersection(Rect a,Rect b) {
     const auto x=std::max(a.x,b.x),y=std::max(a.y,b.y);
     return {x,y,std::max(0.0,std::min(a.x+a.width,b.x+b.width)-x),std::max(0.0,std::min(a.y+a.height,b.y+b.height)-y)};
@@ -328,22 +324,21 @@ void ContextMenu::append_scene(WindowScene& scene,float scale) const {
     const auto secondary_ink=high_contrast_?contrast_foreground_:muted;
     const auto disabled_ink=high_contrast_?contrast_disabled_:disabled;
     const auto pixels=[&](Rect r){return PixelRect{float(r.x*scale),float(r.y*scale),float(r.width*scale),float(r.height*scale)};};
+    ChromeZOrder z{ChromeLayer::context_menu};
     auto box=[&](Rect bounds,Color fill,Color stroke=transparent,double radius=0,double weight=0,bool replace=false) {
         const auto r=intersection(bounds,window);if (r.width<=0 || r.height<=0) return;
-        scene.primitives.push_back({pixels(r),fill,stroke,float(std::min({radius,r.width/2,r.height/2})*scale),float(weight*scale),ChromePrimitiveKind::rectangle,replace});
+        scene.primitives.push_back({pixels(r),fill,stroke,float(std::min({radius,r.width/2,r.height/2})*scale),float(weight*scale),ChromePrimitiveKind::rectangle,replace,z});
     };
     auto label=[&](Rect bounds,const std::string& value,Color color,float size=13,bool bold=false) {
         const auto r=intersection(bounds,window);if (r.width<=0 || r.height<=0 || value.empty()) return;
-        scene.texts.push_back({pixels(r),value,color,size,bold,"Segoe UI Variable Text"});
+        scene.texts.push_back({pixels(r),value,color,size,bold,"Segoe UI Variable Text",ChromeTextAlignment::leading,z});
     };
     for (std::size_t depth=0;depth<layout_.panels.size();++depth) {
         const auto& layout=layout_.panels[depth];const auto p=layout.bounds;
         if (p.width<=0 || p.height<=0) continue;
-        const auto physical=pixels(p);
-        // Primitive/text arrays are separate renderer passes. Covered underlying
-        // UI (including a parent menu) must not paint over this opaque surface.
-        std::erase_if(scene.texts,[&](const auto& text){return intersects({text.rect.x,text.rect.y,text.rect.width,text.rect.height},
-            {physical.x,physical.y,physical.width,physical.height});});
+        // A submenu is a complete higher surface: its background covers only
+        // overlapping pixels of the parent, without removing the parent's label.
+        z.depth=static_cast<std::uint16_t>(depth);
         if (!high_contrast_) box({p.x+2,p.y+4,p.width,p.height},{0,0,0,48},transparent,10);
         box(p,panel_fill,stroke,10,1,true);
         for (std::size_t row=0;row<layout.rows.size();++row) {

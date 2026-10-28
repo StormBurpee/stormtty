@@ -1248,6 +1248,14 @@ void NativeWindow::preview_settings(const Config& candidate) {
         FontOptions font; font.family=candidate.font.family; font.size_dip=static_cast<float>(candidate.font.size_dip); font.ligatures=candidate.font.ligatures;
         RendererCallGuard guard(renderer_call_); renderer_->set_font(std::move(font));
     }
+    if (config_.theme!=candidate.theme) {
+        const auto foreground=color_hex(candidate.theme.foreground,{238,237,236,255});
+        const auto background=color_hex(candidate.theme.background,{17,21,27,255});
+        // Display-only actor updates are coalesced separately from PTY input.
+        // Exited sessions retain their immutable final frame; no shell restarts.
+        for (const auto& [id,session]:sessions_) { (void)id; session->set_default_colors(foreground,background); }
+        config_.theme=candidate.theme;
+    }
     config_.font=candidate.font; config_.appearance=candidate.appearance;
     settings_changed(); caret_schedule(); changed(font_changed);
 }
@@ -1421,14 +1429,15 @@ WindowScene NativeWindow::scene() {
     const Color accent = high_contrast_ ? system_color(COLOR_WINDOWTEXT) : color_hex(config_.theme.accent, {167,196,210,255});
     const Color seam = high_contrast_ ? text : Color{162,173,190,56};
     result.background = background; result.chrome_generation = chrome_generation_; result.force_redraw=force_redraw_;
+    ChromeZOrder z;
     auto rectangle = [&](Rect bounds, Color fill, double radius = 0, Color stroke = {}, double stroke_width = 0, bool replace = false) {
-        result.primitives.push_back({pixels(bounds), fill, stroke, static_cast<float>(radius * scale_), static_cast<float>(stroke_width * scale_), ChromePrimitiveKind::rectangle, replace});
+        result.primitives.push_back({pixels(bounds), fill, stroke, static_cast<float>(radius * scale_), static_cast<float>(stroke_width * scale_), ChromePrimitiveKind::rectangle, replace, z});
     };
     auto line = [&](double x1, double y1, double x2, double y2, Color color, double width = 1) {
-        result.primitives.push_back({pixels({x1,y1,x2-x1,y2-y1}), {}, color, 0, static_cast<float>(width * scale_), ChromePrimitiveKind::line});
+        result.primitives.push_back({pixels({x1,y1,x2-x1,y2-y1}), {}, color, 0, static_cast<float>(width * scale_), ChromePrimitiveKind::line, false, z});
     };
     auto label = [&](Rect bounds, std::string value, Color color, float size = 13, bool bold = false, ChromeTextAlignment alignment = ChromeTextAlignment::leading) {
-        result.texts.push_back({pixels(bounds), std::move(value), color, size, bold, "Segoe UI Variable Text", alignment});
+        result.texts.push_back({pixels(bounds), std::move(value), color, size, bold, "Segoe UI Variable Text", alignment, z});
     };
     const auto now=GetTickCount64();
     auto opacity=[](Color color,double amount) { color.a=static_cast<std::uint8_t>(std::clamp(std::lround(color.a*amount),0L,255L)); return color; };
@@ -1567,6 +1576,7 @@ WindowScene NativeWindow::scene() {
         }
         label({std::max(12.0,width_-count_width-12),navigation_.footer.y+3,std::min(count_width,std::max(0.0,width_-24)),20},summary,secondary,11,false,ChromeTextAlignment::trailing);
     }
+    z={ChromeLayer::transient};
     if (drop_preview_) {
         rectangle(*drop_preview_, {167,196,210,30}, 0, accent,2);
         const auto bounds=*drop_preview_; const auto tag_width=std::min(132.0,std::max(0.0,bounds.width-16));
@@ -1590,10 +1600,12 @@ WindowScene NativeWindow::scene() {
             }
         }
     }
+    z={ChromeLayer::toast};
     if (!notice_.empty()) {
         rectangle({12,std::max(44.0,height_-56),std::max(0.0,width_-24),44},raised,6);
         label({24,std::max(49.0,height_-51),std::max(0.0,width_-64),34},notice_,text,12);
     }
+    z={ChromeLayer::palette}; // Cached closing primitives/text retain this same surface.
     const auto palette_primitive_start=result.primitives.size(), palette_text_start=result.texts.size();
     if (palette_open_ || rename_open_) {
         const double w = std::min(560.0,std::max(0.0,width_-32)), x = (width_-w)/2, y=std::min(72.0,std::max(0.0,height_-80));
@@ -1632,14 +1644,7 @@ WindowScene NativeWindow::scene() {
     }
     if (modal_) {
         const auto box=modal_layout();
-        // Chrome labels paint in a separate final pass. Remove covered labels
-        // so a lower split header cannot overprint this application-owned alert.
-        const auto panel=pixels(box.panel);
-        std::erase_if(result.texts,[&](const auto& item) {
-            return item.rect.x<panel.x+panel.width && item.rect.x+item.rect.width>panel.x &&
-                item.rect.y<panel.y+panel.height && item.rect.y+item.rect.height>panel.y;
-        });
-        if (!high_contrast_) for (auto& item:result.texts) if (item.rect.y>=chrome_.band.height*scale_) item.color=opacity(item.color,.5);
+        z={ChromeLayer::modal};
         rectangle({0,chrome_.band.height,width_,std::max(0.0,height_-chrome_.band.height)},high_contrast_?Color{0,0,0,180}:Color{5,8,13,128});
         rectangle({box.panel.x+2,box.panel.y+5,box.panel.width,box.panel.height},{0,0,0,90},10);
         rectangle(box.panel,high_contrast_?background:Color{24,29,36,255},9,high_contrast_?accent:Color{67,78,99,255},1/scale_);
@@ -1658,16 +1663,14 @@ WindowScene NativeWindow::scene() {
     }
     if (settings_loading()) {
         const Rect panel{std::max(16.0,(width_-420)/2),std::max(16.0,(height_-112)/2),std::max(0.0,std::min(420.0,width_-32)),112};
-        const auto cover=pixels(panel);
-        std::erase_if(result.texts,[&](const auto& item) {return item.rect.x<cover.x+cover.width && item.rect.x+item.rect.width>cover.x && item.rect.y<cover.y+cover.height && item.rect.y+item.rect.height>cover.y;});
-        if (!high_contrast_) for (auto& item:result.texts) item.color=opacity(item.color,.4);
+        z={ChromeLayer::settings};
         rectangle({0,0,width_,height_},high_contrast_?background:Color{4,6,10,148});
         rectangle(panel,high_contrast_?background:Color{24,29,36,255},9,high_contrast_?accent:Color{67,78,99,255},1/scale_);
         label({panel.x+24,panel.y+20,panel.width-48,26},"Opening Settings",text,19,true);
         label({panel.x+24,panel.y+58,panel.width-48,32},"Reading local settings and installed shells. Escape cancels.",secondary,12);
     }
-    context_menu_.append_scene(result,static_cast<float>(scale_));
-    settings_panel_.append_scene(result,static_cast<float>(scale_)); // Final overlay; terminal text never leaks over settings.
+    settings_panel_.append_scene(result,static_cast<float>(scale_));
+    context_menu_.append_scene(result,static_cast<float>(scale_)); // Menu depth determines stacking, not call order.
     return result;
 }
 void NativeWindow::render() {
@@ -2240,8 +2243,17 @@ void NativeWindow::smoke_progress(bool presented) {
         smoke_chrome_verified_=true;
         std::fprintf(stderr,"Native hierarchy smoke: caption/tab/footer routing verified; synthetic hit tests are not desktop Snap visual verification.\n");
     }
-    if (options_.smoke_settings && smoke_settings_stage_<6) {
+    if (options_.smoke_settings && smoke_settings_stage_<8) {
         auto* active=active_session(); const auto info=active?active->info():SessionInfo{};
+        const auto activate_setting=[&](std::string_view control) {
+            for (unsigned i=0;i<256 && settings_panel_.focused_control()!=control;++i) settings_panel_.key({{"TAB"}});
+            if (settings_panel_.focused_control()!=control) return false;
+            settings_panel_.key({{"ENTER"}}); settings_input_changed(); return true;
+        };
+        const auto actor_has_theme=[&](const Theme& theme) {
+            const auto frame=smoke_settings_actor_?smoke_settings_actor_->frame():FramePtr{};
+            return frame && frame->foreground==color_hex(theme.foreground,{}) && frame->background==color_hex(theme.background,{});
+        };
         if (smoke_settings_stage_==0) {
             if (info.state!=SessionState::running || !info.bytes_received) return;
             smoke_settings_original_=config_; smoke_settings_actor_=sessions_.at(workspace().pane(workspace().active_pane())->session);
@@ -2259,10 +2271,13 @@ void NativeWindow::smoke_progress(bool presented) {
             const Point point{found->bounds.x+found->bounds.width/2,found->bounds.y+found->bounds.height/2};
             pointer_down(point,false); pointer_up(point);
             if (config_.font.size_dip!=smoke_settings_original_.font.size_dip+1 || config_.default_profile!=smoke_settings_original_.default_profile) { smoke_finish("Settings preview did not apply only reversible presentation."); return; }
+            if (!activate_setting("appearance.theme.daylight") || config_.theme!=*find_builtin_theme("daylight")) {
+                smoke_finish("Named theme preview did not update the live host palette."); return;
+            }
             smoke_settings_stage(2); return;
         }
         if (smoke_settings_stage_==2) {
-            if (!presented) return;
+            if (!presented || !actor_has_theme(*find_builtin_theme("daylight"))) return;
             try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
             MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam=VK_ESCAPE; key_message(key);
             if (settings_panel_.is_open() || config_!=smoke_settings_original_ || !focused_session_) { smoke_finish("Settings Escape did not roll back preview and restore terminal focus."); return; }
@@ -2278,20 +2293,27 @@ void NativeWindow::smoke_progress(bool presented) {
         if (smoke_settings_stage_==3) {
             if (settings_job_) return;
             if (!settings_panel_.is_open() || !settings_panel_.capturing_shortcut()) { smoke_finish("Shortcut editor did not capture its selected palette action."); return; }
-            settings_panel_.key({{"F8",CommandModifier::control|CommandModifier::shift},false,false,true}); settings_input_changed();
+            if (!actor_has_theme(smoke_settings_original_.theme)) return; // Cancel has reached the same actor.
+            settings_panel_.key({{"]",CommandModifier::alt}}); settings_input_changed();
+            if (!settings_panel_.capturing_shortcut() || settings_panel_.draft().allow_terminal_shortcut_override) {
+                smoke_finish("Terminal shortcut bypassed explicit confirmation."); return;
+            }
+            settings_panel_.key({{"TAB"}}); settings_panel_.key({{"ENTER"}}); settings_input_changed();
             if (settings_panel_.capturing_shortcut() || config_.bindings!=smoke_settings_original_.bindings || sessions_.size()!=1) { smoke_finish("Shortcut capture executed an action or applied before Save."); return; }
             if (managed_shell_profile_ && !options_.shell_runtime_override) {
-                const auto activate=[&](std::string_view control) {
-                    for (unsigned i=0;i<256 && settings_panel_.focused_control()!=control;++i)
-                        settings_panel_.key({{"TAB",CommandModifier::none}});
-                    if (settings_panel_.focused_control()!=control) return false;
-                    settings_panel_.key({{"ENTER",CommandModifier::none}}); settings_input_changed(); return true;
-                };
-                if (using_managed_shell() || !activate("nav.shell") || !activate("shell:stormtty-managed-zsh") ||
+                if (using_managed_shell() || !activate_setting("nav.shell") || !activate_setting("shell:stormtty-managed-zsh") ||
                     !has_managed_zsh_selection(settings_panel_.draft()) || using_managed_shell()) {
                     smoke_finish("Configured Settings did not offer managed Zsh while preserving the old shell before Save."); return;
                 }
             }
+            if (!activate_setting("nav.appearance") || !activate_setting("appearance.theme.instrument")) {
+                smoke_finish("Named theme could not be selected before Save."); return;
+            }
+            for (unsigned i=0;i<256 && settings_panel_.focused_control()!="appearance.opacity";++i) settings_panel_.key({{"TAB"}});
+            settings_panel_.key({{"HOME"}});
+            for (unsigned i=0;i<25;++i) settings_panel_.key({{"RIGHT"}});
+            settings_input_changed();
+            if (settings_panel_.draft().appearance.background_opacity!=.25) {smoke_finish("Full-range opacity did not accept 25%.");return;}
             settings_panel_.key({{"ENTER",CommandModifier::control},false,false,true}); settings_input_changed();
             if (!settings_panel_.saving() || !settings_job_) { smoke_finish("Settings Save did not enter nonblocking pending state."); return; }
             message(WM_CLOSE,0,0);
@@ -2301,10 +2323,14 @@ void NativeWindow::smoke_progress(bool presented) {
         if (smoke_settings_stage_==4) {
             if (settings_job_) return;
             if (settings_panel_.is_open() || !settings_snapshot_ || !settings_snapshot_->existed || !smoke_settings_file_owned_) { smoke_finish("Isolated Settings Save did not commit successfully."); return; }
-            const KeyChord expected{"F8",CommandModifier::control|CommandModifier::shift};
+            const KeyChord expected{"]",CommandModifier::alt};
             if (std::none_of(config_.bindings.begin(),config_.bindings.end(),[&](const auto& b){return b.command=="pane.split_right" && b.chord==expected;}) ||
                 sessions_.size()!=1 || sessions_.begin()->second!=smoke_settings_actor_ || workspace().state().panes.size()!=1) {
                 smoke_finish("Saved shortcut or original actor identity was not retained."); return;
+            }
+            if (!actor_has_theme(*find_builtin_theme("instrument"))) return;
+            if (config_.theme!=*find_builtin_theme("instrument") || config_.appearance.background_opacity!=.25) {
+                smoke_finish("Saved theme or opacity did not remain applied."); return;
             }
             if (managed_shell_profile_ && !options_.shell_runtime_override) {
                 const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
@@ -2327,9 +2353,24 @@ void NativeWindow::smoke_progress(bool presented) {
             if (!settings_panel_.is_open() || !settings_baseline_matches(settings_panel_.draft(),config_,Platform::windows)) {
                 smoke_finish("Settings Save-to-reopen falsely rejected its canonical saved baseline."); return;
             }
+            if (!activate_setting("font.increase")) {smoke_finish("Reopened Settings could not edit font size.");return;}
+            settings_panel_.key({{"ENTER",CommandModifier::control}});settings_input_changed();
+            if (!settings_panel_.saving() || !settings_job_) {smoke_finish("Second Save did not start.");return;}
+            smoke_settings_stage(6);return;
+        }
+        if (smoke_settings_stage_==6) {
+            if (settings_job_) return;
+            if (settings_panel_.is_open()) {smoke_finish("Second Save failed.");return;}
+            open_settings();smoke_settings_stage(7);return;
+        }
+        if (smoke_settings_stage_==7) {
+            if (settings_job_) return;
+            if (!settings_panel_.is_open() || !settings_baseline_matches(settings_panel_.draft(),config_,Platform::windows)) {
+                smoke_finish("Second Save-to-reopen rejected its saved baseline.");return;
+            }
             settings_panel_.cancel(); settings_input_changed();
             if (settings_panel_.is_open() || !focused_session_) { smoke_finish("Reopened Settings did not restore terminal focus on Cancel."); return; }
-            smoke_settings_stage(6);
+            smoke_settings_stage(8);
         }
     }
     if (options_.smoke_modal && smoke_modal_stage_<2) {
@@ -2487,7 +2528,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
         if (using_managed_shell()) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
-        if (options_.smoke_settings) std::fprintf(stderr,"Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, preview rollback, custom system menu/outside-click routing, explicit atomic shortcut Save, original live actor retained. Not physical UI/accessibility QA.\n");
+        if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, theme/font preview rollback, custom system menu/outside-click routing, confirmed Alt+], 25% opacity, two atomic Save/reopen cycles, original live actor retained. Not physical UI/accessibility QA.\n",stderr);
         if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts, original live actor identity across activation/retirement, hidden real output, scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
         if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());

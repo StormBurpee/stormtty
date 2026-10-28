@@ -161,6 +161,53 @@ void theme_overrides_reset_and_validation() {
     rejected = false; try { TerminalCore invalid(options); } catch (const std::invalid_argument&) { rejected = true; }
     CHECK(rejected);
 }
+void live_theme_defaults() {
+    auto options = small();
+    const Color original_fg{18,52,86,255}, original_bg{42,69,107,255};
+    const Color preview_fg{224,225,226,255}, preview_bg{16,17,18,255};
+    options.default_foreground = original_fg; options.default_background = original_bg;
+    TerminalCore t(options);
+    // M deliberately has explicit RGB values identical to the OLD defaults.
+    // Origin, not RGB equality, determines whether an existing cell changes.
+    t.feed("D\x1b[38;2;18;52;86;48;2;42;69;107mM\x1b[31;44mP\x1b[0mR");
+    const auto before = t.snapshot(); const auto revision = t.revision();
+    t.set_default_colors(preview_fg, preview_bg);
+    CHECK(replies(t).empty()); CHECK(t.revision() == revision);
+    const auto preview = t.snapshot();
+    CHECK(preview->foreground == preview_fg && preview->background == preview_bg);
+    for (const auto index : {0u,3u}) {
+        CHECK(preview->lines[0]->cells[index].foreground == preview_fg);
+        CHECK(preview->lines[0]->cells[index].background == preview_bg);
+    }
+    for (const auto index : {1u,2u}) CHECK(preview->lines[0]->cells[index] == before->lines[0]->cells[index]);
+    CHECK(before->foreground == original_fg && before->background == original_bg);
+    CHECK(before->lines[0]->cells[0].foreground == original_fg);
+    t.set_default_colors(original_fg, original_bg); // Cancel after preview.
+    const auto cancelled = t.snapshot();
+    CHECK(cancelled->foreground == original_fg && cancelled->background == original_bg);
+    CHECK(cancelled->lines[0]->cells == before->lines[0]->cells);
+    CHECK(preview->foreground == preview_fg && preview->lines[0]->cells[0].foreground == preview_fg);
+    t.feed("\x1b]10;rgb:aa/bb/cc\x1b\\\x1b]11;rgb:dd/ee/ff\x1b\\");
+    const auto override = t.snapshot();
+    t.set_default_colors(preview_fg, preview_bg);
+    CHECK(t.snapshot()->foreground == override->foreground && t.snapshot()->background == override->background);
+    CHECK(replies(t).empty());
+    t.feed("\x1b]110\x1b\\\x1b]111\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
+    CHECK(replies(t) == "\x1b]10;rgb:e0e0/e1e1/e2e2\x1b\\\x1b]11;rgb:1010/1111/1212\x1b\\");
+    CHECK(t.snapshot()->foreground == preview_fg && t.snapshot()->background == preview_bg);
+    CHECK(t.snapshot()->lines[0]->cells[1] == before->lines[0]->cells[1]);
+    const auto stable = t.snapshot();
+    t.set_default_colors(preview_fg, preview_bg);CHECK(t.snapshot() == stable);
+    bool rejected{};
+    try { t.set_default_colors({1,2,3,128}, original_bg); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected && t.snapshot() == stable);
+    rejected = false;
+    try { t.set_default_colors(original_fg, {1,2,3,0}); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected && t.snapshot() == stable);
+    std::atomic<bool> foreign_rejected{};
+    std::thread foreign([&] { try { t.set_default_colors(original_fg, original_bg); } catch (const std::logic_error&) { foreign_rejected = true; } });
+    foreign.join(); CHECK(foreign_rejected && t.snapshot() == stable);
+}
 void alternate_buffer() {
     TerminalCore t(small()); t.feed("primary"); auto primary = t.snapshot();
     t.feed("\x1b[?1049h\x1b[Halternate"); auto alternate = t.snapshot();
@@ -393,6 +440,7 @@ int main() {
         {"split UTF-8/ANSI feeds", split_feeds}, {"fragmented stream equivalence", fragmented_stream_equivalence}, {"ANSI styles and default backgrounds", ansi_styles},
         {"configured theme defaults/query replies", configured_theme_defaults_and_queries},
         {"theme OSC/reset/alpha validation", theme_overrides_reset_and_validation},
+        {"live theme defaults/cancel/explicit colors", live_theme_defaults},
         {"alternate buffer", alternate_buffer}, {"immutable row sharing", immutable_sharing},
         {"resize and reflow", resize_and_wrap}, {"ConPTY/POSIX resize policy", backend_resize_policy}, {"DEC2026 exact pre-hold capture", hold_captures_exact_boundary},
         {"DEC2026 timeout and resize release", hold_timeout_and_resize}, {"back-to-back render holds", back_to_back_holds},

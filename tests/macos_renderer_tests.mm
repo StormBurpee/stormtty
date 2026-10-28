@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #include "stormtty/renderer.hpp"
+#include "chrome_layer_raster.hpp"
 #include <cmath>
 #include <array>
 #include <algorithm>
@@ -75,5 +76,5 @@ void test(){
     require(renderer.stats().image_cache_bytes<=options.image_cache_bytes,"Image cache exceeded budget");
 }
 }
-int main(){@autoreleasepool{try{test();chrome_alignment_test();std::cout<<"PASS native macOS CoreText/Metal offscreen raster/composition/readback\n";return 0;}
+int main(){@autoreleasepool{try{RendererOptions layer_options;layer_options.font.family="Menlo";stormtty::test::chrome_layer_raster_tests(layer_options);test();chrome_alignment_test();std::cout<<"PASS native macOS CoreText/Metal offscreen raster/composition/readback\n";return 0;}
 catch(const std::exception& e){std::cerr<<"FAIL macOS renderer: "<<e.what()<<'\n';return 1;}}}

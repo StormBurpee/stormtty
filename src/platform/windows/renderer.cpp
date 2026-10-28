@@ -1009,57 +1009,60 @@ struct Renderer::Impl {
         draw_images(pane,ImageLayer::above_text,cw,ch,damage);
         draw_cursor(pane,cw,ch);
     }
-    void draw_chrome(const WindowScene& scene, PixelRect damage) {
-        for (const auto& primitive : scene.primitives) {
-            if(!overlaps(chrome_bounds(primitive),damage))continue;
-            if (primitive.kind == ChromePrimitiveKind::line) {
-                brush->SetColor(color(primitive.stroke_width>0?primitive.stroke:primitive.fill));
-                dc->DrawLine({primitive.rect.x,primitive.rect.y},{primitive.rect.x+primitive.rect.width,primitive.rect.y+primitive.rect.height},
-                             brush.get(),std::max(1.0f,primitive.stroke_width));
+    void draw_chrome(const WindowScene& scene, PixelRect damage, std::span<const ChromeDrawItem> order) {
+        for (const auto& item : order) {
+            if (item.kind==ChromeDrawKind::primitive) {
+                const auto& primitive=scene.primitives[item.index];
+                if(!overlaps(chrome_bounds(primitive),damage))continue;
+                if (primitive.kind == ChromePrimitiveKind::line) {
+                    brush->SetColor(color(primitive.stroke_width>0?primitive.stroke:primitive.fill));
+                    dc->DrawLine({primitive.rect.x,primitive.rect.y},{primitive.rect.x+primitive.rect.width,primitive.rect.y+primitive.rect.height},
+                                 brush.get(),std::max(1.0f,primitive.stroke_width));
+                } else {
+                    const auto radius=std::clamp(primitive.radius,0.0f,std::min(primitive.rect.width,primitive.rect.height)*.5f);
+                    const D2D1_ROUNDED_RECT rounded{rect(primitive.rect),radius,radius};
+                    if (primitive.fill.a || primitive.background_replace) {
+                        auto fill_color=primitive.fill;
+                        if(primitive.background_replace && !material_enabled())fill_color.a=255;
+                        brush->SetColor(color(fill_color));
+                        if(primitive.background_replace)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+                        dc->FillRoundedRectangle(rounded,brush.get());
+                        if(primitive.background_replace)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+                    }
+                    if (primitive.stroke_width>0 && primitive.stroke.a) {
+                        brush->SetColor(color(primitive.stroke)); dc->DrawRoundedRectangle(rounded,brush.get(),primitive.stroke_width);
+                    }
+                }
             } else {
-                const auto radius=std::clamp(primitive.radius,0.0f,std::min(primitive.rect.width,primitive.rect.height)*.5f);
-                const D2D1_ROUNDED_RECT rounded{rect(primitive.rect),radius,radius};
-                if (primitive.fill.a || primitive.background_replace) {
-                    auto fill_color=primitive.fill;
-                    if(primitive.background_replace && !material_enabled())fill_color.a=255;
-                    brush->SetColor(color(fill_color));
-                    if(primitive.background_replace)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
-                    dc->FillRoundedRectangle(rounded,brush.get());
-                    if(primitive.background_replace)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
-                }
-                if (primitive.stroke_width>0 && primitive.stroke.a) {
-                    brush->SetColor(color(primitive.stroke)); dc->DrawRoundedRectangle(rounded,brush.get(),primitive.stroke_width);
-                }
+                const auto& label=scene.texts[item.index];
+                if (!nonempty(label.rect) || !overlaps(label.rect,damage) || label.text.empty() || !label.color.a) continue;
+                if (label.text.size()>32768 || label.family.empty() || label.family.size()>256 ||
+                    !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256) continue;
+                const auto text = utf16(label.text), family = utf16(label.family);
+                Com<IDWriteTextFormat> format;
+                check(write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*dpi/96,L"en-US",format.put()),"Create chrome font");
+                check(format->SetTextAlignment(label.alignment==ChromeTextAlignment::center?DWRITE_TEXT_ALIGNMENT_CENTER:
+                    label.alignment==ChromeTextAlignment::trailing?DWRITE_TEXT_ALIGNMENT_TRAILING:DWRITE_TEXT_ALIGNMENT_LEADING),"Set chrome alignment");
+                check(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP),"Set chrome no-wrap");
+                check(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER),"Center chrome baseline");
+                // DirectWrite owns grapheme/cluster-safe end truncation and the real
+                // omission glyph; never shorten UTF-8 strings or clip a partial glyph.
+                Com<IDWriteInlineObject> ellipsis;
+                check(write_factory->CreateEllipsisTrimmingSign(format.get(),ellipsis.put()),"Create chrome ellipsis");
+                const DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER,0,0};
+                check(format->SetTrimming(&trimming,ellipsis.get()),"Set chrome end ellipsis");
+                Com<IDWriteTextLayout> layout;
+                check(write_factory->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format.get(),
+                                                      label.rect.width,label.rect.height,layout.put()),"Create chrome layout");
+                auto foreground=label.color;foreground.a=255;
+                brush->SetColor(color(foreground));
+                Clip clip(dc.get(),label.rect);
+                // Layer opacity applies equally to monochrome and color-font layers.
+                // Only deliberate ChromeText alpha is faded; terminal rows never are.
+                OpacityLayer opacity(dc.get(),intersect(label.rect,{0,0,float(width),float(height)}),float(label.color.a)/255);
+                dc->DrawTextLayout({label.rect.x,label.rect.y},layout.get(),brush.get(),D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
             }
-        }
-        for (const auto& label : scene.texts) {
-            if (!nonempty(label.rect) || !overlaps(label.rect,damage) || label.text.empty() || !label.color.a) continue;
-            if (label.text.size()>32768 || label.family.empty() || label.family.size()>256 ||
-                !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256) continue;
-            const auto text = utf16(label.text), family = utf16(label.family);
-            Com<IDWriteTextFormat> format;
-            check(write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*dpi/96,L"en-US",format.put()),"Create chrome font");
-            check(format->SetTextAlignment(label.alignment==ChromeTextAlignment::center?DWRITE_TEXT_ALIGNMENT_CENTER:
-                label.alignment==ChromeTextAlignment::trailing?DWRITE_TEXT_ALIGNMENT_TRAILING:DWRITE_TEXT_ALIGNMENT_LEADING),"Set chrome alignment");
-            check(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP),"Set chrome no-wrap");
-            check(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER),"Center chrome baseline");
-            // DirectWrite owns grapheme/cluster-safe end truncation and the real
-            // omission glyph; never shorten UTF-8 strings or clip a partial glyph.
-            Com<IDWriteInlineObject> ellipsis;
-            check(write_factory->CreateEllipsisTrimmingSign(format.get(),ellipsis.put()),"Create chrome ellipsis");
-            const DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER,0,0};
-            check(format->SetTrimming(&trimming,ellipsis.get()),"Set chrome end ellipsis");
-            Com<IDWriteTextLayout> layout;
-            check(write_factory->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format.get(),
-                                                  label.rect.width,label.rect.height,layout.put()),"Create chrome layout");
-            auto foreground=label.color;foreground.a=255;
-            brush->SetColor(color(foreground));
-            Clip clip(dc.get(),label.rect);
-            // Layer opacity applies equally to monochrome and color-font layers.
-            // Only deliberate ChromeText alpha is faded; terminal rows never are.
-            OpacityLayer opacity(dc.get(),intersect(label.rect,{0,0,float(width),float(height)}),float(label.color.a)/255);
-            dc->DrawTextLayout({label.rect.x,label.rect.y},layout.get(),brush.get(),D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
         }
     }
     bool same_images(const RenderFrame& a, const RenderFrame& b) const noexcept {
@@ -1143,6 +1146,7 @@ struct Renderer::Impl {
         const auto dirty=damage(scene);
         if(dirty.empty() && !pending_present) {previous=scene;previous.force_redraw=false;return RenderResult::unchanged;}
         if(!dirty.empty()) {
+            const auto chrome_order=chrome_paint_order(scene);
             dc->SetTarget(canvas.get());
             dc->BeginDraw();
             try {
@@ -1155,7 +1159,7 @@ struct Renderer::Impl {
                     dc->Clear(D2D1_COLOR_F{0,0,0,0});
                     fill({0,0,float(width),float(height)},scene.background,backdrop_opacity(),true);
                     for(const auto& pane:scene.panes) draw_pane(pane,r);
-                    draw_chrome(scene,r);
+                    draw_chrome(scene,r,chrome_order);
                 }
             } catch (...) { dc->EndDraw(); invalid=true; throw; }
             check(dc->EndDraw(),"Render canvas");

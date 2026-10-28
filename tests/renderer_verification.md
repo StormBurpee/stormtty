@@ -273,3 +273,28 @@ API basis: [DComp target layering and one-target-per-layer lifetime](https://lea
 [HWND swapchain target](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgifactory2-createswapchainforhwnd),
 [child window/input behavior](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features),
 and [composition rather than redirection-surface presentation](https://learn.microsoft.com/en-us/archive/msdn-magazine/2014/june/windows-with-c-high-performance-window-layering-using-the-windows-composition-engine).
+
+## Chrome surface stacking
+
+`ChromePrimitive` and `ChromeText` share a `ChromeZOrder`: a named surface layer
+and a nested depth. Both native backends consume `chrome_paint_order()`, painting
+all shapes and then labels **within one surface**, before advancing to the next.
+The stack is base chrome, transient adornments/IME, toast, palette/rename,
+Settings, modal alert, context menu. Submenus increment depth. Callers must bump
+`chrome_generation` for z-only changes, just as for other chrome changes.
+Terminal panes retain their existing cell/image/cursor composition below chrome.
+
+Covered labels are not deleted, clipped as whole objects, or specially faded.
+Opaque higher surfaces cover their pixels; translucent scrims dim the already
+composed lower surface. A partially covered label therefore remains visible
+outside the overlay. Cached closing-palette shapes and labels preserve their
+surface key and deliberate animation alpha on both backends.
+
+`tests/chrome_layer_raster.hpp` runs from `renderer_smoke` and
+`macos_renderer_tests`, using each native backend's offscreen readback. It checks
+opaque overlays over red terminal/base-label ink at 100/150/200% DPI, readable
+overlay labels, partially covered labels, z-only invalidation, removal/restoration,
+real overlapping context-menu panels and submenu dismissal, and settled/fading
+palette-label alpha. Core `context_menu_tests` separately validates stable layer
+ordering and retention of underlying labels. Compiling these native fixtures on
+Linux is compile coverage only, never native runtime or desktop visual proof.

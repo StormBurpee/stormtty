@@ -49,6 +49,31 @@ void check_layout(const ContextMenu& menu,Size viewport) {
 }
 }
 int main() {return run_core_tests("context menu",[] {
+    // Independent components can append in any order. Complete surfaces sort
+    // first by layer/depth, then by shape/text, stably within either array.
+    WindowScene stack;
+    for (const auto layer:{ChromeLayer::context_menu,ChromeLayer::modal,ChromeLayer::settings,
+                          ChromeLayer::palette,ChromeLayer::toast,ChromeLayer::transient,ChromeLayer::base}) {
+        for (const std::uint16_t depth:{2,1,0}) {
+            for (unsigned item=0;item<2;++item) {
+                ChromePrimitive shape;shape.z={layer,depth};stack.primitives.push_back(shape);
+                ChromeText label;label.z={layer,depth};stack.texts.push_back(label);
+            }
+        }
+    }
+    const auto stack_order=chrome_paint_order(stack);
+    CHECK(stack_order.size()==stack.primitives.size()+stack.texts.size());
+    for (std::size_t i=1;i<stack_order.size();++i) {
+        const auto& before=stack_order[i-1];const auto& after=stack_order[i];
+        CHECK(before.z<=after.z);
+        if (before.z==after.z) {
+            CHECK(before.kind<=after.kind);
+            if (before.kind==after.kind) CHECK(before.index<after.index);
+        }
+    }
+    CHECK(stack_order.front().z.layer==ChromeLayer::base && stack_order.front().z.depth==0);
+    CHECK(stack_order.back().z.layer==ChromeLayer::context_menu && stack_order.back().z.depth==2);
+
     ContextMenu menu;auto items=model();
     CHECK(!menu.is_open());CHECK(!menu.key({{"DOWN"}}));CHECK(!menu.pointer_down({0,0}));CHECK(!menu.text("c",0));CHECK(!menu.wheel({0,0},1));
     CHECK(menu.open(items,{100,80}));CHECK(menu.is_open());CHECK(menu.focused_id().empty());CHECK(!menu.take_action());
@@ -129,8 +154,14 @@ int main() {return run_core_tests("context menu",[] {
     WindowScene covered;const auto bounds=menu.layout().panels.front().bounds;
     covered.texts.push_back({{float(bounds.x+20),float(bounds.y+10),80,20},"must not leak"});
     covered.texts.push_back({{900,700,100,20},"outside"});menu.append_scene(covered);
-    CHECK(std::none_of(covered.texts.begin(),covered.texts.end(),[](const auto& t){return t.text=="must not leak";}));
-    CHECK(covered.texts.front().text=="outside" && covered.texts.front().color.a==255);
+    CHECK(covered.texts[0].text=="must not leak" && covered.texts[0].z.layer==ChromeLayer::base);
+    CHECK(covered.texts[1].text=="outside" && covered.texts[1].color.a==255);
+    CHECK(std::all_of(covered.primitives.begin(),covered.primitives.end(),[](const auto& p){return p.z.layer==ChromeLayer::context_menu && p.z.depth==0;}));
+    const auto paint_order=chrome_paint_order(covered);
+    CHECK(paint_order[0].kind==ChromeDrawKind::text && paint_order[0].index==0);
+    CHECK(paint_order[1].kind==ChromeDrawKind::text && paint_order[1].index==1);
+    CHECK(paint_order[2].kind==ChromeDrawKind::primitive);
+    CHECK(paint_order.back().kind==ChromeDrawKind::text && paint_order.back().z.layer==ChromeLayer::context_menu);
     CHECK(std::any_of(covered.primitives.begin(),covered.primitives.end(),[](const auto& p){return p.background_replace && p.fill==Color{24,29,36,255};}));
     menu.set_high_contrast(true,{250,249,248,0},{12,13,14,1},{1,2,3,4},{4,5,6,7},{90,91,92,8});
     const auto contrast_generation=menu.generation();
@@ -142,6 +173,17 @@ int main() {return run_core_tests("context menu",[] {
     CHECK(std::any_of(contrast.texts.begin(),contrast.texts.end(),[](const auto& t){return t.text=="Close pane" && t.color==Color{12,13,14,255};}));
     CHECK(std::any_of(contrast.texts.begin(),contrast.texts.end(),[](const auto& t){return t.text=="Create another tab first" && t.color==Color{90,91,92,255};}));
     menu.set_high_contrast(false);CHECK(menu.generation()>contrast_generation);
+    menu.resize({320,260});CHECK(menu.open(items,{30,30},true));
+    key(menu,"END");key(menu,"UP");key(menu,"RIGHT");CHECK(menu.layout().panels.size()==2);
+    WindowScene nested_scene;menu.append_scene(nested_scene);
+    CHECK(std::any_of(nested_scene.texts.begin(),nested_scene.texts.end(),[](const auto& t){return t.text=="Split right" && t.z==ChromeZOrder{ChromeLayer::context_menu,0};}));
+    CHECK(std::any_of(nested_scene.texts.begin(),nested_scene.texts.end(),[](const auto& t){return t.z==ChromeZOrder{ChromeLayer::context_menu,1};}));
+    const auto nested_order=chrome_paint_order(nested_scene);
+    for (std::size_t i=1;i<nested_order.size();++i) {
+        CHECK(nested_order[i-1].z<=nested_order[i].z);
+        if (nested_order[i-1].z==nested_order[i].z) CHECK(nested_order[i-1].kind<=nested_order[i].kind);
+    }
+
 
     // Defensive bounds: empty/separator-only, duplicate/oversized IDs, huge
     // trees and excessive depth must not degrade into executable leaf items.

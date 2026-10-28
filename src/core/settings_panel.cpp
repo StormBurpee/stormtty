@@ -9,16 +9,22 @@
 
 namespace stormtty {
 namespace {
-constexpr Color panel_color{24,29,36,255}, nav_color{20,24,31,255};
-constexpr Color canvas{17,21,27,255}, border{46,54,68,255}, ink{238,237,236,255};
-constexpr Color muted{158,170,193,255}, subdued{114,127,149,255};
-constexpr Color accent{140,158,255,255}, selection{40,49,74,255}, green{160,226,181,255};
+Color theme_color(std::string_view value) {
+    const auto digit=[](char c)->unsigned {return c>='0' && c<='9'?c-'0':c>='a' && c<='f'?c-'a'+10:c>='A' && c<='F'?c-'A'+10:0;};
+    if (value.size()!=7 || value.front()!='#') return {0,0,0,255};
+    return {static_cast<std::uint8_t>(digit(value[1])*16+digit(value[2])),static_cast<std::uint8_t>(digit(value[3])*16+digit(value[4])),static_cast<std::uint8_t>(digit(value[5])*16+digit(value[6])),255};
+}
+Color blend(Color a,Color b,double amount) {
+    const auto channel=[&](int x,int y){return static_cast<std::uint8_t>(std::lround(x+(y-x)*amount));};
+    return {channel(a.r,b.r),channel(a.g,b.g),channel(a.b,b.b),255};
+}
+bool has_custom_theme(const Config& config) {
+    const auto* named=find_builtin_theme(config.theme.name);
+    return !named || *named!=config.theme;
+}
+std::string theme_title(std::string name) {if (!name.empty() && name[0]>='a' && name[0]<='z') name[0]=static_cast<char>(name[0]-'a'+'A');return name;}
 constexpr Color transparent{0,0,0,0};
 bool finite(Point p) { return std::isfinite(p.x) && std::isfinite(p.y); }
-bool intersects(Rect a, Rect b) {
-    return a.width>0 && a.height>0 && b.width>0 && b.height>0 &&
-        a.x<b.x+b.width && a.x+a.width>b.x && a.y<b.y+b.height && a.y+a.height>b.y;
-}
 bool contains(Rect outer, Rect inner) {
     return inner.width>0 && inner.height>0 && inner.x>=outer.x-0.01 && inner.y>=outer.y-0.01 &&
         inner.x+inner.width<=outer.x+outer.width+0.01 && inner.y+inner.height<=outer.y+outer.height+0.01;
@@ -133,11 +139,16 @@ void SettingsPanel::rebuild_layout() {
     }
     layout_.content={content_x,content_y,content_w,std::max(0.0,layout_.footer.y-content_y-16)};
     document_height_=section_==SettingsSection::appearance?448.0:
-        section_==SettingsSection::shell?92.0+profiles_.size()*72.0:72.0+command_registry().size()*60.0;
+        section_==SettingsSection::shell?profiles_.size()*72.0:72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
     const double top=content_y-scroll_, right=content_x+content_w;
     if (section_==SettingsSection::appearance) {
-        layout_.preview={content_x,top,content_w,78};
+        layout_.preview={content_x,top+40,content_w,38};
+        const auto count=builtin_themes().size()+(has_custom_theme(original_)?1:0);
+        const double theme_width=std::max(0.0,(content_w-(count-1)*6)/count);
+        std::size_t theme_index=0;
+        for (const auto& theme:builtin_themes()) add("appearance.theme."+theme.name,{content_x+theme_index++*(theme_width+6),top,theme_width,30},true);
+        if (has_custom_theme(original_)) add("appearance.theme.custom",{content_x+theme_index*(theme_width+6),top,theme_width,30},true);
         const double cw=std::min(content_w*0.49,230.0);
         add("font.family",{right-cw,top+94,cw,34},true);
         add("font.decrease",{right-118,top+150,32,32},true,draft_.font.size_dip>6);
@@ -151,9 +162,8 @@ void SettingsPanel::rebuild_layout() {
         }
         add("appearance.motion",{right-cw,top+406,cw,34},true);
     } else if (section_==SettingsSection::shell) {
-        layout_.preview={content_x,top,content_w,72};
         for (std::size_t i=0;i<profiles_.size();++i)
-            add("shell:"+profiles_[i].id,{content_x,top+88+i*72,content_w,62},true);
+            add("shell:"+profiles_[i].id,{content_x,top+i*72,content_w,62},true);
     } else {
         layout_.preview={content_x,top,content_w,54};
         std::size_t i=0;
@@ -200,7 +210,11 @@ void SettingsPanel::activate(std::string_view id,int direction) {
         capture_command_=std::string(id.substr(8)); terminal_override_.reset(); error_.clear(); ++generation_; return;
     }
     const auto before=draft_;
-    if (id=="font.family") {
+    if (id.starts_with("appearance.theme.")) {
+        const auto name=id.substr(std::string_view("appearance.theme.").size());
+        if (name=="custom" && has_custom_theme(original_)) draft_.theme=original_.theme;
+        else if (const auto* theme=find_builtin_theme(name)) draft_.theme=*theme;
+    } else if (id=="font.family") {
         const auto found=std::find(families_.begin(),families_.end(),draft_.font.family);
         const auto index=found==families_.end()?0:static_cast<int>(found-families_.begin());
         const auto count=static_cast<int>(families_.size());
@@ -309,6 +323,13 @@ bool SettingsPanel::key(const KeyEvent& event) {
                 const auto id=entries[static_cast<std::size_t>((index+direction+count)%count)];
                 focus_control(id);if (prefix=="shell:") activate(id);
             }
+        } else if (focus_.starts_with("appearance.theme.")) {
+            std::vector<std::string> ids;
+            for (const auto& item:layout_.controls) if (item.id.starts_with("appearance.theme.")) ids.push_back(item.id);
+            const auto current=std::find(ids.begin(),ids.end(),focus_);
+            const auto index=static_cast<int>(current-ids.begin()),count=static_cast<int>(ids.size());
+            const auto id=ids[static_cast<std::size_t>((index+direction+count)%count)];
+            focus_control(id);activate(id);
         } else if (focus_.starts_with("appearance.backdrop.")) {
             constexpr std::array ids{"appearance.backdrop.auto","appearance.backdrop.none","appearance.backdrop.mica","appearance.backdrop.acrylic"};
             const auto current=std::find(ids.begin(),ids.end(),focus_);
@@ -393,15 +414,22 @@ void SettingsPanel::persistence_result(bool success,std::string error) {
 
 void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
     if (!open_ || !std::isfinite(scale) || scale<=0 || scale>8 || layout_.panel.width<=0 || layout_.panel.height<=0) return;
+    // Contrast mode uses stable semantic paint tokens before mapping to the OS
+    // palette; arbitrary custom theme colors cannot alias those token roles.
+    const auto palette=high_contrast_?Theme{}:draft_.theme;
+    const Color canvas=theme_color(palette.background),ink=theme_color(palette.foreground);
+    const Color panel_color=theme_color(palette.chrome),accent=theme_color(palette.accent);
+    const Color nav_color=blend(panel_color,canvas,.55),border=blend(panel_color,ink,.18);
+    const Color muted=blend(ink,panel_color,.26),subdued=blend(ink,panel_color,.42),selection=blend(panel_color,accent,.22);
+    const Color control=blend(panel_color,ink,.035),control_hover=blend(panel_color,ink,.075),control_pressed=blend(panel_color,ink,.12);
+    const Color selected_hover=blend(panel_color,accent,.30),selected_border=blend(panel_color,accent,.55);
+    const Color primary_ink=(accent.r*299+accent.g*587+accent.b*114)>140000?Color{17,21,32,255}:Color{255,255,255,255};
+    const Color green=blend(accent,ink,.25);
     const auto pixels=[&](Rect r){return PixelRect{float(r.x*scale),float(r.y*scale),float(r.width*scale),float(r.height*scale)};};
     const auto& p=layout_.panel;
     const auto first_primitive=scene.primitives.size();
-    // Chrome text is a separate final renderer pass, unlike terminal pane text.
-    // Remove covered labels, then dim remaining labels along with the scrim.
-    const auto pp=pixels(p);
-    std::erase_if(scene.texts,[&](const auto& label){return intersects({label.rect.x,label.rect.y,label.rect.width,label.rect.height},{pp.x,pp.y,pp.width,pp.height});});
-    if (high_contrast_) scene.texts.clear(); // Opaque modal scrim; never fade OS colors.
-    else for (auto& label:scene.texts) label.color.a=static_cast<std::uint8_t>(label.color.a*0.38);
+    // The settings surface paints after complete lower chrome layers. Its scrim
+    // dims underlying shapes and text together without mutating their scene.
     const auto first_text=scene.texts.size();
     const Rect window{0,0,viewport_.width,viewport_.height};
     auto box=[&](Rect r,Color fill,Color stroke=transparent,double radius=0,double weight=0,bool replace=false,std::optional<Rect> clip={}) {
@@ -409,21 +437,21 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         scene.primitives.push_back({pixels(r),fill,stroke,float(radius*scale),float(weight*scale),ChromePrimitiveKind::rectangle,replace});
     };
     auto line=[&](double x,double y,double width,Color color) {box({x,y,width,1},color);};
-    auto text=[&](Rect r,std::string value,Color color=ink,float size=13,bool bold=false,std::string family="Segoe UI Variable Text",bool content=false,ChromeTextAlignment alignment=ChromeTextAlignment::leading) {
+    auto text=[&](Rect r,std::string value,Color color,float size=13,bool bold=false,std::string family="Segoe UI Variable Text",bool content=false,ChromeTextAlignment alignment=ChromeTextAlignment::leading) {
         if (content && !contains(layout_.content,r)) return;
         r=intersection(r,content?layout_.content:p);if (r.width<=0 || r.height<=0) return;
         scene.texts.push_back({pixels(r),std::move(value),color,size,bold,std::move(family),alignment});
     };
-    auto label=[&](Rect r,std::string value,Color color=ink,float size=13,bool bold=false,bool content=false) {text(r,std::move(value),color,size,bold,"Segoe UI Variable Text",content);};
+    auto label=[&](Rect r,std::string value,Color color,float size=13,bool bold=false,bool content=false) {text(r,std::move(value),color,size,bold,"Segoe UI Variable Text",content);};
     auto button=[&](std::string_view id,std::string title,bool selected=false,bool primary=false) {
         const auto* c=find_control(layout_,id);if (!c || !c->visible) return;
         const bool hover=c->id==hover_, pressed=c->id==pressed_, focused=c->id==focus_;
-        Color fill=primary?accent:selected?selection:Color{30,36,45,255};
-        if (hover && !primary) fill=selected?Color{48,59,88,255}:Color{37,45,57,255};
-        if (pressed) fill=primary?Color{119,141,238,255}:Color{45,55,72,255};
-        box(c->bounds,fill,focused?accent:selected?Color{78,94,137,255}:border,6,focused?1.5:1);
-        if (!c->enabled) {fill.a=140;box(c->bounds,{24,29,36,100},transparent,6);}
-        const auto fg=!c->enabled?subdued:primary?Color{17,21,32,255}:selected?Color{197,207,255,255}:ink;
+        Color fill=primary?accent:selected?selection:control;
+        if (hover && !primary) fill=selected?selected_hover:control_hover;
+        if (pressed) fill=primary?blend(accent,panel_color,.15):control_pressed;
+        box(c->bounds,fill,focused?accent:selected?selected_border:border,6,focused?1.5:1);
+        if (!c->enabled) {fill.a=140;box(c->bounds,Color{panel_color.r,panel_color.g,panel_color.b,100},transparent,6);}
+        const auto fg=!c->enabled?subdued:primary?primary_ink:ink;
         text(inset(c->bounds,c->bounds.width<=40?8:12,0),std::move(title),fg,13,primary||selected,"Segoe UI Variable Text",false,ChromeTextAlignment::center);
     };
     box(window,{4,6,10,148});
@@ -432,31 +460,39 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
     // Restrained accent, not a glowing window frame.
     box({p.x+28,p.y,64,2},accent,transparent,1);
     const double pad=p.width<500?16:28;
-    box({p.x+pad,p.y+24,30,30},selection,Color{61,74,108,255},8,1);
-    label({p.x+pad+7,p.y+25,19,27},"S",accent,16,true);
+    // A geometric icon, not a text badge: independent of font bearings/fallback.
+    const Point cog_center{p.x+pad+15,p.y+39};
+    if (contains(p,{cog_center.x-13,cog_center.y-13,26,26})) {
+        const auto stroke=[&](Point a,Point b) {
+            scene.primitives.push_back({pixels({a.x,a.y,b.x-a.x,b.y-a.y}),transparent,muted,0,float(1.5*scale),ChromePrimitiveKind::line});
+        };
+        constexpr double tau=6.283185307179586;
+        const auto point=[&](double angle,double radius) {return Point{cog_center.x+std::cos(angle)*radius,cog_center.y+std::sin(angle)*radius};};
+        for (int i=0;i<32;++i) {
+            const auto radius=[](int vertex){return vertex%4==1 || vertex%4==2?11.0:8.0;};
+            stroke(point(tau*i/32,radius(i)),point(tau*(i+1)/32,radius((i+1)%32)));
+        }
+        for (int i=0;i<24;++i) stroke(point(tau*i/24,3.5),point(tau*(i+1)/24,3.5));
+    }
     label({p.x+pad+43,p.y+17,std::max(0.0,p.width-pad-106),29},"Settings",ink,23,true);
     label({p.x+pad+44,p.y+45,std::max(0.0,p.width-pad-110),19},"Appearance, shells and keyboard shortcuts",muted,12);
     if (const auto* close=find_control(layout_,"close"); close && close->visible) {
-        if (hover_=="close" || focus_=="close") box(close->bounds,{36,43,55,255},focus_=="close"?accent:transparent,5,focus_=="close"?1:0);
-        label({close->bounds.x+8,close->bounds.y,18,28},"×",muted,20);
+        if (hover_=="close" || focus_=="close") box(close->bounds,control_hover,focus_=="close"?accent:transparent,5,focus_=="close"?1:0);
+        text(close->bounds,"×",muted,20,false,"Segoe UI Variable Text",false,ChromeTextAlignment::center);
     }
     line(p.x+pad,p.y+76,std::max(0.0,p.width-pad*2),border);
     if (!layout_.compact) {
         box({p.x+1,p.y+77,207,std::max(0.0,p.height-156)},nav_color);
         box({p.x+208,p.y+78,1,std::max(0.0,p.height-157)},border);
         label({p.x+30,p.y+84,150,16},"PREFERENCES",subdued,10,true);
-        if (p.height>=480) {
-            label({p.x+30,layout_.footer.y-78,150,22},"Local preferences",muted,12,true);
-            label({p.x+30,layout_.footer.y-54,150,18},"Applies to StormTTY.",subdued,11);
-            label({p.x+30,layout_.footer.y-36,150,18},"Your sessions keep running.",subdued,11);
-        }
+
     }
     const std::array<std::pair<std::string_view,std::string_view>,3> nav{{{"nav.appearance","Appearance"},{"nav.shell","Shell"},{"nav.shortcuts","Shortcuts"}}};
     const std::string active=section_==SettingsSection::appearance?"nav.appearance":section_==SettingsSection::shell?"nav.shell":"nav.shortcuts";
     for (const auto& [id,title]:nav) {
         const auto* c=find_control(layout_,id);if (!c || !c->visible) continue;
         const bool selected=id==active;
-        if (selected || hover_==id || focus_==id) box(c->bounds,selected?selection:Color{29,35,45,255},focus_==id?accent:transparent,6,focus_==id?1:0);
+        if (selected || hover_==id || focus_==id) box(c->bounds,selected?selection:control_hover,focus_==id?accent:transparent,6,focus_==id?1:0);
         if (selected && !layout_.compact) box({c->bounds.x,c->bounds.y+11,2,18},accent,transparent,1);
         const double offset=layout_.compact?12:42;
         if (!layout_.compact) {
@@ -484,19 +520,19 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         const auto preview=layout_.preview;
         content_box(preview,canvas,border,7,1);
         content_box({preview.x,preview.y+12,2,preview.height-24},accent,transparent,1);
-        label({preview.x+16,preview.y+10,std::max(0.0,preview.width-110),17},"GRAPHITE",subdued,10,true,true);
-        label({preview.x+preview.width-83,preview.y+10,69,17},"LIVE PREVIEW",accent,9,true,true);
-        text({preview.x+16,preview.y+34,std::max(0.0,preview.width-32),28},">_  ABC abc 0123 {} [] -> !=",ink,float(std::clamp(draft_.font.size_dip,10.0,22.0)),false,draft_.font.family,true);
+        for (const auto& theme:builtin_themes()) button("appearance.theme."+theme.name,theme_title(theme.name),draft_.theme==theme);
+        if (has_custom_theme(original_)) button("appearance.theme.custom","Custom",draft_.theme==original_.theme);
+        text({preview.x+16,preview.y+4,std::max(0.0,preview.width-32),30},">_  ABC abc 0123 {} [] -> !=",ink,float(std::clamp(draft_.font.size_dip,10.0,22.0)),false,draft_.font.family,true);
         const double cw=std::min(content.width*0.49,230.0), lw=std::max(0.0,content.width-cw-20);
         row_labels(90,"Terminal font","System fallback if not installed",lw);
         button("font.family",draft_.font.family+"   ›");
         row_labels(146,"Font size","Measured in display-independent pixels",std::max(0.0,content.width-138));
         button("font.decrease","−");button("font.increase","+");
-        label({right-82,top+150,46,32},number(draft_.font.size_dip),ink,14,true,true);
+        text({right-86,top+150,54,32},number(draft_.font.size_dip),ink,14,true,"Segoe UI Variable Text",true,ChromeTextAlignment::center);
         row_labels(202,"Font ligatures","Join supported programming symbols",std::max(0.0,content.width-62));
         if (const auto* c=find_control(layout_,"font.ligatures");c && c->visible) {
-            box(c->bounds,draft_.font.ligatures?accent:Color{52,61,77,255},focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
-            box({c->bounds.x+(draft_.font.ligatures?21:3),c->bounds.y+3,18,18},draft_.font.ligatures?Color{23,28,43,255}:Color{192,201,218,255},transparent,9);
+            box(c->bounds,draft_.font.ligatures?accent:border,focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
+            box({c->bounds.x+(draft_.font.ligatures?21:3),c->bounds.y+3,18,18},draft_.font.ligatures?primary_ink:ink,transparent,9);
         }
         row_labels(258,"Background opacity","Text always stays crisp and opaque",lw);
         if (const auto* slider=find_control(layout_,"appearance.opacity");slider && slider->visible) {
@@ -504,7 +540,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             if (focus_==slider->id) box(r,transparent,accent,5,1);
             const double progress=draft_.appearance.background_opacity;
             const double width=std::max(0.0,r.width-16), track_y=r.y+27;
-            box({r.x+8,track_y,width,3},{52,62,79,255},transparent,1.5);
+            box({r.x+8,track_y,width,3},border,transparent,1.5);
             box({r.x+8,track_y,width*progress,3},accent,transparent,1.5);
             box({r.x+8+width*progress-5,track_y-4,10,11},ink,transparent,5);
             label({r.x+8,r.y-2,std::max(0.0,r.width-16),21},number(std::round(draft_.appearance.background_opacity*100))+"%",ink,12,true,true);
@@ -515,18 +551,15 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         const auto material=draft_.appearance.backdrop;
         const int selected=material==BackdropPreference::automatic?0:material==BackdropPreference::none?1:material==BackdropPreference::mica?2:3;
         for (std::size_t i=0;i<ids.size();++i) button(ids[i],names[i],selected==static_cast<int>(i));
-        row_labels(402,"Reduce motion","Keep transitions quiet, or follow your system",lw);
+        row_labels(402,"Reduce motion","Use system settings or reduce animations",lw);
         const std::string motion=draft_.appearance.reduced_motion==ReducedMotionPreference::system?"Follow system":draft_.appearance.reduced_motion==ReducedMotionPreference::enabled?"Always reduce":"Allow motion";
         button("appearance.motion",motion+"   ›");
     } else if (section_==SettingsSection::shell) {
-        content_box(layout_.preview,{27,35,46,255},border,7,1);
-        label({content.x+16,top+10,std::max(0.0,content.width-32),23},"A fresh shell. No interrupted sessions.",ink,13,true,true);
-        label({content.x+16,top+35,std::max(0.0,content.width-32),22},"Your default applies after Save, to new terminals only.",muted,12,false,true);
         for (const auto& profile:profiles_) {
             const auto* c=find_control(layout_,"shell:"+profile.id);if (!c || !c->visible) continue;
             const auto r=c->bounds;const bool selected=draft_.default_profile==profile.id;
-            box(r,selected?selection:hover_==c->id?Color{31,38,49,255}:Color{23,28,35,255},focus_==c->id?accent:selected?Color{73,88,127,255}:border,7,focus_==c->id?1.5:1);
-            box({r.x+14,r.y+15,32,32},selected?Color{53,66,98,255}:Color{32,40,51,255},transparent,7);
+            box(r,selected?selection:hover_==c->id?control_hover:control,focus_==c->id?accent:selected?selected_border:border,7,focus_==c->id?1.5:1);
+            box({r.x+14,r.y+15,32,32},selected?selection:control_hover,transparent,7);
             label({r.x+21,r.y+18,23,25},">_",selected?accent:muted,12,true,true);
             label({r.x+59,r.y+7,std::max(0.0,r.width-148),23},profile.label,ink,13,true,true);
             label({r.x+59,r.y+31,std::max(0.0,r.width-82),20},profile.executable,subdued,11,false,true);
@@ -535,13 +568,13 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             if (selected) box({r.x+r.width-25,r.y+39,5,5},accent,transparent,2.5);
         }
     } else {
-        content_box(layout_.preview,capturing_shortcut()?selection:Color{27,35,46,255},capturing_shortcut()?accent:border,7,1);
+        content_box(layout_.preview,capturing_shortcut()?selection:control,capturing_shortcut()?accent:border,7,1);
         label({content.x+14,top+6,std::max(0.0,content.width-28),22},terminal_override_?format_key_chord(*terminal_override_,platform_)+" sends terminal input":capturing_shortcut()?"Press your shortcut now":"Select an action to assign a shortcut",capturing_shortcut()?ink:muted,13,true,true);
         label({content.x+14,top+29,std::max(0.0,content.width-28),18},terminal_override_?"Use shortcut to assign it · Tab then Enter confirms · Esc cancels":"Esc cancels capture · Backspace clears · Conflicts never overwrite",subdued,11,false,true);
         for (const auto& command:command_registry()) {
             const auto* c=find_control(layout_,"binding:"+std::string(command.id));if (!c || !c->visible) continue;
             const auto r=c->bounds;const bool capturing=capture_command_==command.id;
-            box(r,capturing?selection:hover_==c->id?Color{31,38,49,255}:Color{23,28,35,255},focus_==c->id?accent:border,6,focus_==c->id?1.5:1);
+            box(r,capturing?selection:hover_==c->id?control_hover:control,focus_==c->id?accent:border,6,focus_==c->id?1.5:1);
             const double shortcut_width=std::min(170.0,r.width*0.44);
             label({r.x+13,r.y+5,std::max(0.0,r.width-shortcut_width-33),24},std::string(command.label),ink,12,true,true);
             label({r.x+13,r.y+27,std::max(0.0,r.width-26),17},std::string(command.description),subdued,10,false,true);
@@ -551,8 +584,8 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
     if (document_height_>content.height && content.height>20) {
         const double thumb=std::max(22.0,content.height*content.height/document_height_);
         const double y=content.y+scroll_/(document_height_-content.height)*std::max(0.0,content.height-thumb);
-        box({content.x+content.width+8,content.y,3,content.height},{32,39,49,255},transparent,1.5);
-        box({content.x+content.width+8,y,3,std::min(thumb,content.height)},{83,97,122,255},transparent,1.5);
+        box({content.x+content.width+8,content.y,3,content.height},border,transparent,1.5);
+        box({content.x+content.width+8,y,3,std::min(thumb,content.height)},muted,transparent,1.5);
     }
     // The footer is anchored, not part of the scroll region.
     box({p.x+1,layout_.footer.y,p.width-2,std::max(0.0,layout_.footer.height-1)},nav_color,transparent,10);
@@ -571,21 +604,24 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         }
     } else if (!error_.empty()) {
         label({p.x+pad,layout_.footer.y+2,std::max(0.0,p.width-2*pad),18},error_,{244,164,164,255},10);
+    } else if (terminal_override_) {
+        label({p.x+pad,layout_.footer.y+2,std::max(0.0,p.width-2*pad),18},format_key_chord(*terminal_override_,platform_)+" replaces terminal input",muted,10);
     }
     button("cancel","Cancel");
     if (terminal_override_) button("binding.confirm","Use shortcut",false,true);
     else button("save",saving_?"Saving…":"Save changes",false,true);
+    for (std::size_t i=first_primitive;i<scene.primitives.size();++i) scene.primitives[i].z={ChromeLayer::settings};
+    for (std::size_t i=first_text;i<scene.texts.size();++i) scene.texts[i].z={ChromeLayer::settings};
     if (high_contrast_) {
         // Keep semantic geometry identical while replacing every visible paint
         // with supplied system colors. Selected text uses HighlightText, not
         // WindowText: Windows supports light as well as dark contrast themes.
-        auto is_highlight=[](Color color) {
-            return color==accent || color==selection || color==Color{48,59,88,255} ||
-                color==Color{119,141,238,255} || color==Color{53,66,98,255};
+        auto is_highlight=[&](Color color) {
+            return color==accent || color==selection || color==selected_hover ||
+                color==blend(accent,panel_color,.15);
         };
-        auto is_foreground=[](Color color) {
-            return color==ink || color==border || color==muted || color==subdued || color==green ||
-                color==Color{52,61,77,255} || color==Color{52,62,79,255} || color==Color{83,97,122,255};
+        auto is_foreground=[&](Color color) {
+            return color==ink || color==border || color==muted || color==subdued || color==green;
         };
         auto behind=[&](Point center,std::size_t before) {
             while (before>first_primitive) {
@@ -601,7 +637,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             const auto parent=behind(center,i);
             if (primitive.fill.a) {
                 if (is_highlight(primitive.fill)) primitive.fill=high_highlight_;
-                else if (primitive.fill==Color{23,28,43,255}) primitive.fill=high_highlight_text_; // Enabled toggle thumb.
+                else if (primitive.fill==primary_ink) primitive.fill=high_highlight_text_; // Enabled toggle thumb.
                 else if (is_foreground(primitive.fill)) primitive.fill=parent==high_highlight_?high_highlight_text_:high_foreground_;
                 else primitive.fill=high_background_;
             }

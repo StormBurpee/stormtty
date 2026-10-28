@@ -674,6 +674,19 @@ void TerminalCore::resize(TerminalSize size) {
     ghostty_mouse_encoder_reset(impl_->mouse_encoder);
     impl_->check_thread();
 }
+void TerminalCore::set_default_colors(Color foreground, Color background) {
+    impl_->check_thread();
+    if (foreground.a != 255 || background.a != 255)
+        throw std::invalid_argument("terminal default colors must be opaque RGB; apply opacity in the renderer");
+    if (impl_->options.default_foreground == foreground && impl_->options.default_background == background) return;
+    const GhosttyColorRgb fg{foreground.r, foreground.g, foreground.b}, bg{background.r, background.g, background.b};
+    // These options change defaults, not the effective OSC override or cell
+    // styles. The pinned engine marks the palette dirty for render-state update.
+    impl_->set(GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg);
+    impl_->set(GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg);
+    impl_->options.default_foreground = foreground;
+    impl_->options.default_background = background;
+}
 std::string TerminalCore::encode_key(const KeyInput& input) {
     impl_->check_thread();
     const auto event = impl_->key_event.value;

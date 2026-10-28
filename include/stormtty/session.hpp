@@ -46,6 +46,12 @@ public:
     SessionSendResult scroll(std::int64_t rows);
     SessionSendResult scroll_to_bottom();
     SessionSendResult request_resize(TerminalSize);
+    // Display-only: one pending update, latest preview/cancel wins. Shares actor
+    // ordering with input/output but never writes PTY bytes or consumes input
+    // queue capacity. Non-opaque colors throw invalid_argument before enqueue.
+    // Exited/closing sessions return closed and retain their final owned frame;
+    // this API never retains/restarts a terminal engine or a child process.
+    SessionSendResult set_default_colors(Color foreground, Color background);
     // Latest typing request wins; superseded pending search/navigation commands
     // are coalesced, and in-progress work is cancelled on the actor. Results are
     // an owned mailbox; reading it never scans terminal contents on the UI thread.

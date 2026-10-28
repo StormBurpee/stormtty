@@ -2,6 +2,7 @@
 #include "text.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <fstream>
@@ -91,8 +92,17 @@ std::string quote(std::string_view text) {
     }
     result += '"'; return result;
 }
-Theme instrument() { return {"instrument", "#17191D", "#ECEEF2", "#22252B", "#A7C4D2"}; }
-Theme daylight() { return {"daylight", "#FAFBFC", "#232B33", "#EDF0F3", "#315E78"}; }
+
+}
+std::span<const Theme> builtin_themes() {
+    static const std::array themes{Theme{},
+        Theme{"instrument", "#17191D", "#ECEEF2", "#22252B", "#A7C4D2"},
+        Theme{"daylight", "#FAFBFC", "#232B33", "#EDF0F3", "#315E78"}};
+    return themes;
+}
+const Theme* find_builtin_theme(std::string_view name) {
+    for (const auto& theme:builtin_themes()) if (theme.name==name) return &theme;
+    return nullptr;
 }
 Config default_config(Platform platform) {
     Config c;
@@ -103,7 +113,7 @@ Config default_config(Platform platform) {
 }
 Status validate_config(const Config& c, Platform platform) {
     if (c.version != 1) return Status::failure("Unsupported config version; expected version = 1");
-    if (c.theme.name != "graphite" && c.theme.name != "instrument" && c.theme.name != "daylight" && c.theme.name != "custom") return Status::failure("Theme name must be graphite, instrument, daylight or custom");
+    if (!find_builtin_theme(c.theme.name) && c.theme.name != "custom") return Status::failure("Theme name must be graphite, instrument, daylight or custom");
     if (!color(c.theme.background) || !color(c.theme.foreground) || !color(c.theme.chrome) || !color(c.theme.accent)) return Status::failure("Theme colors must be #RRGGBB");
     if (!std::isfinite(c.appearance.background_opacity) || c.appearance.background_opacity < 0.0 || c.appearance.background_opacity > 1.0)
         return Status::failure("background_opacity must be between 0.0 and 1.0");
@@ -275,8 +285,8 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
         if (!handled) error(line_number, 1, "Unknown key: " + (section.empty() ? "" : section + ".") + key);
     }
     if (!have_version) error(1, 1, "Missing version = 1 at the top level");
-    if (config.theme.name == "daylight" || config.theme.name == "instrument" || config.theme.name == "graphite") {
-        const auto base = config.theme.name == "daylight" ? daylight() : config.theme.name == "instrument" ? instrument() : Theme{};
+    if (const auto* named=find_builtin_theme(config.theme.name)) {
+        const auto& base=*named;
         if (!assigned.contains({"theme", "background"})) config.theme.background = base.background;
         if (!assigned.contains({"theme", "foreground"})) config.theme.foreground = base.foreground;
         if (!assigned.contains({"theme", "chrome"})) config.theme.chrome = base.chrome;

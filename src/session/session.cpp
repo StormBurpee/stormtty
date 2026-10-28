@@ -15,7 +15,7 @@ constexpr std::size_t output_budget = 2 * 1024 * 1024;
 constexpr std::size_t write_budget = 4 * 1024 * 1024;
 constexpr std::size_t chunk_limit = 32 * 1024;
 enum class Op { key, text, paste, mouse, focus, select, clear, copy, scroll, bottom, resize,
-                search_start, search_cancel, search_select, search_navigate };
+                search_start, search_cancel, search_select, search_navigate, default_colors };
 bool search_operation(Op op) {
     return op == Op::search_start || op == Op::search_cancel || op == Op::search_select || op == Op::search_navigate;
 }
@@ -25,6 +25,7 @@ struct Command {
     KeyInput key;
     MouseInput mouse;
     TerminalSize size;
+    Color foreground, background;
     std::string text;
     Session::SelectionCallback selection;
     std::int64_t rows{};
@@ -49,7 +50,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     std::deque<Command> commands;
     std::deque<OutputEvent> output;
     std::uint64_t next_sequence{};
-    std::size_t command_bytes{}, output_bytes{};
+    std::size_t command_bytes{}, output_bytes{}; // Excludes the single coalesced default_colors slot.
     std::optional<ProcessExit> exit;
     bool close_requested{};
     std::atomic<bool> done{false};
@@ -99,6 +100,23 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     void set_error(std::string value) {
         { std::lock_guard lock(mutex); information.error = std::move(value); }
         notify();
+    }
+    SessionSendResult enqueue_default_colors(Color foreground, Color background) {
+        if (foreground.a != 255 || background.a != 255)
+            throw std::invalid_argument("terminal default colors must be opaque RGB; apply opacity in the renderer");
+        Command command; command.op = Op::default_colors;
+        command.foreground = foreground; command.background = background;
+        {
+            std::lock_guard lock(mutex);
+            if (close_requested || exit || done.load()) return SessionSendResult::closed;
+            // One separately budgeted display slot. Replace only pending display
+            // updates, preserving all input/output and the newest update's order.
+            std::erase_if(commands, [](const auto& pending) { return pending.op == Op::default_colors; });
+            command.sequence = ++next_sequence;
+            commands.push_back(std::move(command));
+        }
+        changed.notify_all();
+        return SessionSendResult::accepted;
     }
     SessionSendResult enqueue(Command command) {
         const auto amount = command.bytes();
@@ -216,7 +234,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                 request_close_now = close_requested;
                 for (unsigned i = 0; i < 8 && !commands.empty() &&
                      (output.empty() || commands.front().sequence < output.front().sequence); ++i) {
-                    command_bytes -= commands.front().bytes();
+                    if (commands.front().op != Op::default_colors) command_bytes -= commands.front().bytes();
                     batch.push_back(std::move(commands.front())); commands.pop_front();
                 }
                 if (!output.empty() && (commands.empty() || output.front().sequence < commands.front().sequence)) {
@@ -240,6 +258,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                 for (auto& c : batch) {
                     try {
                         switch (c.op) {
+                        case Op::default_colors: core.set_default_colors(c.foreground, c.background); dirty = true; break;
                         case Op::key: append(core.encode_key(c.key)); core.scroll_to_bottom(); dirty = true; break;
                         case Op::text: { KeyInput key; key.text = std::move(c.text); append(core.encode_key(key)); core.scroll_to_bottom(); dirty = true; break; }
                         case Op::paste: append(core.encode_paste(c.text, c.flag)); core.scroll_to_bottom(); dirty = true; break;
@@ -399,6 +418,7 @@ SessionSendResult Session::copy_selection(SelectionCallback value) { Command c; 
 SessionSendResult Session::scroll(std::int64_t value) { Command c; c.op = Op::scroll; c.rows = value; return impl_->enqueue(std::move(c)); }
 SessionSendResult Session::scroll_to_bottom() { Command c; c.op = Op::bottom; return impl_->enqueue(std::move(c)); }
 SessionSendResult Session::request_resize(TerminalSize value) { Command c; c.op = Op::resize; c.size = value; return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::set_default_colors(Color foreground, Color background) { return impl_->enqueue_default_colors(foreground, background); }
 SearchSubmission Session::search(SearchOptions options) { return impl_->enqueue_search(std::move(options), false); }
 SearchSubmission Session::cancel_search() { return impl_->enqueue_search({}, true); }
 SearchSnapshotPtr Session::search_snapshot() const { std::lock_guard lock(impl_->search_mutex); return impl_->latest_search; }

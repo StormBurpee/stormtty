@@ -505,9 +505,9 @@ public:
         // explicit application backgrounds always remain independently opaque.
         if(header_height()>0)scene.primitives.push_back({{0,float((header_height()-1)*scale),float(pixel_width),float(scale)},{54,59,66,255}});
         if(view.hasMarkedText){const auto r=cursor_rect();const auto width=std::max(80.,std::min(400.,double(view->marked.length)*config.font.size_dip));
-            scene.primitives.push_back({{float(r.origin.x*scale),float(r.origin.y*scale),float(width*scale),float(r.size.height*scale)},{43,49,57,255}});
-            scene.texts.push_back({{float(r.origin.x*scale),float(r.origin.y*scale),float(width*scale),float(r.size.height*scale)},utf8(view->marked.string),{236,238,242,255},float(config.font.size_dip),false,"Menlo"});}
-        if(!message.empty())scene.texts.push_back({{float(16*scale),float(pixel_height-22*scale),float(pixel_width-32*scale),float(18*scale)},message,{222,192,146,255},11});
+            scene.primitives.push_back({{float(r.origin.x*scale),float(r.origin.y*scale),float(width*scale),float(r.size.height*scale)},{43,49,57,255},{},0,0,ChromePrimitiveKind::rectangle,false,{ChromeLayer::transient}});
+            scene.texts.push_back({{float(r.origin.x*scale),float(r.origin.y*scale),float(width*scale),float(r.size.height*scale)},utf8(view->marked.string),{236,238,242,255},float(config.font.size_dip),false,"Menlo",ChromeTextAlignment::leading,{ChromeLayer::transient}});}
+        if(!message.empty())scene.texts.push_back({{float(16*scale),float(pixel_height-22*scale),float(pixel_width-32*scale),float(18*scale)},message,{222,192,146,255},11,false,"Segoe UI Variable Text",ChromeTextAlignment::leading,{ChromeLayer::toast}});
         auto result=renderer->render(scene);
         if(result==RenderResult::busy&&!retry_scheduled){retry_scheduled=true;auto weak=weak_from_this();dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC/60),dispatch_get_main_queue(),^{if(auto h=weak.lock()){h->retry_scheduled=false;h->wake();}});}
         if(result==RenderResult::presented){smoke_force_present=false;if(auto s=active()){auto frame=s->frame();if(frame&&frame->generation!=accessibility_generation){accessibility_generation=frame->generation;NSAccessibilityPostNotification(view,NSAccessibilityValueChangedNotification);}}

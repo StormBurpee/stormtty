@@ -2,6 +2,8 @@
 
 #include "stormtty/frame.hpp"
 #include "stormtty/terminal.hpp"
+#include <algorithm>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -44,6 +46,19 @@ struct RenderPane {
     bool cursor_on{true}; // Scheduler owns blink deadlines; no renderer polling.
     bool text_blink_on{true};
 };
+// Complete surfaces paint bottom-to-top, never all shapes followed by all
+// window text. Within one surface, shapes retain insertion order and labels
+// follow its shapes. Give overlapping child surfaces increasing depth (e.g.
+// nested menus), rather than deleting or fading the labels underneath them.
+// Terminal panes and Kitty image layers are always composed before chrome.
+enum class ChromeLayer : std::uint8_t {
+    base, transient, toast, palette, settings, modal, context_menu
+};
+struct ChromeZOrder {
+    ChromeLayer layer{ChromeLayer::base};
+    std::uint16_t depth{};
+    auto operator<=>(const ChromeZOrder&) const = default;
+};
 enum class ChromePrimitiveKind { rectangle, line };
 struct ChromePrimitive {
     PixelRect rect;
@@ -53,6 +68,7 @@ struct ChromePrimitive {
     ChromePrimitiveKind kind{ChromePrimitiveKind::rectangle};
     // For line: rect.x/y is start and x+width/y+height is end.
     bool background_replace{}; // Material fill replaces canvas alpha; never fade text.
+    ChromeZOrder z{};
     bool operator==(const ChromePrimitive&) const = default;
 };
 enum class ChromeTextAlignment { leading, center, trailing };
@@ -64,16 +80,37 @@ struct ChromeText {
     bool semibold{};
     std::string family{"Segoe UI Variable Text"};
     ChromeTextAlignment alignment{ChromeTextAlignment::leading}; // Per label, never terminal cells.
+    ChromeZOrder z{};
     bool operator==(const ChromeText&) const = default;
 };
 struct WindowScene {
     Color background{23, 25, 29, 255};
-    std::uint64_t chrome_generation{}; // Change for chrome/layout/focus/overlays.
+    std::uint64_t chrome_generation{}; // Change for chrome/layout/focus/overlays, including z-order.
     std::vector<RenderPane> panes;
-    std::vector<ChromePrimitive> primitives; // Painted after panes, in order.
+    std::vector<ChromePrimitive> primitives; // Ordered together with texts by z.
     std::vector<ChromeText> texts;
     bool force_redraw{};
 };
+enum class ChromeDrawKind { primitive, text };
+struct ChromeDrawItem {
+    ChromeZOrder z;
+    ChromeDrawKind kind;
+    std::size_t index;
+};
+// Both native renderers consume this same stable surface ordering. Indices
+// remain valid only while the caller leaves the scene's arrays unmodified.
+inline std::vector<ChromeDrawItem> chrome_paint_order(const WindowScene& scene) {
+    std::vector<ChromeDrawItem> order;
+    order.reserve(scene.primitives.size()+scene.texts.size());
+    for (std::size_t i=0;i<scene.primitives.size();++i)
+        order.push_back({scene.primitives[i].z,ChromeDrawKind::primitive,i});
+    for (std::size_t i=0;i<scene.texts.size();++i)
+        order.push_back({scene.texts[i].z,ChromeDrawKind::text,i});
+    std::stable_sort(order.begin(),order.end(),[](const auto& a,const auto& b) {
+        return a.z!=b.z?a.z<b.z:a.kind<b.kind;
+    });
+    return order;
+}
 enum class RenderResult { presented, unchanged, occluded, busy, suspended };
 struct RendererStats {
     std::uint64_t presents{}, shaped_rows{}, shape_cache_hits{}, image_uploads{};
