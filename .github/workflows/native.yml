@@ -159,7 +159,9 @@ jobs:
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         shell: python
         run: |
-          import os,pathlib,subprocess
+          import os,pathlib,importlib.util,sys,json
+          spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
           shell=pathlib.Path('.deps/stormtty-shell/usr/bin/zsh.exe').resolve()
           fixture=pathlib.Path('tools/probes/bundled_shell_fixture.zsh').resolve()
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
@@ -168,10 +170,13 @@ jobs:
             scratch=pathlib.Path(os.environ['RUNNER_TEMP'])/('stormtty-zsh-'+mode)
             args=[str(pathlib.Path('build/bundled_shell_probe.exe').resolve()),str(shell),str(fixture),str(scratch)]
             args+=['inbox'] if mode=='inbox' else ['--packaged-provider',str(provider)]
+            args+=['--resize-repeats','6']
             print('BUNDLED_ZSH_CASE='+mode,flush=True)
-            result=subprocess.run(args,timeout=120)
-            print('BUNDLED_ZSH_RESULT='+mode+':'+str(result.returncode),flush=True)
-            if result.returncode: failures.append(mode)
+            result=runner.run_owned(args,timeout=180,output_dir=pathlib.Path("build/artifacts"))
+            print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
+            print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
+            print('BUNDLED_ZSH_RESULT='+mode+':'+str(result.exit_code),flush=True)
+            if result.exit_code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
       - name: Verify application with bundled Zsh
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
