@@ -13,54 +13,55 @@ namespace stormtty {
 // window, metrics and input services remain platform-owned.
 struct ChromeTab { TabId tab; Rect bounds, close; };
 struct ChromeLayout {
-    Rect band, menu, new_tab, palette, minimize, maximize, close, drag;
+    Rect band, tabs_band, menu, new_tab, palette, minimize, maximize, close, drag;
     std::vector<ChromeTab> tabs;
     bool compact{};
 };
 
+// The global caption owns only app controls and native drag/Snap. Task tabs
+// belong to the workspace column below it, never to the navigation column.
 inline ChromeLayout layout_chrome(double width, double height,
                                  const std::vector<TabId>& tabs, TabId active,
-                                 double caption_width = 46.0,
-                                 double band_height = 48.0) {
+                                 double caption_width = 46.0, double caption_height = 32.0,
+                                 double content_left = 0.0, double tab_height = 40.0) {
     ChromeLayout result;
-    width = std::max(0.0, width);
-    band_height = std::min(std::max(0.0, height), band_height);
-    caption_width = std::min(caption_width, width / 3.0);
-    result.band = {0, 0, width, band_height};
-    result.close = {width - caption_width, 0, caption_width, band_height};
-    result.maximize = {width - 2 * caption_width, 0, caption_width, band_height};
-    result.minimize = {width - 3 * caption_width, 0, caption_width, band_height};
-    const double available = result.minimize.x;
-    const double control_y = std::min(8.0, band_height);
-    const double control_height = std::min(32.0, std::max(0.0, band_height - control_y));
-    result.menu = {12, control_y, std::min(28.0, std::max(0.0, available - 12)), control_height};
-    if (available < 120) {
-        result.drag = {std::min(40.0, available), 0, std::max(0.0, available - 40), band_height};
-        result.compact = true;
-        return result;
+    width=std::max(0.0,width); height=std::max(0.0,height);
+    caption_height=std::clamp(caption_height,0.0,height);
+    caption_width=std::clamp(caption_width,0.0,width/3);
+    content_left=std::clamp(content_left,0.0,width);
+    result.band={0,0,width,caption_height};
+    result.close={width-caption_width,0,caption_width,caption_height};
+    result.maximize={width-2*caption_width,0,caption_width,caption_height};
+    result.minimize={width-3*caption_width,0,caption_width,caption_height};
+    const double available=result.minimize.x,control_height=std::min(28.0,caption_height);
+    const double menu_x=std::min(12.0,available),menu_width=std::min(28.0,std::max(0.0,available-menu_x));
+    result.menu={menu_x,(caption_height-control_height)/2,menu_width,control_height};
+    const double palette_width=available>=88?28:0;
+    result.palette={std::max(0.0,available-36),result.menu.y,palette_width,palette_width>0?control_height:0};
+    const double drag_x=menu_x+menu_width+8,drag_right=palette_width>0?result.palette.x:available;
+    result.drag={std::min(drag_x,available),0,std::max(0.0,drag_right-drag_x),caption_height};
+    tab_height=caption_height>0?std::clamp(tab_height,0.0,height-caption_height):0;
+    result.tabs_band={content_left,caption_height,width-content_left,tab_height};
+    if (tab_height<=0 || result.tabs_band.width<=0) return result;
+    constexpr double gap=4,new_button=32;
+    const double start=content_left+std::min(6.0,result.tabs_band.width);
+    const double end=width-std::min(6.0,result.tabs_band.width);
+    const double space=std::max(0.0,end-start-new_button);
+    result.compact=!tabs.empty() && space<96*tabs.size()+gap*(tabs.size()-1);
+    std::vector<TabId> visible=tabs;
+    if(result.compact)visible=active?std::vector<TabId>{active}:std::vector<TabId>{};
+    const double tab_width=visible.empty()?0:std::min(188.0,std::max(0.0,(space-gap*(visible.size()-1))/visible.size()));
+    const double tab_h=std::min(32.0,tab_height),tab_y=caption_height+(tab_height-tab_h)/2;
+    double x=start;
+    for(const auto id:visible) {
+        const Rect bounds{x,tab_y,tab_width,tab_h};
+        const double close_w=std::min(24.0,tab_width);
+        result.tabs.push_back({id,bounds,{x+std::max(0.0,tab_width-28),tab_y+4,close_w,std::max(0.0,tab_h-8)}});
+        x+=tab_width+gap;
     }
-    result.palette = {available - 36, control_y, 28, control_height};
-    constexpr double start = 52, gap = 4, drag_minimum = 48, new_button = 32;
-    const double tab_space = std::max(0.0, result.palette.x - start - drag_minimum - new_button);
-    result.compact = !tabs.empty() && tab_space < 96 * static_cast<double>(tabs.size()) + gap * (tabs.size() - 1);
-    std::vector<TabId> visible = tabs;
-    if (result.compact) visible = active ? std::vector<TabId>{active} : std::vector<TabId>{};
-    // Compact mode retains one real tab picker and the caption drag gap. The
-    // palette/menu still expose New Tab when its dedicated button cannot fit.
-    const bool show_new = !result.compact || result.palette.x - start - drag_minimum >= 96 + new_button;
-    const double space = std::max(0.0, result.palette.x - start - drag_minimum - (show_new ? new_button : 0));
-    const double tab_width = visible.empty() ? 0 : std::min(188.0, std::max(0.0, (space - gap * (visible.size() - 1)) / visible.size()));
-    double x = start;
-    for (const auto id : visible) {
-        Rect bounds{x, control_y, tab_width, control_height};
-        Rect close{bounds.x + std::max(0.0, bounds.width - 28), control_y + 4, std::min(24.0, bounds.width), std::max(0.0, control_height - 8)};
-        result.tabs.push_back({id, bounds, close});
-        x += tab_width + gap;
-    }
-    if (!visible.empty()) x -= gap;
-    result.new_tab = {x + (show_new ? gap : 0), control_y, show_new ? 28.0 : 0.0, show_new ? control_height : 0.0};
-    const double drag_x = std::min(x + (show_new ? new_button : 0), result.palette.x - drag_minimum);
-    result.drag = {drag_x, 0, std::max(0.0, result.palette.x - drag_x), band_height};
+    if(visible.empty())x=start;
+    const double new_width=std::min(28.0,std::max(0.0,end-x));
+    result.new_tab={x,tab_y,new_width,new_width>0?tab_h:0};
     return result;
 }
 
@@ -94,31 +95,40 @@ inline NativeHit chrome_hit_test(const ChromeLayout& layout, Point p,
 
 struct ProjectNavigationItem { ProjectWorkspaceId project; Rect bounds; };
 struct ProjectNavigationLayout {
-    Rect rail, toggle, new_project, context, focus, viewport;
+    Rect rail, toggle, new_project, settings, tabs, context, focus, viewport, footer;
     std::vector<ProjectNavigationItem> projects;
     std::size_t first{}, capacity{};
     bool expanded{};
 };
-inline ProjectNavigationLayout layout_project_navigation(double width, double height, double crown,
+inline ProjectNavigationLayout layout_project_navigation(double width, double height, double caption,
         const std::vector<ProjectWorkspaceId>& projects, std::size_t first, bool expanded,
         bool focus_mode, bool show_context) {
     ProjectNavigationLayout result;
-    width=std::max(0.0,width); height=std::max(0.0,height); crown=std::clamp(crown,0.0,height);
-    result.expanded=expanded && width>=640;
+    width=std::max(0.0,width); height=std::max(0.0,height); caption=std::clamp(caption,0.0,height);
+    result.expanded=expanded && width>=640 && !focus_mode;
     const double rail=focus_mode?0:std::min(width,result.expanded?184.0:44.0);
-    const double context=focus_mode||!show_context?0:std::min(28.0,height-crown);
-    result.rail={0,crown,rail,height-crown};
-    result.context={rail,crown,std::max(0.0,width-rail),context};
-    result.focus={std::max(rail,width-32),crown+4,std::min(24.0,std::max(0.0,width-rail)),context>0?20.0:0.0};
-    result.viewport={rail,crown+context,std::max(0.0,width-rail),std::max(0.0,height-crown-context)};
+    const double footer=focus_mode?0:std::min(26.0,height-caption);
+    result.footer={0,height-footer,width,footer};
+    result.rail={0,caption,rail,std::max(0.0,result.footer.y-caption)};
+    const double tab_h=caption>0?std::min(40.0,result.rail.height):0;
+    result.tabs={rail,caption,std::max(0.0,width-rail),tab_h};
+    const double context=focus_mode||!show_context?0:std::min(32.0,std::max(0.0,result.rail.height-tab_h));
+    result.context={rail,caption+tab_h,std::max(0.0,width-rail),context};
+    result.focus={std::max(rail,width-32),result.context.y+(context-std::min(24.0,context))/2,
+        std::min(24.0,std::max(0.0,width-rail)),std::min(24.0,context)};
+    result.viewport={rail,caption+tab_h+context,std::max(0.0,width-rail),std::max(0.0,result.footer.y-caption-tab_h-context)};
     if (rail==0) return result;
-    result.toggle={6,crown+4,32,28};
-    result.new_project={4,std::max(crown+36,height-42),std::max(0.0,rail-8),36};
-    result.capacity=static_cast<std::size_t>(std::max(0.0,std::floor((result.new_project.y-(crown+40))/36)));
+    result.toggle={std::min(6.0,rail),caption+4,std::min(32.0,std::max(0.0,rail-12)),std::min(28.0,std::max(0.0,result.rail.height-4))};
+    const double settings_h=result.rail.height>=76?36:0;
+    result.settings={4,result.footer.y-4-settings_h,std::max(0.0,rail-8),settings_h};
+    const double new_h=result.rail.height>=156?36:0;
+    result.new_project={4,result.settings.y-4-new_h,std::max(0.0,rail-8),new_h};
+    const double bottom=new_h?result.new_project.y:settings_h?result.settings.y:result.footer.y;
+    result.capacity=static_cast<std::size_t>(std::max(0.0,std::floor((bottom-(caption+40))/36)));
     const auto maximum_first=projects.size()>result.capacity?projects.size()-result.capacity:0;
     result.first=std::min(first,maximum_first);
     for (std::size_t row=0;row<result.capacity && result.first+row<projects.size();++row)
-        result.projects.push_back({projects[result.first+row],{4,crown+40+row*36,std::max(0.0,rail-8),34}});
+        result.projects.push_back({projects[result.first+row],{4,caption+40+row*36,std::max(0.0,rail-8),34}});
     return result;
 }
 

@@ -29,61 +29,69 @@ int main() {
     require(!tracker.observe({false,true,1}),"unchanged fallback creates no loop");
     require(tracker.observe({true,false,2}),"device recovery restores requested material");
     require(tracker.observe({true,false,3}),"same-path device reconstruction refreshes native material");
-    auto chrome = layout_chrome(1100, 700, {{1}, {2}}, {1});
-    require(chrome.tabs.size() == 2 && !chrome.compact, "two normal tabs");
-    require(chrome.drag.width >= 48, "deliberate draggable gap");
-    require(chrome.band.height == 48, "48-DIP crown");
-    require(chrome.tabs[0].bounds.y == 8 && chrome.tabs[0].bounds.height == 32, "fixed 32-DIP tabs at y8, not band minus8");
-    require(chrome.tabs[0].bounds.width == 188, "preferred tab width");
-    require(chrome.tabs[1].bounds.x - chrome.tabs[0].bounds.x - chrome.tabs[0].bounds.width == 4, "4-DIP tab gap");
-    require(chrome_hit_test(chrome, {chrome.maximize.x + 10, 15}, {1100, 700}, 6, false) == NativeHit::maximize, "Snap maximize region");
-    require(chrome_hit_test(chrome, {60, 20}, {1100, 700}, 6, false) == NativeHit::client, "tab exclusion");
-    require(chrome_hit_test(chrome, {1, 1}, {1100, 700}, 6, false) == NativeHit::top_left, "resize corner");
-    require(chrome_hit_test(chrome, {1, 699}, {1100, 700}, 6, true) == NativeHit::client, "no maximized resize border");
-    chrome = layout_chrome(330, 240, {{1}, {2}, {3}}, {2});
-    require(chrome.compact && chrome.tabs.size() == 1 && chrome.tabs.front().tab == TabId{2}, "compact active tab");
-    require(chrome.new_tab.x + chrome.new_tab.width <= chrome.palette.x, "compact controls don't overlap");
-    require(chrome.drag.width >= 48, "compact drag gap");
-    for (int width=330;width<=2400;width+=17) {
-        for (int count=1;count<=32;++count) {
-            std::vector<TabId> tabs;
-            for (int i=1;i<=count;++i) tabs.push_back(TabId{static_cast<std::uint64_t>(i)});
-            const auto geometry=layout_chrome(width,720,tabs,tabs.back());
-            require(geometry.minimize.x>=0 && geometry.close.x+geometry.close.width==width, "caption region remains in client width");
-            require(geometry.drag.width>=48, "overflow never consumes deliberate drag gap");
-            require(geometry.new_tab.x+geometry.new_tab.width<=geometry.palette.x, "new-tab and palette don't overlap");
-            for (const auto& tab:geometry.tabs) {
-                require(tab.bounds.x>=geometry.menu.x+geometry.menu.width, "menu and tab don't overlap");
-                require(tab.bounds.x+tab.bounds.width<=geometry.new_tab.x, "tab and new-tab don't overlap");
-                require(chrome_hit_test(geometry,{tab.bounds.x+tab.bounds.width/2,20},{static_cast<double>(width),720},6,false)==NativeHit::client,"every visible tab excludes drag");
-            }
-        }
-    }
-    chrome = layout_chrome(330,240,{{1},{2}},{1});
-    require(chrome.new_tab.width == 0, "compact hides new-tab before sacrificing drag/caption");
-    chrome = layout_chrome(1100,720,{{1}},{1},46,0);
-    require(chrome.band.height==0 && chrome.tabs.front().bounds.height==0, "fullscreen chrome has no hit area");
+    auto navigation=layout_project_navigation(1100,700,32,{{1},{2}},0,true,false,true);
+    auto chrome=layout_chrome(1100,700,{{1},{2}},{1},46,32,navigation.rail.width,navigation.tabs.height);
+    require(chrome.band.height==32 && chrome.tabs_band.y==32,"thin caption is global, tasks occupy the next row");
+    require(navigation.expanded && navigation.rail.width==184 && navigation.rail.y==32,"workspace navigation defaults below caption");
+    require(chrome.tabs_band.x==navigation.rail.width && chrome.tabs[0].bounds.x>=navigation.rail.width,"workspace owns task tabs, not global caption");
+    require(chrome.tabs[0].bounds.height==32 && chrome.tabs[0].bounds.y==36,"32-DIP task tabs centered in 40-DIP workspace row");
+    require(chrome.tabs[0].bounds.width==188 && chrome.tabs.size()==2,"preferred task width");
+    require(navigation.context.y==72 && navigation.viewport.y==104,"workspace context separates tasks from terminal");
+    require(navigation.viewport.y+navigation.viewport.height==navigation.footer.y && navigation.footer.height==26,"factual footer never overlaps terminal");
+    require(chrome.drag.width>=48,"global caption reserves a genuine drag target");
+    require(chrome_hit_test(chrome,{chrome.maximize.x+10,15},{1100,700},6,false)==NativeHit::maximize,"Snap maximize region");
+    require(chrome_hit_test(chrome,{60,20},{1100,700},6,false)==NativeHit::caption,"empty caption remains draggable");
+    require(chrome_hit_test(chrome,{220,50},{1100,700},6,false)==NativeHit::client,"task tab never starts window drag");
+    require(chrome_hit_test(chrome,{10,100},{1100,700},6,false)==NativeHit::client,"workspace navigation never starts window drag");
+    require(chrome_hit_test(chrome,{1,1},{1100,700},6,false)==NativeHit::top_left,"native resize corner");
+    require(chrome_hit_test(chrome,{1,699},{1100,700},6,true)==NativeHit::client,"maximized border never resizes");
     std::vector<ProjectWorkspaceId> projects;
-    for (unsigned i=1;i<=256;++i) projects.push_back({i});
-    for (int width=330;width<=2200;width+=37) for (int height=180;height<=1000;height+=53) {
-        for (const bool expanded:{false,true}) for (const bool focus:{false,true}) {
-            const auto nav=layout_project_navigation(width,height,48,projects,250,expanded,focus,true);
-            require(nav.viewport.x==nav.rail.width,"project rail and viewport share boundary");
-            require(nav.viewport.x+nav.viewport.width==width,"project viewport fits client");
-            require(nav.viewport.y+nav.viewport.height==height,"context viewport fits client height");
-            require(nav.projects.size()<=nav.capacity,"navigation rows are bounded");
-            for (const auto& row:nav.projects) {
-                require(row.bounds.y>=nav.toggle.y+nav.toggle.height,"project row excludes toggle");
-                require(row.bounds.y+row.bounds.height<=nav.new_project.y,"project rows exclude folder creation");
-                require(row.project.value>=1 && row.project.value<=256,"only actual supplied projects are shown");
-            }
-            require(focus ? nav.rail.width==0 && nav.context.height==0 : nav.rail.width==(expanded && width>=640?184:44),"collapsed/focus/narrow geometry");
+    for(unsigned i=1;i<=256;++i)projects.push_back({i});
+    for(int width=330;width<=2400;width+=37) for(int height=180;height<=1000;height+=53)
+      for(const bool expanded:{false,true}) for(const bool focus:{false,true}) {
+        const auto nav=layout_project_navigation(width,height,32,projects,250,expanded,focus,true);
+        const auto inside=[&](Rect r) { return r.x>=0 && r.y>=0 && r.width>=0 && r.height>=0 && r.x+r.width<=width && r.y+r.height<=height; };
+        for(const auto r:{nav.rail,nav.tabs,nav.context,nav.focus,nav.viewport,nav.footer,nav.toggle,nav.new_project,nav.settings})
+            require(inside(r),"all shell chrome remains bounded at narrow/short window sizes");
+        require(nav.viewport.x==nav.rail.width && nav.tabs.x==nav.rail.width,"tabs/context/body share navigation boundary");
+        require(nav.viewport.x+nav.viewport.width==width && nav.viewport.y+nav.viewport.height==nav.footer.y,"body excludes global footer");
+        require(nav.context.y==nav.tabs.y+nav.tabs.height && nav.viewport.y==nav.context.y+nav.context.height,"vertical workspace hierarchy has no gaps/overlap");
+        require(nav.projects.size()<=nav.capacity,"navigation rows bounded");
+        for(const auto& row:nav.projects) {
+            require(inside(row.bounds) && row.bounds.y>=nav.toggle.y+nav.toggle.height,"rows exclude sidebar header");
+            const auto bottom=nav.new_project.height>0?nav.new_project.y:nav.settings.height>0?nav.settings.y:nav.footer.y;
+            require(row.bounds.y+row.bounds.height<=bottom,"rows exclude sidebar actions");
+            require(row.project.value>=1 && row.project.value<=256,"only actual projects are displayed");
         }
-    }
-    const auto no_context=layout_project_navigation(1100,720,48,{{1}},0,false,false,false);
-    require(no_context.context.height==0 && no_context.viewport.y==48,"unknown directory does not invent context row");
-    const auto empty_nav=layout_project_navigation(1100,720,48,{},999,false,false,true);
-    require(empty_nav.projects.empty() && empty_nav.first==0,"navigation never invents project rows");
+        require(focus?nav.rail.width==0 && nav.context.height==0 && nav.footer.height==0:nav.rail.width==(expanded && width>=640?184:44),"focus and narrow windows retain useful terminal width");
+        for(int count=1;count<=32;++count) {
+            std::vector<TabId> tabs;for(int i=1;i<=count;++i)tabs.push_back({static_cast<std::uint64_t>(i)});
+            const auto geometry=layout_chrome(width,height,tabs,tabs.back(),46,32,nav.rail.width,nav.tabs.height);
+            require(geometry.tabs_band==nav.tabs,"render/hit-test task band matches navigation model");
+            require(geometry.close.x+geometry.close.width==width && geometry.drag.width>=48,"caption/Snap and drag independent of tab count");
+            require(geometry.new_tab.x+geometry.new_tab.width<=width,"new task remains bounded");
+            for(const auto& tab:geometry.tabs) {
+                require(inside(tab.bounds) && tab.bounds.x>=nav.rail.width && tab.bounds.y>=32,"tasks are children of current workspace column");
+                require(tab.bounds.x+tab.bounds.width<=geometry.new_tab.x,"task and new-task hit targets don't overlap");
+                const Point center{tab.bounds.x+tab.bounds.width/2,tab.bounds.y+tab.bounds.height/2};
+                for(const double dpi:{1.0,1.25,1.5,2.0,3.0}) {
+                    const Point physical{std::round(center.x*dpi),std::round(center.y*dpi)};
+                    require(chrome_hit_test(geometry,{physical.x/dpi,physical.y/dpi},{double(width),double(height)},6,false)==NativeHit::client,"DPI-rounded task hit must not start native drag");
+                }
+            }
+        }
+      }
+    navigation=layout_project_navigation(330,180,32,{{1}},0,true,false,true);
+    chrome=layout_chrome(330,180,{{1},{2},{3}},{2},46,32,navigation.rail.width,navigation.tabs.height);
+    require(chrome.compact && chrome.tabs.size()==1 && chrome.tabs[0].tab==TabId{2},"compact mode preserves active task picker");
+    require(chrome.new_tab.width==28,"narrow layout retains new task without stealing caption drag");
+    const auto no_context=layout_project_navigation(1100,720,32,{{1}},0,false,false,false);
+    require(no_context.context.height==0 && no_context.viewport.y==72,"omitted context leaves no blank row");
+    const auto empty_nav=layout_project_navigation(1100,720,32,{},999,false,false,true);
+    require(empty_nav.projects.empty() && empty_nav.first==0,"no invented workspace entries");
+    const auto fullscreen=layout_project_navigation(1100,720,0,{{1}},0,true,true,false);
+    chrome=layout_chrome(1100,720,{{1}},{1},46,0,fullscreen.rail.width,fullscreen.tabs.height);
+    require(chrome.band.height==0 && chrome.tabs.empty() && fullscreen.viewport==Rect{0,0,1100,720},"fullscreen has no invisible chrome interception");
     ModalFocus modal;
     require(modal.activate()==ModalDecision::cancel,"modal starts with safe Cancel");
     modal.next(); require(modal.activate()==ModalDecision::confirm,"Tab explicitly focuses destructive choice");
