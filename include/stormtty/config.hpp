@@ -9,26 +9,26 @@
 
 namespace stormtty {
 struct Theme {
-    std::string name{"instrument"};
-    std::string background{"#17191D"};
-    std::string foreground{"#ECEEF2"};
-    std::string chrome{"#22252B"};
-    std::string accent{"#A7C4D2"};
+    std::string name{"graphite"};
+    std::string background{"#11151B"};
+    std::string foreground{"#EEEDEC"};
+    std::string chrome{"#181D24"};
+    std::string accent{"#8C9EFF"};
     auto operator<=>(const Theme&) const = default;
 };
-enum class BackdropPreference { automatic, none };
+enum class BackdropPreference { automatic, none, mica, acrylic };
 enum class ReducedMotionPreference { system, enabled, disabled };
 struct AppearanceConfig {
     // Applies ONLY to default canvas background, never glyphs/explicit ANSI
     // backgrounds. Hosts force opaque in high contrast and unsupported paths.
     double background_opacity{0.94};
-    BackdropPreference backdrop{BackdropPreference::automatic};
+    BackdropPreference backdrop{BackdropPreference::acrylic};
     ReducedMotionPreference reduced_motion{ReducedMotionPreference::system};
     auto operator<=>(const AppearanceConfig&) const = default;
 };
 struct FontConfig {
     std::string family{"Cascadia Mono"};
-    double size_dip{14.0};
+    double size_dip{15.0};
     bool ligatures{};
     auto operator<=>(const FontConfig&) const = default;
 };

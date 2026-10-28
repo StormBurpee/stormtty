@@ -172,6 +172,28 @@ struct Clip {
     }
     ~Clip() { dc->PopAxisAlignedClip(); }
 };
+struct OpacityLayer {
+    ID2D1DeviceContext* dc;bool active;
+    OpacityLayer(ID2D1DeviceContext* context,PixelRect bounds,float opacity):dc(context),active(opacity<1) {
+        if(active) {
+            D2D1_LAYER_PARAMETERS1 params{};
+            params.contentBounds=rect(bounds);params.maskAntialiasMode=D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
+            params.maskTransform._11=1;params.maskTransform._22=1;params.opacity=opacity;
+            params.layerOptions=D2D1_LAYER_OPTIONS1_NONE;
+            dc->PushLayer(&params,nullptr);
+        }
+    }
+    ~OpacityLayer(){if(active)dc->PopLayer();}
+};
+PixelRect chrome_bounds(const ChromePrimitive& p) noexcept {
+    if(!std::isfinite(p.stroke_width) || !std::isfinite(p.radius)) return {};
+    const auto pad=std::max(1.0f,p.stroke_width*.5f+1);
+    if(p.kind==ChromePrimitiveKind::line)
+        return {std::min(p.rect.x,p.rect.x+p.rect.width)-pad,std::min(p.rect.y,p.rect.y+p.rect.height)-pad,
+                std::abs(p.rect.width)+pad*2,std::abs(p.rect.height)+pad*2};
+    if(!nonempty(p.rect))return {};
+    return {p.rect.x-pad,p.rect.y-pad,p.rect.width+pad*2,p.rect.height+pad*2};
+}
 struct CellMap { UINT32 column{}, end{}; };
 struct GlyphCluster {
     Com<IDWriteFontFace> face;
@@ -605,8 +627,14 @@ struct Renderer::Impl {
         if (inserted) counters.shape_cache_bytes += bytes;
         return entry->second;
     }
+    bool material_enabled() const noexcept {
+        // Offscreen composition surfaces preserve alpha so WARP can verify its
+        // math. composition=false explicitly tests the opaque fallback there.
+        // A real WARP HWND never advertises an accelerated translucent material.
+        return options.composition && (!window || (counters.composition && !counters.warp));
+    }
     float backdrop_opacity() const noexcept {
-        return (!window || counters.composition) ? options.background_opacity : 1.0f;
+        return material_enabled() ? options.background_opacity : 1.0f;
     }
     void fill(PixelRect r, Color c, float opacity = 1, bool replace = false) {
         if (!nonempty(r)) return;
@@ -879,38 +907,52 @@ struct Renderer::Impl {
     }
     void draw_chrome(const WindowScene& scene, PixelRect damage) {
         for (const auto& primitive : scene.primitives) {
+            if(!overlaps(chrome_bounds(primitive),damage))continue;
             if (primitive.kind == ChromePrimitiveKind::line) {
-                PixelRect box{std::min(primitive.rect.x,primitive.rect.x+primitive.rect.width)-primitive.stroke_width,
-                              std::min(primitive.rect.y,primitive.rect.y+primitive.rect.height)-primitive.stroke_width,
-                              std::abs(primitive.rect.width)+primitive.stroke_width*2,
-                              std::abs(primitive.rect.height)+primitive.stroke_width*2};
-                if (!overlaps(box,damage)) continue;
                 brush->SetColor(color(primitive.stroke_width>0?primitive.stroke:primitive.fill));
                 dc->DrawLine({primitive.rect.x,primitive.rect.y},{primitive.rect.x+primitive.rect.width,primitive.rect.y+primitive.rect.height},
                              brush.get(),std::max(1.0f,primitive.stroke_width));
             } else {
-                if (!overlaps(primitive.rect,damage)) continue;
-                const D2D1_ROUNDED_RECT rounded{rect(primitive.rect),primitive.radius,primitive.radius};
-                if (primitive.fill.a) { brush->SetColor(color(primitive.fill)); dc->FillRoundedRectangle(rounded,brush.get()); }
+                const auto radius=std::clamp(primitive.radius,0.0f,std::min(primitive.rect.width,primitive.rect.height)*.5f);
+                const D2D1_ROUNDED_RECT rounded{rect(primitive.rect),radius,radius};
+                if (primitive.fill.a || primitive.background_replace) {
+                    auto fill_color=primitive.fill;
+                    if(primitive.background_replace && !material_enabled())fill_color.a=255;
+                    brush->SetColor(color(fill_color));
+                    if(primitive.background_replace)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+                    dc->FillRoundedRectangle(rounded,brush.get());
+                    if(primitive.background_replace)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+                }
                 if (primitive.stroke_width>0 && primitive.stroke.a) {
                     brush->SetColor(color(primitive.stroke)); dc->DrawRoundedRectangle(rounded,brush.get(),primitive.stroke_width);
                 }
             }
         }
         for (const auto& label : scene.texts) {
-            if (!nonempty(label.rect) || !overlaps(label.rect,damage) || label.text.empty()) continue;
-            if (label.text.size()>32768 || !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256) continue;
+            if (!nonempty(label.rect) || !overlaps(label.rect,damage) || label.text.empty() || !label.color.a) continue;
+            if (label.text.size()>32768 || label.family.empty() || label.family.size()>256 ||
+                !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256) continue;
             const auto text = utf16(label.text), family = utf16(label.family);
             Com<IDWriteTextFormat> format;
             check(write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*dpi/96,L"en-US",format.put()),"Create chrome font");
-            format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-            format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            check(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP),"Set chrome no-wrap");
+            check(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER),"Center chrome baseline");
+            // DirectWrite owns grapheme/cluster-safe end truncation and the real
+            // omission glyph; never shorten UTF-8 strings or clip a partial glyph.
+            Com<IDWriteInlineObject> ellipsis;
+            check(write_factory->CreateEllipsisTrimmingSign(format.get(),ellipsis.put()),"Create chrome ellipsis");
+            const DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER,0,0};
+            check(format->SetTrimming(&trimming,ellipsis.get()),"Set chrome end ellipsis");
             Com<IDWriteTextLayout> layout;
             check(write_factory->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format.get(),
                                                   label.rect.width,label.rect.height,layout.put()),"Create chrome layout");
-            brush->SetColor(color(label.color));
+            auto foreground=label.color;foreground.a=255;
+            brush->SetColor(color(foreground));
             Clip clip(dc.get(),label.rect);
+            // Layer opacity applies equally to monochrome and color-font layers.
+            // Only deliberate ChromeText alpha is faded; terminal rows never are.
+            OpacityLayer opacity(dc.get(),intersect(label.rect,{0,0,float(width),float(height)}),float(label.color.a)/255);
             dc->DrawTextLayout({label.rect.x,label.rect.y},layout.get(),brush.get(),D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
         }
     }
@@ -925,10 +967,24 @@ struct Renderer::Impl {
     }
     std::vector<PixelRect> damage(const WindowScene& scene) const {
         const PixelRect full{0,0,float(width),float(height)};
-        if (invalid || scene.force_redraw || scene.chrome_generation != previous.chrome_generation ||
+        if (invalid || scene.force_redraw ||
             scene.background != previous.background || scene.panes.size()!=previous.panes.size()) return {full};
         std::vector<PixelRect> result;
-        auto add = [&](PixelRect r) { r=intersect(r,full); if(nonempty(r)) result.push_back(r); };
+        auto add = [&](PixelRect r) { if(!nonempty(r))return;r=intersect(r,full);if(nonempty(r))result.push_back(r); };
+        if(scene.chrome_generation!=previous.chrome_generation) {
+            const auto primitives=std::max(scene.primitives.size(),previous.primitives.size());
+            for(std::size_t i=0;i<primitives;++i) {
+                if(i<scene.primitives.size() && i<previous.primitives.size() && scene.primitives[i]==previous.primitives[i])continue;
+                if(i<scene.primitives.size())add(chrome_bounds(scene.primitives[i]));
+                if(i<previous.primitives.size())add(chrome_bounds(previous.primitives[i]));
+            }
+            const auto texts=std::max(scene.texts.size(),previous.texts.size());
+            for(std::size_t i=0;i<texts;++i) {
+                if(i<scene.texts.size() && i<previous.texts.size() && scene.texts[i]==previous.texts[i])continue;
+                if(i<scene.texts.size())add(scene.texts[i].rect);
+                if(i<previous.texts.size())add(previous.texts[i].rect);
+            }
+        }
         for (std::size_t i=0;i<scene.panes.size();++i) {
             const auto& now=scene.panes[i]; const auto& before=previous.panes[i];
             if (now.id!=before.id || now.content!=before.content) return {full};
@@ -979,7 +1035,7 @@ struct Renderer::Impl {
         if (!width || !height || !canvas) return RenderResult::suspended;
         ++tick;
         const auto dirty=damage(scene);
-        if(dirty.empty() && !pending_present) return RenderResult::unchanged;
+        if(dirty.empty() && !pending_present) {previous=scene;previous.force_redraw=false;return RenderResult::unchanged;}
         if(!dirty.empty()) {
             dc->SetTarget(canvas.get());
             dc->BeginDraw();

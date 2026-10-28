@@ -15,6 +15,17 @@ int main() { return run_core_tests("config", [] {
         custom.profiles[0].environment["EXAMPLE"] = "x\\y\t#literal"; custom.bindings.clear();
         auto parsed = parse_config(serialize_config(custom, platform), platform); CHECK(parsed); CHECK(*parsed.config == custom);
     }
+    const auto graphite = default_config(Platform::windows);
+    CHECK(graphite.theme.name == "graphite" && graphite.theme.background == "#11151B");
+    CHECK(graphite.appearance.background_opacity == 0.94 && graphite.appearance.backdrop == BackdropPreference::acrylic);
+    CHECK(graphite.font.size_dip == 15);
+    for (const auto backdrop : {BackdropPreference::automatic,BackdropPreference::none,BackdropPreference::mica,BackdropPreference::acrylic}) {
+        auto config = graphite; config.appearance.backdrop = backdrop;
+        auto roundtrip = parse_config(serialize_config(config,Platform::windows),Platform::windows);
+        CHECK(roundtrip); CHECK(roundtrip.config->appearance.backdrop == backdrop);
+    }
+    auto instrument = parse_config("version = 1\n[theme]\nname = \"instrument\"",Platform::windows);
+    CHECK(instrument && instrument.config->theme.background == "#17191D");
     CHECK(parse_config("version = 1\n[appearance]\nbackground_opacity = 0.7\nbackdrop = \"none\"\nreduced_motion = \"disabled\"", Platform::windows));
     CHECK(parse_config("version = 1\n[appearance]\nbackground_opacity = 1.0", Platform::windows));
     for (const auto* bad : {"background_opacity = 0.69", "background_opacity = 1.01", "background_opacity = nan", "backdrop = \"acrylic-magic\"", "reduced_motion = \"sometimes\""}) {

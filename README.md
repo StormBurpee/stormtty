@@ -15,14 +15,10 @@
   <a href="#roadmap">Roadmap</a>
 </p>
 
-![StormTTY Smoke design concept: an integrated tab bar above two terminal panes, with restrained background translucency and opaque text. This is a static illustration, not a running application.](docs/readme-assets/smoke-concept.png)
-
-<p align="center"><sub><strong>Smoke, a static design concept.</strong> A direction for the native interface, not a screenshot or evidence of runtime behavior.</sub></p>
-
 > [!IMPORTANT]
 > **StormTTY is in active development, not ready for daily use.** The Windows
-> application is implemented and cross-links; native runtime qualification is
-> still underway. There is no production release or supported binary download.
+> application builds with MSVC and its baseline native test suite passes;
+> interaction, visual and compatibility qualification are still underway. There is no production release or supported binary download.
 > See [platform status](#platform-status) before building.
 
 ## Why StormTTY?
@@ -40,7 +36,7 @@ between you and your shell.
   restarting their processes. The Windows host exposes these through commands
   and direct manipulation; cross-window tear-off is still planned.
 - **An interface that leaves room for the terminal.** Integrated tabs, quiet
-  dividers and no permanent sidebar. The Smoke direction adds slight
+  dividers and no permanent sidebar. The Graphite direction adds slight
   background-only translucency: glyphs, the cursor and explicit terminal cell
   backgrounds stay opaque. Native visual qualification remains a separate gate.
 - **Keyboard commands without stealing the shell's keys.** A searchable command
@@ -273,6 +269,24 @@ the terminal compatibility, performance, input or accessibility requirements.
 
 See the [acceptance gates](docs/acceptance-gates.md) for the detailed test matrix.
 Proposed latency and memory budgets there are targets, not results.
+
+## Ink workload checks
+
+An optional qualification target runs a pinned, real Ink/React application through
+StormTTY's PTY and session pipeline. It covers changing animation frames, input,
+paste, Unicode and resize, and refuses a noninteractive fallback. The initial
+Linux run passes; Windows and macOS qualification remain separate. One fixture
+is not a claim that every Ink application works.
+
+```sh
+npm ci --prefix tests/ink --ignore-scripts --no-audit --no-fund
+npm test --prefix tests/ink
+```
+
+Use Node 22 or newer and add `-DSTORMTTY_TEST_INK=ON` to your CMake configuration.
+The normal desktop build does not require Node. See the
+[verification record](tests/ink_verification.md) for commands, evidence and resize
+limitations.
 
 ## Testing and contributing
 

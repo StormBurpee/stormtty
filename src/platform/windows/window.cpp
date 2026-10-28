@@ -15,6 +15,7 @@
 #include <dwmapi.h>
 #include <imm.h>
 #include <wincodec.h>
+#include <commctrl.h>
 #include "stormtty/native_window.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/session.hpp"
@@ -29,6 +30,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -38,6 +40,7 @@ namespace {
 constexpr UINT wake_message = WM_APP + 41;
 constexpr UINT_PTR cursor_timer = 1;
 constexpr UINT_PTR smoke_timeout_timer = 2;
+constexpr UINT_PTR chrome_motion_timer = 3;
 constexpr std::string_view smoke_marker="__STORMTTY_NATIVE_SMOKE_OK__";
 constexpr std::size_t clipboard_limit = 1024 * 1024;
 
@@ -207,10 +210,14 @@ private:
     void position_ime();
     void composition(LPARAM);
     void caret_schedule();
+    void motion_schedule();
+    void hover_changed(Point);
+    void refresh_tooltips();
+    double hover_amount(std::uint64_t id) const;
     void toggle_fullscreen();
     void show_error(std::string_view);
-    std::string pane_title(PaneId) const;
-    std::string tab_title(TabId) const;
+    std::string pane_title(PaneId, bool full = false) const;
+    std::string tab_title(TabId, bool full = false) const;
     PixelRect pixels(Rect r) const { return {static_cast<float>(r.x * scale_), static_cast<float>(r.y * scale_), static_cast<float>(r.width * scale_), static_cast<float>(r.height * scale_)}; }
     Point point(LPARAM lparam, bool screen = false) const {
         POINT value{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
@@ -218,12 +225,13 @@ private:
         return {value.x / scale_, value.y / scale_};
     }
     Rect content_bounds(const PanePlacement& p) const {
-        const double header = layout_.panes.size() > 1 ? 24.0 : 0.0;
-        return {p.bounds.x + 12, p.bounds.y + header + 10, std::max(0.0, p.bounds.width - 24), std::max(0.0, p.bounds.height - header - 20)};
+        const double header = layout_.panes.size() > 1 ? 28.0 : 0.0;
+        return {p.bounds.x + 20, p.bounds.y + header + 16, std::max(0.0, p.bounds.width - 40), std::max(0.0, p.bounds.height - header - 32)};
     }
     Config config_;
     NativeRunOptions options_;
-    bool smoke_command_sent_{}, smoke_marker_presented_{}, smoke_finished_{};
+    std::set<SessionId> smoke_commands_sent_;
+    bool smoke_marker_presented_{}, smoke_finished_{};
     int exit_code_{};
     Workspace workspace_;
     std::map<SessionId, std::shared_ptr<Session>> sessions_;
@@ -232,7 +240,15 @@ private:
     SessionId focused_session_{};
     std::uint64_t next_session_{1};
     std::shared_ptr<WakeState> wake_;
-    HWND hwnd_{};
+    HWND hwnd_{}, tooltip_{};
+    std::map<UINT_PTR, std::wstring> tooltip_texts_;
+    std::map<std::uint64_t, ChromeTransition> hover_transitions_;
+    std::map<TabId, ChromeTransition> tab_transitions_;
+    std::map<PaneId, ChromeTransition> pane_reveals_;
+    ChromeTransition palette_transition_;
+    bool motion_timer_active_{};
+    std::vector<ChromePrimitive> closing_palette_primitives_;
+    std::vector<ChromeText> closing_palette_texts_;
     std::unique_ptr<Renderer> renderer_;
     double scale_{1}, width_{1100}, height_{720};
     UINT dpi_{96};
@@ -276,6 +292,13 @@ void NativeWindow::create() {
                            CW_USEDEFAULT, CW_USEDEFAULT, 1100, 720, nullptr, nullptr, GetModuleHandleW(nullptr), this);
     if (!hwnd_) throw std::runtime_error("Could not create the native StormTTY window.");
     wake_->window.store(hwnd_, std::memory_order_release);
+    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES};
+    if (InitCommonControlsEx(&controls)) {
+        tooltip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
+            CW_USEDEFAULT, CW_USEDEFAULT, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (tooltip_) { SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, 600); SendMessageW(tooltip_, TTM_SETDELAYTIME, TTDT_INITIAL, 600); }
+    }
     dpi_ = GetDpiForWindow(hwnd_); scale_ = dpi_ / 96.0;
     RendererOptions options;
     options.force_warp = options_.smoke_test;
@@ -285,8 +308,20 @@ void NativeWindow::create() {
     renderer_ = std::make_unique<Renderer>(hwnd_, options);
     settings_changed();
     new_tab();
+    if (options_.smoke_layout) {
+        const auto first=workspace_.active_pane();
+        workspace_.rename_tab(workspace_.active_tab(),"Native layout smoke");
+        new_tab(); workspace_.rename_tab(workspace_.active_tab(),"Background shell 1");
+        new_tab(); workspace_.rename_tab(workspace_.active_tab(),"Background shell 2");
+        activate(first); split(Direction::right); split(Direction::down); activate(first);
+        for (const auto& divider:layout_.dividers) if (divider.axis==Axis::horizontal) {
+            workspace_.set_split_ratio(divider.node,0.60); break;
+        }
+        changed(true);
+    }
     SetWindowPos(hwnd_, nullptr, 0, 0, static_cast<int>(1100 * scale_), static_cast<int>(720 * scale_), SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
     refresh_layout();
+    settings_changed();
     ShowWindow(hwnd_, SW_SHOWNORMAL);
     UpdateWindow(hwnd_);
     if (options_.smoke_test && !SetTimer(hwnd_,smoke_timeout_timer,20000,nullptr)) throw std::runtime_error("Could not start the native smoke deadline.");
@@ -350,14 +385,21 @@ void NativeWindow::settings_changed() {
     high_contrast_ = SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0) && (contrast.dwFlags & HCF_HIGHCONTRASTON);
     BOOL animations = TRUE;
     SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0);
-    reduced_motion_ = !animations || config_.appearance.reduced_motion==ReducedMotionPreference::enabled;
-    if (config_.appearance.reduced_motion==ReducedMotionPreference::disabled && animations) reduced_motion_=false;
+    reduced_motion_ = high_contrast_ || !animations || config_.appearance.reduced_motion==ReducedMotionPreference::enabled;
+    if (config_.appearance.reduced_motion==ReducedMotionPreference::disabled && animations && !high_contrast_) reduced_motion_=false;
     DWORD transparency = 1, size = sizeof(transparency);
     RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"EnableTransparency", RRF_RT_REG_DWORD, nullptr, &transparency, &size);
     const BOOL dark = config_.theme.name != "daylight" && !high_contrast_;
     DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(20), &dark, sizeof(dark));
-    const DWORD material = high_contrast_ || !transparency || config_.appearance.backdrop==BackdropPreference::none ? 1 : 2;
-    backdrop_ = SUCCEEDED(DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(38), &material, sizeof(material))) && material == 2;
+    // Documented Windows 11 attributes. Unsupported builds return E_INVALIDARG;
+    // no undocumented accent-policy calls, layered-window opacity or region hacks.
+    const DWORD corners = 2; // DWMWCP_ROUND; DWM suppresses rounding when snapped/maximized.
+    DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(33), &corners, sizeof(corners));
+    const auto render_capability = renderer_ ? renderer_->stats() : RendererStats{};
+    const bool can_material = renderer_ && render_capability.composition && !render_capability.warp && !high_contrast_ && transparency;
+    const DWORD requested_material = config_.appearance.backdrop == BackdropPreference::acrylic ? 3 : 2;
+    const DWORD material = !can_material || config_.appearance.backdrop==BackdropPreference::none ? 1 : requested_material;
+    backdrop_ = SUCCEEDED(DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(38), &material, sizeof(material))) && material != 1;
     MARGINS margins = backdrop_ ? MARGINS{-1,-1,-1,-1} : MARGINS{1,1,1,1};
     DwmExtendFrameIntoClientArea(hwnd_, &margins);
     if (renderer_) renderer_->set_background_opacity(backdrop_ ? static_cast<float>(config_.appearance.background_opacity) : 1.0f);
@@ -367,6 +409,7 @@ void NativeWindow::changed(bool geometry) {
     ++chrome_generation_; dirty_ = true;
     sync_focus();
     if (geometry && renderer_) refresh_layout();
+    motion_schedule();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 void NativeWindow::refresh_layout() {
@@ -376,9 +419,9 @@ void NativeWindow::refresh_layout() {
     std::vector<TabId> tabs;
     for (const auto& tab : workspace_.state().tabs) tabs.push_back(tab.id);
     const auto caption_width = std::max(46.0, GetSystemMetricsForDpi(SM_CXSIZE, dpi_) / scale_);
-    chrome_ = layout_chrome(width_, height_, tabs, workspace_.active_tab(), caption_width, fullscreen_ ? 0 : 40);
+    chrome_ = layout_chrome(width_, height_, tabs, workspace_.active_tab(), caption_width, fullscreen_ ? 0 : 48);
     zoom_return_={};
-    if (const auto* tab=workspace_.tab(workspace_.active_tab()); tab && tab->zoomed_pane && chrome_.drag.width>=180 && !fullscreen_) zoom_return_={chrome_.drag.x+4,6,120,28};
+    if (const auto* tab=workspace_.tab(workspace_.active_tab()); tab && tab->zoomed_pane && chrome_.drag.width>=180 && !fullscreen_) zoom_return_={chrome_.drag.x+4,10,120,28};
     layout_ = workspace_.layout(workspace_.active_tab(), {0, chrome_.band.height, width_, std::max(0.0, height_ - chrome_.band.height)}, {1.0 / scale_, 7, 80, 48});
     if (renderer_) {
         renderer_->resize(static_cast<std::uint32_t>(std::max(0L, bounds.right)), static_cast<std::uint32_t>(std::max(0L, bounds.bottom)), static_cast<float>(dpi_));
@@ -398,6 +441,7 @@ void NativeWindow::refresh_layout() {
             }
         }
     }
+    refresh_tooltips();
     position_ime();
 }
 void NativeWindow::submit(std::function<SessionSendResult()> action, std::size_t bytes) {
@@ -520,13 +564,14 @@ void NativeWindow::activate(PaneId pane) {
 }
 void NativeWindow::update_sessions() {
     std::vector<std::pair<PaneId,std::string>> titles;
+    bool state_changed=false;
     for (const auto& [pane_id,pane]:workspace_.state().panes) {
         auto found=sessions_.find(pane.session);
         if (found==sessions_.end()) continue;
         const auto info=found->second->info();
         if (!info.title.empty() && pane.title!=info.title) titles.emplace_back(pane_id,info.title);
         if (!info.error.empty() && notice_!=info.error) { notice_=info.error; ++chrome_generation_; }
-        if (!session_states_.contains(pane.session) || session_states_[pane.session]!=info.state) { session_states_[pane.session]=info.state; ++chrome_generation_; }
+        if (!session_states_.contains(pane.session) || session_states_[pane.session]!=info.state) { session_states_[pane.session]=info.state; state_changed=true; ++chrome_generation_; }
     }
     // Model mutations transactionally replace state; never retain iterators or
     // Pane references across them.
@@ -535,28 +580,110 @@ void NativeWindow::update_sessions() {
     { std::lock_guard lock(wake_->mutex); clipboard.swap(wake_->clipboard); error.swap(wake_->error); }
     if (clipboard) set_clipboard(*clipboard);
     if (error) show_error(*error);
+    if (!titles.empty() || state_changed) refresh_tooltips();
     drain_input(); dirty_=true; caret_schedule(); position_ime();
     if (options_.smoke_test) smoke_progress();
 }
 void NativeWindow::show_error(std::string_view error) { notice_ = std::string(error); changed(); }
 
-std::string NativeWindow::pane_title(PaneId id) const {
+std::string NativeWindow::pane_title(PaneId id, bool full) const {
     const auto* pane = workspace_.pane(id);
     if (!pane) return {};
     std::string result = pane->title;
-    if (result.empty()) {
-        for (const auto& profile : config_.profiles) if (profile.id == pane->profile) { result = profile.label; break; }
-        if (result.empty()) result = "Terminal";
+    const Profile* profile = nullptr;
+    for (const auto& candidate : config_.profiles) if (candidate.id == pane->profile) { profile = &candidate; break; }
+    if (result.empty()) result = profile && !profile->label.empty() ? profile->label : "Terminal";
+    // Only replace an exact executable path, never arbitrary OSC text or a user
+    // rename. The untouched title remains available in the native tooltip.
+    if (!full && profile && !profile->label.empty()) {
+        auto canonical = [](std::string value) {
+            for (auto& c : value) { if (c == '/') c = '\\'; if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a'); }
+            return value;
+        };
+        const auto title = canonical(result), executable = canonical(profile->executable);
+        bool exact = !executable.empty() && title == executable;
+        if (executable == "cmd.exe" || executable == "cmd") {
+            std::array<wchar_t, MAX_PATH + 1> directory{};
+            const UINT length = GetSystemDirectoryW(directory.data(), static_cast<UINT>(directory.size()));
+            if (length && length < directory.size()) exact = exact || title == canonical(narrow(std::wstring(directory.data(), length) + L"\\cmd.exe"));
+        }
+        if (exact) result = profile->label;
     }
     result.erase(std::remove_if(result.begin(), result.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; }), result.end());
-    if (result.size() > 256) { result.resize(256); while (!result.empty() && (static_cast<unsigned char>(result.back()) & 0xc0) == 0x80) result.pop_back(); }
+    // The model bounds untrusted titles. DirectWrite performs visual ellipsis;
+    // do not byte-truncate UTF-8 or mutate the session title for presentation.
     if (auto* session = session_for(id); session && session->closed()) result += " · exited";
     return result;
 }
-std::string NativeWindow::tab_title(TabId id) const {
+std::string NativeWindow::tab_title(TabId id, bool full) const {
     const auto* tab = workspace_.tab(id);
     if (!tab) return {};
-    return tab->title.empty() ? pane_title(tab->active_pane) : tab->title;
+    return tab->title.empty() ? pane_title(tab->active_pane, full) : tab->title;
+}
+void NativeWindow::refresh_tooltips() {
+    if (!tooltip_) return;
+    for (const auto& [id, text] : tooltip_texts_) {
+        (void)text; TOOLINFOW info{}; info.cbSize=sizeof(info); info.hwnd=hwnd_; info.uId=id;
+        SendMessageW(tooltip_, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&info));
+    }
+    tooltip_texts_.clear();
+    UINT_PTR next=1;
+    auto add = [&](Rect bounds, std::string text) {
+        if (bounds.width <= 0 || bounds.height <= 0) return;
+        const auto id=next++; auto& owned=tooltip_texts_[id]; owned=widen(text);
+        TOOLINFOW info{}; info.cbSize=sizeof(info); info.hwnd=hwnd_; info.uId=id; info.uFlags=TTF_SUBCLASS;
+        const auto r=pixels(bounds); info.rect={static_cast<LONG>(r.x),static_cast<LONG>(r.y),static_cast<LONG>(r.x+r.width),static_cast<LONG>(r.y+r.height)};
+        info.lpszText=owned.data(); SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
+    };
+    for (const auto& tab:chrome_.tabs) add(tab.bounds,tab_title(tab.tab,true));
+    if (layout_.panes.size()>1) for (const auto& pane:layout_.panes) add({pane.bounds.x,pane.bounds.y,pane.bounds.width,28},pane_title(pane.pane,true));
+    add(chrome_.new_tab,"New tab · Ctrl+Shift+T"); add(chrome_.palette,"Commands · Ctrl+Shift+P"); add(chrome_.menu,"StormTTY menu");
+}
+double NativeWindow::hover_amount(std::uint64_t id) const {
+    const auto found=hover_transitions_.find(id);
+    return found==hover_transitions_.end()?0:found->second.value(GetTickCount64());
+}
+void NativeWindow::hover_changed(Point point) {
+    hover_=point; const auto now=GetTickCount64(); bool modified=false;
+    auto target=[&](std::uint64_t id, Rect bounds) {
+        const double next=bounds.contains(point)?1:0;
+        auto& transition=hover_transitions_[id]; const double before=transition.value(now);
+        transition.target(next,now,reduced_motion_?0:80);
+        modified=modified || before!=next;
+    };
+    target(1,chrome_.menu); target(2,chrome_.new_tab); target(3,chrome_.palette);
+    target(4,chrome_.minimize); target(5,chrome_.maximize); target(6,chrome_.close); target(7,zoom_return_);
+    for (const auto& tab:chrome_.tabs) { target(16+tab.tab.value*2,tab.bounds); target(17+tab.tab.value*2,tab.close); }
+    for (const auto& divider:layout_.dividers) target((1ull<<63)|divider.node.value,divider.hit_bounds);
+    if (modified) changed();
+}
+void NativeWindow::motion_schedule() {
+    const auto now=GetTickCount64(); const auto duration=reduced_motion_?0:120;
+    palette_transition_.target(palette_open_||rename_open_?1:0,now,reduced_motion_?0:100);
+    for (const auto& tab:chrome_.tabs) tab_transitions_[tab.tab].target(tab.tab==workspace_.active_tab()?1:0,now,duration);
+    for (const auto& pane:layout_.panes) pane_reveals_[pane.pane].target(1,now,duration);
+    std::erase_if(tab_transitions_,[&](const auto& item){return !workspace_.tab(item.first);});
+    std::erase_if(pane_reveals_,[&](const auto& item){return !workspace_.pane(item.first);});
+    std::erase_if(hover_transitions_,[&](const auto& item){
+        if (item.first&(1ull<<63)) return !workspace_.node(NodeId{item.first&~(1ull<<63)});
+        return item.first>=16 && !workspace_.tab(TabId{(item.first-16)/2});
+    });
+    bool running=false;
+    auto check=[&](ChromeTransition& transition) { if (reduced_motion_ || minimized_) transition.finish(); running=running||transition.active(now); };
+    check(palette_transition_);
+    for (auto& [id,t]:hover_transitions_) { (void)id; check(t); }
+    for (auto& [id,t]:tab_transitions_) { (void)id; check(t); }
+    for (auto& [id,t]:pane_reveals_) { (void)id; check(t); }
+    if (running && !motion_timer_active_) {
+        motion_timer_active_=SetTimer(hwnd_,chrome_motion_timer,16,nullptr)!=0;
+        if (!motion_timer_active_) { // Resource pressure must never leave chrome half-hidden.
+            palette_transition_.finish();
+            for (auto& [id,t]:hover_transitions_) { (void)id; t.finish(); }
+            for (auto& [id,t]:tab_transitions_) { (void)id; t.finish(); }
+            for (auto& [id,t]:pane_reveals_) { (void)id; t.finish(); }
+        }
+    }
+    else if (!running && motion_timer_active_) { KillTimer(hwnd_,chrome_motion_timer); motion_timer_active_=false; }
 }
 CommandContext NativeWindow::command_context() const {
     CommandContext context;
@@ -673,20 +800,26 @@ WindowScene NativeWindow::scene() {
     const Color background = high_contrast_ ? system_color(COLOR_WINDOW) : color_hex(config_.theme.background, {23,25,29,255});
     Color chrome = high_contrast_ ? system_color(COLOR_BTNFACE) : color_hex(config_.theme.chrome, {34,37,43,255});
     const bool daylight=config_.theme.name=="daylight";
-    Color raised = high_contrast_ ? system_color(COLOR_WINDOW) : daylight?Color{225,230,235,255}:Color{48,52,61,255};
+    Color raised = high_contrast_ ? system_color(COLOR_WINDOW) : daylight?Color{225,230,235,255}:Color{37,45,58,255};
     const Color text = high_contrast_ ? system_color(COLOR_BTNTEXT) : color_hex(config_.theme.foreground, {236,238,242,255});
-    const Color secondary = high_contrast_ ? text : daylight?Color{88,101,114,255}:Color{164,173,185,255};
+    const Color secondary = high_contrast_ ? text : daylight?Color{88,101,114,255}:Color{162,173,190,255};
     const Color accent = high_contrast_ ? system_color(COLOR_WINDOWTEXT) : color_hex(config_.theme.accent, {167,196,210,255});
-    const Color seam = high_contrast_ ? text : Color{116,131,145,255};
+    const Color seam = high_contrast_ ? text : Color{162,173,190,56};
     result.background = background; result.chrome_generation = chrome_generation_;
-    auto rectangle = [&](Rect bounds, Color fill, double radius = 0, Color stroke = {}, double stroke_width = 0) {
-        result.primitives.push_back({pixels(bounds), fill, stroke, static_cast<float>(radius * scale_), static_cast<float>(stroke_width * scale_), ChromePrimitiveKind::rectangle});
+    auto rectangle = [&](Rect bounds, Color fill, double radius = 0, Color stroke = {}, double stroke_width = 0, bool replace = false) {
+        result.primitives.push_back({pixels(bounds), fill, stroke, static_cast<float>(radius * scale_), static_cast<float>(stroke_width * scale_), ChromePrimitiveKind::rectangle, replace});
     };
     auto line = [&](double x1, double y1, double x2, double y2, Color color, double width = 1) {
         result.primitives.push_back({pixels({x1,y1,x2-x1,y2-y1}), {}, color, 0, static_cast<float>(width * scale_), ChromePrimitiveKind::line});
     };
     auto label = [&](Rect bounds, std::string value, Color color, float size = 13, bool bold = false) {
         result.texts.push_back({pixels(bounds), std::move(value), color, size, bold, "Segoe UI Variable Text"});
+    };
+    const auto now=GetTickCount64();
+    auto opacity=[](Color color,double amount) { color.a=static_cast<std::uint8_t>(std::clamp(std::lround(color.a*amount),0L,255L)); return color; };
+    auto blend=[](Color a,Color b,double t) {
+        auto channel=[&](int x,int y){return static_cast<std::uint8_t>(std::lround(x+(y-x)*t));};
+        return Color{channel(a.r,b.r),channel(a.g,b.g),channel(a.b,b.b),channel(a.a,b.a)};
     };
     for (const auto& placement : layout_.panes) {
         if (auto* session = session_for(placement.pane)) {
@@ -695,42 +828,50 @@ WindowScene NativeWindow::scene() {
             result.panes.push_back({placement.pane.value,pixels(content_bounds(placement)),std::move(frame),active_ && placement.pane==workspace_.active_pane() && !palette_open_ && !rename_open_,cursor_visible,reduced_motion_ || cursor_on_});
         }
         if (layout_.panes.size() > 1) {
-            const Rect header{placement.bounds.x, placement.bounds.y, placement.bounds.width, 24};
-            rectangle(header, chrome);
-            if (placement.pane == workspace_.active_pane()) rectangle({header.x + 8,header.y + 7,2,10}, accent);
-            label({header.x + 16,header.y + 3,std::max(0.0,header.width - 48),18}, pane_title(placement.pane), placement.pane == workspace_.active_pane() ? text : secondary, 12);
-            label({header.x + header.width - 28,header.y + 1,24,22}, "···", secondary, 16);
+            const Rect header{placement.bounds.x, placement.bounds.y, placement.bounds.width, 28};
+            if (!high_contrast_) {
+                Color wash=chrome; wash.a=89; rectangle(header,wash);
+                rectangle({header.x,header.y+header.height-1/scale_,header.width,1/scale_},daylight?Color{130,142,155,100}:Color{43,50,61,140});
+            }
+            const double reveal=pane_reveals_[placement.pane].value(now);
+            if (placement.pane == workspace_.active_pane()) rectangle({header.x + 12,header.y + 10,2,8}, accent);
+            label({header.x + 20,header.y + 6,std::max(0.0,header.width - 56),18}, pane_title(placement.pane), opacity(placement.pane == workspace_.active_pane() ? text : secondary,reveal), 13);
+            label({header.x + header.width - 28,header.y + 3,24,22}, "···", secondary, 16);
         }
     }
-    for (const auto& divider : layout_.dividers) rectangle(divider.bounds, divider.hit_bounds.contains(hover_) || drag_node_ == divider.node ? accent : seam);
+    for (const auto& divider : layout_.dividers) rectangle(divider.bounds, drag_node_ == divider.node ? accent : blend(seam,accent,hover_amount((1ull<<63)|divider.node.value)));
     if (!fullscreen_) {
-        if (backdrop_) chrome.a = 248;
-        rectangle(chrome_.band, chrome);
-        auto button = [&](Rect bounds, bool close = false) {
-            if (bounds.contains(hover_)) rectangle(bounds, close ? Color{196,43,28,255} : raised, close ? 0 : 4);
+        if (backdrop_) chrome.a = 230;
+        rectangle(chrome_.band, chrome, 0, {}, 0, true);
+        auto button = [&](Rect bounds, std::uint64_t id, bool close = false) {
+            const auto amount=hover_amount(id);
+            if (amount>0) rectangle(bounds, opacity(close ? Color{196,43,28,255} : raised,amount), close ? 0 : 5);
         };
-        button(chrome_.menu); button(chrome_.new_tab); button(chrome_.palette);
+        button(chrome_.menu,1); button(chrome_.new_tab,2); button(chrome_.palette,3);
         if (zoom_return_.width) {
-            button(zoom_return_);
+            button(zoom_return_,7);
             label({zoom_return_.x+8,zoom_return_.y+5,zoom_return_.width-16,20},"Return to split",accent,12);
         }
         for (const auto& tab : chrome_.tabs) {
             const bool selected = tab.tab == workspace_.active_tab();
-            if (selected || tab.bounds.contains(hover_)) rectangle(tab.bounds, selected ? background : raised, 6);
-            if (chrome_.compact) label({tab.bounds.x+6,tab.bounds.y+7,std::max(0.0,tab.bounds.width-8),20},"▾",text,13);
-            else label({tab.bounds.x + 10,tab.bounds.y + 7,std::max(0.0,tab.bounds.width - 40),20}, tab_title(tab.tab), selected ? text : secondary, 13, selected);
-            if (!chrome_.compact && (selected || tab.bounds.contains(hover_))) {
+            const double settle=tab_transitions_[tab.tab].value(now), hovered=hover_amount(16+tab.tab.value*2);
+            if (settle>0 || hovered>0) rectangle(tab.bounds, opacity(blend(raised,(daylight||high_contrast_)?background:Color{32,38,51,255},settle),std::max(settle,hovered*.65)),6,
+                opacity(high_contrast_?accent:Color{76,86,106,180},settle),1/scale_);
+            if (selected) rectangle({tab.bounds.x+3,tab.bounds.y, std::max(0.0,tab.bounds.width-6),2/scale_},accent,1/scale_);
+            if (chrome_.compact) label({tab.bounds.x+6,tab.bounds.y+6,std::max(0.0,tab.bounds.width-8),20},"▾",text,13);
+            else label({tab.bounds.x + 10,tab.bounds.y + 6,std::max(0.0,tab.bounds.width - 40),20}, tab_title(tab.tab), selected ? text : secondary, 13, selected);
+            if (!chrome_.compact && (selected || hovered>0)) {
                 const double x = tab.close.x + tab.close.width / 2, y = tab.close.y + tab.close.height / 2;
-                if (tab.close.contains(hover_)) rectangle(tab.close, raised, 4);
+                if (const auto amount=hover_amount(17+tab.tab.value*2); amount>0) rectangle(tab.close,opacity(chrome,amount),4);
                 line(x - 3,y - 3,x + 3,y + 3,secondary); line(x + 3,y - 3,x - 3,y + 3,secondary);
             }
         }
         for (int row = 0; row < 3; ++row) line(chrome_.menu.x + 8,chrome_.menu.y + 10 + row * 5,chrome_.menu.x + 20,chrome_.menu.y + 10 + row * 5,secondary,1.2);
-        const double nx = chrome_.new_tab.x + 14, ny = chrome_.new_tab.y + 16;
-        line(nx-5,ny,nx+5,ny,secondary,1.3); line(nx,ny-5,nx,ny+5,secondary,1.3);
+        const double nx = chrome_.new_tab.x + chrome_.new_tab.width/2, ny = chrome_.new_tab.y + chrome_.new_tab.height/2;
+        if (chrome_.new_tab.width>0) { line(nx-5,ny,nx+5,ny,secondary,1.3); line(nx,ny-5,nx,ny+5,secondary,1.3); }
         const double px = chrome_.palette.x + 8, py = chrome_.palette.y + 10;
         for (int y=0;y<2;++y) for (int x=0;x<2;++x) rectangle({px+x*7,py+y*7,4,4},secondary,1);
-        button(chrome_.minimize); button(chrome_.maximize); button(chrome_.close,true);
+        button(chrome_.minimize,4); button(chrome_.maximize,5); button(chrome_.close,6,true);
         const double cy = chrome_.band.height / 2;
         auto center = [](Rect r) { return r.x+r.width/2; };
         const double minx = center(chrome_.minimize), maxx = center(chrome_.maximize), closex = center(chrome_.close);
@@ -749,7 +890,7 @@ WindowScene NativeWindow::scene() {
         label({tag.x+8,tag.y+5,std::max(0.0,tag.width-16),20},drop_direction_?"Move pane here":"Swap panes",text,12);
     }
     if (drag_ == Drag::tab && drag_started_) {
-        for (const auto& tab : chrome_.tabs) if (tab.bounds.contains(hover_)) rectangle({tab.bounds.x,4,2,32},accent);
+        for (const auto& tab : chrome_.tabs) if (tab.bounds.contains(hover_)) rectangle({tab.bounds.x,tab.bounds.y,2,tab.bounds.height},accent);
     }
     if (!preedit_.empty() && composing_) {
         for (const auto& placement : layout_.panes) if (placement.pane == workspace_.active_pane()) {
@@ -768,6 +909,7 @@ WindowScene NativeWindow::scene() {
         rectangle({12,std::max(44.0,height_-56),std::max(0.0,width_-24),44},raised,6);
         label({24,std::max(49.0,height_-51),std::max(0.0,width_-64),34},notice_,text,12);
     }
+    const auto palette_primitive_start=result.primitives.size(), palette_text_start=result.texts.size();
     if (palette_open_ || rename_open_) {
         const double w = std::min(560.0,std::max(0.0,width_-32)), x = (width_-w)/2, y=std::min(72.0,std::max(0.0,height_-80));
         const auto commands = palette_commands();
@@ -788,6 +930,20 @@ WindowScene NativeWindow::scene() {
             }
         }
         if (!rename_open_ && commands.empty()) label({x+16,y+50,w-32,20},"No matching commands",secondary,12);
+    }
+    if (palette_open_ || rename_open_) {
+        closing_palette_primitives_.assign(result.primitives.begin()+palette_primitive_start,result.primitives.end());
+        closing_palette_texts_.assign(result.texts.begin()+palette_text_start,result.texts.end());
+    } else if (palette_transition_.value(now)>0) {
+        result.primitives.insert(result.primitives.end(),closing_palette_primitives_.begin(),closing_palette_primitives_.end());
+        result.texts.insert(result.texts.end(),closing_palette_texts_.begin(),closing_palette_texts_.end());
+    } else { closing_palette_primitives_.clear(); closing_palette_texts_.clear(); }
+    const double reveal=palette_transition_.value(now), offset=(1-reveal)*3*scale_;
+    for (auto i=palette_primitive_start;i<result.primitives.size();++i) {
+        auto& item=result.primitives[i]; item.rect.y+=static_cast<float>(offset); item.fill=opacity(item.fill,reveal); item.stroke=opacity(item.stroke,reveal);
+    }
+    for (auto i=palette_text_start;i<result.texts.size();++i) {
+        auto& item=result.texts[i]; item.rect.y+=static_cast<float>(offset); item.color=opacity(item.color,reveal);
     }
     return result;
 }
@@ -845,7 +1001,7 @@ bool NativeWindow::key_message(MSG& message) {
             palette_index_ = 0; changed(); return true;
         }
         if (vk == VK_RETURN) {
-            if (rename_open_) { workspace_.rename_tab(rename_tab_,query_); rename_open_ = false; changed(); }
+            if (rename_open_) { workspace_.rename_tab(rename_tab_,query_); rename_open_ = false; refresh_tooltips(); changed(); }
             else {
                 const auto commands = palette_commands();
                 if (!commands.empty()) {
@@ -1016,7 +1172,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
                 panes.push_back(item.active_pane);
                 AppendMenuW(picker,MF_STRING|(item.id==workspace_.active_tab()?MF_CHECKED:0),panes.size(),widen(tab_title(item.id)).c_str());
             }
-            POINT position{static_cast<LONG>(tab.bounds.x*scale_),static_cast<LONG>(40*scale_)}; ClientToScreen(hwnd_,&position);
+            POINT position{static_cast<LONG>(tab.bounds.x*scale_),static_cast<LONG>(chrome_.band.height*scale_)}; ClientToScreen(hwnd_,&position);
             const auto chosen=TrackPopupMenuEx(picker,TPM_RETURNCMD|TPM_NONOTIFY,position.x,position.y,hwnd_,nullptr);
             if (chosen && static_cast<std::size_t>(chosen)<=panes.size()) activate(panes[chosen-1]);
             return;
@@ -1034,7 +1190,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
         const auto pane=placement.pane;
         const auto bounds=placement.bounds;
         activate(pane);
-        if (layout_.panes.size()>1 && point.y<bounds.y+24) {
+        if (layout_.panes.size()>1 && point.y<bounds.y+28) {
             if (point.x>=bounds.x+bounds.width-32) { popup_menu(point,true); return; }
             if (double_click) { workspace_.toggle_zoom(); changed(true); return; }
             drag_=Drag::pane; drag_pane_=pane; drag_origin_=point; SetCapture(hwnd_); return;
@@ -1054,7 +1210,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
     }
 }
 void NativeWindow::pointer_move(Point point) {
-    const auto old=hover_; hover_=point;
+    hover_changed(point);
     TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE,hwnd_,0}; TrackMouseEvent(&tracking);
     if (drag_!=Drag::none && !drag_started_) {
         const auto dx=GetSystemMetricsForDpi(SM_CXDRAG,dpi_)/scale_,dy=GetSystemMetricsForDpi(SM_CYDRAG,dpi_)/scale_;
@@ -1101,7 +1257,7 @@ void NativeWindow::pointer_move(Point point) {
     }
     // Hover causes damage only when a chrome region changes, not for every pixel
     // of mouse motion over a terminal with reporting disabled.
-    if (point.y<chrome_.band.height || old.y<chrome_.band.height || drag_==Drag::tab || std::any_of(layout_.dividers.begin(),layout_.dividers.end(),[&](const DividerPlacement& d) { return d.hit_bounds.contains(point)||d.hit_bounds.contains(old); })) changed();
+    if (drag_==Drag::tab) changed();
 }
 void NativeWindow::pointer_up(Point point) {
     if (drag_==Drag::pane && drag_started_ && drop_target_) {
@@ -1160,33 +1316,40 @@ void NativeWindow::capture_frame() {
     check(frame->Commit()); check(encoder->Commit());
 }
 bool NativeWindow::smoke_frame_ready() const {
-    auto* session=active_session(); const auto frame=session?session->frame():nullptr;
-    if (!frame) return false;
-    for (const auto& row:frame->lines) if (row) {
-        std::string line; for (const auto& cell:row->cells) line+=cell.grapheme;
-        // A complete line containing only the marker proves command output,
-        // not merely the command text echoed by the terminal driver.
-        while (!line.empty() && line.back()==' ') line.pop_back();
-        if (line==smoke_marker) return true;
+    if (layout_.panes.empty()) return false;
+    for (const auto& placement:layout_.panes) {
+        auto* session=session_for(placement.pane); const auto frame=session?session->frame():nullptr;
+        if (!frame) return false;
+        bool marker=false;
+        for (const auto& row:frame->lines) if (row) {
+            std::string line; for (const auto& cell:row->cells) line+=cell.grapheme;
+            // A complete output line, not just an echoed input command.
+            while (!line.empty() && line.back()==' ') line.pop_back();
+            if (line==smoke_marker) { marker=true; break; }
+        }
+        if (!marker) return false;
     }
-    return false;
+    return true;
 }
 void NativeWindow::smoke_progress(bool presented) {
     if (!options_.smoke_test || smoke_finished_) return;
-    auto* session=active_session(); if (!session) { smoke_finish("Native smoke has no real session."); return; }
-    const auto info=session->info();
-    if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; }
-    if (!smoke_command_sent_ && info.state==SessionState::running && info.bytes_received) {
-        smoke_command_sent_=true;
-        terminal_text("echo " + std::string(smoke_marker) + " & exit /b 0");
-        const auto* pane=workspace_.pane(workspace_.active_pane());
-        auto owned=sessions_.at(pane->session);
-        KeyInput enter; enter.key=Key::enter;
-        submit([owned,enter] { return owned->key(enter); });
+    if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
+    bool all_closed=true;
+    for (const auto& [id,session]:sessions_) {
+        const auto info=session->info();
+        if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; }
+        if (!smoke_commands_sent_.contains(id) && info.state==SessionState::running && info.bytes_received) {
+            smoke_commands_sent_.insert(id);
+            const std::string command="echo " + std::string(smoke_marker) + " & exit /b 0";
+            submit([session,command] { return session->text(command); },command.size());
+            KeyInput enter; enter.key=Key::enter;
+            submit([session,enter] { return session->key(enter); });
+        }
+        if (!session->closed()) all_closed=false;
+        else if (!info.exit_code || *info.exit_code!=0) { smoke_finish("Controlled smoke shell did not exit successfully."); return; }
     }
-    if (presented && smoke_frame_ready()) smoke_marker_presented_=true;
-    if (session->closed()) {
-        if (!info.exit_code || *info.exit_code!=0) { smoke_finish("Controlled smoke shell did not exit successfully."); return; }
+    if (presented && smoke_frame_ready() && !motion_timer_active_) smoke_marker_presented_=true;
+    if (all_closed) {
         if (!smoke_frame_ready()) { smoke_finish("Controlled smoke shell exited without its expected output marker."); return; }
         if (smoke_marker_presented_ && renderer_->stats().presents) {
             try { capture_frame(); smoke_finish(); }
@@ -1200,6 +1363,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
+        if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace_.state().tabs.size(),layout_.panes.size());
     } else std::fprintf(stderr,"Native CI smoke failed: %.*s\n",static_cast<int>(error.size()),error.data());
     if (hwnd_) DestroyWindow(hwnd_);
 }
@@ -1314,7 +1478,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_SIZE:
         minimized_=wparam==SIZE_MINIMIZED; maximized_=wparam==SIZE_MAXIMIZED;
         if (renderer_ && !minimized_) changed(true);
-        caret_schedule(); return 0;
+        caret_schedule(); motion_schedule(); return 0;
     case WM_ENTERSIZEMOVE: in_size_move_=true; return 0;
     case WM_EXITSIZEMOVE: in_size_move_=false; changed(true); return 0;
     case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_DWMCOMPOSITIONCHANGED:
@@ -1339,6 +1503,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         wake_->posted.store(false,std::memory_order_release); update_sessions(); InvalidateRect(hwnd_,nullptr,FALSE); return 0;
     case WM_TIMER:
         if (wparam==smoke_timeout_timer) { smoke_finish("Native smoke timed out before real shell output, presentation and clean exit."); return 0; }
+        if (wparam==chrome_motion_timer) { motion_schedule(); ++chrome_generation_; dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0; }
         if (wparam==cursor_timer) { cursor_on_=!cursor_on_; dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); } return 0;
     case WM_CHAR: case WM_SYSCHAR: {
         if (message==WM_SYSCHAR && wparam==L' ' && (lparam & (1LL<<29))) return DefWindowProcW(hwnd_,message,wparam,lparam);
@@ -1362,9 +1527,9 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_LBUTTONDBLCLK: pointer_down(point(lparam),true); return 0;
     case WM_LBUTTONUP: pointer_up(point(lparam)); return 0;
     case WM_MOUSEMOVE: pointer_move(point(lparam)); return 0;
-    case WM_MOUSELEAVE: case WM_NCMOUSELEAVE: hover_={-1,-1}; changed(); return 0;
+    case WM_MOUSELEAVE: case WM_NCMOUSELEAVE: hover_changed({-1,-1}); return 0;
     case WM_NCMOUSEMOVE: {
-        hover_=point(lparam,true); changed();
+        hover_changed(point(lparam,true));
         TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE|TME_NONCLIENT,hwnd_,0}; TrackMouseEvent(&tracking);
         break; // DefWindowProc keeps Windows 11 Snap hover semantics.
     }
@@ -1431,7 +1596,9 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_DESTROY:
         wake_->window.store(nullptr,std::memory_order_release);
-        KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer);
+        KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer); KillTimer(hwnd_,chrome_motion_timer);
+        if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);
+        tooltip_=nullptr; tooltip_texts_.clear();
         for (auto& [id,session]:sessions_) { (void)id; session->request_close(); }
         PostQuitMessage(exit_code_); return 0;
     case WM_NCDESTROY: {

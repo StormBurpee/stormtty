@@ -59,6 +59,15 @@ fragment float4 quad_fragment(Vertex v [[stage_in]],texture2d<float> t [[texture
     constexpr sampler s(coord::normalized,filter::nearest,address::clamp_to_edge);
     return t.sample(s,v.uv)*tint;
 }
+fragment float4 quad_replace_fragment(Vertex v [[stage_in]],texture2d<float> t [[texture(0)]],
+    constant float4& tint [[buffer(0)]]) {
+    constexpr sampler s(coord::normalized,filter::nearest,address::clamp_to_edge);
+    const float4 pixel=t.sample(s,v.uv);
+    // Bounded CoreGraphics overlays include transparent padding. COPY applies
+    // to their covered shape, not its otherwise-transparent bounding rectangle.
+    if(pixel.a==0)discard_fragment();
+    return pixel*tint;
+}
 )metal";
 struct RowKey {
     std::uint64_t pane{},id0{},id1{},generation{},font{};
@@ -130,6 +139,7 @@ struct Renderer::Impl {
         pipeline=[device newRenderPipelineStateWithDescriptor:descriptor error:&error];
         check(pipeline!=nil,"Cannot create Metal composition pipeline");
         attachment.blendingEnabled=NO;
+        descriptor.fragmentFunction=[library newFunctionWithName:@"quad_replace_fragment"];
         replace_pipeline=[device newRenderPipelineStateWithDescriptor:descriptor error:&error];
         check(replace_pipeline!=nil,"Cannot create Metal replacement pipeline");
         const std::uint8_t pixel[4]={255,255,255,255};white=texture(1,1,pixel);
@@ -424,7 +434,7 @@ struct Renderer::Impl {
             for(const auto& primitive:scene.primitives) {
                 if(!finite(primitive.rect)||!std::isfinite(primitive.stroke_width)||!std::isfinite(primitive.radius))continue;
                 const bool line=primitive.kind==ChromePrimitiveKind::line;
-                if(!line&&primitive.radius<=0&&primitive.stroke_width<=0){draw(encoder,white,primitive.rect,primitive.fill);continue;}
+                if(!line&&primitive.radius<=0&&primitive.stroke_width<=0){draw(encoder,white,primitive.rect,primitive.fill,primitive.background_replace);continue;}
                 const float pad=std::clamp(primitive.stroke_width,1.f,256.f)+1;
                 PixelRect bounds{std::min(primitive.rect.x,primitive.rect.x+primitive.rect.width)-pad,
                     std::min(primitive.rect.y,primitive.rect.y+primitive.rect.height)-pad,std::abs(primitive.rect.width)+2*pad,std::abs(primitive.rect.height)+2*pad};
@@ -439,7 +449,8 @@ struct Renderer::Impl {
                     std::max(0.f,primitive.radius),std::max(0.f,primitive.radius),nullptr));CGContextAddPath(ctx,path.get());}
                 CGContextSetRGBStrokeColor(ctx,stroke.r/255.,stroke.g/255.,stroke.b/255.,stroke.a/255.);CGContextSetLineWidth(ctx,std::max(1.f,primitive.stroke_width));
                 CGContextDrawPath(ctx,line?kCGPathStroke:primitive.stroke_width>0?kCGPathFillStroke:kCGPathFill);
-                draw(encoder,texture(w,h,bitmap.bytes.data()),{bounds.x,bounds.y,float(w),float(h)});
+                draw(encoder,texture(w,h,bitmap.bytes.data()),{bounds.x,bounds.y,float(w),float(h)},
+                    {255,255,255,255},primitive.background_replace);
             }
             // Chrome text is small and infrequent; row text is the bounded cache.
             for(const auto& label:scene.texts) {

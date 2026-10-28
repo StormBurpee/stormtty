@@ -184,7 +184,14 @@ public:
         const bool opaque=system.accessibilityDisplayShouldReduceTransparency||system.accessibilityDisplayShouldIncreaseContrast||config.appearance.backdrop==BackdropPreference::none;
         reduce_motion=config.appearance.reduced_motion==ReducedMotionPreference::enabled||
             (config.appearance.reduced_motion==ReducedMotionPreference::system&&system.accessibilityDisplayShouldReduceMotion);
-        backdrop.material=opaque?NSVisualEffectMaterialWindowBackground:NSVisualEffectMaterialUnderWindowBackground;
+        // These shared preferences select native Mac materials, not Windows
+        // Mica/Acrylic implementations. Accessibility policy always wins.
+        NSVisualEffectMaterial material=NSVisualEffectMaterialUnderWindowBackground;
+        switch(config.appearance.backdrop){
+        case BackdropPreference::mica:material=NSVisualEffectMaterialWindowBackground;break;
+        case BackdropPreference::automatic:case BackdropPreference::acrylic:case BackdropPreference::none:break;
+        }
+        backdrop.material=opaque?NSVisualEffectMaterialWindowBackground:material;
         backdrop.state=opaque?NSVisualEffectStateInactive:NSVisualEffectStateFollowsWindowActiveState;
         const auto bg=color(config.theme.background,{23,25,29,255});
         const double luminance=.2126*bg.r+.7152*bg.g+.0722*bg.b;

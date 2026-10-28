@@ -65,5 +65,28 @@ The parent CI owner records whether this entry point actually ran and passed.
   the palette. Declarative `--config` startup loading exists; no live reload UI.
 - No physical validation of Snap hover, mixed-DPI monitors, high contrast,
   keyboard layouts, Narrator/NVDA, RDP, device loss, or GPU latency/idle budgets.
-- No polished transition animation yet; static immediate feedback is used
-  rather than an ambient loop or delayed terminal resize.
+- Finite presentation-only hover (80 ms), selected-tab settle/split-label reveal
+  (120 ms), and palette fade/3-DIP translation (100 ms) now have deterministic
+  portable transition tests. Focus/hit testing/PTY geometry change immediately;
+  animation timers stop at their deadline and are disabled by reduced motion.
+  Their visual quality still requires physical Windows verification.
+
+## Graphite refinement (source/cross-build evidence, not desktop visual proof)
+
+- 48-DIP single integrated crown; fixed 32-DIP tabs at y8 with 4-DIP gaps,
+  188-DIP preferred width, compact overflow and at least 48 DIP for dragging.
+- Graphite defaults, opaque text/explicit ANSI backgrounds; documented Windows
+  11 Desktop Acrylic/Mica preferences, exact-alpha crown material replacement,
+  DWM rounded-corner hint, and opaque high-contrast/transparency-off/WARP fallback.
+  DWM may keep maximized/snapped/unsupported windows square. No layered-window
+  global opacity or undocumented accent API is used.
+- 28-DIP quiet pane headers; 20×16-DIP terminal content insets, 1-physical-pixel
+  idle seams and unchanged 7-DIP divider hit targets. Full title native tooltips
+  preserve executable paths while exact shell-path display labels use profiles.
+  DirectWrite ellipsis, not byte truncation, handles constrained labels.
+- `StormTTY --smoke-layout --capture layout.png` is an explicit bounded CI
+  scenario: five actual controlled cmd processes, three real tabs, three visible
+  panes in a 60/40 asymmetric split, real output markers and successful exits,
+  then a settled WARP framebuffer capture. Existing `--smoke` stays one-pane.
+  Neither framebuffer proves desktop blur, outer corners, Snap, IME, or physical
+  text quality. Normal launch never runs this test or its commands.

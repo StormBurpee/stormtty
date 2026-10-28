@@ -1,0 +1,18 @@
+{
+  "name": "stormtty-ink-compatibility-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real interactive Ink workload for the owned StormTTY PTY and VT pipeline",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node fixture.mjs",
+    "test": "node --test fixture.test.mjs"
+  },
+  "dependencies": {
+    "ink": "8.0.0",
+    "react": "19.3.1"
+  }
+}

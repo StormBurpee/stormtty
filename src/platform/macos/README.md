@@ -84,7 +84,10 @@ text. OSC clipboard requests remain denied in the shared adapter. Links are not
 opened. No terminal output is treated as a command or a URL action.
 
 Background-only translucency uses an AppKit material behind a premultiplied Metal
-surface. Text and explicit ANSI/TUI backgrounds stay opaque. Reduce Transparency,
+surface. Shared `auto`/`acrylic` preferences map to AppKit
+`UnderWindowBackground`; `mica` maps to AppKit `WindowBackground`. These are
+native macOS material choices, not Windows Mica/Acrylic implementations. Text
+and explicit ANSI/TUI backgrounds stay opaque. Reduce Transparency,
 Increase Contrast and `backdrop = none` force an opaque canvas. Reduce Motion
 suppresses cursor/text blinking; no decorative animations run. Pending callbacks
 are weak-owned and coalesced; unchanged scenes do not present. Process close/reap

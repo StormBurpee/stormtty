@@ -37,6 +37,13 @@ void test(){
     scene.panes[0].frame=changed;renderer.render(scene);renderer.read_pixels();require(renderer.stats().shaped_rows==stats.shaped_rows+1,"One-row mutation invalidated unrelated rows");
     scene.panes[0].cursor_on=false;renderer.render(scene);renderer.read_pixels();require(renderer.stats().shaped_rows==stats.shaped_rows+1,"Cursor toggle reshaped row text");
     renderer.set_background_opacity(1);renderer.render(scene);require(pixel(renderer.read_pixels(),24,108).a==255,"Opaque fallback");
+    renderer.set_background_opacity(.9f);ChromePrimitive material;
+    material.rect={0,0,256,16};material.fill={23,25,29,204};material.background_replace=true;
+    scene.primitives={material};++scene.chrome_generation;renderer.render(scene);
+    require(std::abs(int(pixel(renderer.read_pixels(),100,8).a)-204)<=1,"Chrome background replacement accumulated canvas alpha");
+    scene.primitives[0].background_replace=false;++scene.chrome_generation;renderer.render(scene);
+    require(pixel(renderer.read_pixels(),100,8).a>=248,"Ordinary chrome overlay did not source-over");
+    scene.primitives.clear();++scene.chrome_generation;
     const auto old=renderer.metrics();renderer.resize(256,160,192);require(renderer.metrics().width>old.width,"Retina font metrics");
     renderer.recreate_device();renderer.render(scene);renderer.read_pixels();require(renderer.stats().device_recoveries==1,"Metal resource recreation");
     renderer.resize(0,0);require(renderer.render(scene)==RenderResult::suspended,"Minimized renderer did not suspend");

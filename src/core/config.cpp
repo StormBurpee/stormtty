@@ -91,6 +91,7 @@ std::string quote(std::string_view text) {
     }
     result += '"'; return result;
 }
+Theme instrument() { return {"instrument", "#17191D", "#ECEEF2", "#22252B", "#A7C4D2"}; }
 Theme daylight() { return {"daylight", "#FAFBFC", "#232B33", "#EDF0F3", "#315E78"}; }
 }
 Config default_config(Platform platform) {
@@ -102,11 +103,11 @@ Config default_config(Platform platform) {
 }
 Status validate_config(const Config& c, Platform platform) {
     if (c.version != 1) return Status::failure("Unsupported config version; expected version = 1");
-    if (c.theme.name != "instrument" && c.theme.name != "daylight" && c.theme.name != "custom") return Status::failure("Theme name must be instrument, daylight or custom");
+    if (c.theme.name != "graphite" && c.theme.name != "instrument" && c.theme.name != "daylight" && c.theme.name != "custom") return Status::failure("Theme name must be graphite, instrument, daylight or custom");
     if (!color(c.theme.background) || !color(c.theme.foreground) || !color(c.theme.chrome) || !color(c.theme.accent)) return Status::failure("Theme colors must be #RRGGBB");
     if (!std::isfinite(c.appearance.background_opacity) || c.appearance.background_opacity < 0.70 || c.appearance.background_opacity > 1.0)
         return Status::failure("background_opacity must be between 0.70 and 1.0");
-    if (c.appearance.backdrop != BackdropPreference::automatic && c.appearance.backdrop != BackdropPreference::none)
+    if (c.appearance.backdrop != BackdropPreference::automatic && c.appearance.backdrop != BackdropPreference::none && c.appearance.backdrop != BackdropPreference::mica && c.appearance.backdrop != BackdropPreference::acrylic)
         return Status::failure("Invalid backdrop preference");
     if (c.appearance.reduced_motion != ReducedMotionPreference::system && c.appearance.reduced_motion != ReducedMotionPreference::enabled && c.appearance.reduced_motion != ReducedMotionPreference::disabled)
         return Status::failure("Invalid reduced motion preference");
@@ -222,7 +223,9 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
                 handled = true; const auto* text_value = std::get_if<std::string>(&*value);
                 if (text_value && *text_value == "auto") config.appearance.backdrop = BackdropPreference::automatic;
                 else if (text_value && *text_value == "none") config.appearance.backdrop = BackdropPreference::none;
-                else error(line_number, equal + 2, "backdrop must be auto or none");
+                else if (text_value && *text_value == "mica") config.appearance.backdrop = BackdropPreference::mica;
+                else if (text_value && *text_value == "acrylic") config.appearance.backdrop = BackdropPreference::acrylic;
+                else error(line_number, equal + 2, "backdrop must be auto, none, mica or acrylic");
             } else if (key == "reduced_motion") {
                 handled = true; const auto* text_value = std::get_if<std::string>(&*value);
                 if (text_value && *text_value == "system") config.appearance.reduced_motion = ReducedMotionPreference::system;
@@ -272,8 +275,8 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
         if (!handled) error(line_number, 1, "Unknown key: " + (section.empty() ? "" : section + ".") + key);
     }
     if (!have_version) error(1, 1, "Missing version = 1 at the top level");
-    if (config.theme.name == "daylight") {
-        const auto base = daylight();
+    if (config.theme.name == "daylight" || config.theme.name == "instrument" || config.theme.name == "graphite") {
+        const auto base = config.theme.name == "daylight" ? daylight() : config.theme.name == "instrument" ? instrument() : Theme{};
         if (!assigned.contains({"theme", "background"})) config.theme.background = base.background;
         if (!assigned.contains({"theme", "foreground"})) config.theme.foreground = base.foreground;
         if (!assigned.contains({"theme", "chrome"})) config.theme.chrome = base.chrome;
@@ -303,7 +306,7 @@ std::string serialize_config(const Config& config, Platform platform) {
         << "\nbackground = " << quote(config.theme.background) << "\nforeground = " << quote(config.theme.foreground)
         << "\nchrome = " << quote(config.theme.chrome) << "\naccent = " << quote(config.theme.accent)
         << "\n\n[appearance]\nbackground_opacity = " << config.appearance.background_opacity
-        << "\nbackdrop = " << quote(config.appearance.backdrop == BackdropPreference::automatic ? "auto" : "none")
+        << "\nbackdrop = " << quote(config.appearance.backdrop == BackdropPreference::automatic ? "auto" : config.appearance.backdrop == BackdropPreference::mica ? "mica" : config.appearance.backdrop == BackdropPreference::acrylic ? "acrylic" : "none")
         << "\nreduced_motion = " << quote(config.appearance.reduced_motion == ReducedMotionPreference::system ? "system" : config.appearance.reduced_motion == ReducedMotionPreference::enabled ? "enabled" : "disabled")
         << "\n\n[font]\nfamily = " << quote(config.font.family) << "\nsize_dip = " << config.font.size_dip
         << "\nligatures = " << (config.font.ligatures ? "true" : "false") << "\n\n[terminal]\nscrollback_lines = " << config.scrollback_lines << '\n';
@@ -341,16 +344,16 @@ version = 1
 default_profile = "default"
 allow_terminal_shortcut_override = false
 [theme]
-name = "instrument" # instrument, daylight, custom
+name = "graphite" # graphite, instrument, daylight, custom
 # Optional #RRGGBB: background, foreground, chrome, accent.
 [appearance]
 background_opacity = 0.94 # 0.70..1.0; default canvas only, not text or ANSI colors
-backdrop = "auto" # auto or none; host capability decides actual implementation
+backdrop = "acrylic" # auto, none, mica or acrylic; unsupported hosts use opaque
 reduced_motion = "system" # system, enabled or disabled; default follows the OS
 # High contrast and unsupported renderers use opaque backgrounds.
 [font]
 family = "Cascadia Mono"
-size_dip = 14
+size_dip = 15
 ligatures = false
 [terminal]
 scrollback_lines = 10000 # 0..1000000

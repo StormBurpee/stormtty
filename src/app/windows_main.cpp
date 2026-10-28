@@ -43,7 +43,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
         Arguments args;
         if (!args.values) throw std::runtime_error("Could not read command-line arguments.");
-        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke") smoke=true;
+        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout") smoke=true;
         stormtty::NativeRunOptions options; options.smoke_test=smoke;
         // Must precede creation of any HWND, including startup error dialogs.
         // ERROR_ACCESS_DENIED means the executable manifest already set it.
@@ -58,9 +58,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             const std::wstring argument(args.values[i]);
             if (argument == L"--config" && i + 1 < args.count) { config_path = args.values[++i]; required = true; }
             else if (argument == L"--smoke") {}
+            else if (argument == L"--smoke-layout") options.smoke_layout=true;
             else if (argument == L"--capture" && i+1<args.count) options.capture_path=args.values[++i];
             else if (argument == L"--help") {
-                MessageBoxW(nullptr, L"StormTTY [--config path]\nCI: StormTTY --smoke [--capture frame.png]\n\nCtrl+Shift+P opens commands.\nCtrl+Shift+T creates a tab.\nCtrl+Tab changes tabs.\nCtrl+Shift+V pastes.\nAlt+Space opens the Windows system menu.", L"StormTTY", MB_OK);
+                MessageBoxW(nullptr, L"StormTTY [--config path]\nCI: StormTTY --smoke [--capture frame.png]\nLayout CI: StormTTY --smoke-layout --capture layout.png\n\nCtrl+Shift+P opens commands.\nCtrl+Shift+T creates a tab.\nCtrl+Tab changes tabs.\nCtrl+Shift+V pastes.\nAlt+Space opens the Windows system menu.", L"StormTTY", MB_OK);
                 return 0;
             } else throw std::runtime_error("Unknown or incomplete option. Use --help or --config path.");
         }

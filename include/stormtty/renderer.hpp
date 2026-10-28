@@ -52,6 +52,8 @@ struct ChromePrimitive {
     float radius{}, stroke_width{};
     ChromePrimitiveKind kind{ChromePrimitiveKind::rectangle};
     // For line: rect.x/y is start and x+width/y+height is end.
+    bool background_replace{}; // Material fill replaces canvas alpha; never fade text.
+    bool operator==(const ChromePrimitive&) const = default;
 };
 struct ChromeText {
     PixelRect rect;
@@ -60,6 +62,7 @@ struct ChromeText {
     float size_dip{13};
     bool semibold{};
     std::string family{"Segoe UI Variable Text"};
+    bool operator==(const ChromeText&) const = default;
 };
 struct WindowScene {
     Color background{23, 25, 29, 255};

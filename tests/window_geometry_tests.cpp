@@ -10,8 +10,12 @@ int main() {
     auto chrome = layout_chrome(1100, 700, {{1}, {2}}, {1});
     require(chrome.tabs.size() == 2 && !chrome.compact, "two normal tabs");
     require(chrome.drag.width >= 48, "deliberate draggable gap");
+    require(chrome.band.height == 48, "48-DIP crown");
+    require(chrome.tabs[0].bounds.y == 8 && chrome.tabs[0].bounds.height == 32, "fixed 32-DIP tabs at y8, not band minus8");
+    require(chrome.tabs[0].bounds.width == 188, "preferred tab width");
+    require(chrome.tabs[1].bounds.x - chrome.tabs[0].bounds.x - chrome.tabs[0].bounds.width == 4, "4-DIP tab gap");
     require(chrome_hit_test(chrome, {chrome.maximize.x + 10, 15}, {1100, 700}, 6, false) == NativeHit::maximize, "Snap maximize region");
-    require(chrome_hit_test(chrome, {40, 15}, {1100, 700}, 6, false) == NativeHit::client, "tab exclusion");
+    require(chrome_hit_test(chrome, {60, 20}, {1100, 700}, 6, false) == NativeHit::client, "tab exclusion");
     require(chrome_hit_test(chrome, {1, 1}, {1100, 700}, 6, false) == NativeHit::top_left, "resize corner");
     require(chrome_hit_test(chrome, {1, 699}, {1100, 700}, 6, true) == NativeHit::client, "no maximized resize border");
     chrome = layout_chrome(330, 240, {{1}, {2}, {3}}, {2});
@@ -33,6 +37,22 @@ int main() {
             }
         }
     }
+    chrome = layout_chrome(330,240,{{1},{2}},{1});
+    require(chrome.new_tab.width == 0, "compact hides new-tab before sacrificing drag/caption");
+    chrome = layout_chrome(1100,720,{{1}},{1},46,0);
+    require(chrome.band.height==0 && chrome.tabs.front().bounds.height==0, "fullscreen chrome has no hit area");
+    ChromeTransition transition;
+    require(!transition.active(100) && transition.value(100)==0, "resting transition has no scheduler work");
+    transition.target(1,100,80);
+    require(transition.value(100)==0 && transition.active(100), "transition starts from current presentation");
+    require(transition.value(140)>0 && transition.value(140)<1, "finite hover interpolation");
+    const auto midway=transition.value(140); transition.target(0,140,80);
+    require(transition.value(140)==midway, "interrupted hover continues without jump");
+    require(!transition.active(220) && transition.value(220)==0, "transition stops exactly at deadline");
+    transition.target(1,300,0);
+    require(!transition.active(300) && transition.value(300)==1, "reduced motion commits immediately without timer");
+    transition.target(0,400,120); transition.finish();
+    require(!transition.active(401) && transition.value(401)==0, "minimize/accessibility finishes timer work");
     Utf16Input input;
     require(input.feed(0xd83d).empty(), "hold high surrogate");
     require(input.feed(0xde80) == "\xf0\x9f\x9a\x80", "supplementary scalar");

@@ -156,3 +156,39 @@ claiming it verified on Windows.
 
 API basis: [Microsoft custom font sets](https://learn.microsoft.com/en-us/windows/win32/directwrite/custom-font-sets-win10)
 and [default system fallback behavior](https://learn.microsoft.com/en-us/windows/win32/api/dwrite_2/nf-dwrite_2-idwritetextlayout2-setfontfallback).
+
+## Material-band alpha, chrome trimming and finite transitions
+
+`ChromePrimitive::background_replace` marks a **material background fill**, not a
+foreground opacity effect. Direct2D uses COPY for that fill and immediately
+restores SOURCE_OVER for the stroke, tabs, overlays and text. Consequently a
+crown fill with alpha 204 remains alpha 204 over a canvas at alpha 230; the two
+backgrounds do not compound to near-opacity. Rounded corners preserve their
+coverage. A real HWND backed by WARP or an opaque swapchain uses opaque default
+and replacement backgrounds; offscreen `composition=false` exercises that
+fallback. Offscreen composition surfaces still allow WARP to test alpha math.
+The shell owns supported DWM Desktop Acrylic selection and OS/high-contrast
+policy; renderer alpha alone does not verify the visible material on a desktop.
+
+Single-line `ChromeText` now uses DirectWrite's actual ellipsis inline object and
+character/cluster-aware trimming. Its UTF-8 text is not manually shortened.
+Explicit text alpha for finite palette transitions is applied to a bounded D2D
+layer, including color-font glyph layers; ordinary chrome text and all cached
+terminal rows remain opaque. No time-based animation is started by the renderer.
+
+Chrome generation changes compare old/new primitive and label content and damage
+only changed bounds. A crown-only alpha transition neither reshapes nor redraws
+terminal rows beneath the content region. Finite overlay transitions still
+recompose the rows they actually cover, using cached shapes; a settled scene
+returns `unchanged`. Geometry changes, device recovery and explicit force redraw
+still legitimately repaint the surface.
+
+Added native WARP assertions check exact material alpha, opaque rounded tabs,
+terminal pixel identity and zero row-cache activity on a crown-only transition,
+opaque fallback, long-label equivalence to a native ellipsis reference, bounded
+text opacity, erasure after opacity reaches zero, and no extra presentation when
+settled. GNU Windows compilation/linking is not execution of these new checks;
+a fresh native Windows CI run is required for this delta.
+
+API basis: [DirectWrite ellipsis trimming sign](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwritefactory-createellipsistrimmingsign)
+and [Direct2D layer opacity](https://learn.microsoft.com/en-us/windows/win32/direct2d/direct2d-layers-overview).

@@ -24,6 +24,13 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install pinned Ink fixture dependencies
+        run: npm ci --prefix tests/ink --ignore-scripts --no-audit --no-fund
+      - name: Reject noninteractive Ink false positives
+        run: npm test --prefix tests/ink
       - name: Initialize Windows native toolchain
         if: runner.os == 'Windows'
         shell: pwsh
@@ -37,13 +44,13 @@ jobs:
         run: python -m unittest discover -s tools -p 'bootstrap_test*.py' -v
       - name: Configure native Windows application
         if: runner.os == 'Windows'
-        run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=ON
       - name: Configure portable core and native POSIX transport
         if: runner.os == 'Linux'
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=OFF
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=OFF -DSTORMTTY_TEST_INK=ON
       - name: Configure native macOS application
         if: runner.os == 'macOS'
-        run: cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/MacOSLLVM.cmake -DSTORMTTY_LLVM_ROOT="$(brew --prefix llvm@20)" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/MacOSLLVM.cmake -DSTORMTTY_LLVM_ROOT="$(brew --prefix llvm@20)" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=ON
       - name: Build
         run: cmake --build build --parallel 2
       - name: Run real native tests
@@ -53,15 +60,17 @@ jobs:
         shell: python
         run: |
           import pathlib,base64,hashlib
-          p=pathlib.Path('build/artifacts/native-window.png')
-          if p.exists():
-            b=p.read_bytes()
-            print('STORMTTY_NATIVE_FRAME_SHA256='+hashlib.sha256(b).hexdigest())
-            print('STORMTTY_NATIVE_FRAME_BASE64_BEGIN')
-            s=base64.b64encode(b).decode()
-            for i in range(0,len(s),4096): print(s[i:i+4096])
-            print('STORMTTY_NATIVE_FRAME_BASE64_END')
-          else: print('Native frame unavailable; do not claim visual verification.')
+          for name in ('native-window.png', 'native-layout.png'):
+            p=pathlib.Path('build/artifacts')/name
+            print('STORMTTY_NATIVE_FRAME_NAME='+name)
+            if p.exists():
+              b=p.read_bytes()
+              print('STORMTTY_NATIVE_FRAME_SHA256='+hashlib.sha256(b).hexdigest())
+              print('STORMTTY_NATIVE_FRAME_BASE64_BEGIN')
+              s=base64.b64encode(b).decode()
+              for i in range(0,len(s),4096): print(s[i:i+4096])
+              print('STORMTTY_NATIVE_FRAME_BASE64_END')
+            else: print('Native frame unavailable; do not claim visual verification.')
       - name: Preserve verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -137,6 +137,55 @@ void transparency_test() {
     renderer.set_background_opacity(1);renderer.render(scene);
     require(pixel(renderer.read_pixels(),96,8,12).a==255,"opaque fallback not applied");
 }
+void chrome_material_test() {
+    RendererOptions options;options.force_warp=true;options.background_opacity=.9f;
+    Renderer renderer(nullptr,options);renderer.resize(128,96);
+    auto source=frame();source->rows=1;source->columns=8;
+    auto row=std::make_shared<FrameRow>(*source->lines[0]);row->cells[0].grapheme="M";source->lines={row};
+    WindowScene scene;scene.chrome_generation=1;scene.panes.push_back({105,{0,48,128,24},source});
+    ChromePrimitive band;band.rect={0,0,128,32};band.fill={27,38,48,204};band.background_replace=true;
+    scene.primitives.push_back(band);
+    ChromePrimitive tab;tab.rect={80,4,36,24};tab.fill={52,65,74,255};tab.radius=7;scene.primitives.push_back(tab);
+    renderer.render(scene);const auto first=renderer.read_pixels();
+    require(near(pixel(first,128,20,16),{27,38,48,204}),"chrome material alpha compounded over canvas");
+    require(near(pixel(first,128,96,16),{52,65,74,255}),"active tab must stay opaque");
+    require(std::abs(int(pixel(first,128,20,80).a)-230)<=1,"terminal canvas opacity changed under chrome");
+    require(near(pixel(first,128,80,4),{27,38,48,204}),"rounded tab corner was filled as a square");
+    const auto before=renderer.stats();scene.primitives[0].fill.a=180;++scene.chrome_generation;
+    renderer.render(scene);const auto second=renderer.read_pixels();
+    require(std::abs(int(pixel(second,128,20,16).a)-180)<=1,"material alpha did not replace old frame alpha");
+    require(renderer.stats().shaped_rows==before.shaped_rows && renderer.stats().shape_cache_hits==before.shape_cache_hits,
+            "chrome-only animation touched terminal rows");
+    for(unsigned y=48;y<72;++y)for(unsigned x=0;x<128;++x)
+        require(pixel(first,128,x,y)==pixel(second,128,x,y),"chrome transition altered terminal pixels");
+    options.composition=false;Renderer fallback(nullptr,options);fallback.resize(128,96);fallback.render(scene);
+    require(pixel(fallback.read_pixels(),128,20,16).a==255,"opaque fallback left material band translucent");
+    require(pixel(fallback.read_pixels(),128,20,80).a==255,"opaque fallback left canvas translucent");
+}
+void chrome_ellipsis_and_opacity_test() {
+    RendererOptions options;options.force_warp=true;options.font.family="Consolas";options.font.size_dip=20;
+    options.background_opacity=0;
+    Renderer renderer(nullptr,options);renderer.resize(192,48);
+    WindowScene scene;scene.chrome_generation=1;
+    ChromeText label;label.rect={8,4,float(renderer.metrics().width)*6,36};label.family="Consolas";label.size_dip=20;
+    label.text="MMMMMMMMMMMMMMMMMMMM";label.color={255,255,255,255};scene.texts.push_back(label);
+    renderer.render(scene);const auto truncated=renderer.read_pixels();
+    scene.texts[0].text="MMMMM\xE2\x80\xA6";++scene.chrome_generation;
+    renderer.render(scene);const auto reference=renderer.read_pixels();
+    unsigned differences=0;
+    for(std::size_t i=0;i<reference.size();++i)if(std::abs(int(reference[i])-int(truncated[i]))>2)++differences;
+    require(differences<=16,"long chrome label did not match native end-ellipsis layout");
+    std::uint8_t opaque=0;for(std::size_t i=3;i<reference.size();i+=4)opaque=std::max(opaque,reference[i]);
+    require(opaque>200,"ellipsis fixture had no visible text ink");
+    scene.texts[0].color.a=128;++scene.chrome_generation;renderer.render(scene);auto faded=renderer.read_pixels();
+    std::uint8_t maximum=0;for(std::size_t i=3;i<faded.size();i+=4)maximum=std::max(maximum,faded[i]);
+    require(maximum<=129 && maximum>60,"finite text opacity did not scale all glyph coverage");
+    scene.texts[0].color.a=0;++scene.chrome_generation;renderer.render(scene);faded=renderer.read_pixels();
+    for(std::size_t i=3;i<faded.size();i+=4)require(faded[i]==0,"completed hidden palette left text pixels behind");
+    const auto presents=renderer.stats().presents;
+    require(renderer.render(scene)==RenderResult::unchanged && renderer.stats().presents==presents,
+            "settled palette continued rendering unchanged frames");
+}
 void cache_pressure_test() {
     RendererOptions options;options.force_warp=true;options.image_cache_bytes=8;options.shape_cache_bytes=512;
     Renderer renderer(nullptr,options);renderer.resize(96,64);
@@ -172,7 +221,7 @@ int main() {
         const auto previous_directory=std::filesystem::current_path();
         struct RestoreDirectory {std::filesystem::path path;~RestoreDirectory(){std::error_code ignored;std::filesystem::current_path(path,ignored);}} restore{previous_directory};
         std::filesystem::current_path(std::filesystem::temp_directory_path());
-        native_render_test();font_override_test();transparency_test();cache_pressure_test();rejected_image_test();
+        native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();cache_pressure_test();rejected_image_test();
         std::cout<<"PASS Windows WARP renderer: private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
         return 0;
     } catch(const std::exception& error) { std::cerr<<"FAIL renderer smoke: "<<error.what()<<'\n';return 1; }
