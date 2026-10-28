@@ -45,6 +45,9 @@ def stage(base, build, destination):
     expected_patch = pathlib.Path(__file__).with_name('0001-retire-resize-before-signal.patch')
     if sha(expected_patch) != sha(provenance / expected_patch.name):
         raise ValueError('Experimental patch provenance mismatch')
+    common_patch = pathlib.Path(__file__).with_name('0000-utils-const-compat.patch')
+    if sha(common_patch) != sha(provenance / common_patch.name):
+        raise ValueError('Common utility patch provenance mismatch')
     manifest_path = base / 'stormtty-shell-manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     for path in base.rglob('*'):
@@ -79,6 +82,7 @@ def stage(base, build, destination):
         'variant': variant, 'original_dll_sha256': original_hash,
         'experimental_dll_sha256': sha(dll),
         'source_archive_sha256': '4b178dfb5b77bce293706dcfabea673b77d8da061a4725bdf4cd94f17533c204',
+        'common_utility_patch_sha256': sha(provenance / common_patch.name),
         'patch_sha256': sha(provenance / '0001-retire-resize-before-signal.patch'),
         'build_environment_sha256': sha(provenance / 'pacman-before.txt'),
         'compiler_packages_sha256': sha(provenance / 'compiler-packages.txt'),

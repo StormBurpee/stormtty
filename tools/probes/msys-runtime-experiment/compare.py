@@ -35,7 +35,7 @@ def main():
         assert info['variant'] == name
         assert info['experimental_dll_sha256'] == sha(getattr(args, name) / 'usr/bin/msys-2.0.dll')
     control, patched = [manifests[name]['experimental_runtime'] for name in ('control', 'patched')]
-    for key in ('build_environment_sha256', 'compiler_mode_sha256', 'compiler_packages_sha256', 'original_dll_sha256', 'source_archive_sha256', 'patch_sha256'):
+    for key in ('build_environment_sha256', 'compiler_mode_sha256', 'compiler_packages_sha256', 'original_dll_sha256', 'source_archive_sha256', 'patch_sha256', 'common_utility_patch_sha256'):
         if control[key] != patched[key]:
             raise RuntimeError('Comparison provenance differs: ' + key)
     original_dll = sha(args.original / 'usr/bin/msys-2.0.dll')

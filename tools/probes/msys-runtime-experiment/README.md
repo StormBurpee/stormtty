@@ -211,3 +211,21 @@ GOODSIG and VALIDSIG from the exact expected signing key, and rejects expired,
 revoked, bad or error states. Missing/ambiguous evidence fails closed.
 `test-signature-status.sh` deterministically checks positive and negative status
 fixtures before native preflight. No native compiler success is implied.
+
+### Common utility-only compatibility patch
+
+Run40720429559 passed native signature/trust and relocated GCC15 smoke gates,
+and compiled/linked `new-msys-2.0.dll`, but the full control package build then
+failed in MinGW `cygcheck` utilities: updated MinGW headers return const pointers
+for string searches on const inputs. Original `.BUILDINFO` used headers14.r147;
+the job installed14.r501. The three affected locals are read-only queries.
+`0000-utils-const-compat.patch` adds `const` to those locals only, with no casts,
+permissive flags, warning suppression, skipped targets or changed tests.
+
+Both control and resize-patched variants apply this identical common utility
+patch after the exact43 official packaging patches. Original utility blobs and
+before/after source files are retained; patch hash is checked at staging and
+must match between variants. It does not modify runtime DLL source. The sole
+runtime behavior difference remains `0001-retire-resize-before-signal.patch`.
+The original archive/recipe/hash checks are unchanged. A linked DLL alone is
+not a completed package or runtime qualification result.

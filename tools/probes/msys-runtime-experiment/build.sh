@@ -17,6 +17,7 @@ available=$(df -Pk "$output" | awk 'NR==2 {print $4}')
 # Preserve original source archive and experimental patch, including upstream licenses.
 cp -- "$archive" "$output/provenance/msys2-runtime-3.6.11-4.src.tar.zst"
 cp -- "$here/0001-retire-resize-before-signal.patch" "$output/provenance/"
+cp -- "$here/0000-utils-const-compat.patch" "$output/provenance/"
 pacman -Q > "$output/provenance/pacman-before.txt"
 find /var/cache/pacman/pkg -maxdepth 1 -type f -name '*.pkg.tar.*' -exec sha256sum {} + > "$output/provenance/cached-toolchain-packages.sha256.txt"
 { uname -a; gcc --version; g++ --version; make --version; makepkg --version; } > "$output/provenance/system-toolchain.txt"
@@ -58,6 +59,15 @@ makepkg --config "$config" --nobuild --holdver --noconfirm
 cd src/msys2-runtime
 [[ $(git hash-object winsup/cygwin/fhandler/console.cc) == a7cdbed500c6235e21f41fe9d0be5075a8c471f1 ]]
 cp winsup/cygwin/fhandler/console.cc "$output/provenance/console-before.cc"
+# Common utility-only compatibility, NOT the experimental runtime behavior patch.
+[[ $(git hash-object winsup/utils/mingw/cygcheck.cc) == 22c7d181aede363995405698ec11673fa5b15ac8 ]]
+[[ $(git hash-object winsup/utils/mingw/dump_setup.cc) == 050679a0d32758b52c1b73f4e3c9a143e2a72264 ]]
+cp winsup/utils/mingw/cygcheck.cc "$output/provenance/cygcheck-before.cc"
+cp winsup/utils/mingw/dump_setup.cc "$output/provenance/dump_setup-before.cc"
+git apply --check "$here/0000-utils-const-compat.patch"
+git apply "$here/0000-utils-const-compat.patch"
+cp winsup/utils/mingw/cygcheck.cc "$output/provenance/cygcheck-after.cc"
+cp winsup/utils/mingw/dump_setup.cc "$output/provenance/dump_setup-after.cc"
 if [[ $variant == patched ]]; then
   git apply --check "$here/0001-retire-resize-before-signal.patch"
   git apply "$here/0001-retire-resize-before-signal.patch"

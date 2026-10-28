@@ -45,6 +45,7 @@ class StagingTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         shutil.copy2(HERE / '0001-retire-resize-before-signal.patch', prov)
+        shutil.copy2(HERE / '0000-utils-const-compat.patch', prov)
         (prov / 'hashes.txt').write_text(stage.sha(self.build / 'experimental-msys-2.0.dll') + '  dll\n')
 
     def test_stage_marks_experimental_and_preserves_original(self):
@@ -77,6 +78,12 @@ class StagingTests(unittest.TestCase):
     def test_base_corruption_rejected(self):
         (self.base / 'usr/bin/msys-2.0.dll').write_bytes(b'MZchanged')
         with self.assertRaises(ValueError):
+            stage.stage(self.base, self.build, self.dest)
+        self.assertFalse(self.dest.exists())
+
+    def test_common_utility_patch_corruption_rejected(self):
+        (self.build / 'provenance/0000-utils-const-compat.patch').write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, 'Common utility patch provenance mismatch'):
             stage.stage(self.base, self.build, self.dest)
         self.assertFalse(self.dest.exists())
 
