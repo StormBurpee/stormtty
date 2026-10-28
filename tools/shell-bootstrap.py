@@ -275,6 +275,24 @@ def extract_package(bundle: tarfile.TarFile, destination: Path, package: str,
                         "sha256": h.hexdigest(), "package": package}
 
 
+def stage_runtime_config(root: Path, records: dict[str, dict]) -> None:
+    # Add only app-owned files. Never replace or reclassify upstream payloads.
+    parent = records.get("etc")
+    if parent and (parent["path"] != "etc" or not parent["directory"]):
+        raise RuntimeError("Runtime configuration collides with package etc directory")
+    for source_name, name in (("shell-runtime.fstab", "etc/fstab"),
+                              ("shell-runtime.nsswitch.conf", "etc/nsswitch.conf")):
+        source = Path(__file__).with_name(source_name)
+        target = root / name
+        if name.casefold() in records or target.exists() or target.is_symlink():
+            raise RuntimeError(f"Runtime configuration collides with package payload: {name}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        records.setdefault("etc", {"path": "etc", "directory": True})
+        shutil.copyfile(source, target)
+        records[name.casefold()] = {"path": name, "directory": False,
+            "bytes": source.stat().st_size, "sha256": digest(source), "package": "stormtty-original-config"}
+
+
 def write_notice_packet(destination: Path, lock: dict, lock_hash: str, sources: bool,
                         records: dict[str, dict]) -> None:
     notices = destination / "notices"
@@ -352,6 +370,7 @@ def stage(args) -> Path:
             shutil.copyfile(preset, preset_target)
             records["stormtty/zsh/.zshrc"] = {"path": "stormtty/zsh/.zshrc", "directory": False,
                 "bytes": preset.stat().st_size, "sha256": digest(preset), "package": "stormtty-original-preset"}
+            stage_runtime_config(root, records)
             write_notice_packet(root, lock, digest(args.lock), args.sources, records)
             if destination.exists() or destination.is_symlink():
                 raise RuntimeError("Destination appeared while staging; refusing overwrite")

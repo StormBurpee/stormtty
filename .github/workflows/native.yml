@@ -155,6 +155,9 @@ jobs:
         id: staged_shell
         if: always() && runner.os == 'Windows' && steps.shell_safety.outcome == 'success'
         run: python tools/shell-bootstrap.py --destination .deps/stormtty-shell --cache .cache/shell-bootstrap
+      - name: Verify managed shell HOME and drive paths
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        run: python tools/shell-path-tests.py --runtime .deps/stormtty-shell
       - name: Qualify bundled Zsh through real native sessions
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         shell: python

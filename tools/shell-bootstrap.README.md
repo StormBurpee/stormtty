@@ -57,3 +57,50 @@ The current lock records the successful native Windows Zsh **subset** (both ConP
 `stormtty-shell-manifest.json` now reports `qualification_only: false` and `default_activation_allowed: true` for the pinned build-default runtime. Raw staging still reports `release_notices_complete: false`; the app build wrapper sets that true only after including the reviewed `shell-notices` packet. `public_redistribution_ready` and `public_source_availability_verified` remain **false** independently. Build-default activation is not a claim of public release readiness.
 
 Before a public binary download, preserve the completed notice overlay and all upstream notices, and actually provide the matching complete corresponding-source ZIP with a clear direct link beside that binary. Generate it with `shell-notices.py --source-packet`; all 19 original archives, static dependencies, recipes, patches and actual build-assembly scripts are included. GPLv3 section 6(d) is the intended route, not a vague written offer or upstream links alone. See `tools/shell-notices/REVIEW.md` for the exact component mapping and the retained upstream dumper license-file inconsistency. No first-party relicensing or Ghostty GPL shell-integration copying is performed.
+
+## Managed Windows home and drives
+
+The staged **private runtime** now owns two manifest-hashed files, `etc/fstab`
+and `etc/nsswitch.conf`; they are not edits to the user's MSYS2 installation or
+Windows environment. Drive roots appear as `/c`, `/d`, etc. (not `/cygdrive/c`),
+with case-insensitive/no-POSIX-ACL drive mounts. UNC paths remain UNC paths.
+The runtime root `/` still points to the bundled runtime, not the Windows drive.
+
+An existing `HOME` wins. When absent, `db_home: env windows` asks the runtime for
+`HOMEDRIVE` + `HOMEPATH`, then `USERPROFILE`, then Windows account information.
+Windows-form paths receive the runtime's normal POSIX conversion. An explicit
+POSIX `HOME`, including an old `/cygdrive/...` value, is **not** silently repaired:
+update that caller setting if it no longer names the desired location. Explicit
+empty `HOME` is restored by the preset using a child-only host marker because the
+pinned runtime imports even empty path variables through its converter. The
+marker is consumed, not exported into descendant shells. No `cd` is inserted:
+project CWD and saved shell choices still win; HOME dotfiles are not loaded or
+written. Global PATH is unchanged.
+
+`/tmp` uses the runtime's `usertemp` mount (`GetTempPathW`), so ordinary temporary
+files go to the launching user's Windows temp location rather than the possibly
+read-only install directory. `TMPDIR`, `TMP`, and `TEMP` are not replaced. Windows
+chooses its temp location from that process's environment; it must already exist
+and be writable. A path below this mount can legitimately display as `/tmp/...`
+instead of `/c/...`. This is not a private sandbox or a temp-cleanup service.
+
+Both automatic preparation and explicit developer-runtime staging reject stale
+or missing managed config; restage with the current `shell-bootstrap.py`. The
+install validator checks the same files. Corresponding-source packets include
+the two original configuration assets and regression gate; upstream binaries,
+licenses, source pins and public redistribution gates are unchanged.
+
+Semantics checked against the pinned package's Cygwin source baseline, commit
+`867eb7748e6e5a0e8430ce9f46af27b4b1e8f204` (`mount.cc`, `uinfo.cc`, `environ.cc`),
+its MSYS2 mount/empty-environment patches (0005, 0013, 0030, 0031), and official references:
+- [MSYS2 filesystem paths](https://www.msys2.org/docs/filesystem-paths/)
+- [Cygwin mount table and usertemp](https://cygwin.com/cygwin-ug-net/using.html)
+- [Cygwin home lookup](https://cygwin.com/cygwin-ug-net/ntsec.html)
+
+Run `python tools/shell-path-tests.py --runtime <absolute-staged-root>` on Windows
+from a local-drive workspace. It checks the actual managed preset, HOME fallback,
+explicit/empty HOME, Unicode/spaced project CWD, drive navigation, `/tmp` writes,
+and user-dotfile isolation. It fails explicitly on non-Windows hosts; Linux
+staging tests/cross-compilation do **not** qualify native path behavior. This new
+configuration needs that native gate; prior shell/ConPTY qualification is not a
+substitute for it.

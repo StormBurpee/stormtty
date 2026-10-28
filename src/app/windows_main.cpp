@@ -40,10 +40,12 @@ void check_shell_runtime(const std::filesystem::path& root, bool configured) {
     if (!root.empty() && (!std::filesystem::is_regular_file(root/L"usr"/L"bin"/L"zsh.exe") ||
         !std::filesystem::is_regular_file(root/L"usr"/L"bin"/L"msys-2.0.dll") ||
         !std::filesystem::is_regular_file(root/L"stormtty"/L"zsh"/L".zshrc") ||
+        !std::filesystem::is_regular_file(root/L"etc"/L"fstab") ||
+        !std::filesystem::is_regular_file(root/L"etc"/L"nsswitch.conf") ||
         (configured && !std::filesystem::is_regular_file(root/L"stormtty-shell-manifest.json"))))
         throw std::runtime_error(configured?
             "The app-owned bundled Zsh runtime is missing or incomplete. Close StormTTY and rebuild the stormtty target; keep runtimes/zsh beside StormTTY.exe when copying/installing. No fallback shell was launched.":
-            "The shell runtime needs usr/bin/zsh.exe, usr/bin/msys-2.0.dll and stormtty/zsh/.zshrc. Restage with shell-bootstrap.py. No fallback shell was launched.");
+            "The shell runtime needs usr/bin/zsh.exe, usr/bin/msys-2.0.dll, stormtty/zsh/.zshrc, etc/fstab and etc/nsswitch.conf. Restage with shell-bootstrap.py. No fallback shell was launched.");
 }
 struct Arguments {
     int count{};

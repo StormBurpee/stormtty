@@ -2,6 +2,10 @@
 # Clean managed profile only. Existing-user-configuration profiles preserve theirs.
 [[ -o interactive ]] || return
 [[ -n ${STORMTTY_SESSION_ID-} ]] || return
+# The host distinguishes absent HOME from an explicit empty value before the
+# MSYS2 Windows-path import. Do not substitute a home or rewrite explicit paths.
+[[ ${STORMTTY_EMPTY_HOME-} == 1 ]] && export HOME=''
+unset STORMTTY_EMPTY_HOME
 # Prevent app bootstrap variables from reinjecting into unrelated descendant shells.
 typeset +x ZDOTDIR STORMTTY_SESSION_ID
 unsetopt PROMPT_SUBST BEEP

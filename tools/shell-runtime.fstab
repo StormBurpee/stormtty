@@ -1,0 +1,5 @@
+# Original StormTTY configuration, scoped to this private runtime only.
+# Windows drives: /c, /d, ...; leave the runtime root and UNC paths alone.
+none / cygdrive binary,posix=0,noacl,user 0 0
+# Use the launching user's Windows temp directory, not the install directory.
+none /tmp usertemp binary,posix=0,noacl 0 0

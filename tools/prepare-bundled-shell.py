@@ -35,7 +35,7 @@ def prepare(runtime, cache, offline=False, zstd=None):
     owned=previous.get("schema")==1 and previous.get("build_owned") is True
     if runtime.exists() and not owned:
         raise RuntimeError("Refusing to replace a runtime not owned by this build helper")
-    required=("usr/bin/zsh.exe","usr/bin/msys-2.0.dll","stormtty/zsh/.zshrc","stormtty-shell-manifest.json","notices/stormtty-review/THIRD-PARTY-NOTICES.txt")
+    required=("etc/fstab","etc/nsswitch.conf","usr/bin/zsh.exe","usr/bin/msys-2.0.dll","stormtty/zsh/.zshrc","stormtty-shell-manifest.json","notices/stormtty-review/THIRD-PARTY-NOTICES.txt")
     if owned and previous.get("recipe")==recipe and all((runtime/p).is_file() for p in required): return
     runtime.parent.mkdir(parents=True,exist_ok=True)
     guard=runtime.with_name(runtime.name+".build-active")

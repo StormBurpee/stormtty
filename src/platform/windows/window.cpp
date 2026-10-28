@@ -846,6 +846,14 @@ SessionId NativeWindow::new_session() {
         for (const auto& [name,value]:selected->environment) process.environment.push_back({name,value});
     }
     if (using_managed_shell()) {
+        // MSYS2 converts HOME at its Windows boundary, including empty values.
+        // Preserve an explicitly empty HOME without inventing a default or
+        // rewriting a caller's path. This marker is child-only and consumed
+        // by our preset; never let an inherited marker affect a later launch.
+        SetLastError(ERROR_SUCCESS);
+        const auto home_length=GetEnvironmentVariableW(L"HOME",nullptr,0);
+        const bool empty_home=home_length==0 && GetLastError()==ERROR_SUCCESS;
+        process.environment.push_back({"STORMTTY_EMPTY_HOME",empty_home?"1":""});
         // Child environment only. HOME is deliberately inherited unchanged;
         // existing user startup hooks must not override this managed preset.
         for (const char* name:{"MSYS","ENV","BASH_ENV"}) process.environment.push_back({name,std::nullopt});

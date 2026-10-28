@@ -143,6 +143,9 @@ class NoticeTests(unittest.TestCase):
             with zipfile.ZipFile(output / "corresponding-source.zip") as bundle:
                 self.assertEqual(bundle.read("notices/texts/zsh/LICENCE"), original)
                 self.assertEqual(bundle.read("stormtty-packaging/tools/shell-notices/texts/zsh/LICENCE"), original)
+                for asset in ("shell-runtime.fstab", "shell-runtime.nsswitch.conf", "shell-path-tests.py"):
+                    self.assertEqual(bundle.read("stormtty-packaging/tools/" + asset),
+                                     (notices.TOOLS / asset).read_bytes())
 
     def test_existing_output_not_modified(self):
         with tempfile.TemporaryDirectory() as tmp:

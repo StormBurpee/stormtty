@@ -127,6 +127,30 @@ class ShellBootstrapTests(unittest.TestCase):
             self.assertEqual((output / "keep").read_text(), "mine")
             self.assertFalse((root / "cache").exists())
 
+    def test_runtime_config_is_manifest_tracked_and_nonoverwriting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            records = {}
+            shell.stage_runtime_config(root, records)
+            for name in ("etc/fstab", "etc/nsswitch.conf"):
+                self.assertEqual(records[name]["sha256"], shell.digest(root / name))
+                self.assertEqual(records[name]["package"], "stormtty-original-config")
+            self.assertIn("none / cygdrive binary,posix=0,noacl,user 0 0", (root / "etc/fstab").read_text())
+            self.assertIn("none /tmp usertemp", (root / "etc/fstab").read_text())
+            self.assertIn("db_home: env windows", (root / "etc/nsswitch.conf").read_text())
+            before = (root / "etc/fstab").read_bytes()
+            with self.assertRaisesRegex(RuntimeError, "collides"):
+                shell.stage_runtime_config(root, {})
+            self.assertEqual((root / "etc/fstab").read_bytes(), before)
+
+    def test_runtime_config_rejects_case_colliding_package(self):
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(RuntimeError, "collides"):
+            shell.stage_runtime_config(Path(tmp), {"etc/fstab": {"path": "ETC/FSTAB"}})
+
+    def test_runtime_config_rejects_parent_alias(self):
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(RuntimeError, "collides"):
+            shell.stage_runtime_config(Path(tmp), {"etc": {"path": "ETC", "directory": True}})
+
     def test_size_budget(self):
         old = shell.MAX_MEMBER_BYTES
         try:
