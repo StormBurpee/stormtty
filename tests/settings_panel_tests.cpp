@@ -43,8 +43,14 @@ int main() {return run_core_tests("settings panel",[] {
     const auto defaults=default_config(Platform::windows);
     SettingsPanel panel;
     CHECK(!panel.is_open());CHECK(!panel.key({{"TAB"}}));CHECK(!panel.pointer_down({0,0}));
+    panel.set_material_status("Opaque: Windows Transparency effects are off.");
+    const auto material_generation=panel.generation();
+    panel.set_material_status("Opaque: Windows Transparency effects are off.");CHECK(panel.generation()==material_generation);
     panel.open(defaults);CHECK(panel.is_open());CHECK(!panel.dirty());CHECK(panel.draft()==defaults);
     CHECK(!panel.take_action());
+    WindowScene material_scene;panel.append_scene(material_scene);
+    CHECK(std::any_of(material_scene.texts.begin(),material_scene.texts.end(),[](const auto& t){return t.text=="Opaque: Windows Transparency effects are off.";}));
+    CHECK(panel.draft()==defaults && !panel.dirty());
     // Semantic controls are unique and every field fits the ordinary modal.
     std::set<std::string> ids;
     for (const auto& c:panel.layout().controls) {CHECK(ids.insert(c.id).second);CHECK(c.visible);}

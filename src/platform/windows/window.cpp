@@ -259,6 +259,7 @@ private:
     bool key_message(MSG&);
     void create();
     void settings_changed();
+    void observe_material_renderer();
     void open_settings(std::string binding = {});
     void settings_actions();
     void settings_completed();
@@ -431,6 +432,8 @@ private:
     std::deque<PendingInput> pending_input_;
     std::size_t pending_bytes_{};
     bool backdrop_{};
+    MaterialRefreshTracker material_tracker_;
+    std::string material_status_;
 };
 
 void NativeWindow::create() {
@@ -583,14 +586,49 @@ void NativeWindow::settings_changed() {
     const DWORD corners = 2; // DWMWCP_ROUND; DWM suppresses rounding when snapped/maximized.
     DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(33), &corners, sizeof(corners));
     const auto render_capability = renderer_ ? renderer_->stats() : RendererStats{};
-    const bool can_material = renderer_ && render_capability.composition && !render_capability.warp && !high_contrast_ && transparency;
-    const DWORD requested_material = config_.appearance.backdrop == BackdropPreference::acrylic ? 3 : 2;
-    const DWORD material = !can_material || config_.appearance.backdrop==BackdropPreference::none ? 1 : requested_material;
-    backdrop_ = SUCCEEDED(DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(38), &material, sizeof(material))) && material != 1;
-    MARGINS margins = backdrop_ ? MARGINS{-1,-1,-1,-1} : MARGINS{1,1,1,1};
-    DwmExtendFrameIntoClientArea(hwnd_, &margins);
-    if (renderer_) renderer_->set_background_opacity(backdrop_ ? static_cast<float>(config_.appearance.background_opacity) : 1.0f);
+    material_tracker_.observe({render_capability.composition,render_capability.warp,render_capability.device_recoveries});
+    const auto policy=window_material_policy(config_.appearance,render_capability.composition,render_capability.warp,high_contrast_,transparency!=0);
+    const DWORD material=policy.system_backdrop;
+    const HRESULT material_result=DwmSetWindowAttribute(hwnd_,static_cast<DWMWINDOWATTRIBUTE>(38),&material,sizeof(material));
+    const bool material_requested=SUCCEEDED(material_result) && material!=1;
+    MARGINS margins=material_requested?MARGINS{-1,-1,-1,-1}:MARGINS{1,1,1,1};
+    const HRESULT frame_result=DwmExtendFrameIntoClientArea(hwnd_,&margins);
+    backdrop_=material_requested && SUCCEEDED(frame_result);
+    if (renderer_) renderer_->set_background_opacity(backdrop_?policy.opacity:1.0f);
+    std::string status;
+    switch(policy.fallback) {
+    case MaterialFallback::solid_selected: status="Solid selected in Settings.";break;
+    case MaterialFallback::no_composition: status="Opaque fallback: composition surface unavailable.";break;
+    case MaterialFallback::software: status="Opaque fallback: software graphics rendering.";break;
+    case MaterialFallback::high_contrast: status="Opaque: Windows high contrast is enabled.";break;
+    case MaterialFallback::transparency_disabled: status="Opaque: Windows Transparency effects are off.";break;
+    case MaterialFallback::none:
+        if(FAILED(material_result)) status="Opaque: Windows system material is unavailable (requires Windows 11 22H2+).";
+        else if(FAILED(frame_result)) status="Opaque: Windows could not extend the material into the client area.";
+        else if(policy.opacity>=1) status="100% background opacity covers the material. Lower Background opacity.";
+        else status=std::string(material==3?"Acrylic requested":"Mica requested (wallpaper only)")+" · "+std::to_string(std::lround(policy.opacity*100))+"% tint; Windows may use a solid fallback.";
+        break;
+    }
+    settings_panel_.set_material_status(status);
+    if(status!=material_status_) {
+        material_status_=std::move(status);
+        char diagnostic[512]{};
+        std::snprintf(diagnostic,sizeof diagnostic,"StormTTY material: %s composition=%u software=%u requested=%lu set_hr=0x%08lx frame_hr=0x%08lx\n",
+            material_status_.c_str(),unsigned(render_capability.composition),unsigned(render_capability.warp),static_cast<unsigned long>(material),
+            static_cast<unsigned long>(material_result),static_cast<unsigned long>(frame_result));
+        OutputDebugStringA(diagnostic);
+        if(options_.smoke_test) std::fputs(diagnostic,stderr);
+    }
     caret_schedule(); changed();
+}
+void NativeWindow::observe_material_renderer() {
+    if(!renderer_) return;
+    const auto capability=renderer_->stats();
+    if(material_tracker_.observe({capability.composition,capability.warp,capability.device_recoveries})) {
+        // Recovery can change an opaque child to DComp or vice versa. Reapply
+        // after the renderer call, never reenter resource construction or poll.
+        settings_pending_=true;defer_layout();
+    }
 }
 void NativeWindow::changed(bool geometry) {
     ++chrome_generation_; dirty_ = true;
@@ -636,6 +674,7 @@ void NativeWindow::refresh_layout() {
             RendererCallGuard guard(renderer_call_);
             renderer_->resize(static_cast<std::uint32_t>(std::max(0L, bounds.right)), static_cast<std::uint32_t>(std::max(0L, bounds.bottom)), static_cast<float>(dpi_));
         }
+        observe_material_renderer();
         const auto metrics = renderer_->metrics();
         for (const auto& placement : layout_.panes) {
             const auto content = pixels(content_bounds(placement));
@@ -1499,6 +1538,7 @@ void NativeWindow::render() {
     if (result==RenderResult::presented) force_redraw_=false;
     render_busy_ = result == RenderResult::busy;
     if (!render_busy_) dirty_ = false;
+    observe_material_renderer();
     if (options_.smoke_test) smoke_progress(result==RenderResult::presented);
     // Occlusion is retried on actual exposure/activation/output, not a timer.
 }

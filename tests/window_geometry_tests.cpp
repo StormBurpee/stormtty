@@ -8,6 +8,27 @@ namespace { void require(bool condition, const char* message) {
 } }
 int main() {
     using namespace stormtty;
+    AppearanceConfig appearance;appearance.backdrop=BackdropPreference::automatic;
+    auto material=window_material_policy(appearance,true,false,false,true);
+    require(material.system_backdrop==3 && material.opacity<1,"Auto requests behind-window Acrylic, not wallpaper-only Mica");
+    appearance.backdrop=BackdropPreference::mica;
+    require(window_material_policy(appearance,true,false,false,true).system_backdrop==2,"explicit Mica choice preserved");
+    appearance.backdrop=BackdropPreference::none;
+    require(window_material_policy(appearance,true,false,false,true).opacity==1,"explicit Solid is opaque");
+    appearance.backdrop=BackdropPreference::acrylic;
+    for(const auto blocked:{window_material_policy(appearance,false,false,false,true),window_material_policy(appearance,true,true,false,true),
+            window_material_policy(appearance,true,false,true,true),window_material_policy(appearance,true,false,false,false)})
+        require(blocked.system_backdrop==1 && blocked.opacity==1 && blocked.fallback!=MaterialFallback::none,"unsupported/accessibility paths stay opaque");
+    appearance.background_opacity=1;
+    require(window_material_policy(appearance,true,false,false,true).opacity==1,"saved 100 percent opacity is not silently changed");
+    MaterialRefreshTracker tracker;
+    require(tracker.observe({false,false,0}),"first material observation");
+    require(!tracker.observe({false,false,0}),"unchanged capability creates no idle work");
+    require(tracker.observe({true,false,0}),"first composition surface triggers refresh");
+    require(tracker.observe({false,true,1}),"device fallback triggers opaque policy refresh");
+    require(!tracker.observe({false,true,1}),"unchanged fallback creates no loop");
+    require(tracker.observe({true,false,2}),"device recovery restores requested material");
+    require(tracker.observe({true,false,3}),"same-path device reconstruction refreshes native material");
     auto chrome = layout_chrome(1100, 700, {{1}, {2}}, {1});
     require(chrome.tabs.size() == 2 && !chrome.compact, "two normal tabs");
     require(chrome.drag.width >= 48, "deliberate draggable gap");

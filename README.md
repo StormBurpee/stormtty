@@ -250,9 +250,13 @@ includes, scripts, environment expansion or shell expressions. An invalid
 startup file is rejected rather than partially applied.
 
 `background_opacity` accepts `0.70` through `1.0` and affects only the default
-terminal background. `backdrop = "none"` opts out of the backdrop; high-contrast
-and unsupported rendering paths use an opaque background. Font names refer to
-available fonts; the current development build does not bundle Cascadia Mono.
+terminal background. On supported Windows builds, `backdrop = "auto"` requests
+Desktop Acrylic; `"mica"` explicitly selects wallpaper-based Mica and `"none"`
+selects a solid background. Appearance shows the requested material or the
+current fallback reason. Saved opacity is preserved; 100% covers the material.
+Windows can substitute a solid surface for inactive windows, accessibility,
+power or graphics conditions ([Microsoft's material guidance](https://learn.microsoft.com/en-us/windows/apps/design/style/acrylic)).
+Cascadia Mono is bundled; other font names refer to installed fonts.
 
 For a custom shell, add a profile with a separate executable and argument list.
 Use an installed executable's full path, and escape Windows backslashes as `\\`.

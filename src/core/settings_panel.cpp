@@ -98,6 +98,11 @@ void SettingsPanel::set_high_contrast(bool enabled, Color background, Color fore
     high_highlight_=highlight;high_highlight_text_=highlight_text;high_disabled_text_=disabled_text;
     ++generation_;
 }
+void SettingsPanel::set_material_status(std::string status) {
+    status=bounded_message(std::move(status));
+    if(material_status_==status) return;
+    material_status_=std::move(status);++generation_;
+}
 void SettingsPanel::rebuild_layout() {
     layout_={};
     const double margin=viewport_.width<600?8:24;
@@ -482,7 +487,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             box({r.x+8+width*progress-5,track_y-4,10,11},ink,transparent,5);
             label({r.x+8,r.y-2,std::max(0.0,r.width-16),21},number(std::round(draft_.appearance.background_opacity*100))+"%",ink,12,true,true);
         }
-        row_labels(313,"Window material","Acrylic and Mica use the native system when available.",content.width);
+        row_labels(313,"Window material",material_status_.empty()?"Auto uses Acrylic; Mica uses wallpaper, not other windows.":material_status_,content.width);
         constexpr std::array ids{"appearance.backdrop.auto","appearance.backdrop.none","appearance.backdrop.mica","appearance.backdrop.acrylic"};
         constexpr std::array names{"Auto","Solid","Mica","Acrylic"};
         const auto material=draft_.appearance.backdrop;
