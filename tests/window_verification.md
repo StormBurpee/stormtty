@@ -90,3 +90,25 @@ The parent CI owner records whether this entry point actually ran and passed.
   then a settled WARP framebuffer capture. Existing `--smoke` stays one-pane.
   Neither framebuffer proves desktop blur, outer corners, Snap, IME, or physical
   text quality. Normal launch never runs this test or its commands.
+
+## Styled modal and caption ownership regression
+
+- Close pane/tab/window and unsafe-paste confirmations are renderer-backed,
+  asynchronous in-window state. No MessageBox, secondary HWND or nested dialog
+  loop is involved in these decisions. Cancel is the default; Escape cancels,
+  Tab/arrows cycle only the modal actions, and Enter/Space activate the selected
+  action. Terminal key/text/mouse/wheel/IME input is intercepted while modal;
+  process output continues. A paste action retains the original actor target.
+- The HWND retains thick-frame, system-menu, minimize/maximize styles but omits
+  WS_CAPTION. NCCALCSIZE/NCPAINT/NCACTIVATE are application-owned before DWM;
+  caption commands are explicitly dispatched on mouse-up. HTMAXBUTTON remains
+  available for documented Snap integration. This source change and style tests
+  are not proof of physical inactive-window, corner, shadow or Snap behavior.
+- `--smoke-modal --capture modal.png` uses actual HWND/renderer/ConPTY sessions,
+  tests synthetic modal key routing and focus ownership, captures a presented
+  styled confirmation, accepts close for a disposable real tab, then requires
+  the surviving shell's output marker and clean exit. A framebuffer cannot show
+  a stale underlying DWM redirection bitmap or prove desktop activation behavior.
+- Startup failures/help still have their separate pre-renderer MessageBox path;
+  removal is tracked as follow-up. Do not claim all application alerts are custom
+  until that fallback is replaced as well. UIA modal semantics are not yet exposed.

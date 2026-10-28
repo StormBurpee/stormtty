@@ -49,6 +49,7 @@ private:
 // Windows is implemented; other platforms provide their own native shell.
 struct NativeRunOptions {
     bool smoke_test{}; // Explicit CI mode; never enabled on a normal launch.
+    bool smoke_modal{}; // Styled modal + routing/close smoke, not desktop activation QA.
     bool smoke_layout{}; // Three visible real shells + two background tabs.
     std::filesystem::path capture_path; // Smoke-only actual framebuffer PNG.
 };

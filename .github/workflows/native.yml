@@ -60,7 +60,7 @@ jobs:
         shell: python
         run: |
           import pathlib,base64,hashlib
-          for name in ('native-window.png', 'native-layout.png'):
+          for name in ('native-window.png', 'native-layout.png', 'native-modal.png'):
             p=pathlib.Path('build/artifacts')/name
             print('STORMTTY_NATIVE_FRAME_NAME='+name)
             if p.exists():

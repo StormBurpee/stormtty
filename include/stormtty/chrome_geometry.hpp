@@ -90,6 +90,31 @@ inline NativeHit chrome_hit_test(const ChromeLayout& layout, Point p,
     return layout.band.contains(p) ? NativeHit::caption : NativeHit::client;
 }
 
+// Shared presentation-only modal geometry and keyboard decision state. Hosts
+// own the asynchronous callback, target identity and input interception.
+struct ModalLayout { Rect panel, title, body, cancel, confirm; };
+inline ModalLayout layout_modal(double width,double height,double crown=48) {
+    const double w=std::min(480.0,std::max(0.0,width-32));
+    const double h=std::min(228.0,std::max(0.0,height-crown-16));
+    const double x=(width-w)/2,y=crown+std::max(0.0,(height-crown-h)/2);
+    const double padding=h<200?12:24, button=std::min(132.0,std::max(0.0,(w-padding*2-8)/2));
+    const double button_y=y+h-padding-32, body_y=y+padding+34;
+    return {{x,y,w,h},{x+padding,y+padding,std::max(0.0,w-padding*2),28},
+        {x+padding,body_y,std::max(0.0,w-padding*2),std::max(0.0,button_y-body_y-8)},
+        {x+w-padding-button*2-8,button_y,button,32},{x+w-padding-button,button_y,button,32}};
+}
+enum class ModalDecision { cancel, confirm };
+class ModalFocus {
+public:
+    void reset() noexcept { confirm_=false; }
+    void next() noexcept { confirm_=!confirm_; }
+    void select(ModalDecision decision) noexcept { confirm_=decision==ModalDecision::confirm; }
+    ModalDecision activate() const noexcept { return confirm_?ModalDecision::confirm:ModalDecision::cancel; }
+    bool confirm_focused() const noexcept { return confirm_; }
+private:
+    bool confirm_{}; // Destructive confirmation is never the default.
+};
+
 // Finite presentation-only transitions. The host schedules a timer only while
 // active(); model focus, hit testing and terminal grids commit immediately.
 class ChromeTransition {

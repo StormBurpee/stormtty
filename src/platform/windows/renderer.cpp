@@ -66,6 +66,62 @@ private:
     }
 };
 void check(HRESULT hr, const char* action) { if (FAILED(hr)) throw GraphicsError(hr, action); }
+// A DComp visual sits above ordinary HWND pixels. Remove that backing surface
+// only while DComp owns presentation; an opaque HWND swapchain needs it back.
+// Own just this bit, not a stale copy of the shell's complete extended style.
+class HostRedirectionStyle {
+public:
+    explicit HostRedirectionStyle(HWND window) noexcept : window_(window) {}
+    HRESULT set(bool no_redirection) noexcept {
+        if (!window_) return S_OK;
+        LONG_PTR style{};
+        auto hr = read(style);
+        if (FAILED(hr)) return hr;
+        if (!saved_) { original_ = (style & WS_EX_NOREDIRECTIONBITMAP) != 0; saved_ = true; }
+        const auto desired = no_redirection ? style | WS_EX_NOREDIRECTIONBITMAP : style & ~LONG_PTR(WS_EX_NOREDIRECTIONBITMAP);
+        if (desired != style) {
+            // Zero is a valid previous EXSTYLE, not necessarily an API failure.
+            SetLastError(ERROR_SUCCESS);
+            const auto previous = SetWindowLongPtrW(window_, GWL_EXSTYLE, desired);
+            const auto error = GetLastError();
+            if (!previous && error) return HRESULT_FROM_WIN32(error);
+            refresh_pending_ = true;
+        }
+        if (refresh_pending_) {
+            SetLastError(ERROR_SUCCESS);
+            if (!SetWindowPos(window_, nullptr, 0, 0, 0, 0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER))
+                return last_error();
+            refresh_pending_ = false;
+        }
+        // A WM_STYLECHANGING handler may modify the requested style. Do not
+        // report a composition host (or use HWND fallback) with the wrong bit.
+        hr = read(style);
+        if (FAILED(hr)) return hr;
+        return ((style & WS_EX_NOREDIRECTIONBITMAP) != 0) == no_redirection ? S_OK : E_FAIL;
+    }
+    HRESULT restore() noexcept {
+        if (!saved_) return S_OK;
+        // The owner may already have destroyed its HWND during app shutdown.
+        if (!IsWindow(window_)) { saved_ = refresh_pending_ = false; return S_OK; }
+        const auto hr = set(original_);
+        if (SUCCEEDED(hr)) saved_ = false;
+        return hr;
+    }
+private:
+    static HRESULT last_error() noexcept {
+        const auto error = GetLastError();
+        return error ? HRESULT_FROM_WIN32(error) : E_FAIL;
+    }
+    HRESULT read(LONG_PTR& style) const noexcept {
+        SetLastError(ERROR_SUCCESS);
+        style = GetWindowLongPtrW(window_, GWL_EXSTYLE);
+        const auto error = GetLastError();
+        return !style && error ? HRESULT_FROM_WIN32(error) : S_OK;
+    }
+    HWND window_{};
+    bool saved_{}, original_{}, refresh_pending_{};
+};
 bool device_lost(HRESULT hr) noexcept {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
            hr == D2DERR_RECREATE_TARGET || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
@@ -327,6 +383,7 @@ constexpr Color selection_foreground{236,238,242,255};
 struct Renderer::Impl {
     Apartment apartment;
     HWND window{};
+    HostRedirectionStyle host_style;
     RendererOptions options;
     CellMetrics cell;
     RendererStats counters;
@@ -359,7 +416,7 @@ struct Renderer::Impl {
     std::unordered_map<ImageKey, CachedImage, ImageHash> images;
     WindowScene previous;
 
-    Impl(void* hwnd, RendererOptions opts) : window(static_cast<HWND>(hwnd)), options(std::move(opts)) {
+    Impl(void* hwnd, RendererOptions opts) : window(static_cast<HWND>(hwnd)), host_style(window), options(std::move(opts)) {
         if (FAILED(apartment.hr) && apartment.hr != RPC_E_CHANGED_MODE) check(apartment.hr, "COM initialization");
         validate_font(options.font);
         if (!options.maximum_image_dimension || options.maximum_image_dimension > 8192 ||
@@ -376,21 +433,30 @@ struct Renderer::Impl {
         create_device();
         measure_font();
     }
-    ~Impl() { release_gpu(); }
+    ~Impl() {
+        if (FAILED(release_gpu()))
+            OutputDebugStringW(L"StormTTY: failed to restore HWND redirection style during renderer destruction.\n");
+    }
     static void validate_font(const FontOptions& font) {
         if (font.family.empty() || font.family.size() > 256 || font.locale.size() > 85 ||
             !std::isfinite(font.size_dip) || font.size_dip < 4 || font.size_dip > 128)
             throw std::invalid_argument("Invalid terminal font");
     }
-    void release_gpu() noexcept {
+    HRESULT release_swapchain() noexcept {
+        composition_visual.reset(); composition_target.reset(); composition.reset();
+        latency.reset(); swapchain2.reset(); swapchain.reset();
+        counters.composition = false;
+        return host_style.restore();
+    }
+    HRESULT release_gpu() noexcept {
         if (dc) dc->SetTarget(nullptr);
         canvas.reset(); canvas_texture.reset(); brush.reset(); images.clear();
         counters.image_cache_bytes = 0;
-        composition_visual.reset(); composition_target.reset(); composition.reset();
-        latency.reset(); swapchain2.reset(); swapchain.reset();
+        const auto style_result = release_swapchain();
         dc4.reset(); dc.reset(); d2d_device.reset();
         if (immediate) { immediate->ClearState(); immediate->Flush(); }
         immediate.reset(); device.reset();
+        return style_result;
     }
     void create_device() {
         D3D_FEATURE_LEVEL level{};
@@ -422,6 +488,7 @@ struct Renderer::Impl {
     }
     void create_surfaces() {
         if (!width || !height) return;
+        try {
         if (window && !swapchain) {
             Com<IDXGIDevice> dxgi_device; check(device.as(dxgi_device), "Query DXGI device");
             Com<IDXGIAdapter> adapter; check(dxgi_device->GetAdapter(adapter.put()), "Get adapter");
@@ -444,12 +511,16 @@ struct Renderer::Impl {
                 if (SUCCEEDED(hr)) hr = composition_visual->SetContent(swapchain.get());
                 if (SUCCEEDED(hr)) hr = composition_target->SetRoot(composition_visual.get());
                 if (SUCCEEDED(hr)) hr = composition->Commit();
+                if (SUCCEEDED(hr)) hr = host_style.set(true);
                 counters.composition = SUCCEEDED(hr);
                 if (!counters.composition) {
-                    composition_visual.reset(); composition_target.reset(); composition.reset(); swapchain.reset();
+                    check(release_swapchain(), "Restore HWND redirection after composition failure");
                 }
             }
             if (!swapchain) {
+                // Do not carry DComp-only no-redirection into HWND presentation,
+                // even when the caller originally supplied that extended style.
+                check(host_style.set(false), "Enable HWND swapchain redirection");
                 desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
                 check(factory->CreateSwapChainForHwnd(device.get(), window, &desc, nullptr, nullptr, swapchain.put()), "Create HWND swapchain");
             }
@@ -469,6 +540,11 @@ struct Renderer::Impl {
                                                 D2D1_BITMAP_OPTIONS_TARGET,nullptr};
         check(dc->CreateBitmapFromDxgiSurface(surface.get(), &properties, canvas.put()), "Create canvas bitmap");
         dc->SetTarget(canvas.get()); invalid = true; pending_present = false;
+        } catch (...) {
+            dc->SetTarget(nullptr); canvas.reset(); canvas_texture.reset();
+            check(release_swapchain(), "Restore HWND redirection after surface failure");
+            throw;
+        }
     }
     void measure_font() {
         em_size = options.font.size_dip * dpi / 96;
@@ -1115,7 +1191,9 @@ RenderResult Renderer::render(const WindowScene& scene) {
 void* Renderer::frame_latency_wait_handle() const noexcept {return impl_->latency.value;}
 RendererStats Renderer::stats() const noexcept {return impl_->counters;}
 void Renderer::recreate_device() {
-    auto& p=*impl_;p.release_gpu();p.create_device();p.invalid=true;++p.counters.device_recoveries;
+    auto& p=*impl_;
+    check(p.release_gpu(),"Restore HWND redirection before device recovery");
+    p.create_device();p.invalid=true;++p.counters.device_recoveries;
 }
 std::vector<std::uint8_t> Renderer::read_pixels() {
     auto& p=*impl_;if(!p.canvas_texture) return {};

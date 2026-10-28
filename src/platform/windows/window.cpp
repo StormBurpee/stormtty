@@ -38,6 +38,7 @@
 namespace stormtty {
 namespace {
 constexpr UINT wake_message = WM_APP + 41;
+constexpr UINT deferred_layout_message = WM_APP + 42;
 constexpr UINT_PTR cursor_timer = 1;
 constexpr UINT_PTR smoke_timeout_timer = 2;
 constexpr UINT_PTR chrome_motion_timer = 3;
@@ -172,6 +173,7 @@ private:
     void create();
     void settings_changed();
     void refresh_layout();
+    void defer_layout();
     void update_sessions();
     void sync_focus();
     void changed(bool geometry = false);
@@ -190,9 +192,11 @@ private:
     SessionId new_session();
     void new_tab();
     void split(Direction);
-    void close_pane(PaneId);
-    void close_tab(TabId);
-    bool confirm_close(std::string_view what);
+    void close_pane(PaneId, bool approved = false);
+    void close_tab(TabId, bool approved = false);
+    void show_modal(std::string title, std::vector<std::string> body, std::string confirm, std::function<void()> action, bool destructive = true);
+    void answer_modal(ModalDecision);
+    ModalLayout modal_layout() const { return layout_modal(width_,height_,chrome_.band.height); }
     void retire_unused_sessions();
     void activate(PaneId);
     void terminal_text(std::string, Key key = Key::unidentified, std::uint16_t modifiers = 0);
@@ -233,6 +237,8 @@ private:
     std::set<SessionId> smoke_commands_sent_;
     bool smoke_marker_presented_{}, smoke_finished_{};
     int exit_code_{};
+    unsigned smoke_modal_stage_{};
+    std::shared_ptr<Session> smoke_disposable_;
     Workspace workspace_;
     std::map<SessionId, std::shared_ptr<Session>> sessions_;
     std::map<SessionId, TerminalSize> sizes_;
@@ -250,6 +256,7 @@ private:
     std::vector<ChromePrimitive> closing_palette_primitives_;
     std::vector<ChromeText> closing_palette_texts_;
     std::unique_ptr<Renderer> renderer_;
+    bool renderer_call_{}, layout_pending_{}, settings_pending_{};
     double scale_{1}, width_{1100}, height_{720};
     UINT dpi_{96};
     ChromeLayout chrome_;
@@ -261,6 +268,11 @@ private:
     WINDOWPLACEMENT restore_placement_{};
     LONG_PTR restore_style_{};
     std::string query_, preedit_, notice_;
+    struct Modal { std::string title; std::vector<std::string> body; std::string confirm_label; std::function<void()> confirm; bool destructive{}; };
+    std::optional<Modal> modal_;
+    ModalFocus modal_focus_;
+    std::optional<ModalDecision> modal_pressed_;
+    WPARAM caption_pressed_{};
     std::size_t palette_index_{};
     TabId rename_tab_{};
     Utf16Input text_input_;
@@ -288,7 +300,7 @@ private:
 };
 
 void NativeWindow::create() {
-    hwnd_ = CreateWindowExW(0, L"StormTTY.NativeWindow", L"StormTTY", WS_OVERLAPPEDWINDOW,
+    hwnd_ = CreateWindowExW(0, L"StormTTY.NativeWindow", L"StormTTY", WS_OVERLAPPEDWINDOW & ~WS_CAPTION,
                            CW_USEDEFAULT, CW_USEDEFAULT, 1100, 720, nullptr, nullptr, GetModuleHandleW(nullptr), this);
     if (!hwnd_) throw std::runtime_error("Could not create the native StormTTY window.");
     wake_->window.store(hwnd_, std::memory_order_release);
@@ -349,6 +361,7 @@ int NativeWindow::run() {
                 if (options_.smoke_test) for (const auto& [id,session]:sessions_) {
                     (void)id; if (!session->wait_closed(std::chrono::seconds(5))) code=3;
                 }
+                if (options_.smoke_modal && smoke_disposable_ && !smoke_disposable_->wait_closed(std::chrono::seconds(5))) code=3;
                 return code;
             }
             if (message.hwnd == hwnd_ && key_message(message)) continue;
@@ -381,6 +394,7 @@ LRESULT CALLBACK NativeWindow::procedure(HWND window, UINT message, WPARAM wpara
     return 0;
 }
 void NativeWindow::settings_changed() {
+    if (renderer_call_) { settings_pending_=true; defer_layout(); return; }
     HIGHCONTRASTW contrast{}; contrast.cbSize=sizeof(contrast);
     high_contrast_ = SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0) && (contrast.dwFlags & HCF_HIGHCONTRASTON);
     BOOL animations = TRUE;
@@ -412,7 +426,18 @@ void NativeWindow::changed(bool geometry) {
     motion_schedule();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
+void NativeWindow::defer_layout() {
+    if (!layout_pending_ && hwnd_) { layout_pending_=true; if (!PostMessageW(hwnd_,deferred_layout_message,0,0)) layout_pending_=false; }
+}
+struct RendererCallGuard {
+    bool& flag;
+    explicit RendererCallGuard(bool& value):flag(value){flag=true;}
+    ~RendererCallGuard(){flag=false;}
+};
 void NativeWindow::refresh_layout() {
+    // Style changes during DirectComposition construction can synchronously send
+    // WM_SIZE. Never reenter renderer resource construction through that message.
+    if (renderer_call_) { defer_layout(); return; }
     RECT bounds{}; GetClientRect(hwnd_, &bounds);
     width_ = (bounds.right - bounds.left) / scale_; height_ = (bounds.bottom - bounds.top) / scale_;
     maximized_ = IsZoomed(hwnd_) != FALSE;
@@ -424,7 +449,10 @@ void NativeWindow::refresh_layout() {
     if (const auto* tab=workspace_.tab(workspace_.active_tab()); tab && tab->zoomed_pane && chrome_.drag.width>=180 && !fullscreen_) zoom_return_={chrome_.drag.x+4,10,120,28};
     layout_ = workspace_.layout(workspace_.active_tab(), {0, chrome_.band.height, width_, std::max(0.0, height_ - chrome_.band.height)}, {1.0 / scale_, 7, 80, 48});
     if (renderer_) {
-        renderer_->resize(static_cast<std::uint32_t>(std::max(0L, bounds.right)), static_cast<std::uint32_t>(std::max(0L, bounds.bottom)), static_cast<float>(dpi_));
+        {
+            RendererCallGuard guard(renderer_call_);
+            renderer_->resize(static_cast<std::uint32_t>(std::max(0L, bounds.right)), static_cast<std::uint32_t>(std::max(0L, bounds.bottom)), static_cast<float>(dpi_));
+        }
         const auto metrics = renderer_->metrics();
         for (const auto& placement : layout_.panes) {
             const auto content = pixels(content_bounds(placement));
@@ -529,28 +557,50 @@ void NativeWindow::retire_unused_sessions() {
         else ++iterator;
     }
 }
-bool NativeWindow::confirm_close(std::string_view what) {
-    const auto message = widen("Close " + std::string(what) + "?\n\nIts shell or child programs may still be running. Unsaved work can be lost.");
-    return MessageBoxW(hwnd_, message.c_str(), L"StormTTY", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+void NativeWindow::show_modal(std::string title, std::vector<std::string> body, std::string confirm, std::function<void()> action, bool destructive) {
+    if (modal_) return; // Never replace an unacknowledged decision/target.
+    if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
+    cancel_drag();
+    palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false; text_input_.reset();
+    palette_transition_=ChromeTransition{}; closing_palette_primitives_.clear(); closing_palette_texts_.clear();
+    if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
+    modal_=Modal{std::move(title),std::move(body),std::move(confirm),std::move(action),destructive};
+    modal_focus_.reset(); modal_pressed_.reset();
+    if (tooltip_) SendMessageW(tooltip_,TTM_POP,0,0);
+    SetFocus(hwnd_); changed(); caret_schedule();
 }
-void NativeWindow::close_pane(PaneId pane) {
+void NativeWindow::answer_modal(ModalDecision decision) {
+    if (!modal_) return;
+    auto action=decision==ModalDecision::confirm?std::move(modal_->confirm):std::function<void()>{};
+    if (GetCapture()==hwnd_) ReleaseCapture();
+    modal_.reset(); modal_pressed_.reset(); text_input_.reset();
+    if (action) action();
+    if (hwnd_) { changed(); caret_schedule(); }
+}
+void NativeWindow::close_pane(PaneId pane, bool approved) {
+    if (!workspace_.pane(pane)) return;
     auto* session = session_for(pane);
-    if (session && !session->closed() && !confirm_close("this pane")) return;
+    if (!approved && session && !session->closed()) {
+        show_modal("Close this pane?",{"Programs may still be running.","Closing can discard unsaved work."},"Close pane",[this,pane]{close_pane(pane,true);}); return;
+    }
     workspace_.close_pane(pane); retire_unused_sessions();
     if (workspace_.state().tabs.empty()) { DestroyWindow(hwnd_); return; }
     changed(true);
 }
-void NativeWindow::close_tab(TabId tab) {
+void NativeWindow::close_tab(TabId tab, bool approved) {
+    if (!workspace_.tab(tab)) return;
     bool live = false;
     for (auto pane : workspace_.pane_order(tab)) if (auto* session = session_for(pane); session && !session->closed()) live = true;
-    if (live && !confirm_close("this tab and its panes")) return;
+    if (!approved && live) {
+        show_modal("Close this tab?",{"Its panes may have running programs.","Closing can discard unsaved work."},"Close tab",[this,tab]{close_tab(tab,true);}); return;
+    }
     workspace_.close_tab(tab); retire_unused_sessions();
     if (workspace_.state().tabs.empty()) { DestroyWindow(hwnd_); return; }
     changed(true);
 }
 void NativeWindow::sync_focus() {
     SessionId desired{};
-    if (active_ && !palette_open_ && !rename_open_) if (const auto* pane=workspace_.pane(workspace_.active_pane())) desired=pane->session;
+    if (active_ && !palette_open_ && !rename_open_ && !modal_) if (const auto* pane=workspace_.pane(workspace_.active_pane())) desired=pane->session;
     if (desired==focused_session_) return;
     const auto previous=focused_session_; focused_session_=desired;
     if (sessions_.contains(previous)) { auto old=sessions_.at(previous); submit([old] { return old->focus(false); }); }
@@ -721,6 +771,7 @@ std::vector<const Command*> NativeWindow::palette_commands() const {
     return result;
 }
 void NativeWindow::dispatch(std::string_view command) {
+    if (modal_) return;
     if (drag_!=Drag::none || mouse_capture_pane_) cancel_drag();
     if (!host_availability(command, command_context()).enabled) { show_error(host_availability(command, command_context()).reason); return; }
     notice_.clear();
@@ -825,7 +876,7 @@ WindowScene NativeWindow::scene() {
         if (auto* session = session_for(placement.pane)) {
             auto frame=session->frame();
             const bool cursor_visible=!frame || !frame->cursor.blinking || cursor_on_;
-            result.panes.push_back({placement.pane.value,pixels(content_bounds(placement)),std::move(frame),active_ && placement.pane==workspace_.active_pane() && !palette_open_ && !rename_open_,cursor_visible,reduced_motion_ || cursor_on_});
+            result.panes.push_back({placement.pane.value,pixels(content_bounds(placement)),std::move(frame),active_ && placement.pane==workspace_.active_pane() && !palette_open_ && !rename_open_ && !modal_,cursor_visible,reduced_motion_ || cursor_on_});
         }
         if (layout_.panes.size() > 1) {
             const Rect header{placement.bounds.x, placement.bounds.y, placement.bounds.width, 28};
@@ -945,11 +996,31 @@ WindowScene NativeWindow::scene() {
     for (auto i=palette_text_start;i<result.texts.size();++i) {
         auto& item=result.texts[i]; item.rect.y+=static_cast<float>(offset); item.color=opacity(item.color,reveal);
     }
+    if (modal_) {
+        const auto box=modal_layout();
+        rectangle({0,chrome_.band.height,width_,std::max(0.0,height_-chrome_.band.height)},high_contrast_?Color{0,0,0,180}:Color{5,8,13,128});
+        rectangle({box.panel.x+2,box.panel.y+5,box.panel.width,box.panel.height},{0,0,0,90},10);
+        rectangle(box.panel,high_contrast_?background:Color{24,29,36,255},9,high_contrast_?accent:Color{67,78,99,255},1/scale_);
+        label(box.title,modal_->title,text,18,true);
+        if (box.body.height<modal_->body.size()*22 && !modal_->body.empty()) label({box.body.x,box.body.y,box.body.width,20},modal_->body.back(),secondary,13);
+        else for (std::size_t i=0;i<modal_->body.size();++i) label({box.body.x,box.body.y+i*22,box.body.width,20},modal_->body[i],secondary,13);
+        const auto paint_button=[&](Rect bounds,std::string title,bool confirm) {
+            const bool focused=modal_focus_.confirm_focused()==confirm;
+            Color fill=confirm?(modal_->destructive?Color{103,45,55,255}:Color{45,61,97,255}):raised;
+            if (high_contrast_) fill=background;
+            if (bounds.contains(hover_) && !high_contrast_) fill=blend(fill,Color{80,92,120,255},.25);
+            rectangle(bounds,fill,5,focused?accent:Color{65,75,94,255},focused?2/scale_:1/scale_);
+            label({bounds.x+12,bounds.y+7,std::max(0.0,bounds.width-24),20},std::move(title),text,13,focused);
+        };
+        paint_button(box.cancel,"Cancel",false); paint_button(box.confirm,modal_->confirm_label,true);
+    }
     return result;
 }
 void NativeWindow::render() {
     if (!renderer_ || minimized_) return;
-    const auto result = renderer_->render(scene());
+    if (renderer_call_) { defer_layout(); return; }
+    RenderResult result;
+    { RendererCallGuard guard(renderer_call_); result=renderer_->render(scene()); }
     render_busy_ = result == RenderResult::busy;
     if (!render_busy_) dirty_ = false;
     if (options_.smoke_test) smoke_progress(result==RenderResult::presented);
@@ -957,7 +1028,7 @@ void NativeWindow::render() {
 }
 
 void NativeWindow::terminal_text(std::string text, Key key, std::uint16_t modifiers) {
-    if (text.empty()) return;
+    if (modal_ || text.empty()) return;
     if (palette_open_ || rename_open_) {
         if (query_.size() + text.size() <= 1024) query_ += text;
         palette_index_ = 0; changed(); return;
@@ -991,6 +1062,15 @@ bool NativeWindow::key_message(MSG& message) {
     // Preserve OS-reserved shortcuts before application or terminal routing.
     if ((modifiers & Modifier::super) || ((modifiers & Modifier::alt) && !altgr && (vk == VK_F4 || vk == VK_SPACE))) return false;
     if (up && vk < consumed_keys_.size() && consumed_keys_[vk]) { consumed_keys_[vk] = false; return true; }
+    if (modal_) {
+        if (down) {
+            if (vk<consumed_keys_.size()) consumed_keys_[vk]=true;
+            if (vk==VK_ESCAPE) answer_modal(ModalDecision::cancel);
+            else if (vk==VK_TAB || vk==VK_LEFT || vk==VK_RIGHT) { modal_focus_.next(); changed(); }
+            else if (vk==VK_RETURN || vk==VK_SPACE) answer_modal(modal_focus_.activate());
+        }
+        return true; // All terminal/palette chords and key-up are trapped.
+    }
     if (composing_ || vk == VK_PROCESSKEY) return false;
     if (down && vk == VK_ESCAPE && drag_ != Drag::none) { cancel_drag(); consumed_keys_[vk] = true; return true; }
     if (palette_open_ || rename_open_) {
@@ -1099,13 +1179,18 @@ void NativeWindow::paste() {
     }
     if (text.size()>clipboard_limit) { show_error("Paste exceeds the 1 MiB safety limit; nothing was sent."); return; }
     const bool unsafe=!TerminalCore::paste_is_safe(text);
-    if (unsafe && MessageBoxW(hwnd_,L"This paste contains line breaks or terminal control characters. It may execute commands in the active shell.\n\nPaste it anyway?",L"Review paste",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)!=IDYES) return;
     const auto* pane=workspace_.pane(workspace_.active_pane());
     if (!pane || !sessions_.contains(pane->session)) return;
     auto session=sessions_.at(pane->session); const auto size=text.size();
-    submit([session,text=std::move(text),unsafe] { return session->paste(text,unsafe); },size);
+    auto send=[this,session,text=std::move(text),unsafe,size] {
+        if (session->closed()) { show_error("The paste destination has closed; nothing was sent."); return; }
+        submit([session,text,unsafe] { return session->paste(text,unsafe); },size);
+    };
+    if (unsafe) show_modal("Review paste",{"This paste contains multiple lines","or terminal control characters.","It may execute shell commands."},"Paste anyway",std::move(send),false);
+    else send();
 }
 void NativeWindow::terminal_mouse(Point point, MouseAction action, MouseButton button, bool pressed) {
+    if (modal_) return;
     for (const auto& placement:layout_.panes) {
         const bool captured=mouse_capture_pane_ && placement.pane==mouse_capture_pane_;
         if (mouse_capture_pane_ ? !captured : !placement.bounds.contains(point)) continue;
@@ -1150,6 +1235,13 @@ void NativeWindow::popup_menu(Point point, bool pane_actions) {
 }
 void NativeWindow::pointer_down(Point point, bool double_click) {
     SetFocus(hwnd_);
+    if (modal_) {
+        const auto layout=modal_layout(); modal_pressed_.reset();
+        if (layout.cancel.contains(point)) modal_pressed_=ModalDecision::cancel;
+        else if (layout.confirm.contains(point)) modal_pressed_=ModalDecision::confirm;
+        if (modal_pressed_) { modal_focus_.select(*modal_pressed_); SetCapture(hwnd_); }
+        changed(); return;
+    }
     notice_.clear();
     if (palette_open_ || rename_open_) {
         const double w=std::min(560.0,std::max(0.0,width_-32)),x=(width_-w)/2,y=std::min(72.0,std::max(0.0,height_-80));
@@ -1210,6 +1302,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
     }
 }
 void NativeWindow::pointer_move(Point point) {
+    if (modal_) { const auto old=hover_; hover_=point; const auto layout=modal_layout(); if (layout.cancel.contains(old)!=layout.cancel.contains(point) || layout.confirm.contains(old)!=layout.confirm.contains(point)) changed(); return; }
     hover_changed(point);
     TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE,hwnd_,0}; TrackMouseEvent(&tracking);
     if (drag_!=Drag::none && !drag_started_) {
@@ -1260,6 +1353,17 @@ void NativeWindow::pointer_move(Point point) {
     if (drag_==Drag::tab) changed();
 }
 void NativeWindow::pointer_up(Point point) {
+    if (caption_pressed_) {
+        const auto pressed=caption_pressed_; caption_pressed_=0; if (GetCapture()==hwnd_) ReleaseCapture();
+        const bool hit=pressed==HTMINBUTTON?chrome_.minimize.contains(point):pressed==HTMAXBUTTON?chrome_.maximize.contains(point):chrome_.close.contains(point);
+        if (hit) PostMessageW(hwnd_,WM_SYSCOMMAND,pressed==HTMINBUTTON?SC_MINIMIZE:pressed==HTMAXBUTTON?(maximized_?SC_RESTORE:SC_MAXIMIZE):SC_CLOSE,0);
+        changed(); return;
+    }
+    if (modal_) {
+        const auto pressed=modal_pressed_; modal_pressed_.reset(); if (GetCapture()==hwnd_) ReleaseCapture(); const auto layout=modal_layout();
+        if (pressed && (*pressed==ModalDecision::cancel?layout.cancel:layout.confirm).contains(point)) answer_modal(*pressed);
+        return;
+    }
     if (drag_==Drag::pane && drag_started_ && drop_target_) {
         const auto status=drop_direction_?workspace_.move_pane(drag_pane_,drop_target_,*drop_direction_):workspace_.swap_panes(drag_pane_,drop_target_);
         if (!status) show_error(status.error);
@@ -1334,6 +1438,34 @@ bool NativeWindow::smoke_frame_ready() const {
 void NativeWindow::smoke_progress(bool presented) {
     if (!options_.smoke_test || smoke_finished_) return;
     if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
+    for (const auto& [id,session]:sessions_) { (void)id; const auto info=session->info(); if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; } }
+    if (options_.smoke_modal && smoke_modal_stage_<2) {
+        auto* active=active_session(); const auto info=active?active->info():SessionInfo{};
+        if (smoke_modal_stage_==0 && info.state==SessionState::running && info.bytes_received) {
+            const auto styles=GetWindowLongPtrW(hwnd_,GWL_STYLE);
+            if ((styles&WS_CAPTION) || !(styles&WS_THICKFRAME) || !(styles&WS_MAXIMIZEBOX)) { smoke_finish("Custom frame style invariants failed."); return; }
+            const auto original=workspace_.active_pane(); const auto original_session=workspace_.pane(original)->session;
+            close_pane(original);
+            if (!modal_ || modal_focus_.activate()!=ModalDecision::cancel || focused_session_) { smoke_finish("Modal did not default to Cancel and remove terminal focus."); return; }
+            MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam='X';
+            if (!key_message(key)) { smoke_finish("Modal printable key leaked to terminal routing."); return; }
+            key.wParam=VK_ESCAPE; key_message(key);
+            if (modal_ || !workspace_.pane(original) || focused_session_!=original_session) { smoke_finish("Escape did not restore terminal focus without closing."); return; }
+            close_pane(original); key.wParam=VK_RETURN; key_message(key);
+            if (modal_ || !workspace_.pane(original)) { smoke_finish("Default Enter did not cancel destructive close."); return; }
+            new_tab(); const auto disposable=workspace_.pane(workspace_.active_pane())->session;
+            smoke_disposable_=sessions_.at(disposable); close_tab(workspace_.active_tab());
+            if (!modal_) { smoke_finish("Disposable tab did not show styled close confirmation."); return; }
+            smoke_modal_stage_=1; return;
+        }
+        if (smoke_modal_stage_==1 && presented) {
+            try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
+            modal_focus_.select(ModalDecision::confirm); answer_modal(modal_focus_.activate());
+            if (modal_ || workspace_.state().tabs.size()!=1 || sessions_.size()!=1) { smoke_finish("Explicit modal close did not retire only its tab."); return; }
+            smoke_modal_stage_=2;
+        } else return;
+    }
+    if (options_.smoke_modal && smoke_disposable_ && !smoke_disposable_->closed()) return;
     bool all_closed=true;
     for (const auto& [id,session]:sessions_) {
         const auto info=session->info();
@@ -1352,7 +1484,7 @@ void NativeWindow::smoke_progress(bool presented) {
     if (all_closed) {
         if (!smoke_frame_ready()) { smoke_finish("Controlled smoke shell exited without its expected output marker."); return; }
         if (smoke_marker_presented_ && renderer_->stats().presents) {
-            try { capture_frame(); smoke_finish(); }
+            try { if (!options_.smoke_modal) capture_frame(); smoke_finish(); }
             catch (const std::exception& error) { smoke_finish(error.what()); }
         }
     }
@@ -1363,6 +1495,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
+        if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
         if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace_.state().tabs.size(),layout_.panes.size());
     } else std::fprintf(stderr,"Native CI smoke failed: %.*s\n",static_cast<int>(error.size()),error.data());
     if (hwnd_) DestroyWindow(hwnd_);
@@ -1412,7 +1545,7 @@ void NativeWindow::caret_schedule() {
         for (const auto& row:snapshot->lines) if (row) for (const auto& cell:row->cells) if (cell.style.blink) { text_blinks=true; break; }
     }
     const bool cursor_blinks=frame && frame->cursor.visible && frame->cursor.blinking;
-    const bool should_blink=active_ && !minimized_ && !palette_open_ && !rename_open_ && (cursor_blinks || text_blinks) && interval && interval!=INFINITE;
+    const bool should_blink=active_ && !minimized_ && !palette_open_ && !rename_open_ && !modal_ && (cursor_blinks || text_blinks) && interval && interval!=INFINITE;
     if (should_blink && !cursor_timer_active_) cursor_timer_active_=SetTimer(hwnd_,cursor_timer,interval,nullptr)!=0;
     else if (!should_blink && cursor_timer_active_) { KillTimer(hwnd_,cursor_timer); cursor_timer_active_=false; cursor_on_=true; }
 }
@@ -1431,7 +1564,8 @@ void NativeWindow::toggle_fullscreen() {
 }
 LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     LRESULT dwm_result{};
-    const bool dwm_handled=DwmDefWindowProc(hwnd_,message,wparam,lparam,&dwm_result)!=FALSE;
+    const bool nc_input=message==WM_NCHITTEST || message==WM_NCMOUSEMOVE || message==WM_NCMOUSELEAVE;
+    const bool dwm_handled=nc_input && DwmDefWindowProc(hwnd_,message,wparam,lparam,&dwm_result)!=FALSE;
     // Caption geometry is our own; DWM still observes non-client input for Snap.
     if (dwm_handled && message!=WM_NCHITTEST && message!=WM_NCCALCSIZE && message!=WM_NCPAINT && message!=WM_NCACTIVATE && message!=WM_NCMOUSEMOVE && message!=WM_NCMOUSELEAVE) return dwm_result;
     switch (message) {
@@ -1444,9 +1578,12 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
             }
             return 0; // One client-drawn band; never an extra standard topbar.
         }
-        break;
+        return 0;
     case WM_NCPAINT: return 0;
-    case WM_NCACTIVATE: changed(); return DefWindowProcW(hwnd_,message,wparam,-1);
+    case WM_NCACTIVATE:
+        changed();
+        if (IsIconic(hwnd_)) return DefWindowProcW(hwnd_,message,wparam,-1);
+        return TRUE; // Accept activation; our client renderer owns every caption pixel.
     case WM_NCHITTEST: {
         const auto p=point(lparam,true);
         if (zoom_return_.contains(p)) return HTCLIENT;
@@ -1499,6 +1636,10 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (in_size_move_ && renderer_ && !minimized_) render();
         return 0;
     }
+    case deferred_layout_message:
+        layout_pending_=false;
+        if (settings_pending_) { settings_pending_=false; settings_changed(); }
+        changed(true); return 0;
     case wake_message:
         wake_->posted.store(false,std::memory_order_release); update_sessions(); InvalidateRect(hwnd_,nullptr,FALSE); return 0;
     case WM_TIMER:
@@ -1518,8 +1659,9 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_IME_SETCONTEXT:
         return DefWindowProcW(hwnd_,message,wparam,lparam & ~static_cast<LPARAM>(ISC_SHOWUICOMPOSITIONWINDOW));
     case WM_IME_STARTCOMPOSITION:
+        if (modal_) { if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0); return 0; }
         composing_=true; preedit_.clear(); text_input_.reset(); position_ime(); changed(); return 0;
-    case WM_IME_COMPOSITION: composition(lparam); return 0;
+    case WM_IME_COMPOSITION: if (modal_) return 0; composition(lparam); return 0;
     case WM_IME_ENDCOMPOSITION: composing_=false; preedit_.clear(); changed(); return 0;
     case WM_IME_CHAR: return 0; // Result committed once from GCS_RESULTSTR above.
     case WM_INPUTLANGCHANGE: text_input_.reset(); position_ime(); break;
@@ -1533,14 +1675,24 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE|TME_NONCLIENT,hwnd_,0}; TrackMouseEvent(&tracking);
         break; // DefWindowProc keeps Windows 11 Snap hover semantics.
     }
-    case WM_NCLBUTTONDOWN: case WM_NCLBUTTONUP: changed(); break;
+    case WM_NCLBUTTONDOWN: case WM_NCLBUTTONDBLCLK:
+        if (wparam==HTMINBUTTON || wparam==HTMAXBUTTON || wparam==HTCLOSE) {
+            caption_pressed_=wparam; SetCapture(hwnd_); changed(); return 0;
+        }
+        break;
+    case WM_NCLBUTTONUP:
+        if (caption_pressed_) { pointer_up(point(lparam,true)); return 0; }
+        if (wparam==HTMINBUTTON || wparam==HTMAXBUTTON || wparam==HTCLOSE) return 0;
+        break;
     case WM_RBUTTONDOWN: {
+        if (modal_) return 0;
         const auto p=point(lparam);
         for (const auto& placement:layout_.panes) if (placement.bounds.contains(p)) { const auto pane=placement.pane; activate(pane); break; }
         if (!(GetKeyState(VK_SHIFT)&0x8000)) terminal_mouse(p,MouseAction::press,MouseButton::right,true);
         return 0;
     }
     case WM_RBUTTONUP: {
+        if (modal_) return 0;
         const auto p=point(lparam);
         if (p.y<chrome_.band.height) popup_menu(p);
         else if (mouse_capture_pane_) terminal_mouse(p,MouseAction::release,MouseButton::right,false);
@@ -1548,10 +1700,12 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     }
     case WM_MBUTTONDOWN:
+        if (modal_) return 0;
         for (const auto& tab:chrome_.tabs) if (tab.bounds.contains(point(lparam))) { close_tab(tab.tab); return 0; }
         terminal_mouse(point(lparam),MouseAction::press,MouseButton::middle,true); return 0;
     case WM_MBUTTONUP: terminal_mouse(point(lparam),MouseAction::release,MouseButton::middle,false); return 0;
     case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL: {
+        if (modal_) return 0;
         auto& remainder=message==WM_MOUSEHWHEEL?horizontal_wheel_remainder_:wheel_remainder_;
         remainder+=GET_WHEEL_DELTA_WPARAM(wparam);
         const int steps=remainder/WHEEL_DELTA; remainder%=WHEEL_DELTA;
@@ -1575,12 +1729,14 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_SETCURSOR:
         if (LOWORD(lparam)==HTCLIENT) {
+            if (modal_) { SetCursor(LoadCursorW(nullptr,IDC_ARROW)); return TRUE; }
             POINT cursor{}; GetCursorPos(&cursor); ScreenToClient(hwnd_,&cursor); const Point p{cursor.x/scale_,cursor.y/scale_};
             for (const auto& divider:layout_.dividers) if (divider.hit_bounds.contains(p)) { SetCursor(LoadCursorW(nullptr,divider.axis==Axis::horizontal?IDC_SIZEWE:IDC_SIZENS)); return TRUE; }
-            SetCursor(LoadCursorW(nullptr,p.y<chrome_.band.height?IDC_ARROW:IDC_IBEAM)); return TRUE;
+            SetCursor(LoadCursorW(nullptr,modal_ || p.y<chrome_.band.height?IDC_ARROW:IDC_IBEAM)); return TRUE;
         }
         break;
     case WM_CAPTURECHANGED:
+        caption_pressed_=0; modal_pressed_.reset();
         if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
         mouse_capture_pane_={}; mouse_capture_button_=MouseButton::none;
         if (drag_!=Drag::none) cancel_drag(); return 0;
@@ -1591,7 +1747,9 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_CLOSE: {
         const bool live=std::any_of(sessions_.begin(),sessions_.end(),[](const auto& pair) { return !pair.second->closed(); });
-        if (!live || confirm_close("this window and all its sessions")) DestroyWindow(hwnd_);
+        if (modal_) { answer_modal(ModalDecision::cancel); return 0; }
+        if (!live) DestroyWindow(hwnd_);
+        else show_modal("Close StormTTY?",{"Its sessions may have running programs.","Closing can discard unsaved work."},"Close window",[this]{if (hwnd_) DestroyWindow(hwnd_);});
         return 0;
     }
     case WM_DESTROY:

@@ -1,5 +1,12 @@
 // Native Windows runtime test. Cross-compiling this file is NOT a passing test.
 #include "stormtty/renderer.hpp"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -10,12 +17,128 @@
 namespace {
 using namespace stormtty;
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+struct HostWindow {
+    HWND hwnd{};
+    bool reject_no_redirection{}, reject_redirection{};
+    unsigned no_redirection_requests{};
+    static constexpr const wchar_t* class_name = L"StormTTYRendererHostSmoke";
+    static LRESULT CALLBACK dispatch(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) noexcept {
+        if (message == WM_NCCREATE) {
+            const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+        }
+        auto* self = reinterpret_cast<HostWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (self && message == WM_STYLECHANGING && static_cast<int>(wparam) == GWL_EXSTYLE) {
+            auto* style = reinterpret_cast<STYLESTRUCT*>(lparam);
+            if (style->styleNew & WS_EX_NOREDIRECTIONBITMAP) {
+                ++self->no_redirection_requests;
+                if (self->reject_no_redirection) style->styleNew &= ~DWORD(WS_EX_NOREDIRECTIONBITMAP);
+            } else if (self->reject_redirection) style->styleNew |= WS_EX_NOREDIRECTIONBITMAP;
+        }
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
+    explicit HostWindow(bool no_redirection, DWORD base_style=WS_EX_TOOLWINDOW) {
+        WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=class_name;wc.lpfnWndProc=dispatch;
+        require(RegisterClassW(&wc)!=0,"Register renderer host class failed");
+        hwnd=CreateWindowExW(base_style | (no_redirection ? WS_EX_NOREDIRECTIONBITMAP : 0),
+            class_name,L"Renderer host smoke",WS_POPUP,0,0,96,48,nullptr,nullptr,wc.hInstance,this);
+        if (!hwnd) {
+            UnregisterClassW(class_name,wc.hInstance);
+            throw std::runtime_error("Create hidden renderer host failed");
+        }
+    }
+    ~HostWindow() { if(hwnd)DestroyWindow(hwnd);UnregisterClassW(class_name,GetModuleHandleW(nullptr)); }
+    HostWindow(const HostWindow&)=delete;
+    HostWindow& operator=(const HostWindow&)=delete;
+    LONG_PTR style() const { return GetWindowLongPtrW(hwnd,GWL_EXSTYLE); }
+    void add_unrelated_style() {
+        SetLastError(ERROR_SUCCESS);
+        const auto previous=SetWindowLongPtrW(hwnd,GWL_EXSTYLE,style() | WS_EX_ACCEPTFILES);
+        require(previous!=0 || GetLastError()==ERROR_SUCCESS,"Add unrelated host style failed");
+    }
+};
+void native_host_surface_test() {
+    // A real HWND, not offscreen alpha readback: both initial bit states, both
+    // presentation paths, recovery, and mutations owned by the host itself.
+    for (const bool original_no_redirection : {false,true}) {
+        for (const bool composition : {false,true}) {
+            HostWindow host(original_no_redirection,composition ? 0 : WS_EX_TOOLWINDOW);
+            const auto original=host.style();
+            RendererOptions options;options.force_warp=true;options.composition=composition;
+            {
+                Renderer renderer(host.hwnd,options);
+                require(host.style()==original,"Renderer changed host style before creating a surface");
+                renderer.resize(96,48);
+                require(renderer.stats().composition==composition,"Requested native composition/opaque test path unavailable");
+                require(((host.style() & WS_EX_NOREDIRECTIONBITMAP)!=0)==composition,
+                        "Host redirection style does not match active swapchain path");
+                require((host.style() & ~LONG_PTR(WS_EX_NOREDIRECTIONBITMAP))==
+                        (original & ~LONG_PTR(WS_EX_NOREDIRECTIONBITMAP)),"Renderer clobbered unrelated host styles");
+                host.add_unrelated_style();
+                WindowScene scene;renderer.render(scene);
+                require(renderer.read_pixels().size()==96*48*4,"Native host surface did not render");
+                renderer.recreate_device();renderer.render(scene);
+                require(renderer.stats().composition==composition && renderer.stats().device_recoveries==1,
+                        "Native host did not reconstruct its selected presentation path");
+                require(((host.style() & WS_EX_NOREDIRECTIONBITMAP)!=0)==composition,
+                        "Recovery left the wrong host redirection style");
+                require((host.style() & WS_EX_ACCEPTFILES)!=0,"Recovery lost host-owned extended style change");
+                if (composition && !original_no_redirection) {
+                    host.reject_no_redirection=true;renderer.recreate_device();
+                    require(!renderer.stats().composition && (host.style() & WS_EX_NOREDIRECTIONBITMAP)==0,
+                            "Composition-to-opaque recovery retained the no-redirection bit");
+                    require((host.style() & WS_EX_ACCEPTFILES)!=0,"Fallback recovery lost unrelated host style");
+                    host.reject_no_redirection=false;renderer.recreate_device();
+                    require(renderer.stats().composition && (host.style() & WS_EX_NOREDIRECTIONBITMAP)!=0,
+                            "Opaque-to-composition recovery did not restore the required host style");
+                }
+            }
+            require(host.style()==(original | WS_EX_ACCEPTFILES),"Renderer destruction did not restore only its owned style bit");
+        }
+    }
+    {
+        // WM_STYLECHANGING can reject a successfully requested SetWindowLongPtr.
+        // That must fall back, not leave a translucent visual above HWND pixels.
+        HostWindow host(false);host.reject_no_redirection=true;
+        const auto original=host.style();
+        RendererOptions options;options.force_warp=true;
+        {
+            Renderer renderer(host.hwnd,options);renderer.resize(96,48);
+            require(host.no_redirection_requests>0,"Rejected-style fixture never reached composition host setup");
+            require(!renderer.stats().composition,"Rejected DComp host style did not select opaque fallback");
+            require(host.style()==original,"Composition failure left a stale no-redirection bit");
+            host.reject_no_redirection=false;
+            renderer.recreate_device();
+            require(renderer.stats().composition && (host.style() & WS_EX_NOREDIRECTIONBITMAP)!=0,
+                    "Recovery from opaque fallback failed to enable composition hosting");
+        }
+        require(host.style()==original,"Fallback-to-composition destruction lost original host style");
+    }
+    {
+        // Conversely an HWND path may not proceed when redirection is refused.
+        // Its thrown setup failure must roll back and permit a later clean retry.
+        HostWindow host(true);host.reject_redirection=true;
+        const auto original=host.style();
+        RendererOptions options;options.force_warp=true;options.composition=false;
+        {
+            Renderer renderer(host.hwnd,options);
+            bool rejected=false;
+            try { renderer.resize(96,48); } catch(const std::exception&) { rejected=true; }
+            require(rejected,"HWND swapchain creation proceeded without a redirection surface");
+            require(host.style()==original && !renderer.stats().composition,
+                    "Failed surface construction did not restore original host style");
+            host.reject_redirection=false;renderer.resize(96,48);
+            require((host.style() & WS_EX_NOREDIRECTIONBITMAP)==0,"Retry did not enable opaque HWND redirection");
+        }
+        require(host.style()==original,"Opaque renderer did not restore caller's original no-redirection bit");
+    }
+}
 Color pixel(const std::vector<std::uint8_t>& rgba, std::size_t width, std::size_t x, std::size_t y) {
     const auto offset=(y*width+x)*4;
     require(offset+3<rgba.size(),"pixel coordinate outside readback");
     return {rgba[offset],rgba[offset+1],rgba[offset+2],rgba[offset+3]};
 }
-bool near(Color a, Color b, unsigned tolerance=2) {
+bool colors_near(Color a, Color b, unsigned tolerance=2) {
     auto close=[tolerance](unsigned x,unsigned y) { return x>y?x-y<=tolerance:y-x<=tolerance; };
     return close(a.r,b.r)&&close(a.g,b.g)&&close(a.b,b.b)&&close(a.a,b.a);
 }
@@ -61,13 +184,13 @@ void native_render_test() {
     require(renderer.render(scene)==RenderResult::presented,"first offscreen frame not presented");
     auto stats=renderer.stats();require(stats.warp,"smoke test did not use WARP");require(stats.shaped_rows==4,"expected four shaped rows");
     auto rgba=renderer.read_pixels();require(rgba.size()==256*160*4,"readback size wrong");
-    require(near(pixel(rgba,256,16+4*16+8,24+12),{200,30,40,255}),"explicit background paint wrong");
-    require(near(pixel(rgba,256,16+5*16+8,24+12),{20,190,50,255}),"inverse background paint wrong");
-    require(near(pixel(rgba,256,24,24+2*24+12),{58,79,91,255}),"selection background paint wrong");
-    require(near(pixel(rgba,256,16+8*16+8,24+2*24+12),{0,80,240,255}),"cropped image placement not drawn");
+    require(colors_near(pixel(rgba,256,16+4*16+8,24+12),{200,30,40,255}),"explicit background paint wrong");
+    require(colors_near(pixel(rgba,256,16+5*16+8,24+12),{20,190,50,255}),"inverse background paint wrong");
+    require(colors_near(pixel(rgba,256,24,24+2*24+12),{58,79,91,255}),"selection background paint wrong");
+    require(colors_near(pixel(rgba,256,16+8*16+8,24+2*24+12),{0,80,240,255}),"cropped image placement not drawn");
     unsigned ink=0;
     for(unsigned y=24;y<48;++y) for(unsigned x=16;x<32;++x)
-        if(!near(pixel(rgba,256,x,y),source->background,8)) ++ink;
+        if(!colors_near(pixel(rgba,256,x,y),source->background,8)) ++ink;
     require(ink>4,"DirectWrite did not rasterize visible text");
     require(renderer.render(scene)==RenderResult::unchanged,"identical scene was repainted");
     require(renderer.stats().shaped_rows==stats.shaped_rows,"identical frame reshaped text");
@@ -87,13 +210,13 @@ void native_render_test() {
     scene.panes[0].cursor_on=false;renderer.render(scene);
     require(renderer.stats().shaped_rows==cursor_shapes,"cursor blink reshaped unchanged rows");
     rgba=renderer.read_pixels();
-    require(near(pixel(rgba,256,16+24,24+3*24+12),source->background),"old cursor was not erased");
+    require(colors_near(pixel(rgba,256,16+24,24+3*24+12),source->background),"old cursor was not erased");
 
     auto animation=std::make_shared<RenderFrame>(*cursor_frame);animation->generation++;
     auto next_pixels=std::make_shared<ImagePixels>(*pixels);next_pixels->generation++;next_pixels->bytes={255,0,0,255,30,210,60,255};
     animation->images[0].pixels=next_pixels;scene.panes[0].frame=animation;renderer.render(scene);
     rgba=renderer.read_pixels();
-    require(near(pixel(rgba,256,16+8*16+8,24+2*24+12),{30,210,60,255}),"image animation generation used stale pixels");
+    require(colors_near(pixel(rgba,256,16+8*16+8,24+2*24+12),{30,210,60,255}),"image animation generation used stale pixels");
     require(renderer.stats().image_uploads==2,"unchanged image was reuploaded or new frame was missed");
     require(renderer.stats().image_cache_bytes<=options.image_cache_bytes,"image cache exceeded budget");
 
@@ -102,7 +225,7 @@ void native_render_test() {
     renderer.render(scene);renderer.recreate_device();renderer.render(scene);
     require(renderer.stats().device_recoveries==1,"device reconstruction not exercised");
     rgba=renderer.read_pixels();
-    require(near(pixel(rgba,256,16+8*16+8,24+2*24+12),{30,210,60,255}),"owned image lost after device reconstruction");
+    require(colors_near(pixel(rgba,256,16+8*16+8,24+2*24+12),{30,210,60,255}),"owned image lost after device reconstruction");
     renderer.resize(0,0);require(renderer.render(scene)==RenderResult::suspended,"zero-size surface did not suspend");
     renderer.resize(256,160,96);require(renderer.render(scene)==RenderResult::presented,"restore from zero size failed");
 }
@@ -147,10 +270,10 @@ void chrome_material_test() {
     scene.primitives.push_back(band);
     ChromePrimitive tab;tab.rect={80,4,36,24};tab.fill={52,65,74,255};tab.radius=7;scene.primitives.push_back(tab);
     renderer.render(scene);const auto first=renderer.read_pixels();
-    require(near(pixel(first,128,20,16),{27,38,48,204}),"chrome material alpha compounded over canvas");
-    require(near(pixel(first,128,96,16),{52,65,74,255}),"active tab must stay opaque");
+    require(colors_near(pixel(first,128,20,16),{27,38,48,204}),"chrome material alpha compounded over canvas");
+    require(colors_near(pixel(first,128,96,16),{52,65,74,255}),"active tab must stay opaque");
     require(std::abs(int(pixel(first,128,20,80).a)-230)<=1,"terminal canvas opacity changed under chrome");
-    require(near(pixel(first,128,80,4),{27,38,48,204}),"rounded tab corner was filled as a square");
+    require(colors_near(pixel(first,128,80,4),{27,38,48,204}),"rounded tab corner was filled as a square");
     const auto before=renderer.stats();scene.primitives[0].fill.a=180;++scene.chrome_generation;
     renderer.render(scene);const auto second=renderer.read_pixels();
     require(std::abs(int(pixel(second,128,20,16).a)-180)<=1,"material alpha did not replace old frame alpha");
@@ -198,9 +321,9 @@ void cache_pressure_test() {
     source->images={a,b};source->image_placements_generation=1;
     WindowScene scene;scene.background={100,110,120,255};scene.panes.push_back({103,{16,16,64,24},source});
     renderer.render(scene);const auto rgba=renderer.read_pixels();
-    require(near(pixel(rgba,96,8,24),scene.background),"negative image placement escaped pane clip");
-    require(near(pixel(rgba,96,24,24),{240,20,30,255}),"evicted texture lost in-flight drawing reference");
-    require(near(pixel(rgba,96,40,24),{20,30,240,255}),"second cache-pressure image not drawn");
+    require(colors_near(pixel(rgba,96,8,24),scene.background),"negative image placement escaped pane clip");
+    require(colors_near(pixel(rgba,96,24,24),{240,20,30,255}),"evicted texture lost in-flight drawing reference");
+    require(colors_near(pixel(rgba,96,40,24),{20,30,240,255}),"second cache-pressure image not drawn");
     require(renderer.stats().image_uploads==2 && renderer.stats().image_cache_bytes<=8,"image eviction budget failed");
     require(renderer.stats().shape_cache_bytes<=512,"shape cache budget failed");
 }
@@ -221,8 +344,8 @@ int main() {
         const auto previous_directory=std::filesystem::current_path();
         struct RestoreDirectory {std::filesystem::path path;~RestoreDirectory(){std::error_code ignored;std::filesystem::current_path(path,ignored);}} restore{previous_directory};
         std::filesystem::current_path(std::filesystem::temp_directory_path());
-        native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();cache_pressure_test();rejected_image_test();
-        std::cout<<"PASS Windows WARP renderer: private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
+        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();cache_pressure_test();rejected_image_test();
+        std::cout<<"PASS Windows WARP renderer: HWND/DComp style lifecycle and fallback, private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
         return 0;
     } catch(const std::exception& error) { std::cerr<<"FAIL renderer smoke: "<<error.what()<<'\n';return 1; }
 }

@@ -41,6 +41,19 @@ int main() {
     require(chrome.new_tab.width == 0, "compact hides new-tab before sacrificing drag/caption");
     chrome = layout_chrome(1100,720,{{1}},{1},46,0);
     require(chrome.band.height==0 && chrome.tabs.front().bounds.height==0, "fullscreen chrome has no hit area");
+    ModalFocus modal;
+    require(modal.activate()==ModalDecision::cancel,"modal starts with safe Cancel");
+    modal.next(); require(modal.activate()==ModalDecision::confirm,"Tab explicitly focuses destructive choice");
+    modal.next(); require(modal.activate()==ModalDecision::cancel,"modal focus cycles without escaping");
+    modal.select(ModalDecision::confirm); modal.reset();
+    require(modal.activate()==ModalDecision::cancel,"new decision resets to Cancel");
+    for (int width=330;width<=2200;width+=37) for (int height=180;height<=1000;height+=53) {
+        const auto box=layout_modal(width,height);
+        require(box.panel.x>=0 && box.panel.y>=48,"modal fits below integrated crown");
+        require(box.panel.x+box.panel.width<=width && box.panel.y+box.panel.height<=height,"modal fits resized client");
+        require(box.cancel.x+box.cancel.width<=box.confirm.x,"modal actions never overlap");
+        require(box.body.y+box.body.height<=box.cancel.y && box.body.height>=18,"compact modal retains warning above actions");
+    }
     ChromeTransition transition;
     require(!transition.active(100) && transition.value(100)==0, "resting transition has no scheduler work");
     transition.target(1,100,80);

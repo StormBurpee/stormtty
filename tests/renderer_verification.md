@@ -192,3 +192,57 @@ a fresh native Windows CI run is required for this delta.
 
 API basis: [DirectWrite ellipsis trimming sign](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwritefactory-createellipsistrimmingsign)
 and [Direct2D layer opacity](https://learn.microsoft.com/en-us/windows/win32/direct2d/direct2d-layers-overview).
+
+## DirectComposition HWND backing-surface ownership
+
+The physical Windows screenshots from 2026-10-28 showed the stock native title,
+icon and caption buttons **under** the translucent custom crown, including while
+the stock close-confirmation dialog had deactivated the window. Offscreen canvas
+readback cannot detect that second desktop layer.
+
+The renderer now enables `WS_EX_NOREDIRECTIONBITMAP` only after creating and
+committing its actual DirectComposition swapchain/visual target. A checked style
+failure discards that target and selects the opaque HWND fallback. Immediately
+before `CreateSwapChainForHwnd`, the bit must be cleared: the ordinary HWND path
+requires its redirection surface. This applies even when the caller originally
+supplied the bit; teardown restores that original value.
+
+Only the one renderer-owned bit is changed. Other extended styles are read fresh
+and preserved, including changes made by the shell during the renderer lifetime.
+Zero-valued `Get/SetWindowLongPtrW` results use `GetLastError` correctly; changes
+are refreshed using checked `SetWindowPos(SWP_FRAMECHANGED)` without moving,
+resizing, activating or reordering the window. Readback also rejects a style
+silently altered by `WM_STYLECHANGING`. Surface-creation failure and device
+reconstruction release the swapchain and restore the bit before proceeding;
+failure to restore blocks recovery instead of creating an incorrectly styled
+fallback. Destruction is nonthrowing and emits a debugger diagnostic if a live
+HWND refuses restoration. An already-destroyed HWND needs no restoration.
+The shell must defer nested layout/render work while these synchronous style
+notifications run; the Windows shell owns that renderer-call reentrancy guard.
+
+`renderer_smoke` now creates hidden real HWNDs and requires both native WARP
+DirectComposition and opaque HWND presentation to initialize, rather than treating
+an unavailable path as a pass. Assertions cover initial zero/nonzero EXSTYLE,
+caller-preexisting no-redirection, unrelated-style preservation, reconstruction,
+DComp-to-opaque-to-DComp recovery, and original-bit restoration on destruction.
+A test window's `WM_STYLECHANGING` handler deliberately refuses each direction
+of the bit change: rejected DComp hosting must fall back, while rejected HWND
+redirection must throw and roll back; removing the rejection must permit retry.
+No production fault-injection option or shared renderer API was added.
+
+These assertions require a **new native Windows run**. GNU Windows object/EXE
+compilation is not execution. Even a successful hidden-HWND smoke cannot verify
+the visible DWM layering, inactive crown, custom-alert layout, or physical
+hardware behavior; focused/blurred windows and all close/cancel/paste flows still
+require physical acceptance screenshots. The shell's separate native-caption
+and custom-alert changes are complementary, not proven by these renderer tests.
+
+Microsoft's [DirectComposition target layering contract](https://learn.microsoft.com/en-us/windows/win32/api/dcomp/nf-dcomp-idcompositiondevice-createtargetforhwnd)
+places the visual above ordinary HWND content. The
+[extended-style reference](https://learn.microsoft.com/en-us/windows/win32/winmsg/extended-window-styles)
+defines redirection suppression, and Microsoft's
+[DirectComposition layering walkthrough](https://learn.microsoft.com/en-us/archive/msdn-magazine/2014/june/windows-with-c-high-performance-window-layering-using-the-windows-composition-engine)
+explicitly distinguishes composition swapchains from `CreateSwapChainForHwnd`
+when that surface is absent. Checked updates follow
+[SetWindowLongPtrW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw)
+and [SetWindowPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos).
