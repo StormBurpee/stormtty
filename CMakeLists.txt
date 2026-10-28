@@ -110,6 +110,9 @@ if(BUILD_TESTING)
                 "${STORMTTY_NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ink/fixture.mjs" "${ink_case}")
             set_tests_properties(ink_${ink_name} PROPERTIES TIMEOUT 90 LABELS "ink;native-pty")
         endforeach()
+        add_test(NAME ink_static_margin_probe COMMAND ink_session_tests
+            "${STORMTTY_NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ink/fixture.mjs" "static-margin-probe")
+        set_tests_properties(ink_static_margin_probe PROPERTIES TIMEOUT 90 LABELS "ink;native-pty;diagnostic")
         # A known upstream resize/repaint regression stays strict and visible.
         set_property(TEST ink_compact_alt APPEND PROPERTY LABELS "upstream-regression")
     endif()

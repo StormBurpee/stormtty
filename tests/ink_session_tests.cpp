@@ -158,7 +158,8 @@ public:
     const bool expected_alternate;
     const bool expected_fullscreen;
 
-    FixtureSession(const std::string& node, const std::string& fixture, FixtureMode mode)
+    FixtureSession(const std::string& node, const std::string& fixture, FixtureMode mode,
+                   TerminalSize initial_size = {80, 24, 8, 16})
         : scenario(mode_name(mode)), expected_alternate(mode != FixtureMode::primary), expected_fullscreen(mode == FixtureMode::fullscreen) {
         ProcessOptions process;
         process.executable = node;
@@ -177,7 +178,7 @@ public:
         process.environment = {{"NO_COLOR", std::nullopt}, {"FORCE_COLOR", "3"},
             {"INK_SCREEN_READER", std::nullopt}, {"NODE_OPTIONS", std::nullopt}};
         TerminalOptions terminal;
-        terminal.size = {80, 24, 8, 16};
+        terminal.size = initial_size;
         terminal.default_foreground = Color{230, 230, 230, 255};
         terminal.default_background = Color{16, 20, 30, 255};
         session = Session::start(std::move(process), terminal, [signal = wake] { signal->signal(); });
@@ -393,19 +394,42 @@ void exercise(const std::string& node, const std::string& fixture, FixtureMode m
         << ": interactive PTY, styled Unicode cells, live animation, key selection/editing, paste, shrink/grow, clean exit passed; provider="
         << test.session->diagnostics().provider << '\n';
 }
+
+// Diagnostic only: no resize requests and no changes to the fixture or its
+// assertions. At 72/73 columns the same 72-column box touches/leaves the margin;
+// 56 columns reproduces the failing shrink geometry without an in-flight resize.
+int static_margin_probe(const std::string& node, const std::string& fixture) {
+    unsigned failures = 0;
+    for (const std::uint16_t columns : {56, 72, 73}) {
+        const auto size = std::to_string(columns) + "x20";
+        try {
+            FixtureSession test(node, fixture, FixtureMode::fullscreen, {columns, 20, 8, 16});
+            test.text("Interactive TTY | Size: " + size);
+            test.animation();
+            std::cout << "Static margin probe " << size << ": PASS; provider="
+                      << test.session->diagnostics().provider << '\n';
+        } catch (const std::exception& error) {
+            ++failures;
+            std::cerr << "Static margin probe " << size << ": FAIL: " << error.what() << '\n';
+        }
+    }
+    std::cout << "Static margin probe: " << 3 - failures << "/3 passed (startup/animation only; no resize)\n";
+    return failures ? 1 : 0;
+}
 }
 
 int main(int argc, char** argv) {
     try {
         check(argc == 3 || argc == 4,
-            "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs> [all|primary|fullscreen|compact-alt|host-close]");
+            "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs> [all|primary|fullscreen|compact-alt|host-close|static-margin-probe]");
         check(utf8_path(argv[1]).is_absolute(), "Node executable path must be absolute");
         check(utf8_path(argv[2]).is_absolute(), "Ink fixture path must be absolute");
         check(std::filesystem::is_regular_file(utf8_path(argv[1])), "Node executable is missing");
         check(std::filesystem::is_regular_file(utf8_path(argv[2])), "Ink fixture is missing");
         const std::string_view mode = argc == 4 ? argv[3] : "all";
-        check(mode == "all" || mode == "primary" || mode == "fullscreen" || mode == "compact-alt" || mode == "host-close",
-            "Unknown Ink scenario; use all, primary, fullscreen, compact-alt, or host-close");
+        check(mode == "all" || mode == "primary" || mode == "fullscreen" || mode == "compact-alt" || mode == "host-close" || mode == "static-margin-probe",
+            "Unknown Ink scenario; use all, primary, fullscreen, compact-alt, host-close, or static-margin-probe");
+        if (mode == "static-margin-probe") return static_margin_probe(argv[1], argv[2]);
         if (mode == "all" || mode == "primary") exercise(argv[1], argv[2], FixtureMode::primary);
         if (mode == "all" || mode == "fullscreen") exercise(argv[1], argv[2], FixtureMode::fullscreen);
         // This remains a strict regression, including the known resize gap.
