@@ -108,11 +108,22 @@ addons = importlib.util.module_from_spec(addon_spec)
 addon_spec.loader.exec_module(addons)
 
 
+tools_spec = importlib.util.spec_from_file_location("shell_tools", TOOLS / "shell-tools.py")
+shell_tools = importlib.util.module_from_spec(tools_spec)
+tools_spec.loader.exec_module(shell_tools)
+static_spec = importlib.util.spec_from_file_location("shell_tools_notices", TOOLS / "shell-tools-notices.py")
+static_notices = importlib.util.module_from_spec(static_spec)
+static_spec.loader.exec_module(static_notices)
+
+
 def emit(args):
     lock = bootstrap.read_lock(TOOLS / "shell-bootstrap.lock.json")
     index, mapping = validated_assets(lock)
     sources = source_records(lock)
     addon_sources = addons.read_lock()["components"]
+    tools_lock = shell_tools.read_lock()
+    tool_sources = shell_tools.merge_sources(tools_lock["sources"], tools_lock["msys_support"]["sources"])
+    tool_packages = tools_lock["packages"] + tools_lock["msys_support"]["packages"]
     output = args.output.absolute()
     if output.exists() or output.is_symlink():
         raise RuntimeError("Output must be a fresh directory")
@@ -122,6 +133,8 @@ def emit(args):
         raise RuntimeError("Runtime was staged from a different lock")
     if runtime_manifest.get("managed_addons_lock_sha256") != bootstrap.digest(TOOLS / "shell-addons.lock.json"):
         raise RuntimeError("Runtime was staged from a different managed addons lock")
+    if runtime_manifest.get("managed_tools_lock_sha256") != bootstrap.digest(TOOLS / "shell-tools.lock.json"):
+        raise RuntimeError("Runtime was staged from a different managed tools lock")
     # Preserve build evidence exactly; do not execute .INSTALL/PKGBUILD files.
     evidence = []
     for record in runtime_manifest["files"]:
@@ -131,7 +144,7 @@ def emit(args):
             path = checked_asset(runtime / name, record["sha256"], record["bytes"])
             evidence.append((name, path, record["sha256"]))
     if not all(any(n.startswith(f".stormtty-packages/{p['name']}/") and n.endswith('/.BUILDINFO')
-                   for n, _, _ in evidence) for p in lock["packages"]):
+                   for n, _, _ in evidence) for p in lock["packages"] + tool_packages):
         raise RuntimeError("Runtime lacks original per-package build evidence")
     cache = args.cache.resolve()
     cache.mkdir(parents=True, exist_ok=True)
@@ -142,6 +155,9 @@ def emit(args):
     if args.source_packet:
         for source in addon_sources:
             source_paths.append((source, addons.acquire(source, cache, args.offline)))
+    if args.source_packet:
+        for source in tool_sources:
+            source_paths.append((source, bootstrap.download(source, cache, args.offline)))
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".stormtty-notices-", dir=output.parent) as temp:
         staged = Path(temp) / "packet"
@@ -153,7 +169,7 @@ def emit(args):
             path.write_bytes(notice_bytes(ASSETS / asset["path"], asset["sha256"], asset["bytes"]))
         for filename in ("assets.json", "components.json", "source-supplements.lock.json", "REVIEW.md"):
             shutil.copyfile(ASSETS / filename, notices / filename)
-        (notices / "source-manifest.json").write_text(json.dumps(sources + addon_sources, indent=2) + "\n", encoding="utf-8")
+        (notices / "source-manifest.json").write_text(json.dumps(shell_tools.merge_sources(sources, addon_sources, tool_sources), indent=2) + "\n", encoding="utf-8")
         text = ["StormTTY bundled Zsh — third-party notices", "",
                 "This packet supplements, and must not replace/remove, upstream notices already",
                 "present in the intact runtime. StormTTY's first-party licensing is unchanged.",
@@ -169,16 +185,37 @@ def emit(args):
             text += [f"{c['name']} {c['revision']}: {c['license']}",
                      f"  Preserved upstream notice: stormtty/vendor/{c['name']}/{c['notice']}",
                      f"  Source: {c['url']} (SHA-256 {c['sha256']})", ""]
+        for c in tool_packages:
+            path = runtime / c["notice"]
+            record = next(r for r in runtime_manifest["files"] if r["path"] == c["notice"])
+            checked_asset(path, record["sha256"], record["bytes"])
+            target = notices / "tools" / c["name"] / path.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+            text += [f"{c['name']} {c['version']}", f"  Preserved package notice: {c['notice']}",
+                     "  Static dependency/toolchain notice review remains incomplete.", ""]
+        for asset in tools_lock["msys_support"]["notice_assets"]:
+            target = notices / "tools-support" / asset['path'].removeprefix('shell-tools-notices/texts/')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(TOOLS / asset['path'], target)
+        shutil.copyfile(TOOLS / "shell-tools-sources.lock.json", notices / "tools-static-source-manifest.json")
         for c in mapping["components"]:
             text += [f"{c['package']} {c['version']}: {c['license_review']}",
                      "  Notice directories: " + ", ".join("texts/" + n for n in c["notice_components"]),
                      "  " + c["review_notes"], ""]
         (notices / "THIRD-PARTY-NOTICES.txt").write_text("\n".join(text), encoding="utf-8")
-        summary = {"schema": 1, "bundle_id": lock["bundle_id"], "binary_components": len(mapping["components"]),
-                   "notice_assets": len(index["assets"]), "source_archives": len(sources) + len(addon_sources),
+        summary = {"schema": 1, "bundle_id": lock["bundle_id"], "binary_components": len(mapping["components"]) + len(tool_packages),
+                   "notice_assets": len(index["assets"]), "source_archives": len(shell_tools.merge_sources(sources, addon_sources, tool_sources)),
+                   "managed_tools_static_notice_review_complete": False, "release_notices_complete": False,
+                   "support_notice_assets": len(tools_lock["msys_support"]["notice_assets"]),
+                   "static_source_archives": len(read_json(TOOLS / "shell-tools-sources.lock.json")["sources"]),
                    "source_packet_emitted": args.source_packet, "runtime_mutated": False,
                    "public_source_availability_verified": False, "native_qualification_changed": False}
         if args.source_packet:
+            # Conservatively retain the exact source inventory; never claim the
+            # Rust linked closure or compiler notices are settled by this packet.
+            static_cache = getattr(args, "tools_source_cache", None) or cache / "static-sources"
+            static_notices.emit(static_cache, staged / "tools-static-sources")
             readme = staged / "SOURCE-README.txt"
             readme.write_text(
                 "Corresponding source for the exact StormTTY Zsh runtime identified by shell-bootstrap.lock.json.\n\n"
@@ -205,8 +242,12 @@ def emit(args):
             archive_path = staged / "corresponding-source.zip"
             with zipfile.ZipFile(archive_path, "x", allowZip64=True) as archive:
                 archive_file(archive, "README.txt", readme)
-                for source, path in sorted(source_paths, key=lambda x: x[0]["filename"]):
+                unique_paths = {source['filename']: (source, path) for source, path in source_paths}
+                for source, path in sorted(unique_paths.values(), key=lambda x: x[0]["filename"]):
                     archive_file(archive, "sources/" + source["filename"], path, source["sha256"])
+                for path in sorted((staged / "tools-static-sources").rglob("*")):
+                    if path.is_file():
+                        archive_file(archive, "tools-static-sources/" + path.relative_to(staged / "tools-static-sources").as_posix(), path)
                 for name, path, checksum in sorted(evidence):
                     archive_file(archive, "build-evidence/" + name, path, checksum)
                 recipes = ["tools/" + name for name in (
@@ -214,9 +255,12 @@ def emit(args):
                     "shell-bootstrap.README.md", "shell-preset.zsh", "shell-addons.py", "shell-addons.lock.json", "shell-managed-tests.py", "shell-runtime.fstab", "shell-runtime.nsswitch.conf", "shell-path-tests.py", "shell-notices.py", "shell-notices-tests.py",
                     "shell-zstd-bootstrap.py", "shell-zstd-bootstrap.lock.json", "shell-zstd-bootstrap-tests.py",
                     "prepare-bundled-shell.py", "stage-developer-shell.py", "stage-developer-shell-tests.py")]
+                recipes += ["tools/" + n for n in ("shell-tools.py", "shell-tools.lock.json", "shell-tools.zsh", "shell-tools-zoxide.zsh", "shell-tools-notices.py", "shell-tools-sources.lock.json", "shell-tools-tests.py", "shell-tools.README.md")]
                 recipes += ["CMakeLists.txt", "cmake/StormTTYDeveloperShell.cmake"]
                 for name in sorted(recipes):
                     archive_file(archive, "stormtty-packaging/" + name, TOOLS.parent / name)
+                for asset in tools_lock["msys_support"]["notice_assets"]:
+                    archive_file(archive, "stormtty-packaging/tools/" + asset["path"], TOOLS / asset["path"], asset["sha256"])
                 asset_pins = {a["path"]: a["sha256"] for a in index["assets"]}
                 for path in sorted(ASSETS.rglob("*")):
                     if path.is_file():
@@ -246,6 +290,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-packet", action="store_true")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--tools-source-cache", type=Path, help="Verified static source cache, default CACHE/static-sources; source packets only")
     try:
         emit(parser.parse_args())
         return 0

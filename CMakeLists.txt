@@ -217,6 +217,11 @@ if(WIN32)
         target_compile_definitions(managed_shell_state_probe PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
         stormtty_warnings(managed_shell_state_probe)
         stormtty_copy_ghostty_runtime(managed_shell_state_probe)
+        add_executable(shell_navigation_probe tests/shell_navigation_probe.cpp)
+        target_link_libraries(shell_navigation_probe PRIVATE stormtty_session stormtty_settings_services shell32 ole32)
+        target_compile_definitions(shell_navigation_probe PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+        stormtty_warnings(shell_navigation_probe)
+        stormtty_copy_ghostty_runtime(shell_navigation_probe)
         # Built everywhere on Windows; registered only with the real bundled
         # runtime below. Cross-compilation is not native execution evidence.
         add_executable(console_backend_tests tests/console_backend_tests.cpp)

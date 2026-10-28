@@ -1,0 +1,3083 @@
+{
+  "schema": 1,
+  "review_complete": false,
+  "scope": "Cargo.lock conservative superset includes build/dev/other platforms, not a claim of exact linked closure; Go modules match embedded fzf build info. Compiler/runtime licenses still require separate review.",
+  "sources": [
+    {
+      "component": "zoxide-lock-superset",
+      "name": "aho-corasick",
+      "version": "1.1.4",
+      "url": "https://static.crates.io/crates/aho-corasick/aho-corasick-1.1.4.crate",
+      "filename": "aho-corasick-1.1.4.crate",
+      "sha256": "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301",
+      "bytes": 184015,
+      "declared_license": "Unlicense OR MIT",
+      "license_files": [
+        {
+          "path": "aho-corasick-1.1.4/COPYING",
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f",
+          "bytes": 126
+        },
+        {
+          "path": "aho-corasick-1.1.4/LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f",
+          "bytes": 1081
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "aliasable",
+      "version": "0.1.3",
+      "url": "https://static.crates.io/crates/aliasable/aliasable-0.1.3.crate",
+      "filename": "aliasable-0.1.3.crate",
+      "sha256": "250f629c0161ad8107cf89319e990051fae62832fd343083bea452d93e2205fd",
+      "bytes": 6169,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "aliasable-0.1.3/LICENSE",
+          "sha256": "b6e8f9bd07084b3ed3a061cd0e9f0c5d5fb46667ef007684c87573a7c8090a34",
+          "bytes": 1099
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "anstream",
+      "version": "1.0.0",
+      "url": "https://static.crates.io/crates/anstream/anstream-1.0.0.crate",
+      "filename": "anstream-1.0.0.crate",
+      "sha256": "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d",
+      "bytes": 28916,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "anstream-1.0.0/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "anstream-1.0.0/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "anstyle",
+      "version": "1.0.14",
+      "url": "https://static.crates.io/crates/anstyle/anstyle-1.0.14.crate",
+      "filename": "anstyle-1.0.14.crate",
+      "sha256": "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000",
+      "bytes": 17787,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "anstyle-1.0.14/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "anstyle-1.0.14/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "anstyle-parse",
+      "version": "1.0.0",
+      "url": "https://static.crates.io/crates/anstyle-parse/anstyle-parse-1.0.0.crate",
+      "filename": "anstyle-parse-1.0.0.crate",
+      "sha256": "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e",
+      "bytes": 22042,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "anstyle-parse-1.0.0/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "anstyle-parse-1.0.0/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "anstyle-query",
+      "version": "1.1.5",
+      "url": "https://static.crates.io/crates/anstyle-query/anstyle-query-1.1.5.crate",
+      "filename": "anstyle-query-1.1.5.crate",
+      "sha256": "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc",
+      "bytes": 10264,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "anstyle-query-1.1.5/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "anstyle-query-1.1.5/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "anstyle-wincon",
+      "version": "3.0.11",
+      "url": "https://static.crates.io/crates/anstyle-wincon/anstyle-wincon-3.0.11.crate",
+      "filename": "anstyle-wincon-3.0.11.crate",
+      "sha256": "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d",
+      "bytes": 12638,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "anstyle-wincon-3.0.11/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "anstyle-wincon-3.0.11/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "anyhow",
+      "version": "1.0.102",
+      "url": "https://static.crates.io/crates/anyhow/anyhow-1.0.102.crate",
+      "filename": "anyhow-1.0.102.crate",
+      "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c",
+      "bytes": 48658,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "anyhow-1.0.102/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "anyhow-1.0.102/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "askama",
+      "version": "0.16.0",
+      "url": "https://static.crates.io/crates/askama/askama-0.16.0.crate",
+      "filename": "askama-0.16.0.crate",
+      "sha256": "f1bf825125edd887a019d0a3a837dcc5499a68b0d034cc3eb594070c3e18addc",
+      "bytes": 49135,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "askama-0.16.0/LICENSE-APACHE",
+          "sha256": "87cb0d734c723c083e51c825930ff42bce28596b52dee15567f6b28f19c195e3",
+          "bytes": 10840
+        },
+        {
+          "path": "askama-0.16.0/LICENSE-MIT",
+          "sha256": "df20e0180764bf5bd76f74d47bc9e8c0069a666401629c390003a1d5eba99c92",
+          "bytes": 1064
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "askama_derive",
+      "version": "0.16.0",
+      "url": "https://static.crates.io/crates/askama_derive/askama_derive-0.16.0.crate",
+      "filename": "askama_derive-0.16.0.crate",
+      "sha256": "e1c7065972a130eafa84215f21352ae15b4a7393da48c1f5e103904490736738",
+      "bytes": 106406,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "askama_derive-0.16.0/LICENSE-APACHE",
+          "sha256": "87cb0d734c723c083e51c825930ff42bce28596b52dee15567f6b28f19c195e3",
+          "bytes": 10840
+        },
+        {
+          "path": "askama_derive-0.16.0/LICENSE-MIT",
+          "sha256": "df20e0180764bf5bd76f74d47bc9e8c0069a666401629c390003a1d5eba99c92",
+          "bytes": 1064
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "askama_macros",
+      "version": "0.16.0",
+      "url": "https://static.crates.io/crates/askama_macros/askama_macros-0.16.0.crate",
+      "filename": "askama_macros-0.16.0.crate",
+      "sha256": "0e23b1d2c4bd39a41971f6124cef4cc6fd0540913ecb90919b69ab3bbe44ae1a",
+      "bytes": 8421,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "askama_macros-0.16.0/LICENSE-APACHE",
+          "sha256": "87cb0d734c723c083e51c825930ff42bce28596b52dee15567f6b28f19c195e3",
+          "bytes": 10840
+        },
+        {
+          "path": "askama_macros-0.16.0/LICENSE-MIT",
+          "sha256": "df20e0180764bf5bd76f74d47bc9e8c0069a666401629c390003a1d5eba99c92",
+          "bytes": 1064
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "askama_parser",
+      "version": "0.16.0",
+      "url": "https://static.crates.io/crates/askama_parser/askama_parser-0.16.0.crate",
+      "filename": "askama_parser-0.16.0.crate",
+      "sha256": "7db09fde9143e7ac4513358fb32ee32847125b63b18ea715afd487956da715da",
+      "bytes": 73451,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "askama_parser-0.16.0/LICENSE-APACHE",
+          "sha256": "87cb0d734c723c083e51c825930ff42bce28596b52dee15567f6b28f19c195e3",
+          "bytes": 10840
+        },
+        {
+          "path": "askama_parser-0.16.0/LICENSE-MIT",
+          "sha256": "df20e0180764bf5bd76f74d47bc9e8c0069a666401629c390003a1d5eba99c92",
+          "bytes": 1064
+        },
+        {
+          "path": "askama_parser-0.16.0/benches/librustdoc/LICENSE.md",
+          "sha256": "ceca995f2a9ba147d4ada210d9527769091630651e565e40e841acf435c9cea2",
+          "bytes": 426
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "assert_cmd",
+      "version": "2.2.2",
+      "url": "https://static.crates.io/crates/assert_cmd/assert_cmd-2.2.2.crate",
+      "filename": "assert_cmd-2.2.2.crate",
+      "sha256": "2aa3a22042e45de04255c7bf3626e239f450200fd0493c1e382263544b20aea6",
+      "bytes": 27683,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "assert_cmd-2.2.2/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "assert_cmd-2.2.2/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "bincode",
+      "version": "1.3.3",
+      "url": "https://static.crates.io/crates/bincode/bincode-1.3.3.crate",
+      "filename": "bincode-1.3.3.crate",
+      "sha256": "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad",
+      "bytes": 28958,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "bincode-1.3.3/LICENSE.md",
+          "sha256": "237710d4c9dd8eb7fead2c9c433be493a878f547d1093812feff43d18abe5896",
+          "bytes": 1097
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "bitflags",
+      "version": "2.11.1",
+      "url": "https://static.crates.io/crates/bitflags/bitflags-2.11.1.crate",
+      "filename": "bitflags-2.11.1.crate",
+      "sha256": "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3",
+      "bytes": 49082,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "bitflags-2.11.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "bitflags-2.11.1/LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb",
+          "bytes": 1071
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "bstr",
+      "version": "1.12.1",
+      "url": "https://static.crates.io/crates/bstr/bstr-1.12.1.crate",
+      "filename": "bstr-1.12.1.crate",
+      "sha256": "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab",
+      "bytes": 354916,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "bstr-1.12.1/COPYING",
+          "sha256": "68653aaa727a2bfa31b7a751e31701ce33c49d695c12dd291a07d1c54da4c14b",
+          "bytes": 262
+        },
+        {
+          "path": "bstr-1.12.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "bstr-1.12.1/LICENSE-MIT",
+          "sha256": "6b7374c39a57e57fc2c38eb529c4c88340152b10f51dd5ae2d819dfa67f61715",
+          "bytes": 1086
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "cfg-if",
+      "version": "1.0.4",
+      "url": "https://static.crates.io/crates/cfg-if/cfg-if-1.0.4.crate",
+      "filename": "cfg-if-1.0.4.crate",
+      "sha256": "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801",
+      "bytes": 9360,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "cfg-if-1.0.4/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "cfg-if-1.0.4/LICENSE-MIT",
+          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397",
+          "bytes": 1057
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "clap",
+      "version": "4.6.1",
+      "url": "https://static.crates.io/crates/clap/clap-4.6.1.crate",
+      "filename": "clap-4.6.1.crate",
+      "sha256": "1ddb117e43bbf7dacf0a4190fef4d345b9bad68dfc649cb349e7d17d28428e51",
+      "bytes": 61836,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "clap-4.6.1/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "clap-4.6.1/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "clap_builder",
+      "version": "4.6.0",
+      "url": "https://static.crates.io/crates/clap_builder/clap_builder-4.6.0.crate",
+      "filename": "clap_builder-4.6.0.crate",
+      "sha256": "714a53001bf66416adb0e2ef5ac857140e7dc3a0c48fb28b2f10762fc4b5069f",
+      "bytes": 171122,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "clap_builder-4.6.0/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "clap_builder-4.6.0/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "clap_complete",
+      "version": "4.6.5",
+      "url": "https://static.crates.io/crates/clap_complete/clap_complete-4.6.5.crate",
+      "filename": "clap_complete-4.6.5.crate",
+      "sha256": "e0a7a9bfdb35811f9e59832f0f05975114d2251b415fb534108e6f34060fd772",
+      "bytes": 51377,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "clap_complete-4.6.5/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "clap_complete-4.6.5/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "clap_complete_fig",
+      "version": "4.5.2",
+      "url": "https://static.crates.io/crates/clap_complete_fig/clap_complete_fig-4.5.2.crate",
+      "filename": "clap_complete_fig-4.5.2.crate",
+      "sha256": "d494102c8ff3951810c72baf96910b980fb065ca5d3101243e6a8dc19747c86b",
+      "bytes": 11376,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "clap_complete_fig-4.5.2/LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "bytes": 11357
+        },
+        {
+          "path": "clap_complete_fig-4.5.2/LICENSE-MIT",
+          "sha256": "0d687e1f07b58fe68bda74668ff6326125e5e5efa184cce755cd84ac535b7058",
+          "bytes": 1108
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "clap_complete_nushell",
+      "version": "4.6.0",
+      "url": "https://static.crates.io/crates/clap_complete_nushell/clap_complete_nushell-4.6.0.crate",
+      "filename": "clap_complete_nushell-4.6.0.crate",
+      "sha256": "fbb9e9715d29a754b468591be588f6b926f5b0a1eb6a8b62acabeb66ff84d897",
+      "bytes": 36526,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "clap_complete_nushell-4.6.0/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "clap_complete_nushell-4.6.0/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "clap_derive",
+      "version": "4.6.1",
+      "url": "https://static.crates.io/crates/clap_derive/clap_derive-4.6.1.crate",
+      "filename": "clap_derive-4.6.1.crate",
+      "sha256": "f2ce8604710f6733aa641a2b3731eaa1e8b3d9973d5e3565da11800813f997a9",
+      "bytes": 33512,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "clap_derive-4.6.1/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "clap_derive-4.6.1/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "clap_lex",
+      "version": "1.1.0",
+      "url": "https://static.crates.io/crates/clap_lex/clap_lex-1.1.0.crate",
+      "filename": "clap_lex-1.1.0.crate",
+      "sha256": "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9",
+      "bytes": 13470,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "clap_lex-1.1.0/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "clap_lex-1.1.0/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "color-print",
+      "version": "0.3.7",
+      "url": "https://static.crates.io/crates/color-print/color-print-0.3.7.crate",
+      "filename": "color-print-0.3.7.crate",
+      "sha256": "3aa954171903797d5623e047d9ab69d91b493657917bdfb8c2c80ecaf9cdb6f4",
+      "bytes": 11586,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "color-print-0.3.7/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "color-print-0.3.7/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "color-print-proc-macro",
+      "version": "0.3.7",
+      "url": "https://static.crates.io/crates/color-print-proc-macro/color-print-proc-macro-0.3.7.crate",
+      "filename": "color-print-proc-macro-0.3.7.crate",
+      "sha256": "692186b5ebe54007e45a59aea47ece9eb4108e141326c304cdc91699a7118a22",
+      "bytes": 23082,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "color-print-proc-macro-0.3.7/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "color-print-proc-macro-0.3.7/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "colorchoice",
+      "version": "1.0.5",
+      "url": "https://static.crates.io/crates/colorchoice/colorchoice-1.0.5.crate",
+      "filename": "colorchoice-1.0.5.crate",
+      "sha256": "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570",
+      "bytes": 8187,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "colorchoice-1.0.5/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "colorchoice-1.0.5/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "deranged",
+      "version": "0.5.8",
+      "url": "https://static.crates.io/crates/deranged/deranged-0.5.8.crate",
+      "filename": "deranged-0.5.8.crate",
+      "sha256": "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c",
+      "bytes": 26885,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "deranged-0.5.8/LICENSE-Apache",
+          "sha256": "edd65bdd88957a205c47d53fa499eed8865a70320f0f03f6391668cb304ea376",
+          "bytes": 11349
+        },
+        {
+          "path": "deranged-0.5.8/LICENSE-MIT",
+          "sha256": "231c837c45eb53f108fb48929e488965bc4fcc14e9ea21d35f50e6b99d98685b",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "difflib",
+      "version": "0.4.0",
+      "url": "https://static.crates.io/crates/difflib/difflib-0.4.0.crate",
+      "filename": "difflib-0.4.0.crate",
+      "sha256": "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8",
+      "bytes": 7638,
+      "declared_license": "MIT",
+      "license_files": [],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "dirs",
+      "version": "6.0.0",
+      "url": "https://static.crates.io/crates/dirs/dirs-6.0.0.crate",
+      "filename": "dirs-6.0.0.crate",
+      "sha256": "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e",
+      "bytes": 14190,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "dirs-6.0.0/LICENSE-APACHE",
+          "sha256": "d3174ad63e721d4c9dccb8ad4320848992d314369bc46319720b5802c9153fe9",
+          "bytes": 9694
+        },
+        {
+          "path": "dirs-6.0.0/LICENSE-MIT",
+          "sha256": "6a2e0ade09a7d5f816f11566fee2b151b32235a7fad52b41d49cce96f833c1a9",
+          "bytes": 1069
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "dirs-sys",
+      "version": "0.5.0",
+      "url": "https://static.crates.io/crates/dirs-sys/dirs-sys-0.5.0.crate",
+      "filename": "dirs-sys-0.5.0.crate",
+      "sha256": "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab",
+      "bytes": 10157,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "dirs-sys-0.5.0/LICENSE-APACHE",
+          "sha256": "d3174ad63e721d4c9dccb8ad4320848992d314369bc46319720b5802c9153fe9",
+          "bytes": 9694
+        },
+        {
+          "path": "dirs-sys-0.5.0/LICENSE-MIT",
+          "sha256": "6a2e0ade09a7d5f816f11566fee2b151b32235a7fad52b41d49cce96f833c1a9",
+          "bytes": 1069
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "dunce",
+      "version": "1.0.5",
+      "url": "https://static.crates.io/crates/dunce/dunce-1.0.5.crate",
+      "filename": "dunce-1.0.5.crate",
+      "sha256": "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813",
+      "bytes": 8244,
+      "declared_license": "CC0-1.0 OR MIT-0 OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "dunce-1.0.5/LICENSE",
+          "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+          "bytes": 7048
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "equivalent",
+      "version": "1.0.2",
+      "url": "https://static.crates.io/crates/equivalent/equivalent-1.0.2.crate",
+      "filename": "equivalent-1.0.2.crate",
+      "sha256": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f",
+      "bytes": 7419,
+      "declared_license": "Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "equivalent-1.0.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "equivalent-1.0.2/LICENSE-MIT",
+          "sha256": "7365cc8878a1d7ce155a58c4ca09c3d7a6be413efa5334a80ea842912b669349",
+          "bytes": 1049
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "errno",
+      "version": "0.3.14",
+      "url": "https://static.crates.io/crates/errno/errno-0.3.14.crate",
+      "filename": "errno-0.3.14.crate",
+      "sha256": "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb",
+      "bytes": 12002,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "errno-0.3.14/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "errno-0.3.14/LICENSE-MIT",
+          "sha256": "8764a597675778ddfd4e25f81b08a05dbcf089ac05662df7613fe67f150e3aa2",
+          "bytes": 1054
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "fastrand",
+      "version": "2.4.1",
+      "url": "https://static.crates.io/crates/fastrand/fastrand-2.4.1.crate",
+      "filename": "fastrand-2.4.1.crate",
+      "sha256": "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6",
+      "bytes": 20773,
+      "declared_license": "Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "fastrand-2.4.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "fastrand-2.4.1/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "foldhash",
+      "version": "0.1.5",
+      "url": "https://static.crates.io/crates/foldhash/foldhash-0.1.5.crate",
+      "filename": "foldhash-0.1.5.crate",
+      "sha256": "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2",
+      "bytes": 21901,
+      "declared_license": "Zlib",
+      "license_files": [
+        {
+          "path": "foldhash-0.1.5/LICENSE",
+          "sha256": "b1181a40b2a7b25cf66fd01481713bc1005df082c53ef73e851e55071b102744",
+          "bytes": 856
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "getrandom",
+      "version": "0.2.17",
+      "url": "https://static.crates.io/crates/getrandom/getrandom-0.2.17.crate",
+      "filename": "getrandom-0.2.17.crate",
+      "sha256": "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0",
+      "bytes": 40780,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "getrandom-0.2.17/LICENSE-APACHE",
+          "sha256": "aaff376532ea30a0cd5330b9502ad4a4c8bf769c539c87ffe78819d188a18ebf",
+          "bytes": 10849
+        },
+        {
+          "path": "getrandom-0.2.17/LICENSE-MIT",
+          "sha256": "42fa16951ce7f24b5a467a40e5b449a1d41e662f97ca779864f053f39e097737",
+          "bytes": 1130
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "getrandom",
+      "version": "0.4.2",
+      "url": "https://static.crates.io/crates/getrandom/getrandom-0.4.2.crate",
+      "filename": "getrandom-0.4.2.crate",
+      "sha256": "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555",
+      "bytes": 53905,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "getrandom-0.4.2/LICENSE-APACHE",
+          "sha256": "aaff376532ea30a0cd5330b9502ad4a4c8bf769c539c87ffe78819d188a18ebf",
+          "bytes": 10849
+        },
+        {
+          "path": "getrandom-0.4.2/LICENSE-MIT",
+          "sha256": "523a42c25d245dde9c015f882cec7f4555aad883382a6cf19b4b7d9b2cd5419b",
+          "bytes": 1130
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "glob",
+      "version": "0.3.3",
+      "url": "https://static.crates.io/crates/glob/glob-0.3.3.crate",
+      "filename": "glob-0.3.3.crate",
+      "sha256": "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280",
+      "bytes": 22861,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "glob-0.3.3/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "glob-0.3.3/LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb",
+          "bytes": 1071
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "hashbrown",
+      "version": "0.15.5",
+      "url": "https://static.crates.io/crates/hashbrown/hashbrown-0.15.5.crate",
+      "filename": "hashbrown-0.15.5.crate",
+      "sha256": "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1",
+      "bytes": 140908,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "hashbrown-0.15.5/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "hashbrown-0.15.5/LICENSE-MIT",
+          "sha256": "ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2",
+          "bytes": 1060
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "url": "https://static.crates.io/crates/hashbrown/hashbrown-0.17.1.crate",
+      "filename": "hashbrown-0.17.1.crate",
+      "sha256": "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a",
+      "bytes": 155512,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "hashbrown-0.17.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "hashbrown-0.17.1/LICENSE-MIT",
+          "sha256": "ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2",
+          "bytes": 1060
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "heck",
+      "version": "0.4.1",
+      "url": "https://static.crates.io/crates/heck/heck-0.4.1.crate",
+      "filename": "heck-0.4.1.crate",
+      "sha256": "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8",
+      "bytes": 11567,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "heck-0.4.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "heck-0.4.1/LICENSE-MIT",
+          "sha256": "7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0",
+          "bytes": 1071
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "heck",
+      "version": "0.5.0",
+      "url": "https://static.crates.io/crates/heck/heck-0.5.0.crate",
+      "filename": "heck-0.5.0.crate",
+      "sha256": "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea",
+      "bytes": 11517,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "heck-0.5.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "heck-0.5.0/LICENSE-MIT",
+          "sha256": "7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0",
+          "bytes": 1071
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "id-arena",
+      "version": "2.3.0",
+      "url": "https://static.crates.io/crates/id-arena/id-arena-2.3.0.crate",
+      "filename": "id-arena-2.3.0.crate",
+      "sha256": "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954",
+      "bytes": 12883,
+      "declared_license": "MIT/Apache-2.0",
+      "license_files": [
+        {
+          "path": "id-arena-2.3.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "id-arena-2.3.0/LICENSE-MIT",
+          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397",
+          "bytes": 1057
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "indexmap",
+      "version": "2.14.0",
+      "url": "https://static.crates.io/crates/indexmap/indexmap-2.14.0.crate",
+      "filename": "indexmap-2.14.0.crate",
+      "sha256": "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9",
+      "bytes": 104085,
+      "declared_license": "Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "indexmap-2.14.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "indexmap-2.14.0/LICENSE-MIT",
+          "sha256": "ecc269ef87fd38a1d98e30bfac9ba964a9dbd9315c3770fed98d4d7cb5882055",
+          "bytes": 1049
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "is_terminal_polyfill",
+      "version": "1.70.2",
+      "url": "https://static.crates.io/crates/is_terminal_polyfill/is_terminal_polyfill-1.70.2.crate",
+      "filename": "is_terminal_polyfill-1.70.2.crate",
+      "sha256": "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695",
+      "bytes": 7548,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "is_terminal_polyfill-1.70.2/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "is_terminal_polyfill-1.70.2/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "itoa",
+      "version": "1.0.18",
+      "url": "https://static.crates.io/crates/itoa/itoa-1.0.18.crate",
+      "filename": "itoa-1.0.18.crate",
+      "sha256": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682",
+      "bytes": 15935,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "itoa-1.0.18/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "itoa-1.0.18/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "leb128fmt",
+      "version": "0.1.0",
+      "url": "https://static.crates.io/crates/leb128fmt/leb128fmt-0.1.0.crate",
+      "filename": "leb128fmt-0.1.0.crate",
+      "sha256": "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2",
+      "bytes": 14138,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "leb128fmt-0.1.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "leb128fmt-0.1.0/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "libc",
+      "version": "0.2.186",
+      "url": "https://static.crates.io/crates/libc/libc-0.2.186.crate",
+      "filename": "libc-0.2.186.crate",
+      "sha256": "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66",
+      "bytes": 821883,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "libc-0.2.186/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "libc-0.2.186/LICENSE-MIT",
+          "sha256": "123a331b5dbf04c30097fa43b8f858bc85df671fe776de498d01f3d6b7c1f69e",
+          "bytes": 1066
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "libredox",
+      "version": "0.1.16",
+      "url": "https://static.crates.io/crates/libredox/libredox-0.1.16.crate",
+      "filename": "libredox-0.1.16.crate",
+      "sha256": "e02f3bb43d335493c96bf3fd3a321600bf6bd07ed34bc64118e9293bdffea46c",
+      "bytes": 9600,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "libredox-0.1.16/LICENSE",
+          "sha256": "8d073a6a80d1ef2d2fc2bc6c809aa221161bf1906c76d4aeef55fd2b999d9413",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "linux-raw-sys",
+      "version": "0.12.1",
+      "url": "https://static.crates.io/crates/linux-raw-sys/linux-raw-sys-0.12.1.crate",
+      "filename": "linux-raw-sys-0.12.1.crate",
+      "sha256": "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53",
+      "bytes": 3006116,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "linux-raw-sys-0.12.1/COPYRIGHT",
+          "sha256": "3290ae0fbc9ddb77d2239121d710f0bb9d31b3b4744e6d97fe01e652b4c1870b",
+          "bytes": 881
+        },
+        {
+          "path": "linux-raw-sys-0.12.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "linux-raw-sys-0.12.1/LICENSE-Apache-2.0_WITH_LLVM-exception",
+          "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+          "bytes": 12243
+        },
+        {
+          "path": "linux-raw-sys-0.12.1/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "log",
+      "version": "0.4.29",
+      "url": "https://static.crates.io/crates/log/log-0.4.29.crate",
+      "filename": "log-0.4.29.crate",
+      "sha256": "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897",
+      "bytes": 51515,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "log-0.4.29/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "log-0.4.29/LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb",
+          "bytes": 1071
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "memchr",
+      "version": "2.8.0",
+      "url": "https://static.crates.io/crates/memchr/memchr-2.8.0.crate",
+      "filename": "memchr-2.8.0.crate",
+      "sha256": "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79",
+      "bytes": 97780,
+      "declared_license": "Unlicense OR MIT",
+      "license_files": [
+        {
+          "path": "memchr-2.8.0/COPYING",
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f",
+          "bytes": 126
+        },
+        {
+          "path": "memchr-2.8.0/LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f",
+          "bytes": 1081
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "minimal-lexical",
+      "version": "0.2.1",
+      "url": "https://static.crates.io/crates/minimal-lexical/minimal-lexical-0.2.1.crate",
+      "filename": "minimal-lexical-0.2.1.crate",
+      "sha256": "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a",
+      "bytes": 94841,
+      "declared_license": "MIT/Apache-2.0",
+      "license_files": [
+        {
+          "path": "minimal-lexical-0.2.1/LICENSE-APACHE",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "bytes": 10850
+        },
+        {
+          "path": "minimal-lexical-0.2.1/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        },
+        {
+          "path": "minimal-lexical-0.2.1/LICENSE.md",
+          "sha256": "dbe1fff0fb1314b6af94f161511406275cf01c5a32441fbf24528a57a051d599",
+          "bytes": 2003
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "nom",
+      "version": "7.1.3",
+      "url": "https://static.crates.io/crates/nom/nom-7.1.3.crate",
+      "filename": "nom-7.1.3.crate",
+      "sha256": "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a",
+      "bytes": 117570,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "nom-7.1.3/LICENSE",
+          "sha256": "4dbda04344456f09a7a588140455413a9ac59b6b26a1ef7cdf9c800c012d87f0",
+          "bytes": 1065
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "num-conv",
+      "version": "0.2.1",
+      "url": "https://static.crates.io/crates/num-conv/num-conv-0.2.1.crate",
+      "filename": "num-conv-0.2.1.crate",
+      "sha256": "c6673768db2d862beb9b39a78fdcb1a69439615d5794a1be50caa9bc92c81967",
+      "bytes": 7099,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "num-conv-0.2.1/LICENSE-Apache",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "bytes": 10174
+        },
+        {
+          "path": "num-conv-0.2.1/LICENSE-MIT",
+          "sha256": "e2e245f2b566d0bfafb0f6a04c16b82d710c4e6e7d799e39bb4ef6e541b85b98",
+          "bytes": 1050
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "once_cell",
+      "version": "1.21.4",
+      "url": "https://static.crates.io/crates/once_cell/once_cell-1.21.4.crate",
+      "filename": "once_cell-1.21.4.crate",
+      "sha256": "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50",
+      "bytes": 35010,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "once_cell-1.21.4/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "once_cell-1.21.4/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "once_cell_polyfill",
+      "version": "1.70.2",
+      "url": "https://static.crates.io/crates/once_cell_polyfill/once_cell_polyfill-1.70.2.crate",
+      "filename": "once_cell_polyfill-1.70.2.crate",
+      "sha256": "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe",
+      "bytes": 7448,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "once_cell_polyfill-1.70.2/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "once_cell_polyfill-1.70.2/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "option-ext",
+      "version": "0.2.0",
+      "url": "https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate",
+      "filename": "option-ext-0.2.0.crate",
+      "sha256": "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d",
+      "bytes": 7345,
+      "declared_license": "MPL-2.0",
+      "license_files": [
+        {
+          "path": "option-ext-0.2.0/LICENSE.txt",
+          "sha256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
+          "bytes": 16727
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "ouroboros",
+      "version": "0.18.5",
+      "url": "https://static.crates.io/crates/ouroboros/ouroboros-0.18.5.crate",
+      "filename": "ouroboros-0.18.5.crate",
+      "sha256": "1e0f050db9c44b97a94723127e6be766ac5c340c48f2c4bb3ffa11713744be59",
+      "bytes": 11678,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "ouroboros-0.18.5/LICENSE_APACHE",
+          "sha256": "33b9a1c1bb6c09f51adae737d27a770f0c0d025c7e65111b7088df98174fce4b",
+          "bytes": 11335
+        },
+        {
+          "path": "ouroboros-0.18.5/LICENSE_MIT",
+          "sha256": "b87740f87cbb0e8be9c4c21db4a265d5f297cd9ee3ea0ff4cf702de819ef6de7",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "ouroboros_macro",
+      "version": "0.18.5",
+      "url": "https://static.crates.io/crates/ouroboros_macro/ouroboros_macro-0.18.5.crate",
+      "filename": "ouroboros_macro-0.18.5.crate",
+      "sha256": "3c7028bdd3d43083f6d8d4d5187680d0d3560d54df4cc9d752005268b41e64d0",
+      "bytes": 22021,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "ouroboros_macro-0.18.5/LICENSE_APACHE",
+          "sha256": "33b9a1c1bb6c09f51adae737d27a770f0c0d025c7e65111b7088df98174fce4b",
+          "bytes": 11335
+        },
+        {
+          "path": "ouroboros_macro-0.18.5/LICENSE_MIT",
+          "sha256": "b87740f87cbb0e8be9c4c21db4a265d5f297cd9ee3ea0ff4cf702de819ef6de7",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "percent-encoding",
+      "version": "2.3.2",
+      "url": "https://static.crates.io/crates/percent-encoding/percent-encoding-2.3.2.crate",
+      "filename": "percent-encoding-2.3.2.crate",
+      "sha256": "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220",
+      "bytes": 11583,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "percent-encoding-2.3.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "percent-encoding-2.3.2/LICENSE-MIT",
+          "sha256": "b38f11f6096706e6de553dabe2a7ed142d59b6fa8c97e290c67496154745cdd5",
+          "bytes": 1072
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "powerfmt",
+      "version": "0.2.0",
+      "url": "https://static.crates.io/crates/powerfmt/powerfmt-0.2.0.crate",
+      "filename": "powerfmt-0.2.0.crate",
+      "sha256": "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391",
+      "bytes": 15165,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "powerfmt-0.2.0/LICENSE-Apache",
+          "sha256": "155420c6403d4e0fca34105e3c03fdd6939b64c393c7ec6f95f5b72c5474eab0",
+          "bytes": 11349
+        },
+        {
+          "path": "powerfmt-0.2.0/LICENSE-MIT",
+          "sha256": "070dbc7dda03a29296f2d58bdb9b7331af90f2abc9f31df22875d1eabaf29852",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "ppv-lite86",
+      "version": "0.2.21",
+      "url": "https://static.crates.io/crates/ppv-lite86/ppv-lite86-0.2.21.crate",
+      "filename": "ppv-lite86-0.2.21.crate",
+      "sha256": "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9",
+      "bytes": 22522,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "ppv-lite86-0.2.21/LICENSE-APACHE",
+          "sha256": "0218327e7a480793ffdd4eb792379a9709e5c135c7ba267f709d6f6d4d70af0a",
+          "bytes": 10854
+        },
+        {
+          "path": "ppv-lite86-0.2.21/LICENSE-MIT",
+          "sha256": "4cada0bd02ea3692eee6f16400d86c6508bbd3bafb2b65fed0419f36d4f83e8f",
+          "bytes": 1076
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "predicates",
+      "version": "3.1.4",
+      "url": "https://static.crates.io/crates/predicates/predicates-3.1.4.crate",
+      "filename": "predicates-3.1.4.crate",
+      "sha256": "ada8f2932f28a27ee7b70dd6c1c39ea0675c55a36879ab92f3a715eaa1e63cfe",
+      "bytes": 24327,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "predicates-3.1.4/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "predicates-3.1.4/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "predicates-core",
+      "version": "1.0.10",
+      "url": "https://static.crates.io/crates/predicates-core/predicates-core-1.0.10.crate",
+      "filename": "predicates-core-1.0.10.crate",
+      "sha256": "cad38746f3166b4031b1a0d39ad9f954dd291e7854fcc0eed52ee41a0b50d144",
+      "bytes": 8649,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "predicates-core-1.0.10/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "predicates-core-1.0.10/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "predicates-tree",
+      "version": "1.0.13",
+      "url": "https://static.crates.io/crates/predicates-tree/predicates-tree-1.0.13.crate",
+      "filename": "predicates-tree-1.0.13.crate",
+      "sha256": "d0de1b847b39c8131db0467e9df1ff60e6d0562ab8e9a16e568ad0fdb372e2f2",
+      "bytes": 8422,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "predicates-tree-1.0.13/LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "predicates-tree-1.0.13/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "prettyplease",
+      "version": "0.2.37",
+      "url": "https://static.crates.io/crates/prettyplease/prettyplease-0.2.37.crate",
+      "filename": "prettyplease-0.2.37.crate",
+      "sha256": "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b",
+      "bytes": 72033,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "prettyplease-0.2.37/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "prettyplease-0.2.37/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "proc-macro2",
+      "version": "1.0.106",
+      "url": "https://static.crates.io/crates/proc-macro2/proc-macro2-1.0.106.crate",
+      "filename": "proc-macro2-1.0.106.crate",
+      "sha256": "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934",
+      "bytes": 59765,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "proc-macro2-1.0.106/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "proc-macro2-1.0.106/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "proc-macro2-diagnostics",
+      "version": "0.10.1",
+      "url": "https://static.crates.io/crates/proc-macro2-diagnostics/proc-macro2-diagnostics-0.10.1.crate",
+      "filename": "proc-macro2-diagnostics-0.10.1.crate",
+      "sha256": "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8",
+      "bytes": 12219,
+      "declared_license": "MIT/Apache-2.0",
+      "license_files": [
+        {
+          "path": "proc-macro2-diagnostics-0.10.1/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "proc-macro2-diagnostics-0.10.1/LICENSE-MIT",
+          "sha256": "38176bb6aad910a449a304967836091da15384cdb73c7477d805b1f6045d14d6",
+          "bytes": 1085
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "quote",
+      "version": "1.0.45",
+      "url": "https://static.crates.io/crates/quote/quote-1.0.45.crate",
+      "filename": "quote-1.0.45.crate",
+      "sha256": "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924",
+      "bytes": 31564,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "quote-1.0.45/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "quote-1.0.45/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "r-efi",
+      "version": "6.0.0",
+      "url": "https://static.crates.io/crates/r-efi/r-efi-6.0.0.crate",
+      "filename": "r-efi-6.0.0.crate",
+      "sha256": "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf",
+      "bytes": 65303,
+      "declared_license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "license_files": [],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "rand",
+      "version": "0.8.6",
+      "url": "https://static.crates.io/crates/rand/rand-0.8.6.crate",
+      "filename": "rand-0.8.6.crate",
+      "sha256": "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a",
+      "bytes": 83339,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "rand-0.8.6/COPYRIGHT",
+          "sha256": "90eb64f0279b0d9432accfa6023ff803bc4965212383697eee27a0f426d5f8d5",
+          "bytes": 569
+        },
+        {
+          "path": "rand-0.8.6/LICENSE-APACHE",
+          "sha256": "35242e7a83f69875e6edeff02291e688c97caafe2f8902e4e19b49d3e78b4cab",
+          "bytes": 9724
+        },
+        {
+          "path": "rand-0.8.6/LICENSE-MIT",
+          "sha256": "209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b",
+          "bytes": 1117
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "rand_chacha",
+      "version": "0.3.1",
+      "url": "https://static.crates.io/crates/rand_chacha/rand_chacha-0.3.1.crate",
+      "filename": "rand_chacha-0.3.1.crate",
+      "sha256": "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88",
+      "bytes": 15251,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "rand_chacha-0.3.1/COPYRIGHT",
+          "sha256": "90eb64f0279b0d9432accfa6023ff803bc4965212383697eee27a0f426d5f8d5",
+          "bytes": 569
+        },
+        {
+          "path": "rand_chacha-0.3.1/LICENSE-APACHE",
+          "sha256": "aaff376532ea30a0cd5330b9502ad4a4c8bf769c539c87ffe78819d188a18ebf",
+          "bytes": 10849
+        },
+        {
+          "path": "rand_chacha-0.3.1/LICENSE-MIT",
+          "sha256": "209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b",
+          "bytes": 1117
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "rand_core",
+      "version": "0.6.4",
+      "url": "https://static.crates.io/crates/rand_core/rand_core-0.6.4.crate",
+      "filename": "rand_core-0.6.4.crate",
+      "sha256": "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c",
+      "bytes": 22666,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "rand_core-0.6.4/COPYRIGHT",
+          "sha256": "90eb64f0279b0d9432accfa6023ff803bc4965212383697eee27a0f426d5f8d5",
+          "bytes": 569
+        },
+        {
+          "path": "rand_core-0.6.4/LICENSE-APACHE",
+          "sha256": "6df43f6f4b5d4587f3d8d71e45532c688fd168afa5fe89d571cb32fa09c4ef51",
+          "bytes": 10282
+        },
+        {
+          "path": "rand_core-0.6.4/LICENSE-MIT",
+          "sha256": "209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b",
+          "bytes": 1117
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "redox_users",
+      "version": "0.5.2",
+      "url": "https://static.crates.io/crates/redox_users/redox_users-0.5.2.crate",
+      "filename": "redox_users-0.5.2.crate",
+      "sha256": "a4e608c6638b9c18977b00b475ac1f28d14e84b27d8d42f70e0bf1e3dec127ac",
+      "bytes": 17280,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "redox_users-0.5.2/LICENSE",
+          "sha256": "e6a8ae2d796083783efc94b1e66271aa2929dc4dfb231d34239aa9c7db8396db",
+          "bytes": 1080
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "regex",
+      "version": "1.12.3",
+      "url": "https://static.crates.io/crates/regex/regex-1.12.3.crate",
+      "filename": "regex-1.12.3.crate",
+      "sha256": "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276",
+      "bytes": 153392,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "regex-1.12.3/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "regex-1.12.3/LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb",
+          "bytes": 1071
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "regex-automata",
+      "version": "0.4.14",
+      "url": "https://static.crates.io/crates/regex-automata/regex-automata-0.4.14.crate",
+      "filename": "regex-automata-0.4.14.crate",
+      "sha256": "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f",
+      "bytes": 618012,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "regex-automata-0.4.14/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "regex-automata-0.4.14/LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb",
+          "bytes": 1071
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "regex-syntax",
+      "version": "0.8.10",
+      "url": "https://static.crates.io/crates/regex-syntax/regex-syntax-0.8.10.crate",
+      "filename": "regex-syntax-0.8.10.crate",
+      "sha256": "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a",
+      "bytes": 358781,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "regex-syntax-0.8.10/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "regex-syntax-0.8.10/LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb",
+          "bytes": 1071
+        },
+        {
+          "path": "regex-syntax-0.8.10/src/unicode_tables/LICENSE-UNICODE",
+          "sha256": "74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3",
+          "bytes": 2847
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "relative-path",
+      "version": "1.9.3",
+      "url": "https://static.crates.io/crates/relative-path/relative-path-1.9.3.crate",
+      "filename": "relative-path-1.9.3.crate",
+      "sha256": "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2",
+      "bytes": 22400,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "rstest",
+      "version": "0.26.1",
+      "url": "https://static.crates.io/crates/rstest/rstest-0.26.1.crate",
+      "filename": "rstest-0.26.1.crate",
+      "sha256": "f5a3193c063baaa2a95a33f03035c8a72b83d97a54916055ba22d35ed3839d49",
+      "bytes": 56940,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "rstest-0.26.1/LICENSE-APACHE",
+          "sha256": "58bd62e8a40f94eb780e1ad32d8ad33a7baed34f78b833e61ebabb7b489d90f4",
+          "bytes": 11352
+        },
+        {
+          "path": "rstest-0.26.1/LICENSE-MIT",
+          "sha256": "53b5c498df966daf4ea75d92c047e4d92bc02cffa4315751109596d32a524c87",
+          "bytes": 1060
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "rstest_macros",
+      "version": "0.26.1",
+      "url": "https://static.crates.io/crates/rstest_macros/rstest_macros-0.26.1.crate",
+      "filename": "rstest_macros-0.26.1.crate",
+      "sha256": "9c845311f0ff7951c5506121a9ad75aec44d083c31583b2ea5a30bcb0b0abba0",
+      "bytes": 68256,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "rstest_macros-0.26.1/LICENSE-APACHE",
+          "sha256": "58bd62e8a40f94eb780e1ad32d8ad33a7baed34f78b833e61ebabb7b489d90f4",
+          "bytes": 11352
+        },
+        {
+          "path": "rstest_macros-0.26.1/LICENSE-MIT",
+          "sha256": "53b5c498df966daf4ea75d92c047e4d92bc02cffa4315751109596d32a524c87",
+          "bytes": 1060
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "rstest_reuse",
+      "version": "0.7.0",
+      "url": "https://static.crates.io/crates/rstest_reuse/rstest_reuse-0.7.0.crate",
+      "filename": "rstest_reuse-0.7.0.crate",
+      "sha256": "b3a8fb4672e840a587a66fc577a5491375df51ddb88f2a2c2a792598c326fe14",
+      "bytes": 12828,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "rstest_reuse-0.7.0/LICENSE-APACHE",
+          "sha256": "58bd62e8a40f94eb780e1ad32d8ad33a7baed34f78b833e61ebabb7b489d90f4",
+          "bytes": 11352
+        },
+        {
+          "path": "rstest_reuse-0.7.0/LICENSE-MIT",
+          "sha256": "53b5c498df966daf4ea75d92c047e4d92bc02cffa4315751109596d32a524c87",
+          "bytes": 1060
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "rustc-hash",
+      "version": "2.1.2",
+      "url": "https://static.crates.io/crates/rustc-hash/rustc-hash-2.1.2.crate",
+      "filename": "rustc-hash-2.1.2.crate",
+      "sha256": "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe",
+      "bytes": 14754,
+      "declared_license": "Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "rustc-hash-2.1.2/LICENSE-APACHE",
+          "sha256": "95bd3988beee069fa2848f648dab43cc6e0b2add2ad6bcb17360caf749802bcc",
+          "bytes": 9722
+        },
+        {
+          "path": "rustc-hash-2.1.2/LICENSE-MIT",
+          "sha256": "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
+          "bytes": 1022
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "rustc_version",
+      "version": "0.4.1",
+      "url": "https://static.crates.io/crates/rustc_version/rustc_version-0.4.1.crate",
+      "filename": "rustc_version-0.4.1.crate",
+      "sha256": "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92",
+      "bytes": 12245,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "rustc_version-0.4.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "rustc_version-0.4.1/LICENSE-MIT",
+          "sha256": "c9a75f18b9ab2927829a208fc6aa2cf4e63b8420887ba29cdb265d6619ae82d5",
+          "bytes": 1071
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "rustix",
+      "version": "1.1.4",
+      "url": "https://static.crates.io/crates/rustix/rustix-1.1.4.crate",
+      "filename": "rustix-1.1.4.crate",
+      "sha256": "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190",
+      "bytes": 425241,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "rustix-1.1.4/COPYRIGHT",
+          "sha256": "377c2e7c53250cc5905c0b0532d35973392af16ffb9596a41d99d202cf3617c9",
+          "bytes": 853
+        },
+        {
+          "path": "rustix-1.1.4/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "rustix-1.1.4/LICENSE-Apache-2.0_WITH_LLVM-exception",
+          "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+          "bytes": 12243
+        },
+        {
+          "path": "rustix-1.1.4/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "semver",
+      "version": "1.0.28",
+      "url": "https://static.crates.io/crates/semver/semver-1.0.28.crate",
+      "filename": "semver-1.0.28.crate",
+      "sha256": "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd",
+      "bytes": 33064,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "semver-1.0.28/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "semver-1.0.28/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "serde",
+      "version": "1.0.228",
+      "url": "https://static.crates.io/crates/serde/serde-1.0.228.crate",
+      "filename": "serde-1.0.228.crate",
+      "sha256": "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e",
+      "bytes": 83652,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "serde-1.0.228/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "serde-1.0.228/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "serde_core",
+      "version": "1.0.228",
+      "url": "https://static.crates.io/crates/serde_core/serde_core-1.0.228.crate",
+      "filename": "serde_core-1.0.228.crate",
+      "sha256": "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad",
+      "bytes": 63111,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "serde_core-1.0.228/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "serde_core-1.0.228/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "serde_derive",
+      "version": "1.0.228",
+      "url": "https://static.crates.io/crates/serde_derive/serde_derive-1.0.228.crate",
+      "filename": "serde_derive-1.0.228.crate",
+      "sha256": "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79",
+      "bytes": 59605,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "serde_derive-1.0.228/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "serde_derive-1.0.228/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "serde_json",
+      "version": "1.0.149",
+      "url": "https://static.crates.io/crates/serde_json/serde_json-1.0.149.crate",
+      "filename": "serde_json-1.0.149.crate",
+      "sha256": "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86",
+      "bytes": 155994,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "serde_json-1.0.149/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "serde_json-1.0.149/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "static_assertions",
+      "version": "1.1.0",
+      "url": "https://static.crates.io/crates/static_assertions/static_assertions-1.1.0.crate",
+      "filename": "static_assertions-1.1.0.crate",
+      "sha256": "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f",
+      "bytes": 18480,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "static_assertions-1.1.0/LICENSE-APACHE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "bytes": 11358
+        },
+        {
+          "path": "static_assertions-1.1.0/LICENSE-MIT",
+          "sha256": "ea084a2373ebc1f0902c09266e7bf25a05ab3814c1805bb017ffa7308f90c061",
+          "bytes": 1072
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "strsim",
+      "version": "0.11.1",
+      "url": "https://static.crates.io/crates/strsim/strsim-0.11.1.crate",
+      "filename": "strsim-0.11.1.crate",
+      "sha256": "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f",
+      "bytes": 14266,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "strsim-0.11.1/LICENSE",
+          "sha256": "1e697ce8d21401fbf1bddd9b5c3fd4c4c79ae1e3bdf51f81761c85e11d5a89cd",
+          "bytes": 1166
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "syn",
+      "version": "2.0.117",
+      "url": "https://static.crates.io/crates/syn/syn-2.0.117.crate",
+      "filename": "syn-2.0.117.crate",
+      "sha256": "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99",
+      "bytes": 306011,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "syn-2.0.117/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "syn-2.0.117/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "tempfile",
+      "version": "3.27.0",
+      "url": "https://static.crates.io/crates/tempfile/tempfile-3.27.0.crate",
+      "filename": "tempfile-3.27.0.crate",
+      "sha256": "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd",
+      "bytes": 44780,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "tempfile-3.27.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "tempfile-3.27.0/LICENSE-MIT",
+          "sha256": "8b427f5bc501764575e52ba4f9d95673cf8f6d80a86d0d06599852e1a9a20a36",
+          "bytes": 1056
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "termtree",
+      "version": "0.5.1",
+      "url": "https://static.crates.io/crates/termtree/termtree-0.5.1.crate",
+      "filename": "termtree-0.5.1.crate",
+      "sha256": "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683",
+      "bytes": 8498,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "termtree-0.5.1/LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "bytes": 1062
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "thiserror",
+      "version": "2.0.18",
+      "url": "https://static.crates.io/crates/thiserror/thiserror-2.0.18.crate",
+      "filename": "thiserror-2.0.18.crate",
+      "sha256": "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4",
+      "bytes": 28875,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "thiserror-2.0.18/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "thiserror-2.0.18/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "thiserror-impl",
+      "version": "2.0.18",
+      "url": "https://static.crates.io/crates/thiserror-impl/thiserror-impl-2.0.18.crate",
+      "filename": "thiserror-impl-2.0.18.crate",
+      "sha256": "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5",
+      "bytes": 21413,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "thiserror-impl-2.0.18/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "thiserror-impl-2.0.18/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "time",
+      "version": "0.3.47",
+      "url": "https://static.crates.io/crates/time/time-0.3.47.crate",
+      "filename": "time-0.3.47.crate",
+      "sha256": "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c",
+      "bytes": 225161,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "time-0.3.47/LICENSE-Apache",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "bytes": 10174
+        },
+        {
+          "path": "time-0.3.47/LICENSE-MIT",
+          "sha256": "2537228d9a1b44a5dc595241349cae7090b326c8de165aaf89bfddef4a00d0fc",
+          "bytes": 1057
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "time-core",
+      "version": "0.1.8",
+      "url": "https://static.crates.io/crates/time-core/time-core-0.1.8.crate",
+      "filename": "time-core-0.1.8.crate",
+      "sha256": "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca",
+      "bytes": 9634,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "time-core-0.1.8/LICENSE-Apache",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "bytes": 10174
+        },
+        {
+          "path": "time-core-0.1.8/LICENSE-MIT",
+          "sha256": "2537228d9a1b44a5dc595241349cae7090b326c8de165aaf89bfddef4a00d0fc",
+          "bytes": 1057
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "time-macros",
+      "version": "0.2.27",
+      "url": "https://static.crates.io/crates/time-macros/time-macros-0.2.27.crate",
+      "filename": "time-macros-0.2.27.crate",
+      "sha256": "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215",
+      "bytes": 25144,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "time-macros-0.2.27/LICENSE-Apache",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "bytes": 10174
+        },
+        {
+          "path": "time-macros-0.2.27/LICENSE-MIT",
+          "sha256": "2537228d9a1b44a5dc595241349cae7090b326c8de165aaf89bfddef4a00d0fc",
+          "bytes": 1057
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "unicode-ident",
+      "version": "1.0.24",
+      "url": "https://static.crates.io/crates/unicode-ident/unicode-ident-1.0.24.crate",
+      "filename": "unicode-ident-1.0.24.crate",
+      "sha256": "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75",
+      "bytes": 49298,
+      "declared_license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "license_files": [
+        {
+          "path": "unicode-ident-1.0.24/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "unicode-ident-1.0.24/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        },
+        {
+          "path": "unicode-ident-1.0.24/LICENSE-UNICODE",
+          "sha256": "f7db81051789b729fea528a63ec4c938fdcb93d9d61d97dc8cc2e9df6d47f2a1",
+          "bytes": 1995
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "unicode-xid",
+      "version": "0.2.6",
+      "url": "https://static.crates.io/crates/unicode-xid/unicode-xid-0.2.6.crate",
+      "filename": "unicode-xid-0.2.6.crate",
+      "sha256": "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853",
+      "bytes": 15744,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "unicode-xid-0.2.6/COPYRIGHT",
+          "sha256": "23860c2a7b5d96b21569afedf033469bab9fe14a1b24a35068b8641c578ce24d",
+          "bytes": 321
+        },
+        {
+          "path": "unicode-xid-0.2.6/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "unicode-xid-0.2.6/LICENSE-MIT",
+          "sha256": "7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0",
+          "bytes": 1071
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "utf8parse",
+      "version": "0.2.2",
+      "url": "https://static.crates.io/crates/utf8parse/utf8parse-0.2.2.crate",
+      "filename": "utf8parse-0.2.2.crate",
+      "sha256": "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821",
+      "bytes": 13499,
+      "declared_license": "Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "utf8parse-0.2.2/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "bytes": 9723
+        },
+        {
+          "path": "utf8parse-0.2.2/LICENSE-MIT",
+          "sha256": "e4c9b06fa850cb9b540a5e400e9f6394cf15efcf4098144de477d1d3dae10150",
+          "bytes": 1052
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "version_check",
+      "version": "0.9.5",
+      "url": "https://static.crates.io/crates/version_check/version_check-0.9.5.crate",
+      "filename": "version_check-0.9.5.crate",
+      "sha256": "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a",
+      "bytes": 15554,
+      "declared_license": "MIT/Apache-2.0",
+      "license_files": [
+        {
+          "path": "version_check-0.9.5/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "version_check-0.9.5/LICENSE-MIT",
+          "sha256": "b7e650f3fce5c53249d1cdc608b54df156a97edd636cf9d23498d0cfe7aec63e",
+          "bytes": 1085
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wait-timeout",
+      "version": "0.2.1",
+      "url": "https://static.crates.io/crates/wait-timeout/wait-timeout-0.2.1.crate",
+      "filename": "wait-timeout-0.2.1.crate",
+      "sha256": "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11",
+      "bytes": 11435,
+      "declared_license": "MIT/Apache-2.0",
+      "license_files": [
+        {
+          "path": "wait-timeout-0.2.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "wait-timeout-0.2.1/LICENSE-MIT",
+          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397",
+          "bytes": 1057
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wasi",
+      "version": "0.11.1+wasi-snapshot-preview1",
+      "url": "https://static.crates.io/crates/wasi/wasi-0.11.1+wasi-snapshot-preview1.crate",
+      "filename": "wasi-0.11.1+wasi-snapshot-preview1.crate",
+      "sha256": "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b",
+      "bytes": 28477,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "wasi-0.11.1+wasi-snapshot-preview1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "wasi-0.11.1+wasi-snapshot-preview1/LICENSE-Apache-2.0_WITH_LLVM-exception",
+          "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+          "bytes": 12243
+        },
+        {
+          "path": "wasi-0.11.1+wasi-snapshot-preview1/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wasip2",
+      "version": "1.0.3+wasi-0.2.9",
+      "url": "https://static.crates.io/crates/wasip2/wasip2-1.0.3+wasi-0.2.9.crate",
+      "filename": "wasip2-1.0.3+wasi-0.2.9.crate",
+      "sha256": "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6",
+      "bytes": 134512,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "wasip2-1.0.3+wasi-0.2.9/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "wasip2-1.0.3+wasi-0.2.9/LICENSE-Apache-2.0_WITH_LLVM-exception",
+          "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+          "bytes": 12243
+        },
+        {
+          "path": "wasip2-1.0.3+wasi-0.2.9/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wasip3",
+      "version": "0.4.0+wasi-0.3.0-rc-2026-01-06",
+      "url": "https://static.crates.io/crates/wasip3/wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.crate",
+      "filename": "wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.crate",
+      "sha256": "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5",
+      "bytes": 123354,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wasm-encoder",
+      "version": "0.244.0",
+      "url": "https://static.crates.io/crates/wasm-encoder/wasm-encoder-0.244.0.crate",
+      "filename": "wasm-encoder-0.244.0.crate",
+      "sha256": "990065f2fe63003fe337b932cfb5e3b80e0b4d0f5ff650e6985b1048f62c8319",
+      "bytes": 85804,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wasm-metadata",
+      "version": "0.244.0",
+      "url": "https://static.crates.io/crates/wasm-metadata/wasm-metadata-0.244.0.crate",
+      "filename": "wasm-metadata-0.244.0.crate",
+      "sha256": "bb0e353e6a2fbdc176932bbaab493762eb1255a7900fe0fea1a2f96c296cc909",
+      "bytes": 21500,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "wasm-metadata-0.244.0/src/oci_annotations/licenses.rs",
+          "sha256": "2c8aca896e6e398329499ccb47c43947ab89e6cd4bd6a2739fad80118df45881",
+          "bytes": 3439
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wasmparser",
+      "version": "0.244.0",
+      "url": "https://static.crates.io/crates/wasmparser/wasmparser-0.244.0.crate",
+      "filename": "wasmparser-0.244.0.crate",
+      "sha256": "47b807c72e1bac69382b3a6fb3dbe8ea4c0ed87ff5629b8685ae6b9a611028fe",
+      "bytes": 265607,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "which",
+      "version": "8.0.2",
+      "url": "https://static.crates.io/crates/which/which-8.0.2.crate",
+      "filename": "which-8.0.2.crate",
+      "sha256": "81995fafaaaf6ae47a7d0cc83c67caf92aeb7e5331650ae6ff856f7c0c60c459",
+      "bytes": 27189,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "which-8.0.2/LICENSE.txt",
+          "sha256": "0041560f5d419c30e1594567f3b7ac2bc078ff6a68f437e0348ba85d9cf99112",
+          "bytes": 1056
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "windows-link",
+      "version": "0.2.1",
+      "url": "https://static.crates.io/crates/windows-link/windows-link-0.2.1.crate",
+      "filename": "windows-link-0.2.1.crate",
+      "sha256": "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5",
+      "bytes": 6133,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "windows-link-0.2.1/license-apache-2.0",
+          "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b",
+          "bytes": 11351
+        },
+        {
+          "path": "windows-link-0.2.1/license-mit",
+          "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+          "bytes": 1141
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "windows-sys",
+      "version": "0.61.2",
+      "url": "https://static.crates.io/crates/windows-sys/windows-sys-0.61.2.crate",
+      "filename": "windows-sys-0.61.2.crate",
+      "sha256": "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
+      "bytes": 2517186,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "windows-sys-0.61.2/license-apache-2.0",
+          "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b",
+          "bytes": 11351
+        },
+        {
+          "path": "windows-sys-0.61.2/license-mit",
+          "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+          "bytes": 1141
+        },
+        {
+          "path": "windows-sys-0.61.2/src/Windows/Win32/Security/LicenseProtection/mod.rs",
+          "sha256": "a48ff77be5dd144f696440880d34a8b4d9ac89f6c2a31cf45fe9cfa137f14a7f",
+          "bytes": 883
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "winnow",
+      "version": "1.0.2",
+      "url": "https://static.crates.io/crates/winnow/winnow-1.0.2.crate",
+      "filename": "winnow-1.0.2.crate",
+      "sha256": "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0",
+      "bytes": 188047,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "winnow-1.0.2/LICENSE-MIT",
+          "sha256": "cb5aedb296c5246d1f22e9099f925a65146f9f0d6b4eebba97fd27a6cdbbab2d",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wit-bindgen",
+      "version": "0.51.0",
+      "url": "https://static.crates.io/crates/wit-bindgen/wit-bindgen-0.51.0.crate",
+      "filename": "wit-bindgen-0.51.0.crate",
+      "sha256": "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5",
+      "bytes": 68035,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "wit-bindgen-0.51.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "wit-bindgen-0.51.0/LICENSE-Apache-2.0_WITH_LLVM-exception",
+          "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+          "bytes": 12243
+        },
+        {
+          "path": "wit-bindgen-0.51.0/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wit-bindgen",
+      "version": "0.57.1",
+      "url": "https://static.crates.io/crates/wit-bindgen/wit-bindgen-0.57.1.crate",
+      "filename": "wit-bindgen-0.57.1.crate",
+      "sha256": "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e",
+      "bytes": 71227,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "wit-bindgen-0.57.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "wit-bindgen-0.57.1/LICENSE-Apache-2.0_WITH_LLVM-exception",
+          "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+          "bytes": 12243
+        },
+        {
+          "path": "wit-bindgen-0.57.1/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wit-bindgen-core",
+      "version": "0.51.0",
+      "url": "https://static.crates.io/crates/wit-bindgen-core/wit-bindgen-core-0.51.0.crate",
+      "filename": "wit-bindgen-core-0.51.0.crate",
+      "sha256": "ea61de684c3ea68cb082b7a88508a8b27fcc8b797d738bfc99a82facf1d752dc",
+      "bytes": 35048,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "wit-bindgen-core-0.51.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "wit-bindgen-core-0.51.0/LICENSE-Apache-2.0_WITH_LLVM-exception",
+          "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+          "bytes": 12243
+        },
+        {
+          "path": "wit-bindgen-core-0.51.0/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wit-bindgen-rust",
+      "version": "0.51.0",
+      "url": "https://static.crates.io/crates/wit-bindgen-rust/wit-bindgen-rust-0.51.0.crate",
+      "filename": "wit-bindgen-rust-0.51.0.crate",
+      "sha256": "b7c566e0f4b284dd6561c786d9cb0142da491f46a9fbed79ea69cdad5db17f21",
+      "bytes": 57051,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "wit-bindgen-rust-0.51.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "wit-bindgen-rust-0.51.0/LICENSE-Apache-2.0_WITH_LLVM-exception",
+          "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+          "bytes": 12243
+        },
+        {
+          "path": "wit-bindgen-rust-0.51.0/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wit-bindgen-rust-macro",
+      "version": "0.51.0",
+      "url": "https://static.crates.io/crates/wit-bindgen-rust-macro/wit-bindgen-rust-macro-0.51.0.crate",
+      "filename": "wit-bindgen-rust-macro-0.51.0.crate",
+      "sha256": "0c0f9bfd77e6a48eccf51359e3ae77140a7f50b1e2ebfe62422d8afdaffab17a",
+      "bytes": 14283,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "wit-bindgen-rust-macro-0.51.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "wit-bindgen-rust-macro-0.51.0/LICENSE-Apache-2.0_WITH_LLVM-exception",
+          "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+          "bytes": 12243
+        },
+        {
+          "path": "wit-bindgen-rust-macro-0.51.0/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wit-component",
+      "version": "0.244.0",
+      "url": "https://static.crates.io/crates/wit-component/wit-component-0.244.0.crate",
+      "filename": "wit-component-0.244.0.crate",
+      "sha256": "9d66ea20e9553b30172b5e831994e35fbde2d165325bec84fc43dbf6f4eb9cb2",
+      "bytes": 256882,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "wit-parser",
+      "version": "0.244.0",
+      "url": "https://static.crates.io/crates/wit-parser/wit-parser-0.244.0.crate",
+      "filename": "wit-parser-0.244.0.crate",
+      "sha256": "ecc8ac4bc1dc3381b7f59c34f00b67e18f910c2c0f50015669dde7def656a736",
+      "bytes": 159371,
+      "declared_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_files": [],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "yansi",
+      "version": "1.0.1",
+      "url": "https://static.crates.io/crates/yansi/yansi-1.0.1.crate",
+      "filename": "yansi-1.0.1.crate",
+      "sha256": "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049",
+      "bytes": 75497,
+      "declared_license": "MIT OR Apache-2.0",
+      "license_files": [
+        {
+          "path": "yansi-1.0.1/LICENSE-APACHE",
+          "sha256": "a8410ec5312922e0edae227ae056c7ea78093092503717ae377a2be4f0d295f1",
+          "bytes": 10834
+        },
+        {
+          "path": "yansi-1.0.1/LICENSE-MIT",
+          "sha256": "ce1f970284c4ab06e90671a984086692dc44da3e2b8ee86444d79b6f77bcf9e7",
+          "bytes": 1080
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "zerocopy",
+      "version": "0.8.48",
+      "url": "https://static.crates.io/crates/zerocopy/zerocopy-0.8.48.crate",
+      "filename": "zerocopy-0.8.48.crate",
+      "sha256": "eed437bf9d6692032087e337407a86f04cd8d6a16a37199ed57949d415bd68e9",
+      "bytes": 287554,
+      "declared_license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "zerocopy-0.8.48/LICENSE-APACHE",
+          "sha256": "9d185ac6703c4b0453974c0d85e9eee43e6941009296bb1f5eb0b54e2329e9f3",
+          "bytes": 11350
+        },
+        {
+          "path": "zerocopy-0.8.48/LICENSE-BSD",
+          "sha256": "83c1763356e822adde0a2cae748d938a73fdc263849ccff6b27776dff213bd32",
+          "bytes": 1275
+        },
+        {
+          "path": "zerocopy-0.8.48/LICENSE-MIT",
+          "sha256": "1a2f5c12ddc934d58956aa5dbdd3255fe55fd957633ab7d0d39e4f0daa73f7df",
+          "bytes": 1060
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "zerocopy-derive",
+      "version": "0.8.48",
+      "url": "https://static.crates.io/crates/zerocopy-derive/zerocopy-derive-0.8.48.crate",
+      "filename": "zerocopy-derive-0.8.48.crate",
+      "sha256": "70e3cd084b1788766f53af483dd21f93881ff30d7320490ec3ef7526d203bad4",
+      "bytes": 97646,
+      "declared_license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "license_files": [
+        {
+          "path": "zerocopy-derive-0.8.48/LICENSE-APACHE",
+          "sha256": "9d185ac6703c4b0453974c0d85e9eee43e6941009296bb1f5eb0b54e2329e9f3",
+          "bytes": 11350
+        },
+        {
+          "path": "zerocopy-derive-0.8.48/LICENSE-BSD",
+          "sha256": "83c1763356e822adde0a2cae748d938a73fdc263849ccff6b27776dff213bd32",
+          "bytes": 1275
+        },
+        {
+          "path": "zerocopy-derive-0.8.48/LICENSE-MIT",
+          "sha256": "1a2f5c12ddc934d58956aa5dbdd3255fe55fd957633ab7d0d39e4f0daa73f7df",
+          "bytes": 1060
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "zoxide-lock-superset",
+      "name": "zmij",
+      "version": "1.0.21",
+      "url": "https://static.crates.io/crates/zmij/zmij-1.0.21.crate",
+      "filename": "zmij-1.0.21.crate",
+      "sha256": "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa",
+      "bytes": 26665,
+      "declared_license": "MIT",
+      "license_files": [
+        {
+          "path": "zmij-1.0.21/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "bytes": 1023
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "github.com/charlievieth/fastwalk",
+      "version": "v1.0.14",
+      "url": "https://proxy.golang.org/github.com/charlievieth/fastwalk/@v/v1.0.14.zip",
+      "filename": "github.com_charlievieth_fastwalk-v1.0.14.zip",
+      "h1": "h1:3Eh5uaFGwHZd8EGwTjJnSpBkfwfsak9h6ICgnWlhAyg=",
+      "sha256": "08fb812ab587d7bb10d70d88adce496218e7501c7b1719138937a54d81f5fec9",
+      "bytes": 71415,
+      "license_files": [
+        {
+          "path": "github.com/charlievieth/fastwalk@v1.0.14/LICENSE",
+          "sha256": "2433a04efb9330946ad8c198790cf595af15ac04c7a5e58f3b951ee3f253dba0",
+          "bytes": 1080
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "github.com/gdamore/encoding",
+      "version": "v1.0.1",
+      "url": "https://proxy.golang.org/github.com/gdamore/encoding/@v/v1.0.1.zip",
+      "filename": "github.com_gdamore_encoding-v1.0.1.zip",
+      "h1": "h1:YzKZckdBL6jVt2Gc+5p82qhrGiqMdG/eNs6Wy0u3Uhw=",
+      "sha256": "e584303c743306ae55be21a5703900d0628aa2ef840ce49d5f0bbf7c51379e33",
+      "bytes": 25022,
+      "license_files": [
+        {
+          "path": "github.com/gdamore/encoding@v1.0.1/LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "bytes": 11358
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "github.com/gdamore/tcell/v2",
+      "version": "v2.9.0",
+      "url": "https://proxy.golang.org/github.com/gdamore/tcell/v2/@v/v2.9.0.zip",
+      "filename": "github.com_gdamore_tcell_v2-v2.9.0.zip",
+      "h1": "h1:N6t+eqK7/xwtRPwxzs1PXeRWnm0H9l02CrgJ7DLn1ys=",
+      "sha256": "e36d0cb01474c5456b4fd28dc6b0c1dc115d1788ed174885afd4bf5fa2b9af42",
+      "bytes": 278542,
+      "license_files": [
+        {
+          "path": "github.com/gdamore/tcell/v2@v2.9.0/LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "bytes": 11358
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "github.com/junegunn/go-shellwords",
+      "version": "v0.0.0-20250127100254-2aa3b3277741",
+      "url": "https://proxy.golang.org/github.com/junegunn/go-shellwords/@v/v0.0.0-20250127100254-2aa3b3277741.zip",
+      "filename": "github.com_junegunn_go-shellwords-v0.0.0-20250127100254-2aa3b3277741.zip",
+      "h1": "h1:7dYDtfMDfKzjT+DVfIS4iqknSEKtZpEcXtu6vuaasHs=",
+      "sha256": "98c5c4410d555d1268b4048ddd9acaf925660fb19e65d746a70f0ba5c6308616",
+      "bytes": 10171,
+      "license_files": [
+        {
+          "path": "github.com/junegunn/go-shellwords@v0.0.0-20250127100254-2aa3b3277741/LICENSE",
+          "sha256": "dce57e2906b8ebfc7a0978105aac3082ddceb8a1f673bec71b9c8dc5df51c5d7",
+          "bytes": 1085
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "github.com/lucasb-eyer/go-colorful",
+      "version": "v1.2.0",
+      "url": "https://proxy.golang.org/github.com/lucasb-eyer/go-colorful/@v/v1.2.0.zip",
+      "filename": "github.com_lucasb-eyer_go-colorful-v1.2.0.zip",
+      "h1": "h1:1nnpGOrhyZZuNyfu1QjKiUICQ74+3FNCN69Aj6K7nkY=",
+      "sha256": "78d5d0e0737f0f54bbed77b6dfa847d8c871bed2668a9dc44328c7c3411ada10",
+      "bytes": 958042,
+      "license_files": [
+        {
+          "path": "github.com/lucasb-eyer/go-colorful@v1.2.0/LICENSE",
+          "sha256": "1e4cf2a117516ec1b54041d68ed4f5d331878b04de3386f4790e7b5b9c04e1ec",
+          "bytes": 1055
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "github.com/mattn/go-isatty",
+      "version": "v0.0.24",
+      "url": "https://proxy.golang.org/github.com/mattn/go-isatty/@v/v0.0.24.zip",
+      "filename": "github.com_mattn_go-isatty-v0.0.24.zip",
+      "h1": "h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=",
+      "sha256": "4fcffec0bae0ad4af7bf96e2497a817d85de64af19ffe31d82bda362148234b8",
+      "bytes": 9195,
+      "license_files": [
+        {
+          "path": "github.com/mattn/go-isatty@v0.0.24/LICENSE",
+          "sha256": "08eab1118c80885fa1fa6a6dd7303f65a379fcb3733e063d20d1bbc2c76e6fa1",
+          "bytes": 1099
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "github.com/mattn/go-runewidth",
+      "version": "v0.0.16",
+      "url": "https://proxy.golang.org/github.com/mattn/go-runewidth/@v/v0.0.16.zip",
+      "filename": "github.com_mattn_go-runewidth-v0.0.16.zip",
+      "h1": "h1:E5ScNMtiwvlvB5paMFdw9p4kSQzbXFikJ5SQO6TULQc=",
+      "sha256": "179d2d900c76ee3560fbeda60d0237a3be6acb734d0cb7423b55e5ccb0cedbca",
+      "bytes": 22002,
+      "license_files": [
+        {
+          "path": "github.com/mattn/go-runewidth@v0.0.16/LICENSE",
+          "sha256": "88a2379b3ca34bf5c57127aff9dcb802bbb60ece0805cdbda65b3bd115f971d9",
+          "bytes": 1085
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "github.com/rivo/uniseg",
+      "version": "v0.4.7",
+      "url": "https://proxy.golang.org/github.com/rivo/uniseg/@v/v0.4.7.zip",
+      "filename": "github.com_rivo_uniseg-v0.4.7.zip",
+      "h1": "h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ=",
+      "sha256": "b995e4aa0cc1e5779cc61138ac925cb8c1e963e40c80e4b93ee8553812ebb792",
+      "bytes": 481951,
+      "license_files": [
+        {
+          "path": "github.com/rivo/uniseg@v0.4.7/LICENSE.txt",
+          "sha256": "a59885f5f0f3b3c07cf9444db5fe399b6f0791eac82055f7b85cc65500551039",
+          "bytes": 1072
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "golang.org/x/sys",
+      "version": "v0.35.0",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.35.0.zip",
+      "filename": "golang.org_x_sys-v0.35.0.zip",
+      "h1": "h1:vz1N37gP5bs89s7He8XuIYXpyY0+QlsKmzipCbUtyxI=",
+      "sha256": "dc3c20611168aaa8fda0d71999be1a5222a0ba57bc767c978a590e41ff2ede35",
+      "bytes": 1998204,
+      "license_files": [
+        {
+          "path": "golang.org/x/sys@v0.35.0/LICENSE",
+          "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+          "bytes": 1453
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "golang.org/x/term",
+      "version": "v0.34.0",
+      "url": "https://proxy.golang.org/golang.org/x/term/@v/v0.34.0.zip",
+      "filename": "golang.org_x_term-v0.34.0.zip",
+      "h1": "h1:O/2T7POpk0ZZ7MAzMeWFSg6S5IpWd/RXDlM9hgM3DR4=",
+      "sha256": "22281cbf30560433d57de8d72c1151f9cac2917795dc6e9f694f7a525bb5309c",
+      "bytes": 21166,
+      "license_files": [
+        {
+          "path": "golang.org/x/term@v0.34.0/LICENSE",
+          "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+          "bytes": 1453
+        }
+      ],
+      "verified": true
+    },
+    {
+      "component": "fzf-binary-buildinfo",
+      "name": "golang.org/x/text",
+      "version": "v0.28.0",
+      "url": "https://proxy.golang.org/golang.org/x/text/@v/v0.28.0.zip",
+      "filename": "golang.org_x_text-v0.28.0.zip",
+      "h1": "h1:rhazDwis8INMIwQ4tpjLDzUhx6RlXqZNPEM0huQojng=",
+      "sha256": "46259e1416ae7ec6adf1867c5f9fab32af0476a148e3c95f1dfbb134f4acf48d",
+      "bytes": 9234223,
+      "license_files": [
+        {
+          "path": "golang.org/x/text@v0.28.0/LICENSE",
+          "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+          "bytes": 1453
+        }
+      ],
+      "verified": true
+    }
+  ]
+}

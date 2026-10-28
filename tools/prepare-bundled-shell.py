@@ -15,7 +15,7 @@ TOOLS = Path(__file__).resolve().parent
 
 def recipe_digest():
     paths = [p for p in TOOLS.glob("shell-*") if p.is_file()]
-    paths += [p for p in (TOOLS / "shell-notices").rglob("*") if p.is_file()]
+    paths += [p for folder in ("shell-notices", "shell-tools-notices") for p in (TOOLS / folder).rglob("*") if p.is_file()]
     paths.append(Path(__file__).resolve())
     digest = hashlib.sha256()
     for path in sorted(paths):
@@ -35,7 +35,7 @@ def prepare(runtime, cache, offline=False, zstd=None):
     owned=previous.get("schema")==1 and previous.get("build_owned") is True
     if runtime.exists() and not owned:
         raise RuntimeError("Refusing to replace a runtime not owned by this build helper")
-    required=("etc/fstab","etc/nsswitch.conf","usr/bin/zsh.exe","usr/bin/msys-2.0.dll","stormtty/zsh/.zshrc","stormtty/vendor/oh-my-zsh/oh-my-zsh.sh","stormtty/vendor/addons.lock.json","stormtty-shell-manifest.json","notices/stormtty-review/THIRD-PARTY-NOTICES.txt")
+    required=("etc/fstab","etc/nsswitch.conf","usr/bin/zsh.exe","usr/bin/msys-2.0.dll","stormtty/zsh/.zshrc","stormtty/vendor/oh-my-zsh/oh-my-zsh.sh","stormtty/vendor/addons.lock.json","usr/bin/awk.exe","usr/bin/msys-readline8.dll","usr/bin/msys-mpfr-6.dll","ucrt64/bin/fzf.exe","ucrt64/bin/zoxide.exe","stormtty/vendor/shell-tools/tools.lock.json","stormtty-shell-manifest.json","notices/stormtty-review/THIRD-PARTY-NOTICES.txt")
     if owned and previous.get("recipe")==recipe and all((runtime/p).is_file() for p in required): return
     runtime.parent.mkdir(parents=True,exist_ok=True)
     guard=runtime.with_name(runtime.name+".build-active")
@@ -57,7 +57,8 @@ def prepare(runtime, cache, offline=False, zstd=None):
             shutil.copyfile(packet/"packet-manifest.json",root/"notices/stormtty-review/packet-manifest.json")
             manifest_path=root/"stormtty-shell-manifest.json"
             manifest=json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["release_notices_complete"]=True
+            manifest["release_notices_complete"]=False
+            manifest["base_runtime_notices_complete"]=True  # Tool static closure remains pending.
             manifest["notice_packet"]="notices/stormtty-review/packet-manifest.json"
             # This records actual attached texts only, not public source access
             # or a supported signed binary release.

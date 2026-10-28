@@ -316,6 +316,10 @@ def write_notice_packet(destination: Path, lock: dict, lock_hash: str, sources: 
         text += [f"{addon['name']} {addon['revision']} ({addon['license']})",
                  f"  Source: {addon['url']}", f"  SHA-256: {addon['sha256']}",
                  f"  Notice: stormtty/vendor/{addon['name']}/{addon['notice']}", ""]
+    tools_lock = json.loads(Path(__file__).with_name("shell-tools.lock.json").read_text())
+    for tool in tools_lock["packages"] + tools_lock["msys_support"]["packages"]:
+        text += [f"{tool['name']} {tool['version']}", f"  Notice: {tool['notice']}",
+                 "  Native qualification and static dependency notice review pending.", ""]
     source_map = {s["filename"]: s for s in lock["sources"]}
     for package in lock["packages"]:
         source = source_map[package["source"]]
@@ -323,10 +327,13 @@ def write_notice_packet(destination: Path, lock: dict, lock_hash: str, sources: 
                  f"  Binary: {package['url']}", f"  Binary SHA-256: {package['sha256']}",
                  f"  Source: {source['url']}", f"  Source SHA-256: {source['sha256']}", ""]
     (notices / "THIRD-PARTY-NOTICES.txt").write_text("\n".join(text), encoding="utf-8")
-    (notices / "source-manifest.json").write_text(json.dumps(lock["sources"] + addon_lock["components"], indent=2) + "\n", encoding="utf-8")
+    (notices / "source-manifest.json").write_text(json.dumps(list({s["filename"]: s for s in lock["sources"] + addon_lock["components"] + tools_lock["sources"] + tools_lock["msys_support"]["sources"]}.values()), indent=2) + "\n", encoding="utf-8")
     (notices / "shell-bootstrap.lock.json").write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
     manifest = {"schema": 1, "managed_addons_native_qualification": "pending",
                 "managed_addons_lock_sha256": digest(Path(__file__).with_name("shell-addons.lock.json")),
+                "managed_tools_lock_sha256": digest(Path(__file__).with_name("shell-tools.lock.json")),
+                "managed_tools_native_qualification": "pending",
+                "managed_tools_static_notice_review": "pending",
                 "bundle_id": lock["bundle_id"], "platform": lock["platform"],
                 "qualification_only": lock["qualification_only"],
                 "default_activation_allowed": lock["default_activation_allowed"],
@@ -381,13 +388,17 @@ def stage(args) -> Path:
             addons = importlib.util.module_from_spec(addon_spec)
             addon_spec.loader.exec_module(addons)
             addons.stage(root, cache, args.offline, records)
+            tools_spec = importlib.util.spec_from_file_location("shell_tools", Path(__file__).with_name("shell-tools.py"))
+            shell_tools = importlib.util.module_from_spec(tools_spec)
+            tools_spec.loader.exec_module(shell_tools)
+            shell_tools.stage(root, cache, args.offline, records, zstd, args.sources)
             stage_runtime_config(root, records)
             write_notice_packet(root, lock, digest(args.lock), args.sources, records)
             if destination.exists() or destination.is_symlink():
                 raise RuntimeError("Destination appeared while staging; refusing overwrite")
             root.rename(destination)
         print(f"Staged {destination / 'usr/bin/zsh.exe'}", flush=True)
-        print("Base Zsh build-default qualified; new managed addons still need native qualification. Public distribution requires notices and matching source delivery.", flush=True)
+        print("Base Zsh build-default qualified; new managed addons/tools still need native qualification. Public distribution requires notices and matching source delivery.", flush=True)
         return destination
     finally:
         guard.unlink(missing_ok=True)

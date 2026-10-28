@@ -129,7 +129,8 @@ class NoticeTests(unittest.TestCase):
                 records.append({"path": name, "sha256": notices.bootstrap.digest(path), "bytes": path.stat().st_size})
             (runtime / "stormtty-shell-manifest.json").write_text(json.dumps({
                 "lock_sha256": notices.bootstrap.digest(notices.TOOLS / "shell-bootstrap.lock.json"),
-                "managed_addons_lock_sha256": notices.bootstrap.digest(notices.TOOLS / "shell-addons.lock.json"), "files": records}))
+                "managed_addons_lock_sha256": notices.bootstrap.digest(notices.TOOLS / "shell-addons.lock.json"),
+                "managed_tools_lock_sha256": notices.bootstrap.digest(notices.TOOLS / "shell-tools.lock.json"), "files": records}))
             archive = root / "source-fixture.tar.zst"
             archive.write_bytes(b"opaque unit-test source archive")
             source_record = {"filename": archive.name, "bytes": archive.stat().st_size, "sha256": notices.bootstrap.digest(archive)}
@@ -138,6 +139,8 @@ class NoticeTests(unittest.TestCase):
             with mock.patch.object(notices, "ASSETS", assets), \
                     mock.patch.object(notices, "source_records", return_value=[source_record]), \
                     mock.patch.object(notices.addons, "read_lock", return_value={"components": []}), \
+                    mock.patch.object(notices.shell_tools, "read_lock", return_value={"packages": [], "sources": [], "msys_support": {"packages": [], "sources": [], "notice_assets": []}}), \
+                    mock.patch.object(notices.static_notices, "emit", side_effect=lambda cache, dest: dest.mkdir()), \
                     mock.patch.object(notices.bootstrap, "download", return_value=archive):
                 notices.emit(args)
             self.assertEqual(source.read_bytes(), raw)
@@ -158,6 +161,18 @@ class NoticeTests(unittest.TestCase):
                 (runtime/'stormtty-shell-manifest.json').write_text(json.dumps(manifest))
                 args=argparse.Namespace(output=root/'output', runtime=runtime, cache=root/'cache',source_packet=True,offline=True)
                 with self.assertRaisesRegex(RuntimeError,'managed addons lock'): notices.emit(args)
+                self.assertFalse(args.output.exists())
+
+    def test_mismatched_or_absent_tools_lock_refuses_packet(self):
+        for checksum in (None, '0' * 64):
+            with self.subTest(checksum=checksum), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp); runtime=root/'runtime';runtime.mkdir()
+                manifest={'lock_sha256':notices.bootstrap.digest(notices.TOOLS/'shell-bootstrap.lock.json'),
+                          'managed_addons_lock_sha256':notices.bootstrap.digest(notices.TOOLS/'shell-addons.lock.json'), 'files':[]}
+                if checksum is not None: manifest['managed_tools_lock_sha256']=checksum
+                (runtime/'stormtty-shell-manifest.json').write_text(json.dumps(manifest))
+                args=argparse.Namespace(output=root/'output',runtime=runtime,cache=root/'cache',source_packet=True,offline=True)
+                with self.assertRaisesRegex(RuntimeError,'managed tools lock'): notices.emit(args)
                 self.assertFalse(args.output.exists())
 
     def test_existing_output_not_modified(self):

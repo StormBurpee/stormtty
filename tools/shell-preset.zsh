@@ -145,6 +145,7 @@ zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
 # A dedicated, opt-in user file; never create/overwrite or source ~/.zshrc.
 [[ -n $_stormtty_state && -f $_stormtty_state/config.zsh ]] && _stormtty_safe_file "$_stormtty_state/config.zsh" && _stormtty_safe_file "$_stormtty_state/config.zsh.zwc" && source "$_stormtty_state/config.zsh"
 [[ ${STORMTTY_PROMPT:-managed} == managed ]] && unsetopt PROMPT_SUBST
+[[ -r $_stormtty_vendor/shell-tools/init.zsh ]] && source "$_stormtty_vendor/shell-tools/init.zsh"
 # Only packaged modules; no plugin managers and no startup network calls.
 if [[ ${STORMTTY_AUTOSUGGESTIONS:-1} != 0 && -r $_stormtty_vendor/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
   ZSH_AUTOSUGGEST_STRATEGY=(history)
