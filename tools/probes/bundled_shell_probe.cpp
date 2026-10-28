@@ -86,8 +86,28 @@ void dump_journal(const fs::path& path) {
     std::string bytes(128 * 1024, '\0');
     input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     bytes.resize(static_cast<std::size_t>(input.gcount()));
-    std::cout << "ZLE journal (controlled fixture; max128KiB):\n" << bytes
+    std::cout << "ZLE journal (controlled fixture; max128KiB; last successful flush, possibly before failure):\n" << bytes
               << "\nEnd ZLE journal\n";
+}
+// Snapshot controller completion separately from shell/native observations.
+// A successful native resize API call does not establish Zsh observation.
+void dump_process_diagnostics(const std::shared_ptr<Session>& session, std::string_view label) {
+    const auto d = session->diagnostics();
+    std::cout << "Process diagnostics " << label << ": provider=" << d.provider
+              << " queued_input_bytes=" << d.queued_input_bytes;
+    if (d.windows_control) {
+        const auto& c = *d.windows_control;
+        std::cout << " requested_generation=" << c.requested_resize_generation
+                  << " applied_generation=" << c.applied_resize_generation
+                  << " requested_grid=" << c.requested_grid.columns << 'x' << c.requested_grid.rows
+                  << " applied_grid=";
+        if (c.applied_grid) std::cout << c.applied_grid->columns << 'x' << c.applied_grid->rows;
+        else std::cout << "unavailable";
+        std::cout << " resize_calls=" << c.resize_calls << " resize_failures=" << c.resize_failures
+                  << " wait_calls=" << c.wait_calls << " control_wakes=" << c.control_wakes
+                  << " child_exit_wakes=" << c.child_exit_wakes;
+    } else std::cout << " windows_control=not-applicable";
+    std::cout << '\n';
 }
 std::string inherited_path() {
 #ifdef _WIN32
@@ -107,7 +127,7 @@ std::string inherited_path() {
     const auto path = std::getenv("PATH"); return path ? path : "";
 #endif
 }
-int native_size() {
+int native_size(std::string_view tag = {}) {
 #ifdef _WIN32
     CONSOLE_SCREEN_BUFFER_INFO info{};
     if (!GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info)) return 43;
@@ -120,6 +140,7 @@ int native_size() {
     const auto rows = info.ws_row;
 #endif
     std::cout << "__STORMTTY_NATIVE_SIZE:" << columns << 'x' << rows << "__\n" << std::flush;
+    if (!tag.empty()) std::cout << "__STORMTTY_NATIVE_SIZE_ACK:" << tag << ':' << columns << 'x' << rows << "__\n" << std::flush;
     return 0;
 }
 int native_handles() {
@@ -137,10 +158,20 @@ int native_handles() {
 }
 }
 int main(int argc, char** argv) {
-    if (argc == 2 && std::string_view(argv[1]) == "--native-size") return native_size();
+    if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--native-size")
+        return native_size(argc==3?std::string_view(argv[2]):std::string_view{});
     if (argc == 2 && std::string_view(argv[1]) == "--native-handles") return native_handles();
+    unsigned resize_repeats=1;
+    if (argc >= 3 && std::string_view(argv[argc-2]) == "--resize-repeats") {
+        const std::string count=argv[argc-1];
+        if (count.empty() || count.size()>2 || count.find_first_not_of("0123456789")!=std::string::npos ||
+            (resize_repeats=static_cast<unsigned>(std::strtoul(count.c_str(),nullptr,10)))<1 || resize_repeats>50) {
+            std::cerr << "--resize-repeats must be 1..50\n"; return 2;
+        }
+        argc-=2;
+    }
     if (argc < 4 || argc > 6) {
-        std::cerr << "usage: bundled_shell_probe SHELL_ABSOLUTE FIXTURE_ABSOLUTE SCRATCH_DIR [inbox | --packaged-provider ABSOLUTE_DIRECTORY]\n";
+        std::cerr << "usage: bundled_shell_probe SHELL_ABSOLUTE FIXTURE_ABSOLUTE SCRATCH_DIR [inbox | --packaged-provider ABSOLUTE_DIRECTORY] [--resize-repeats 1..50]\n";
         return 2;
     }
     std::cout << std::unitbuf;
@@ -176,14 +207,18 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
         const auto path = utf8(shell.parent_path()) + ";" + inherited_path();
         const auto sleep = shell.parent_path() / "sleep.exe";
+        const auto stty = shell.parent_path() / "stty.exe";
 #else
         const auto path = utf8(shell.parent_path()) + ":" + inherited_path();
         const auto sleep = fs::path("/usr/bin/sleep");
+        const auto stty = fs::path("/usr/bin/stty");
 #endif
         require(fs::is_regular_file(sleep), "candidate sleep executable missing");
+        require(fs::is_regular_file(stty), "candidate stty executable missing");
         p.environment = {{"STORMTTY_PROBE_SLEEP", utf8(sleep)}, {"ZDOTDIR", utf8(dotdir)}, {"HOME", utf8(home)},
             {"STORMTTY_PROBE_FIXTURE", utf8(fixture)},
             {"STORMTTY_PROBE_JOURNAL", utf8(journal)},
+            {"STORMTTY_PROBE_STTY", utf8(stty)},
             {"STORMTTY_PROBE_NATIVE", utf8(fs::absolute(path_utf8(argv[0])))},
             {"PATH", path}, {"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"},
             {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"},
@@ -207,21 +242,62 @@ int main(int argc, char** argv) {
         expect(session, "workspace caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84__");
         require(until([&] { return session->info().working_directory.find("workspace") != std::string::npos; }),
                 "OSC 7 did not reach Session cwd metadata");
-        require(session->request_resize({111, 35, 8, 16}) == SessionSendResult::accepted,
-                "resize request rejected");
-        const bool shell_resized = until([&] {
-            prompt.send("stormtty_probe_size");
-            prompt.ready(0);
-            return screen(session).find("__STORMTTY_SIZE:111x35__") != std::string::npos;
-        });
-        // Independently report the native child's actual terminal size even if
-        // the shell marker is missing; never substitute it for the shell check.
-        std::cout << "shell_resize_observed=" << shell_resized << "\n" << screen(session);
-        prompt.send("stormtty_probe_native_size");
-        prompt.ready(0);
-        std::cout << "native resize diagnostic:\n" << screen(session);
-        require(shell_resized, "shell did not observe terminal resize");
-        expect(session, "__STORMTTY_NATIVE_SIZE:111x35__");
+        for (unsigned phase=0; phase<resize_repeats; ++phase) {
+            const bool enlarged=phase%2==0;
+            const std::string dimensions=enlarged?"111x35":"100x30";
+            std::cout << "[resize phase " << phase+1 << '/' << resize_repeats << "] target=" << dimensions << '\n';
+            prompt.send("stormtty_probe_journal_reset"); prompt.ready(0);
+            auto flush = [&] {
+                prompt.send("stormtty_probe_journal_flush");
+                prompt.ready(0);
+            };
+            try {
+                require(session->request_resize(enlarged?TerminalSize{111,35,8,16}:TerminalSize{100,30,8,16})
+                        == SessionSendResult::accepted, "resize request rejected");
+                const bool shell_resized = until([&] {
+                    const auto sequence=prompt.sequence;
+                    prompt.send("stormtty_probe_size");
+                    prompt.ready(0); // Any lost/altered command fails immediately, never retried.
+                    const auto frame=screen(session);
+                    return frame.find("__STORMTTY_SIZE:"+dimensions+"__") != std::string::npos &&
+                        frame.find("__STORMTTY_SIZE_ACK:"+std::to_string(sequence)+":"+dimensions+"__") != std::string::npos;
+                });
+                std::cout << "shell_resize_observed=" << shell_resized << '\n';
+                require(shell_resized, "shell did not observe terminal resize");
+                // Independent native dimensions never substitute for shell evidence.
+                const auto native_sequence=prompt.sequence;
+                prompt.send("stormtty_probe_native_size"); prompt.ready(0);
+                expect(session, "__STORMTTY_NATIVE_SIZE:"+dimensions+"__");
+                expect(session, "__STORMTTY_NATIVE_SIZE_ACK:"+std::to_string(native_sequence)+":"+dimensions+"__");
+                dump_process_diagnostics(session, "phase-complete");
+                flush();
+                std::cout << "[resize phase " << phase+1 << "] PASS\n";
+            } catch (...) {
+                // Preserve evidence before flushing or running any child, which
+                // may redraw the terminal or incidentally refresh shell state.
+                std::cerr << "Original resize failure frame (before diagnostics):\n" << screen(session);
+                dump_process_diagnostics(session, "original-failure-before-diagnostics");
+                // Diagnostics only after the original failure. Neither a
+                // successful flush nor new observations can change that result.
+                try {
+                    prompt.ready(); // Wait for this exact cycle, allowing nonzero status.
+                    flush();
+                } catch (const std::exception& error) {
+                    std::cerr << "Post-failure journal flush unavailable: " << error.what() << '\n';
+                }
+                try {
+                    std::cout << "Post-failure dimensions (original test remains FAILED; no forced WINCH):\n";
+                    const auto sequence=prompt.sequence;
+                    prompt.send("stormtty_probe_resize_diagnostic");
+                    expect(session, "__STORMTTY_RESIZE_DIAG_END:"+std::to_string(sequence)+"__");
+                    prompt.ready(0);
+                    std::cout << screen(session);
+                } catch (const std::exception& error) {
+                    std::cerr << "Post-failure size diagnostic unavailable: " << error.what() << '\n';
+                }
+                throw;
+            }
+        }
         prompt.send("stormtty_probe_wait first"); expect(session, "__STORMTTY_WAITING:first__");
         key(session, Key::c, Modifier::control);
         prompt.ready(130);

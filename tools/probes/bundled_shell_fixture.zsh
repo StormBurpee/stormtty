@@ -18,14 +18,33 @@ stormtty_probe_tty() {
   print -r -- "ZSH_VERSION=$ZSH_VERSION"
 }
 stormtty_probe_unicode() { print -r -- "__STORMTTY_UNICODE:${1}__" }
-stormtty_probe_size() { stormtty_probe_emit "SIZE:${COLUMNS}x${LINES}" }
+stormtty_probe_size() {
+  stormtty_probe_emit "SIZE:${COLUMNS}x${LINES}"
+  stormtty_probe_emit "SIZE_ACK:${stormtty_probe_sequence}:${COLUMNS}x${LINES}"
+}
 stormtty_probe_cwd() {
   print -r -- "__STORMTTY_CWD:${PWD:t}__"
   # Tests the existing Session CWD effect, not production path translation.
   printf '\033]7;file://stormtty%s\007' "$PWD"
 }
 stormtty_probe_native() { "$STORMTTY_PROBE_NATIVE" --native-handles }
-stormtty_probe_native_size() { "$STORMTTY_PROBE_NATIVE" --native-size }
+stormtty_probe_native_size() { "$STORMTTY_PROBE_NATIVE" --native-size "$stormtty_probe_sequence" }
+# Invoked only after a qualification failure. Observe before any forced signal
+# or corrective action; this is never a replacement for the failed assertion.
+stormtty_probe_resize_diagnostic() {
+  stormtty_probe_emit "RESIZE_DIAG_BEGIN:${stormtty_probe_sequence}"
+  stormtty_probe_emit "RESIZE_DIAG_ZSH_BEFORE:${COLUMNS}x${LINES}"
+  local ioctl_size
+  ioctl_size=$("$STORMTTY_PROBE_STTY" size)
+  local ioctl_result=$?
+  stormtty_probe_emit "RESIZE_DIAG_STTY:rc=${ioctl_result}:rows-cols=${ioctl_size}"
+  stormtty_probe_emit "RESIZE_DIAG_ZSH_AFTER_STTY:${COLUMNS}x${LINES}"
+  "$STORMTTY_PROBE_NATIVE" --native-size "$stormtty_probe_sequence"
+  local native_result=$?
+  stormtty_probe_emit "RESIZE_DIAG_NATIVE_RC:${native_result}"
+  stormtty_probe_emit "RESIZE_DIAG_ZSH_AFTER_NATIVE:${COLUMNS}x${LINES}"
+  stormtty_probe_emit "RESIZE_DIAG_END:${stormtty_probe_sequence}"
+}
 stormtty_probe_wait() { stormtty_probe_emit "WAITING:${1}"; "$STORMTTY_PROBE_SLEEP" 30 }
 stormtty_probe_after_interrupt() {
   local previous=$stormtty_probe_status
@@ -70,15 +89,35 @@ stormtty_probe_line_init() {
 zle -N zle-line-init stormtty_probe_line_init
 # Controlled-fixture diagnostic only. Journal what ZLE actually receives, not
 # just terminal echo. No terminal output, delays, retries or signal traps added.
-# Each record is bounded; wrappers preserve the underlying widget's status.
-typeset -gi stormtty_probe_journal_count=0
+# A 256-record in-memory ring avoids per-key filesystem I/O. Records are
+# bounded; wrappers preserve the underlying widget's status.
+typeset -gi stormtty_probe_journal_count=0 stormtty_probe_journal_enabled=1
+typeset -a stormtty_probe_journal_records
 stormtty_probe_journal() {
   [[ -n ${STORMTTY_PROBE_JOURNAL-} ]] || return 0
-  (( stormtty_probe_sequence >= 5 && stormtty_probe_sequence <= 9 )) || return 0
-  (( stormtty_probe_journal_count < 512 )) || return 0
+  (( stormtty_probe_sequence >= 5 && stormtty_probe_journal_enabled )) || return 0
   (( ++stormtty_probe_journal_count ))
-  local entry="${1[1,512]}"
-  print -r -- "${stormtty_probe_journal_count} seq=${stormtty_probe_sequence} size=${COLUMNS}x${LINES} ${entry}" >> "$STORMTTY_PROBE_JOURNAL"
+  local entry="${1[1,384]}"
+  local slot=$(( (stormtty_probe_journal_count - 1) % 256 + 1 ))
+  stormtty_probe_journal_records[$slot]="${stormtty_probe_journal_count} seq=${stormtty_probe_sequence} size=${COLUMNS}x${LINES} ${entry}"
+}
+stormtty_probe_journal_reset() {
+  stormtty_probe_journal_records=()
+  stormtty_probe_journal_count=0
+  stormtty_probe_journal_enabled=1
+}
+stormtty_probe_journal_flush() {
+  # Single explicit post-phase/post-failure flush. No per-character file I/O.
+  stormtty_probe_journal_enabled=0
+  local first=$(( stormtty_probe_journal_count > 256 ? stormtty_probe_journal_count - 255 : 1 ))
+  local i slot
+  {
+    print -r -- "memory-ring total=${stormtty_probe_journal_count} retained-from=${first}"
+    for (( i=first; i<=stormtty_probe_journal_count; ++i )); do
+      slot=$(( (i - 1) % 256 + 1 ))
+      print -r -- "$stormtty_probe_journal_records[$slot]"
+    done
+  } > "$STORMTTY_PROBE_JOURNAL"
 }
 stormtty_probe_insert() {
   stormtty_probe_journal "insert-before keys=${(qqqq)KEYS} buffer=${(qqqq)BUFFER}"
