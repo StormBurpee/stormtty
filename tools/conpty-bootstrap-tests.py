@@ -137,6 +137,30 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "wrong-sized"):
             bootstrap.acquire(cache, lock, True)
 
+    def test_signature_verifier_isolates_builtin_module_without_policy_bypass(self):
+        powershell = self.root / "Windows" / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        with mock.patch.dict(os.environ, {"PSModulePath": "untrusted PS7 modules", "KEEP_THIS": "kept"}), \
+             mock.patch.object(bootstrap.subprocess, "run") as run:
+            bootstrap.verify_authenticode(self.output, powershell)
+        args = run.call_args.args[0]
+        options = run.call_args.kwargs
+        self.assertEqual(args[0], str(powershell))
+        self.assertTrue(options["check"])
+        self.assertEqual(options["env"]["PSModulePath"], str(powershell.parent / "Modules"))
+        self.assertEqual(options["env"]["KEEP_THIS"], "kept")
+        script = base64.b64decode(args[-1]).decode("utf-16-le")
+        self.assertIn("Import-Module ($PSHOME +", script)
+        self.assertIn("Microsoft.PowerShell.Security.psd1", script)
+        self.assertIn("Microsoft.PowerShell.Security\\Get-AuthenticodeSignature", script)
+        self.assertNotIn("ExecutionPolicy", " ".join(args) + script)
+        self.assertIn("$s.Status -ne 'Valid'", script)
+        self.assertIn("O=Microsoft Corporation", script)
+
+    def test_signature_command_failure_is_not_swallowed(self):
+        with mock.patch.object(bootstrap.subprocess, "run", side_effect=bootstrap.subprocess.CalledProcessError(1, "trust")), \
+             self.assertRaises(bootstrap.subprocess.CalledProcessError):
+            bootstrap.verify_authenticode(self.output, self.root / "powershell.exe")
+
     def publication_fixture(self, repair):
         transaction = self.root / "transaction"
         transaction.mkdir()

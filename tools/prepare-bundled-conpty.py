@@ -77,15 +77,22 @@ def require_native_amd64() -> Path:
 
 def verify_authenticode(root: Path, powershell: Path) -> None:
     quoted = ",".join("'" + str(root / n).replace("'", "''") + "'" for n in ("conpty.dll", "OpenConsole.exe"))
-    script = "$ErrorActionPreference='Stop'; foreach ($p in @(" + quoted + ")) { " + r"""
-$s=Get-AuthenticodeSignature -LiteralPath $p
+    # GitHub's pwsh host can export PS7 module paths into this PS5.1 child.
+    # Never autoload a same-named user/PS7 module into the system trust verifier.
+    # This is child-only module discovery, not an execution-policy change.
+    environment = {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
+    environment["PSModulePath"] = str(powershell.parent / "Modules")
+    script = ("$ErrorActionPreference='Stop'; "
+              "Import-Module ($PSHOME + '\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop; "
+              "foreach ($p in @(" + quoted + ")) { ") + r"""
+$s=Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $p
 if ($s.Status -ne 'Valid' -or !$s.SignerCertificate -or $s.SignerCertificate.Subject -notmatch '(?:^|,\s*)O=Microsoft Corporation(?:,|$)') {
   throw "Microsoft Authenticode validation failed: $p ($($s.Status))"
 }
 Write-Output "$p signer=$($s.SignerCertificate.Subject) thumbprint=$($s.SignerCertificate.Thumbprint)"
 }"""
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    subprocess.run([str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], check=True, timeout=120)
+    subprocess.run([str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], check=True, timeout=120, env=environment)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

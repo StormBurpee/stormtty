@@ -84,11 +84,11 @@ jobs:
           import pathlib,subprocess,sys,importlib.util,json
           subprocess.run(['cmake','-S','.','-B','build','-DSTORMTTY_CONPTY_OFFLINE=ON'],check=True,timeout=120)
           subprocess.run(['cmake','--build','build','--target','stormtty','--parallel','2'],check=True,timeout=180)
-          runtime=pathlib.Path('build/runtimes/conpty/1.25.260930003/x64')
+          runtime=pathlib.Path('build/runtimes/conpty/1.25.260930003/x64').resolve()
           # Delete only a generated private payload; the owned receipt enables cached repair.
           (runtime/'OpenConsole.exe').unlink()
           subprocess.run(['cmake','--build','build','--target','stormtty','--parallel','2'],check=True,timeout=180)
-          subprocess.run([sys.executable,'tools/prepare-bundled-conpty.py','--destination',str(runtime),'--cache','.cache/conpty','--verify-only'],check=True,timeout=90)
+          subprocess.run([sys.executable,'tools/prepare-bundled-conpty.py','--destination',str(runtime),'--cache',str(pathlib.Path('.cache/conpty').resolve()),'--verify-only'],check=True,timeout=90)
           install=pathlib.Path('build/portable console é').resolve()
           subprocess.run(['cmake','--install','build','--prefix',str(install)],check=True,timeout=240)
           spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
