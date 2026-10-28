@@ -17,8 +17,9 @@
 
 > [!IMPORTANT]
 > **StormTTY is in active development, not ready for daily use.** The Windows
-> application builds with MSVC and its baseline native test suite passes;
-> interaction, visual and compatibility qualification are still underway. There is no production release or supported binary download.
+> application builds with MSVC and its native UI checks run successfully;
+> the full suite still has known compatibility failures. Physical interaction
+> and visual qualification are also underway. There is no production release or supported binary download.
 > See [platform status](#platform-status) before building.
 
 ## Why StormTTY?
@@ -36,7 +37,7 @@ between you and your shell.
   restarting their processes. The Windows host exposes these through commands
   and direct manipulation; cross-window tear-off is still planned.
 - **An interface that leaves room for the terminal.** Integrated tabs, quiet
-  dividers and no permanent sidebar. The Graphite direction adds slight
+  dividers and a collapsible workspace rail. The Graphite direction adds slight
   background-only translucency: glyphs, the cursor and explicit terminal cell
   backgrounds stay opaque. Native visual qualification remains a separate gate.
 - **Keyboard commands without stealing the shell's keys.** A searchable command
@@ -55,7 +56,7 @@ criteria](docs/acceptance-gates.md), not published benchmark wins.
 | Platform | Implementation | Verification boundary |
 | --- | --- | --- |
 | **Windows** | Native application, custom chrome, tabs, splits, command palette, ConPTY and DirectWrite/Direct3D renderer | Native MSVC build passes. Session, terminal and renderer tests execute on Windows; full-suite qualification, physical interaction and visual QA remain gates. |
-| **macOS** | Shared core, POSIX PTY transport and implemented AppKit/CoreText/Metal host; native integration is under qualification | Native build/runtime qualification is pending. No supported macOS application yet. |
+| **macOS** | Shared core, POSIX PTY transport and AppKit/CoreText/Metal host | Native compilation, core/PTY and offscreen renderer checks pass. Onscreen presentation verification remains unresolved; no supported macOS application yet. |
 | **Linux** | Portable core, terminal adapter, process and session test host | Core/process/session tests pass locally. A Linux desktop application is not a current product target. |
 
 The [native workflow](.github/workflows/native.yml) separates Linux, Windows and
@@ -148,24 +149,60 @@ different shell; StormTTY does not replace or emulate the shell itself.
 | Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Copy selection | `Ctrl+Shift+C` |
 | Paste | `Ctrl+Shift+V` |
-| Windows system menu | `Alt+Space` |
+| Window menu | `Alt+Space` |
 
 Use **Show commands** for splits, pane focus and movement, pane zoom, tab
 renaming, split equalization and fullscreen. The command palette also shows
-unavailable actions with a reason. Find-in-terminal and the in-app settings
-editor are not implemented yet; their reserved command IDs are not evidence of
-working features.
+unavailable actions with a reason. Select an action and press **Alt+Enter** to
+assign and save its shortcut. Conflicting or reserved shortcuts are rejected.
+
+**Settings** includes appearance previews, font controls, shell selection and
+shortcut editing. Close confirmations, context menus and settings share the
+app's renderer-owned interface. Find-in-terminal has a tested core search service,
+but its user-facing command is not enabled yet.
 
 The [command registry](src/core/commands.cpp) defines the full set of actions and
 platform-specific bindings. Close and paste behavior still need native
 interaction testing; do not use the development build for irreplaceable work.
 
+### Try the managed Zsh runtime
+
+This opt-in development profile uses upstream Zsh 5.9.2 with StormTTY's own
+startup preset: directory, exit-status and duration prompt; ZLE editing; and
+completion. It is not a Zsh fork. It leaves your existing shell dotfiles and HOME
+alone, and does not write history yet. The full extension/module system is not
+implemented.
+
+After building, use PowerShell from the repository root. Runtime staging needs
+**Python 3.14+**; console-package signature verification needs the **.NET SDK**.
+Both destination directories must be new:
+
+```powershell
+python tools/shell-bootstrap.py --destination .deps/stormtty-shell --cache .cache/shell-bootstrap
+./tools/prepare-conpty-probe.ps1 -Destination .deps/conpty
+./build-msvc/stormtty.exe --shell-runtime "$PWD/.deps/stormtty-shell" --console-runtime "$PWD/.deps/conpty"
+```
+
+The shell flag applies to this launch's tabs, panes and workspaces; it is not
+written into your saved configuration. Without the flags, existing defaults
+remain unchanged. The console runtime is the pinned Microsoft package, not a
+replacement for Windows system files, and a failed explicit selection does not
+silently fall back to another provider.
+
+Native Windows app checks have exercised this combination. Deeper shell/job-control
+qualification is still in progress, and compact alternate-screen Ink layouts
+have a known resize-redraw race. This is not a supported release or a completed
+redistribution packet. See the [runtime staging guide](tools/shell-bootstrap.README.md)
+and [console compatibility evidence](tests/ink/conpty-el-regression/README.md).
+
 ## Configuration
 
 The Windows host reads `%LOCALAPPDATA%\StormTTY\config.stormtty` if it exists.
 To use a different file, launch `stormtty.exe --config path\to\config.stormtty`.
-There is no settings-file generator or in-app editor yet; create the file
-manually and restart the application after changes.
+Use **Settings** to edit and save supported options, or edit the file directly
+and restart. Appearance previews can be cancelled; changing the default shell
+applies to new sessions, not processes already running. Saving detects external
+file changes rather than silently overwriting them.
 
 A small, complete configuration:
 
@@ -256,10 +293,12 @@ feature list.
 | --- | --- | --- |
 | Shared workspace, commands, config, terminal adapter and sessions | Implemented; portable tests pass | Broader regression and adversarial coverage |
 | Windows native application | Native MSVC build passes; session and renderer tests pass | Complete native regression suite, desktop visual QA, DPI, Snap and interaction checks |
-| macOS application | Source integrated; qualification pending | Apple SDK compilation, matched libc++ runtime and native AppKit/Metal evidence |
-| Modern terminal and Ink workloads | Qualification pending | Resize, Unicode, input, synchronized output and graphics across the complete native path |
+| macOS application | Native build, core/PTY and offscreen renderer checks pass | Verified onscreen presentation, physical input and platform UI parity |
+| Modern terminal and Ink workloads | Packaged Windows console fixes the verified right-margin defect | Compact alternate-screen resize race; broader graphics/protocol coverage |
 | Text input and accessibility | Incomplete | Full TSF/IME and UI Automation behavior, screen-reader and physical-input testing |
-| Find, settings editor and cross-window tear-off | Planned | User-facing implementation and tests |
+| Settings, shortcuts and owned menus | Implemented; native Windows app checks pass | Physical interaction, accessibility and platform parity |
+| Managed Zsh | Explicit opt-in; native Windows app checks pass | Job control qualification, history, modules, default packaging and complete notices |
+| Find and cross-window tear-off | Core search implemented; UI/tear-off pending | User-facing implementation and native tests |
 | Performance and distribution | Pending | Recorded-hardware measurements, ConPTY provider qualification, packaging and complete notices |
 
 First-class Codex and Claude workflows are a longer-term product direction:
@@ -275,8 +314,11 @@ Proposed latency and memory budgets there are targets, not results.
 An optional qualification target runs a pinned, real Ink/React application through
 StormTTY's PTY and session pipeline. It covers changing animation frames, input,
 paste, Unicode and resize, and refuses a noninteractive fallback. The initial
-Linux run passes; Windows and macOS qualification remain separate. One fixture
-is not a claim that every Ink application works.
+Linux run passes. Native Windows tests distinguish the inbox and explicit
+packaged console providers; the latter resolves the captured right-margin
+incompatibility, but repeated compact alternate-screen resizing still fails in
+some runs. macOS also has a compact-layout resize regression. One fixture is not
+a claim that every Ink application works.
 
 ```sh
 npm ci --prefix tests/ink --ignore-scripts --no-audit --no-fund

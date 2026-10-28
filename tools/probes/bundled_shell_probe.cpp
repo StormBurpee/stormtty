@@ -61,6 +61,21 @@ void command(const std::shared_ptr<Session>& s, std::string text) {
     require(s->text(std::move(text)) == SessionSendResult::accepted, "command rejected");
     key(s, Key::enter);
 }
+// One fresh ZLE input-ready cycle per submitted command. The fixture preserves
+// the preceding command status before any prompt bookkeeping can overwrite it.
+struct PromptProtocol {
+    std::shared_ptr<Session> session;
+    unsigned sequence{1};
+    void ready(int status = -1) {
+        const auto prefix = "__STORMTTY_PROMPT:" + std::to_string(sequence) + ":";
+        expect(session, status < 0 ? prefix : prefix + std::to_string(status) + "__");
+    }
+    void send(std::string text) {
+        ready();
+        command(session, std::move(text));
+        ++sequence;
+    }
+};
 std::string inherited_path() {
 #ifdef _WIN32
     const auto count = GetEnvironmentVariableW(L"PATH", nullptr, 0);
@@ -145,40 +160,48 @@ int main(int argc, char** argv) {
         const auto started = std::chrono::steady_clock::now();
         session = Session::start(std::move(p), terminal);
         expect(session, "__STORMTTY_READY__");
+        PromptProtocol prompt{session};
+        prompt.ready(0);
         std::cout << "provider=" << session->diagnostics().provider << '\n';
         std::cout << "startup_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started).count() << '\n';
         require(screen(session).find("GLOBAL_DOTFILE_WAS_READ") == std::string::npos,
                 "managed profile sourced HOME/.zshrc");
-        command(session, "stormtty_probe_tty"); expect(session, "__STORMTTY_TTY_OK__");
-        command(session, "stormtty_probe_native"); expect(session, "__STORMTTY_NATIVE_TTY_OK__");
-        command(session, "stormtty_probe_unicode 'caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83'");
+        prompt.send("stormtty_probe_tty"); expect(session, "__STORMTTY_TTY_OK__");
+        prompt.send("stormtty_probe_native"); expect(session, "__STORMTTY_NATIVE_TTY_OK__");
+        prompt.send("stormtty_probe_unicode 'caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83'");
         expect(session, "__STORMTTY_UNICODE:caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84 \xe2\x98\x83__");
-        command(session, "stormtty_probe_cwd");
+        prompt.send("stormtty_probe_cwd");
         expect(session, "workspace caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84__");
         require(until([&] { return session->info().working_directory.find("workspace") != std::string::npos; }),
                 "OSC 7 did not reach Session cwd metadata");
         require(session->request_resize({111, 35, 8, 16}) == SessionSendResult::accepted,
                 "resize request rejected");
         require(until([&] {
-            command(session, "stormtty_probe_size");
-            std::this_thread::sleep_for(80ms);
+            prompt.send("stormtty_probe_size");
+            prompt.ready(0);
             return screen(session).find("__STORMTTY_SIZE:111x35__") != std::string::npos;
         }), "shell did not observe terminal resize");
-        command(session, "stormtty_probe_wait first"); expect(session, "__STORMTTY_WAITING:first__");
+        prompt.send("stormtty_probe_wait first"); expect(session, "__STORMTTY_WAITING:first__");
         key(session, Key::c, Modifier::control);
-        command(session, "stormtty_probe_after_interrupt"); expect(session, "__STORMTTY_INTERRUPTED:130__");
+        prompt.ready(130);
+        prompt.send("stormtty_probe_after_interrupt"); expect(session, "__STORMTTY_INTERRUPTED:130__");
         // Clear old markers before another long-running real foreground job.
-        command(session, "printf '\\033[2J\\033[H'; stormtty_probe_wait second");
+        prompt.send("printf '\\033[2J\\033[H'; stormtty_probe_wait second");
         expect(session, "__STORMTTY_WAITING:second__");
         key(session, Key::z, Modifier::control);
-        command(session, "stormtty_probe_job_stopped"); expect(session, "__STORMTTY_JOB_STOPPED__");
-        command(session, "bg; stormtty_probe_job_running"); expect(session, "__STORMTTY_JOB_RUNNING__");
-        command(session, "fg"); std::this_thread::sleep_for(200ms);
+        prompt.send("stormtty_probe_job_stopped"); expect(session, "__STORMTTY_JOB_STOPPED__");
+        prompt.send("bg; stormtty_probe_job_running"); expect(session, "__STORMTTY_JOB_RUNNING__");
+        // fg reports "running" (bg reports "continued"). This is an
+        // observed command transition, not a timed guess. The later jobs-empty
+        // assertion also rejects interrupting only the shell with a live job.
+        prompt.send("fg"); expect(session, "+ running");
         key(session, Key::c, Modifier::control);
-        command(session, "stormtty_probe_after_interrupt"); expect(session, "__STORMTTY_INTERRUPTED:130__");
+        prompt.ready(130);
+        prompt.send("stormtty_probe_after_interrupt"); expect(session, "__STORMTTY_INTERRUPTED:130__");
+        prompt.send("stormtty_probe_jobs_empty"); expect(session, "__STORMTTY_JOBS_EMPTY__");
         std::cout << "provider=" << session->diagnostics().provider << "\n" << screen(session);
-        command(session, "stormtty_probe_exit");
+        prompt.send("stormtty_probe_exit");
         require(session->wait_closed(10s), "zsh natural exit did not close Session");
         require(session->info().state == SessionState::exited, "zsh exited in failed state");
         require(session->info().exit_code == 37, "zsh exit status lost");

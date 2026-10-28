@@ -27,7 +27,7 @@ stormtty_probe_cwd() {
 stormtty_probe_native() { "$STORMTTY_PROBE_NATIVE" --native-handles }
 stormtty_probe_wait() { stormtty_probe_emit "WAITING:${1}"; "$STORMTTY_PROBE_SLEEP" 30 }
 stormtty_probe_after_interrupt() {
-  local previous=$?
+  local previous=$stormtty_probe_status
   stormtty_probe_emit "INTERRUPTED:${previous}"
 }
 stormtty_probe_job_stopped() {
@@ -44,5 +44,24 @@ stormtty_probe_job_running() {
     stormtty_probe_emit JOB_NOT_RUNNING
   fi
 }
+stormtty_probe_jobs_empty() {
+  if (( ${#jobstates} == 0 )); then
+    stormtty_probe_emit JOBS_EMPTY
+  else
+    stormtty_probe_emit JOBS_REMAIN
+  fi
+}
 stormtty_probe_exit() { exit 37 }
+# Capture status before prompt hooks run; emit readiness only once ZLE has
+# initialized input mode. A stale prompt or a command's output is not readiness.
+typeset -gi stormtty_probe_sequence=0 stormtty_probe_status=0
+precmd() {
+  stormtty_probe_status=$?
+  (( ++stormtty_probe_sequence ))
+}
+stormtty_probe_line_init() {
+  print -r -- "__STORMTTY_PROMPT:${stormtty_probe_sequence}:${stormtty_probe_status}__"
+  zle reset-prompt
+}
+zle -N zle-line-init stormtty_probe_line_init
 stormtty_probe_emit READY
