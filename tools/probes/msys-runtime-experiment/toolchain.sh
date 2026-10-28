@@ -11,7 +11,8 @@ mkdir -p "$root/downloads" "$root/prefix" "$root/wrappers" "$root/provenance"
 # wrapper precheck. Clone only public verification state; no system edits,
 # secret keys, new signing keys, trust overrides, or signature bypasses.
 keyring=$(pacman-conf gpgdir)
-mkdir -m 700 "$root/keyring"
+# Public-only state; inherit runner scratch ACL rather than Unix chmod on NTFS.
+mkdir "$root/keyring"
 cp "$keyring/pubring.gpg" "$keyring/trustdb.gpg" "$root/keyring/"
 # Some GnuPG installations retain the public keys in a keybox instead.
 if [[ -f $keyring/pubring.kbx ]]; then cp "$keyring/pubring.kbx" "$root/keyring/"; fi
