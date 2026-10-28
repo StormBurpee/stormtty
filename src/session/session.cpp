@@ -1,0 +1,327 @@
+#include "stormtty/session.hpp"
+#include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <utility>
+
+namespace stormtty {
+namespace {
+constexpr std::size_t command_budget = 1024 * 1024;
+constexpr std::size_t output_budget = 2 * 1024 * 1024;
+constexpr std::size_t write_budget = 4 * 1024 * 1024;
+constexpr std::size_t chunk_limit = 32 * 1024;
+enum class Op { key, text, paste, mouse, focus, select, clear, copy, scroll, bottom, resize };
+struct Command {
+    Op op{};
+    std::uint64_t sequence{};
+    KeyInput key;
+    MouseInput mouse;
+    TerminalSize size;
+    std::string text;
+    Session::SelectionCallback selection;
+    std::int64_t rows{};
+    std::uint16_t x1{}, y1{}, x2{}, y2{};
+    bool flag{};
+    std::size_t bytes() const { return sizeof(Command) + text.size() + key.text.size(); }
+};
+struct OutputEvent { std::uint64_t sequence{}; std::string bytes; };
+struct PendingWrite { std::string bytes; std::size_t offset{}; };
+}
+struct Session::Impl : std::enable_shared_from_this<Impl> {
+    ProcessOptions process_options;
+    TerminalOptions terminal_options;
+    Wake wake;
+    mutable std::mutex mutex;
+    std::condition_variable_any changed;
+    std::deque<Command> commands;
+    std::deque<OutputEvent> output;
+    std::uint64_t next_sequence{};
+    std::size_t command_bytes{}, output_bytes{};
+    std::optional<ProcessExit> exit;
+    bool close_requested{};
+    std::atomic<bool> done{false};
+    mutable std::mutex frame_mutex;
+    FramePtr latest;
+    SessionInfo information;
+    std::shared_ptr<Process> process;
+
+    Impl(ProcessOptions p, TerminalOptions t, Wake w)
+        : process_options(std::move(p)), terminal_options(t), wake(std::move(w)) {}
+    void publish(FramePtr frame) {
+        FramePtr retired;
+        { std::lock_guard lock(frame_mutex); retired = std::exchange(latest, std::move(frame)); }
+        // Release potentially large rows/images outside the short mailbox lock.
+    }
+    void notify() noexcept { try { if (wake) wake(); } catch (...) {} }
+    void set_error(std::string value) {
+        { std::lock_guard lock(mutex); information.error = std::move(value); }
+        notify();
+    }
+    SessionSendResult enqueue(Command command) {
+        const auto amount = command.bytes();
+        if (amount > command_budget) return SessionSendResult::too_large;
+        {
+            std::lock_guard lock(mutex);
+            if (close_requested || done.load()) return SessionSendResult::closed;
+            if (amount > command_budget - command_bytes) return SessionSendResult::would_block;
+            command.sequence = ++next_sequence;
+            command_bytes += amount;
+            commands.push_back(std::move(command));
+        }
+        changed.notify_all();
+        return SessionSendResult::accepted;
+    }
+    void accept_output(std::string_view bytes, std::stop_token stop) {
+        for (std::size_t offset = 0; offset < bytes.size();) {
+            const auto count = std::min(chunk_limit, bytes.size() - offset);
+            std::unique_lock lock(mutex);
+            if (!changed.wait(lock, stop, [&] {
+                    return done.load() || close_requested || count <= output_budget - output_bytes;
+                }) || done.load() || close_requested) return;
+            output.push_back({++next_sequence, std::string(bytes.substr(offset, count))});
+            output_bytes += count;
+            information.bytes_received += count;
+            offset += count;
+            lock.unlock();
+            changed.notify_all();
+        }
+    }
+    void close() noexcept {
+        { std::lock_guard lock(mutex); close_requested = true; }
+        changed.notify_all();
+    }
+    void run() noexcept {
+        try { actor(); }
+        catch (const std::exception& e) { fail(e.what()); }
+        catch (...) { fail("Unexpected terminal session failure"); }
+        done.store(true, std::memory_order_release);
+        changed.notify_all();
+        notify();
+    }
+    void fail(std::string reason) noexcept {
+        std::shared_ptr<Process> child;
+        {
+            std::lock_guard lock(mutex);
+            information.state = SessionState::failed;
+            information.error = std::move(reason);
+            close_requested = true;
+            child = process;
+            commands.clear(); command_bytes = 0;
+            output.clear(); output_bytes = 0;
+        }
+        changed.notify_all();
+        if (child) {
+            child->request_close();
+            // This is the background actor, never the UI/callback. A failed
+            // session is not called closed until its transport has reaped.
+            while (!child->wait_for_exit(std::chrono::milliseconds(250))) {}
+        }
+    }
+    void actor() {
+        TerminalCore core(terminal_options); // Construct and destroy on this actor.
+        publish(core.snapshot());
+        notify();
+        const auto weak = weak_from_this();
+        auto child = Process::start(process_options, {
+            [weak](std::string_view bytes, std::stop_token stop) {
+                if (auto state = weak.lock()) state->accept_output(bytes, stop);
+            },
+            [weak](ProcessExit value) {
+                if (auto state = weak.lock()) {
+                    { std::lock_guard lock(state->mutex); state->exit = std::move(value); }
+                    state->changed.notify_all();
+                }
+            }
+        });
+        { std::lock_guard lock(mutex); process = std::move(child); }
+        std::deque<PendingWrite> writes;
+        std::size_t write_bytes = 0;
+        bool closing = false, dirty = false;
+        auto last_frame = TerminalCore::Clock::now();
+        auto append = [&](std::string bytes) {
+            if (bytes.empty()) return;
+            if (bytes.size() > write_budget - write_bytes)
+                throw std::runtime_error("Terminal input backlog exceeded its safety limit");
+            write_bytes += bytes.size();
+            writes.push_back({std::move(bytes), 0});
+        };
+        auto effects = [&] {
+            for (auto& effect : core.take_effects()) {
+                if (effect.kind == EffectKind::write_pty) { append(std::move(effect.text)); continue; }
+                std::lock_guard lock(mutex);
+                if (effect.kind == EffectKind::title) information.title = std::move(effect.text);
+                else if (effect.kind == EffectKind::working_directory)
+                    information.working_directory = std::move(effect.text);
+                // Clipboard protocol requests are denied by the adapter; never
+                // copy their payloads into the OS clipboard or execute titles.
+            }
+        };
+        for (;;) {
+            std::deque<Command> batch;
+            std::string bytes;
+            std::optional<ProcessExit> child_exit;
+            bool request_close_now = false;
+            {
+                std::lock_guard lock(mutex);
+                request_close_now = close_requested;
+                for (unsigned i = 0; i < 8 && !commands.empty() &&
+                     (output.empty() || commands.front().sequence < output.front().sequence); ++i) {
+                    command_bytes -= commands.front().bytes();
+                    batch.push_back(std::move(commands.front())); commands.pop_front();
+                }
+                if (!output.empty() && (commands.empty() || output.front().sequence < commands.front().sequence)) {
+                    output_bytes -= output.front().bytes.size();
+                    bytes = std::move(output.front().bytes); output.pop_front();
+                }
+                // Exit is consumed only after all bytes delivered before EOF.
+                if (exit && output.empty() && bytes.empty()) child_exit = exit;
+            }
+            changed.notify_all(); // Reader backpressure and UI queue capacity.
+            if (!batch.empty()) notify();
+            if (request_close_now && !closing) {
+                closing = true;
+                { std::lock_guard lock(mutex); information.state = SessionState::closing; }
+                process->request_close();
+                writes.clear(); write_bytes = 0; // Explicit close, never normal overload.
+                notify();
+            }
+            if (!closing) {
+                for (auto& c : batch) {
+                    try {
+                        switch (c.op) {
+                        case Op::key: append(core.encode_key(c.key)); core.scroll_to_bottom(); dirty = true; break;
+                        case Op::text: { KeyInput key; key.text = std::move(c.text); append(core.encode_key(key)); core.scroll_to_bottom(); dirty = true; break; }
+                        case Op::paste: append(core.encode_paste(c.text, c.flag)); core.scroll_to_bottom(); dirty = true; break;
+                        case Op::mouse: append(core.encode_mouse(c.mouse)); break;
+                        case Op::focus: append(core.encode_focus(c.flag)); break;
+                        case Op::select: core.select(c.x1, c.y1, c.x2, c.y2, c.flag); dirty = true; break;
+                        case Op::clear: core.clear_selection(); dirty = true; break;
+                        case Op::copy: {
+                            auto text = core.selection_text();
+                            if (text.size() > 16u * 1024u * 1024u) throw std::invalid_argument("Selection exceeds clipboard safety limit");
+                            if (c.selection) c.selection(std::move(text));
+                            break;
+                        }
+                        case Op::scroll: core.scroll_viewport(c.rows); dirty = true; break;
+                        case Op::bottom: core.scroll_to_bottom(); dirty = true; break;
+                        case Op::resize:
+                            core.resize(c.size);
+                            process->request_resize({c.size.columns, c.size.rows});
+                            dirty = true; break;
+                        }
+                    } catch (const std::invalid_argument& e) { set_error(e.what()); }
+                }
+            }
+            if (!bytes.empty() && !closing) { core.feed(bytes); dirty = true; }
+            effects();
+            bool progress = false;
+            while (!closing && !writes.empty()) {
+                auto& pending = writes.front();
+                const auto count = std::min({chunk_limit, process_options.input_capacity_bytes,
+                                             pending.bytes.size() - pending.offset});
+                if (count == 0) throw std::runtime_error("Process input capacity must be positive");
+                const auto sent = process->try_send(std::string_view(pending.bytes).substr(pending.offset, count));
+                if (sent == ProcessSendResult::would_block) break;
+                if (sent == ProcessSendResult::closed) { writes.clear(); write_bytes = 0; break; }
+                if (sent == ProcessSendResult::too_large) throw std::runtime_error("Process rejected bounded input chunk");
+                pending.offset += count; write_bytes -= count; progress = true;
+                { std::lock_guard lock(mutex); information.bytes_sent += count; }
+                if (pending.offset == pending.bytes.size()) writes.pop_front();
+            }
+            const auto now = TerminalCore::Clock::now();
+            const auto deadline = core.next_deadline();
+            if ((dirty && now - last_frame >= std::chrono::milliseconds(8)) ||
+                (deadline && now >= *deadline) || child_exit) {
+                publish(core.snapshot(now));
+                last_frame = now; dirty = false; effects(); notify();
+            }
+            if (child_exit) {
+                std::lock_guard lock(mutex);
+                information.exit_code = child_exit->exit_code;
+                if (!child_exit->error.empty()) information.error = child_exit->error;
+                information.state = child_exit->error.empty() ? SessionState::exited : SessionState::failed;
+                return;
+            }
+            const bool starting = process->state() == ProcessState::starting;
+            {
+                bool state_changed = false;
+                { std::lock_guard lock(mutex);
+                  if (!closing && information.state == SessionState::starting && process->state() == ProcessState::running) {
+                      information.state = SessionState::running; state_changed = true;
+                  }
+                }
+                if (state_changed) notify();
+            }
+            if (!batch.empty() || !bytes.empty() || progress) continue;
+            auto until = TerminalCore::Clock::time_point::max();
+            if (dirty) until = last_frame + std::chrono::milliseconds(8);
+            if (deadline) until = std::min(until, *deadline);
+            if (!writes.empty()) until = std::min(until, now + std::chrono::milliseconds(5));
+            if (starting) until = std::min(until, now + std::chrono::milliseconds(20));
+            std::unique_lock lock(mutex);
+            const auto ready = [&] { return !commands.empty() || !output.empty() || exit.has_value() || (close_requested && !closing); };
+            if (until == TerminalCore::Clock::time_point::max()) changed.wait(lock, ready);
+            else changed.wait_until(lock, until, ready);
+        }
+    }
+};
+Session::Session(std::shared_ptr<Impl> value) : impl_(std::move(value)) {}
+std::shared_ptr<Session> Session::start(ProcessOptions process, TerminalOptions terminal, Wake wake) {
+    if (!process.input_capacity_bytes) throw std::invalid_argument("Process input capacity must be positive");
+    process.grid = {terminal.size.columns, terminal.size.rows};
+    const auto add_default = [&](std::string name, std::string value) {
+        const auto equal = [](std::string_view a, std::string_view b) {
+            if (a.size() != b.size()) return false;
+            for (std::size_t i = 0; i < a.size(); ++i) {
+#ifdef _WIN32
+                const auto upper = [](unsigned char c) { return c >= 'a' && c <= 'z' ? static_cast<unsigned char>(c - 'a' + 'A') : c; };
+                if (upper(a[i]) != upper(b[i])) return false;
+#else
+                if (a[i] != b[i]) return false;
+#endif
+            }
+            return true;
+        };
+        if (std::none_of(process.environment.begin(), process.environment.end(), [&](const auto& e) { return equal(e.name, name); }))
+            process.environment.push_back({std::move(name), std::move(value)});
+    };
+    add_default("TERM", "xterm-256color");
+    add_default("COLORTERM", "truecolor");
+    add_default("TERM_PROGRAM", "stormtty");
+    add_default("TERM_PROGRAM_VERSION", "0.1.0-dev");
+    auto state = std::make_shared<Impl>(std::move(process), terminal, std::move(wake));
+    auto session = std::shared_ptr<Session>(new Session(state));
+    std::thread([state] { state->run(); }).detach();
+    return session;
+}
+Session::~Session() { request_close(); }
+FramePtr Session::frame() const noexcept { std::lock_guard lock(impl_->frame_mutex); return impl_->latest; }
+SessionInfo Session::info() const { std::lock_guard lock(impl_->mutex); return impl_->information; }
+ProcessDiagnostics Session::diagnostics() const {
+    std::shared_ptr<Process> process;
+    { std::lock_guard lock(impl_->mutex); process = impl_->process; }
+    return process ? process->diagnostics() : ProcessDiagnostics{};
+}
+SessionSendResult Session::key(KeyInput value) { Command c; c.op = Op::key; c.key = std::move(value); return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::text(std::string value) { Command c; c.op = Op::text; c.text = std::move(value); return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::paste(std::string value, bool allow) { Command c; c.op = Op::paste; c.text = std::move(value); c.flag = allow; return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::mouse(MouseInput value) { Command c; c.op = Op::mouse; c.mouse = value; return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::focus(bool value) { Command c; c.op = Op::focus; c.flag = value; return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::select(std::uint16_t x1, std::uint16_t y1, std::uint16_t x2, std::uint16_t y2, bool rectangle) {
+    Command c; c.op = Op::select; c.x1 = x1; c.y1 = y1; c.x2 = x2; c.y2 = y2; c.flag = rectangle; return impl_->enqueue(std::move(c));
+}
+SessionSendResult Session::clear_selection() { Command c; c.op = Op::clear; return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::copy_selection(SelectionCallback value) { Command c; c.op = Op::copy; c.selection = std::move(value); return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::scroll(std::int64_t value) { Command c; c.op = Op::scroll; c.rows = value; return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::scroll_to_bottom() { Command c; c.op = Op::bottom; return impl_->enqueue(std::move(c)); }
+SessionSendResult Session::request_resize(TerminalSize value) { Command c; c.op = Op::resize; c.size = value; return impl_->enqueue(std::move(c)); }
+void Session::request_close() noexcept { impl_->close(); }
+bool Session::closed() const noexcept { return impl_->done.load(std::memory_order_acquire); }
+bool Session::wait_closed(std::chrono::milliseconds timeout) const {
+    std::unique_lock lock(impl_->mutex); return impl_->changed.wait_for(lock, timeout, [&] { return impl_->done.load(); });
+}
+} // namespace stormtty

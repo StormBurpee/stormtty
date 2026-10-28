@@ -1,0 +1,160 @@
+// Native Windows runtime test. Cross-compiling this file is NOT a passing test.
+#include "stormtty/renderer.hpp"
+#include <array>
+#include <cmath>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+namespace {
+using namespace stormtty;
+void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+Color pixel(const std::vector<std::uint8_t>& rgba, std::size_t width, std::size_t x, std::size_t y) {
+    const auto offset=(y*width+x)*4;
+    require(offset+3<rgba.size(),"pixel coordinate outside readback");
+    return {rgba[offset],rgba[offset+1],rgba[offset+2],rgba[offset+3]};
+}
+bool near(Color a, Color b, unsigned tolerance=2) {
+    auto close=[tolerance](unsigned x,unsigned y) { return x>y?x-y<=tolerance:y-x<=tolerance; };
+    return close(a.r,b.r)&&close(a.g,b.g)&&close(a.b,b.b)&&close(a.a,b.a);
+}
+std::shared_ptr<RenderFrame> frame() {
+    auto result=std::make_shared<RenderFrame>();
+    result->generation=1;result->columns=12;result->rows=4;result->cell_width=16;result->cell_height=24;
+    result->foreground={236,238,242,255};result->background={23,25,29,255};
+    for(unsigned r=0;r<4;++r) {
+        auto row=std::make_shared<FrameRow>();row->id.words={42,r+1};row->generation=1;row->cells.resize(12);
+        for(auto& c:row->cells) {c.foreground=result->foreground;c.background=result->background;c.underline_color=result->foreground;}
+        result->lines.push_back(row);
+    }
+    return result;
+}
+void native_render_test() {
+    RendererOptions options;options.force_warp=true;options.image_cache_bytes=4096;
+    Renderer renderer(nullptr,options);renderer.resize(256,160);
+    auto source=frame();
+    auto first=std::make_shared<FrameRow>(*source->lines[0]);
+    first->cells[0].grapheme="A";
+    first->cells[4].background={200,30,40,255};first->cells[4].background_is_default=false;
+    first->cells[5].foreground={20,190,50,255};first->cells[5].style.inverse=true;
+    source->lines[0]=first;
+    auto unicode=std::make_shared<FrameRow>(*source->lines[1]);
+    unicode->cells[0].grapheme="e\xCC\x81"; // combining sequence, one terminal cell
+    unicode->cells[1].grapheme="\xE7\x95\x8C";unicode->cells[1].span=2;unicode->cells[2].span=0;
+    unicode->cells[3].grapheme="\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x92\xBB";
+    unicode->cells[3].span=2;unicode->cells[4].span=0;
+    // Contextual Latin shaping and Arabic exercise fallback/cluster capture; this
+    // test deliberately does not assert font-specific glyph counts or full bidi.
+    for(unsigned i=0;i<6;++i) unicode->cells[6+i].grapheme=std::string(1,"office"[i]);
+    source->lines[1]=unicode;
+    auto selection=std::make_shared<FrameRow>(*source->lines[2]);selection->cells[0].selected=true;
+    source->lines[2]=selection;
+    auto pixels=std::make_shared<ImagePixels>();pixels->image_id=7;pixels->generation=1;pixels->width=2;pixels->height=1;
+    pixels->bytes={255,0,0,255,0,80,240,255};
+    ImagePlacement placement;placement.pixels=pixels;placement.column=8;placement.row=2;
+    placement.pixel_width=16;placement.pixel_height=24;placement.source_x=1;placement.source_width=1;placement.source_height=1;
+    placement.kind=ImagePlacementKind::virtual_placeholder; // Geometry is already resolved by the adapter.
+    source->images.push_back(placement);source->image_placements_generation=1;
+    WindowScene scene;scene.panes.push_back({100,{16,24,192,96},source,true,true});
+    require(renderer.render(scene)==RenderResult::presented,"first offscreen frame not presented");
+    auto stats=renderer.stats();require(stats.warp,"smoke test did not use WARP");require(stats.shaped_rows==4,"expected four shaped rows");
+    auto rgba=renderer.read_pixels();require(rgba.size()==256*160*4,"readback size wrong");
+    require(near(pixel(rgba,256,16+4*16+8,24+12),{200,30,40,255}),"explicit background paint wrong");
+    require(near(pixel(rgba,256,16+5*16+8,24+12),{20,190,50,255}),"inverse background paint wrong");
+    require(near(pixel(rgba,256,24,24+2*24+12),{58,79,91,255}),"selection background paint wrong");
+    require(near(pixel(rgba,256,16+8*16+8,24+2*24+12),{0,80,240,255}),"cropped image placement not drawn");
+    unsigned ink=0;
+    for(unsigned y=24;y<48;++y) for(unsigned x=16;x<32;++x)
+        if(!near(pixel(rgba,256,x,y),source->background,8)) ++ink;
+    require(ink>4,"DirectWrite did not rasterize visible text");
+    require(renderer.render(scene)==RenderResult::unchanged,"identical scene was repainted");
+    require(renderer.stats().shaped_rows==stats.shaped_rows,"identical frame reshaped text");
+
+    auto changed=std::make_shared<RenderFrame>(*source);changed->generation++;
+    auto row=std::make_shared<FrameRow>(*changed->lines[1]);row->generation++;row->cells[6].grapheme="O";
+    changed->lines[1]=row;scene.panes[0].frame=changed;
+    const auto before_damage=renderer.stats().dirty_rectangles;
+    renderer.render(scene);
+    require(renderer.stats().shaped_rows==stats.shaped_rows+1,"single-row edit reshaped unchanged rows");
+    require(renderer.stats().dirty_rectangles==before_damage+1,"single-row edit did not produce one damage band");
+
+    auto cursor_frame=std::make_shared<RenderFrame>(*changed);cursor_frame->generation++;
+    cursor_frame->cursor={1,3,true,false,false,false,CursorShape::block,{220,230,240,255}};
+    scene.panes[0].frame=cursor_frame;renderer.render(scene);
+    const auto cursor_shapes=renderer.stats().shaped_rows;
+    scene.panes[0].cursor_on=false;renderer.render(scene);
+    require(renderer.stats().shaped_rows==cursor_shapes,"cursor blink reshaped unchanged rows");
+    rgba=renderer.read_pixels();
+    require(near(pixel(rgba,256,16+24,24+3*24+12),source->background),"old cursor was not erased");
+
+    auto animation=std::make_shared<RenderFrame>(*cursor_frame);animation->generation++;
+    auto next_pixels=std::make_shared<ImagePixels>(*pixels);next_pixels->generation++;next_pixels->bytes={255,0,0,255,30,210,60,255};
+    animation->images[0].pixels=next_pixels;scene.panes[0].frame=animation;renderer.render(scene);
+    rgba=renderer.read_pixels();
+    require(near(pixel(rgba,256,16+8*16+8,24+2*24+12),{30,210,60,255}),"image animation generation used stale pixels");
+    require(renderer.stats().image_uploads==2,"unchanged image was reuploaded or new frame was missed");
+    require(renderer.stats().image_cache_bytes<=options.image_cache_bytes,"image cache exceeded budget");
+
+    const auto old_metrics=renderer.metrics();renderer.resize(256,160,144);
+    require(renderer.metrics().width>old_metrics.width,"DPI did not remeasure font");
+    renderer.render(scene);renderer.recreate_device();renderer.render(scene);
+    require(renderer.stats().device_recoveries==1,"device reconstruction not exercised");
+    rgba=renderer.read_pixels();
+    require(near(pixel(rgba,256,16+8*16+8,24+2*24+12),{30,210,60,255}),"owned image lost after device reconstruction");
+    renderer.resize(0,0);require(renderer.render(scene)==RenderResult::suspended,"zero-size surface did not suspend");
+    renderer.resize(256,160,96);require(renderer.render(scene)==RenderResult::presented,"restore from zero size failed");
+}
+void transparency_test() {
+    RendererOptions options;options.force_warp=true;options.background_opacity=.9f;
+    Renderer renderer(nullptr,options);renderer.resize(96,48);
+    auto source=frame();source->columns=4;source->rows=1;
+    auto row=std::make_shared<FrameRow>(*source->lines[0]);
+    row->cells[1].background_is_default=false; // Same RGB but explicit TUI background must stay opaque.
+    source->lines={row};
+    WindowScene scene;scene.panes.push_back({101,{0,0,64,24},source});renderer.render(scene);
+    auto rgba=renderer.read_pixels();
+    require(std::abs(int(pixel(rgba,96,8,12).a)-230)<=1,"default background opacity not preserved");
+    require(pixel(rgba,96,24,12).a==255,"explicit background was made translucent");
+    auto changed=std::make_shared<RenderFrame>(*source);changed->generation++;
+    auto changed_row=std::make_shared<FrameRow>(*row);changed_row->generation++;changed_row->cells[3].grapheme="A";
+    changed->lines={changed_row};scene.panes[0].frame=changed;renderer.render(scene);
+    require(std::abs(int(pixel(renderer.read_pixels(),96,8,12).a)-230)<=1,"damage repaint accumulated background alpha");
+    renderer.set_background_opacity(1);renderer.render(scene);
+    require(pixel(renderer.read_pixels(),96,8,12).a==255,"opaque fallback not applied");
+}
+void cache_pressure_test() {
+    RendererOptions options;options.force_warp=true;options.image_cache_bytes=8;options.shape_cache_bytes=512;
+    Renderer renderer(nullptr,options);renderer.resize(96,64);
+    auto source=frame();source->rows=1;source->columns=4;
+    auto red=std::make_shared<ImagePixels>();red->image_id=1;red->generation=1;red->width=2;red->height=1;
+    red->bytes={240,20,30,255,240,20,30,255};
+    auto blue=std::make_shared<ImagePixels>(*red);blue->image_id=2;blue->bytes={20,30,240,255,20,30,240,255};
+    ImagePlacement a;a.pixels=red;a.column=-1;a.pixel_width=32;a.pixel_height=24;
+    ImagePlacement b;b.pixels=blue;b.column=1;b.pixel_width=16;b.pixel_height=24;
+    source->images={a,b};source->image_placements_generation=1;
+    WindowScene scene;scene.background={100,110,120,255};scene.panes.push_back({103,{16,16,64,24},source});
+    renderer.render(scene);const auto rgba=renderer.read_pixels();
+    require(near(pixel(rgba,96,8,24),scene.background),"negative image placement escaped pane clip");
+    require(near(pixel(rgba,96,24,24),{240,20,30,255}),"evicted texture lost in-flight drawing reference");
+    require(near(pixel(rgba,96,40,24),{20,30,240,255}),"second cache-pressure image not drawn");
+    require(renderer.stats().image_uploads==2 && renderer.stats().image_cache_bytes<=8,"image eviction budget failed");
+    require(renderer.stats().shape_cache_bytes<=512,"shape cache budget failed");
+}
+void rejected_image_test() {
+    RendererOptions options;options.force_warp=true;options.image_cache_bytes=4;
+    Renderer renderer(nullptr,options);renderer.resize(64,48);
+    auto source=frame();auto pixels=std::make_shared<ImagePixels>();pixels->width=8193;pixels->height=8193;
+    ImagePlacement image;image.pixels=pixels;image.pixel_width=16;image.pixel_height=16;
+    source->images.push_back(image);
+    WindowScene scene;scene.panes.push_back({102,{0,0,64,48},source});renderer.render(scene);
+    require(renderer.stats().image_uploads==0,"oversized malformed image was uploaded");
+    require(renderer.stats().image_cache_bytes==0,"rejected image consumed cache budget");
+}
+} // namespace
+int main() {
+    try {
+        native_render_test();transparency_test();cache_pressure_test();rejected_image_test();
+        std::cout<<"PASS Windows WARP renderer: pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
+        return 0;
+    } catch(const std::exception& error) { std::cerr<<"FAIL renderer smoke: "<<error.what()<<'\n';return 1; }
+}

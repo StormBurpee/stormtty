@@ -1,0 +1,150 @@
+{
+  "package": "Microsoft.Windows.Console.ConPTY",
+  "version": "1.25.260930003",
+  "download_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/1.25.260930003/microsoft.windows.console.conpty.1.25.260930003.nupkg",
+  "archive_sha256": "02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee",
+  "archive_sha512_base64": "LuqMk9r5oTzeRne35IOlUdSQ7DkjorOIbcnODGZ81MvmUpTr/1VBQz3fAdCNCwkfuR0Mluq+H7rS3Hes/A1fOw==",
+  "inspection_date": "2026-10-28",
+  "nuget_trust_signature_verification": "NOT PERFORMED: no NuGet/.NET verifier in Linux execution environment. Signature CMS parsed, not a trust/content verification. Native CI verification remains a gate.",
+  "official_sha512_endpoint": "404: no upstream digest comparison performed; recorded archive hashes identify inspected bytes only.",
+  "license": {
+    "nuspec_expression": "MIT",
+    "copyright": "Microsoft Corporation",
+    "license_file_in_archive": false,
+    "source_license_url": "https://raw.githubusercontent.com/microsoft/terminal/dc8ae365847d41f62d1ebca93815bb00959bc12f/LICENSE",
+    "source_license_sha256": "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b"
+  },
+  "x64_file_versions": {
+    "conpty.dll": "1.25.2609.30003",
+    "OpenConsole.exe": "1.25.2609.30003"
+  },
+  "x64_product_versions": {
+    "conpty.dll": "1.25.260930003",
+    "OpenConsole.exe": "1.25.260930003"
+  },
+  "x64_exports": [
+    "ClearPseudoConsole",
+    "ClosePseudoConsole",
+    "ConptyClearPseudoConsole",
+    "ConptyClosePseudoConsole",
+    "ConptyCreatePseudoConsole",
+    "ConptyCreatePseudoConsoleAsUser",
+    "ConptyPackPseudoConsole",
+    "ConptyReleasePseudoConsole",
+    "ConptyReparentPseudoConsole",
+    "ConptyResizePseudoConsole",
+    "ConptyShowHidePseudoConsole",
+    "CreatePseudoConsole",
+    "ReleasePseudoConsole",
+    "ResizePseudoConsole"
+  ],
+  "native_targets_layout": {
+    "dll": "conpty.dll",
+    "native_x64_host": "x64/OpenConsole.exe"
+  },
+  "runtime_qualification": "NOT RUN: no native Windows runtime in this executor. Current implementation selects inbox system ConPTY, NOT these binaries.",
+  "files": {
+    "_rels/.rels": {
+      "bytes": 526,
+      "sha256": "b77bd38c04e9fdfb531fd5812a3a5594196687e4c2806fbeb346fe4511d4a5a3"
+    },
+    "Microsoft.Windows.Console.ConPTY.nuspec": {
+      "bytes": 736,
+      "sha256": "e7663d6e7b877ae5faa476e37bcdf6e01041805d9a46a2a2718b7c99bcb255fe"
+    },
+    "build/Microsoft.Windows.Console.ConPTY.props": {
+      "bytes": 1633,
+      "sha256": "417515fb53e2c919559fba1f4e4189e710ae59cf2c98ffcbaffdb0627b5db5c5"
+    },
+    "build/Microsoft.Windows.Console.ConPTY.targets": {
+      "bytes": 1070,
+      "sha256": "6288e160941c9bd43e682a9a4f8f697bcdeeb50930e90c6b5c34f243880e421d"
+    },
+    "build/native/Microsoft.Windows.Console.ConPTY.props": {
+      "bytes": 239,
+      "sha256": "872730c4957a840f9ba19d4631db3086f6bc883b4b0ecddd64d01f9d599ed52a"
+    },
+    "build/native/Microsoft.Windows.Console.ConPTY.targets": {
+      "bytes": 1412,
+      "sha256": "3c8e70c9ce166fd7f64143829ede2065b5f10d5fad993731910399dbf75db232"
+    },
+    "inc/conpty.h": {
+      "bytes": 2066,
+      "sha256": "976ccae27ccd70a4710275d05bbedbc7139a8e04b2537bfca0a827f70414f53d"
+    },
+    "runtimes/win-x86/native/conpty.dll": {
+      "bytes": 98616,
+      "sha256": "d145f621bf64a9da3b7395587ddef9831ca404805d8987ec8c9903d0c4603d93"
+    },
+    "runtimes/win-x86/lib/uap10.0/conpty.lib": {
+      "bytes": 5124,
+      "sha256": "ffd923f5e542a7899bfac2f7af5c6af1aab03bd34f985229bbff81b6a9de56be"
+    },
+    "build/native/runtimes/x86/OpenConsole.exe": {
+      "bytes": 1046880,
+      "sha256": "e3e475547d57da0689dc9fc5e0101d10390e2a4719a6eb5dcad569f6cb33c1a3"
+    },
+    "runtimes/win-x64/native/conpty.dll": {
+      "bytes": 119608,
+      "sha256": "feeef341d891643c62d30b6b07800bc70f0bc148f44cb8c3bee84aa557ae805a"
+    },
+    "runtimes/win-x64/lib/uap10.0/conpty.lib": {
+      "bytes": 4900,
+      "sha256": "3d37b3910bf180adcf3e2b1353ba5bcb563aee2d63479d266701874d6464f02f"
+    },
+    "build/native/runtimes/x64/OpenConsole.exe": {
+      "bytes": 1089376,
+      "sha256": "3d66b23d0a71bb8eed2b77edc8b9df9bf54ce6c8fb74c863a30e760997f80586"
+    },
+    "runtimes/win-arm64/lib/uap10.0/conpty.lib": {
+      "bytes": 4900,
+      "sha256": "777623fe1e82d3e88c18bc4da1a7731cc14b8103371bf2811dd65aca0ea82d82"
+    },
+    "runtimes/win-arm64/native/conpty.dll": {
+      "bytes": 116024,
+      "sha256": "151a02355227710c20c9f8f1eaf68ac4668aa09cdc921adc7ec661804d8eb1bf"
+    },
+    "build/native/runtimes/arm64/OpenConsole.exe": {
+      "bytes": 1149752,
+      "sha256": "4313825a3ba634d113cc6ed3bc8ce735e3c19d360cecd985794787479469f91f"
+    },
+    "[Content_Types].xml": {
+      "bytes": 784,
+      "sha256": "1af28a0a1ae585a5ee924b9a33d0322b52b1b1ea0a14fca5d2cb009103bd68b7"
+    },
+    "package/services/metadata/core-properties/28205e962da841689622b8193bda09b9.psmdcp": {
+      "bytes": 797,
+      "sha256": "23df973002a4c74fa99585afe8eb35899885fb28ac573ea571945e2c5e0df96d"
+    },
+    ".signature.p7s": {
+      "bytes": 25986,
+      "sha256": "c43fdae25f16cee3d4179f3b88a783fbab0a8af131020197df73f07a3a3192e0"
+    }
+  },
+  "binary_architectures": {
+    "build/native/runtimes/x86/OpenConsole.exe": {
+      "machine": "0x14c",
+      "architecture": "x86"
+    },
+    "build/native/runtimes/arm64/OpenConsole.exe": {
+      "machine": "0xaa64",
+      "architecture": "ARM64"
+    },
+    "build/native/runtimes/x64/OpenConsole.exe": {
+      "machine": "0x8664",
+      "architecture": "x64"
+    },
+    "runtimes/win-arm64/native/conpty.dll": {
+      "machine": "0xaa64",
+      "architecture": "ARM64"
+    },
+    "runtimes/win-x64/native/conpty.dll": {
+      "machine": "0x8664",
+      "architecture": "x64"
+    },
+    "runtimes/win-x86/native/conpty.dll": {
+      "machine": "0x14c",
+      "architecture": "x86"
+    }
+  }
+}
