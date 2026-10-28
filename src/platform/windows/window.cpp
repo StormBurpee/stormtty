@@ -339,7 +339,17 @@ private:
     void paste();
     void set_clipboard(std::string_view);
     void toggle_palette();
-    std::vector<const Command*> palette_commands() const;
+    bool smoke_palette_evidence(SessionId);
+    struct PaletteEntry {
+        std::string id, label, description;
+        std::optional<ProjectSessionReference> session;
+        int score{};
+    };
+    struct PaletteLayout { Rect panel; std::size_t first{}, rows{}; std::vector<Rect> row_bounds; };
+    std::vector<PaletteEntry> palette_commands() const;
+    PaletteLayout palette_layout(std::span<const PaletteEntry>) const;
+    CommandAvailability palette_availability(const PaletteEntry&) const;
+    void activate_palette_entry(const PaletteEntry&);
     void popup_menu(Point, bool pane_actions = false);
     void pointer_down(Point, bool double_click);
     void pointer_move(Point);
@@ -473,6 +483,7 @@ private:
     std::optional<ModalDecision> modal_pressed_;
     WPARAM caption_pressed_{};
     std::size_t palette_index_{};
+    bool palette_background_only_{};
     TabId rename_tab_{};
     Utf16Input text_input_;
     WPARAM text_vk_{}; LPARAM text_flags_{};
@@ -989,12 +1000,13 @@ void NativeWindow::answer_modal(ModalDecision decision) {
     if (hwnd_) { changed(); caret_schedule(); }
 }
 std::string NativeWindow::background_title(const ParkedSession& parked, bool status) const {
-    std::string title=parked.title.empty()?parked.profile:parked.title;
+    std::string profile;
+    if (managed_shell_profile_ && managed_shell_profile_->id==parked.profile) profile=managed_shell_profile_->label;
+    else for (const auto& candidate:config_.profiles) if (candidate.id==parked.profile) { profile=candidate.label; break; }
+    std::string title=background_session_title(parked.user_title,parked.title,profile);
     if (auto found=sessions_.find(parked.session); found!=sessions_.end()) {
         const auto info=found->second->info();
-        if (!info.title.empty()) title=info.title;
-        title.erase(std::remove_if(title.begin(),title.end(),[](unsigned char c){return c<0x20 || c==0x7f;}),title.end());
-        if (title.empty()) title="Terminal";
+        title=background_session_title(parked.user_title,info.title.empty()?parked.title:info.title,profile);
         // Keep UTF-8 intact; DirectWrite clips bounded actor titles.
         if (!status) return title;
         if (const auto attention=parked_attention_.find(parked.session); attention!=parked_attention_.end() && attention->second.unread_completion()) title+=" · command finished";
@@ -1501,21 +1513,72 @@ CommandAvailability host_availability(std::string_view id, const CommandContext&
     return command_availability(id, context);
 }
 void NativeWindow::toggle_palette() {
+    palette_background_only_=false;
     palette_open_ = !palette_open_; rename_open_ = false; query_.clear(); palette_index_ = 0;
     composing_ = false; preedit_.clear();
     if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
     caret_schedule(); changed();
 }
-std::vector<const Command*> NativeWindow::palette_commands() const {
-    std::string query = query_;
-    for (auto& c : query) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    std::vector<const Command*> result;
-    for (const auto& command : command_registry()) {
-        std::string haystack = std::string(command.label) + " " + std::string(command.description);
-        for (auto& c : haystack) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-        if (query.empty() || haystack.find(query) != std::string::npos) result.push_back(&command);
+std::vector<NativeWindow::PaletteEntry> NativeWindow::palette_commands() const {
+    std::vector<PaletteEntry> result;
+    if (!palette_background_only_) for (const auto& command:command_registry())
+        if (const auto score=command_search_score(query_,command.label,command.description))
+            result.push_back({std::string(command.id),std::string(command.label),std::string(command.description),{},*score});
+    // Only the current workspace: restoration must never silently switch projects.
+    // Titles are presentation/search data, never interpreted as commands or IDs.
+    for (const auto& parked:projects_.active()->parked_sessions) {
+        const auto title=(palette_background_only_?"":"Restore · ")+background_title(parked,false);
+        auto context=projects_.active()->metadata.name;
+        if (const auto actor=sessions_.find(parked.session); actor!=sessions_.end()) {
+            auto cwd=actor->second->info().working_directory;
+            std::erase_if(cwd,[](unsigned char c){return c<0x20 || c==0x7f;});
+            if (!cwd.empty() && cwd!=context) context+=(context.empty()?"":" · ")+cwd;
+        }
+        if (const auto score=command_search_score(query_,title,context))
+            result.push_back({{},title,context,ProjectSessionReference{projects_.active_id(),parked.session},*score});
     }
+    std::stable_sort(result.begin(),result.end(),[](const auto& a,const auto& b){return a.score>b.score;});
     return result;
+}
+NativeWindow::PaletteLayout NativeWindow::palette_layout(std::span<const PaletteEntry> entries) const {
+    const double w=std::min(640.0,std::max(0.0,width_-32));
+    const double preferred_y=std::min(72.0,std::max(16.0,height_*0.12));
+    const double budget=std::max(48.0,height_-preferred_y-102);
+    const auto selected=entries.empty()?0:std::min(palette_index_,entries.size()-1);
+    auto height=[&](std::size_t i){return entries[i].session || !palette_availability(entries[i]).enabled?48.0:36.0;};
+    std::size_t first=selected;
+    double body=entries.empty()?0:height(selected);
+    while (first && selected-first<7 && body+height(first-1)<=budget) body+=height(--first);
+    std::vector<double> heights;
+    body=0;
+    if (!rename_open_) for (auto i=first;i<entries.size() && heights.size()<8;++i) {
+        const auto row_height=height(i);
+        if (!heights.empty() && body+row_height>budget) break;
+        heights.push_back(row_height); body+=row_height;
+    }
+    const double h=rename_open_?86:86+std::max(48.0,body);
+    const double y=std::min(preferred_y,std::max(8.0,height_-h-8));
+    PaletteLayout result{{(width_-w)/2,y,w,h},first,heights.size(),{}};
+    double top=y+58;
+    for (const auto row_height:heights) { result.row_bounds.push_back({result.panel.x+8,top,w-16,row_height}); top+=row_height; }
+    return result;
+}
+CommandAvailability NativeWindow::palette_availability(const PaletteEntry& entry) const {
+    if (!entry.session) return host_availability(entry.id,command_context());
+    const auto target=*entry.session;
+    const auto* project=projects_.find(target.project);
+    if (!project || target.project!=projects_.active_id() || !sessions_.contains(target.local) ||
+        std::none_of(project->parked_sessions.begin(),project->parked_sessions.end(),[&](const auto& item){return item.session==target.local;}))
+        return {false,"This background terminal is no longer available"};
+    if (project->workspace.state().tabs.size()>=Workspace::maximum_tabs) return {false,"Tab limit reached"};
+    return {true,{}};
+}
+void NativeWindow::activate_palette_entry(const PaletteEntry& entry) {
+    const auto available=palette_availability(entry);
+    if (!available.enabled) { show_error(available.reason); return; }
+    palette_open_=false; query_.clear();
+    if (entry.session) restore_parked(*entry.session);
+    else dispatch(entry.id);
 }
 void NativeWindow::dispatch(std::string_view command) {
     if (modal_ || overlay_open()) return;
@@ -1544,6 +1607,10 @@ void NativeWindow::dispatch(std::string_view command) {
     }
     if (command == "tab.new") { new_tab(); return; }
     if (command == "tab.close") { close_tab(tab); return; }
+    if (command == "background.restore") {
+        if (!palette_open_) toggle_palette();
+        palette_background_only_=true; query_.clear(); palette_index_=0; changed(); return;
+    }
     if (command == "pane.background") { park_pane(pane); return; }
     if (command == "pane.close") { close_pane(pane); return; }
     if (command == "pane.split_right") { split(Direction::right); return; }
@@ -1845,25 +1912,41 @@ WindowScene NativeWindow::scene() {
     z={ChromeLayer::palette}; // Cached closing primitives/text retain this same surface.
     const auto palette_primitive_start=result.primitives.size(), palette_text_start=result.texts.size();
     if (palette_open_ || rename_open_) {
-        const double w = std::min(560.0,std::max(0.0,width_-32)), x = (width_-w)/2, y=std::min(72.0,std::max(0.0,height_-80));
-        const auto commands = palette_commands();
-        const std::size_t first = palette_index_ >= 8 ? palette_index_-7 : 0;
-        const auto rows = rename_open_ ? std::size_t{0} : std::min<std::size_t>(8,commands.size()-std::min(first,commands.size()));
-        rectangle({x,y,w,64+rows*44.0},raised,8,seam,1);
-        label({x+16,y+12,w-32,22},query_.empty() ? (rename_open_ ? "Type a tab name; Enter saves, Escape cancels" : "Search commands…   Alt+Enter to set shortcut") : query_, query_.empty()?secondary:text,14);
-        line(x+12,y+47,x+w-12,y+47,seam);
-        for (std::size_t row=0;row<rows;++row) {
-            const auto index=first+row; const auto& command=*commands[index];
-            const auto available=host_availability(command.id,command_context());
-            const double top=y+55+row*44;
-            if (index==palette_index_) rectangle({x+7,top-2,w-14,42},background,4,accent,1);
-            label({x+16,top,w-170,20},std::string(command.label),available.enabled?text:secondary,13);
-            label({x+16,top+20,w-32,17},std::string(available.enabled?command.description:available.reason),secondary,11);
-            for (const auto& binding : config_.bindings) if (binding.command==command.id) {
-                label({x+w-150,top,134,20},format_key_chord(binding.chord,Platform::windows),secondary,11); break;
+        const auto commands=palette_commands();
+        const auto layout=palette_layout(commands);
+        const auto [x,y,w,h]=layout.panel;
+        rectangle(layout.panel,raised,10,seam,1);
+        rectangle({x+w-49,y+18,30,19},background,4,seam,1);
+        label({x+w-44,y+20,24,15},"Esc",secondary,10);
+        label({x+20,y+16,w-90,24},query_.empty()?(rename_open_?"Tab name":palette_background_only_?"Search background terminals…":"Type a command…"):query_,query_.empty()?secondary:text,16);
+        line(x+1,y+50,x+w-1,y+50,seam);
+        for (std::size_t row=0;row<layout.rows;++row) {
+            const auto index=layout.first+row; const auto& command=commands[index];
+            const auto available=palette_availability(command);
+            const auto bounds=layout.row_bounds[row];
+            const auto detail=!available.enabled?available.reason:command.session?std::string_view(command.description):std::string_view{};
+            const double top=bounds.y+(detail.empty()?7:3);
+            if (index==std::min(palette_index_,commands.size()-1)) {
+                rectangle({bounds.x,bounds.y,bounds.width,bounds.height-4},background,5);
+                rectangle({bounds.x,bounds.y+7,3,bounds.height-18},accent,1);
+            }
+            std::string shortcut;
+            for (const auto& binding:config_.bindings) if (binding.command==command.id) { shortcut=format_key_chord(binding.chord,Platform::windows); break; }
+            const double key_width=shortcut.empty()?0:std::min(w*0.45,shortcut.size()*6.3+16);
+            label({x+20,top,w-40-key_width-(key_width?12:0),21},command.label,available.enabled?text:secondary,14);
+            if (!detail.empty()) label({x+20,top+21,w-40,17},std::string(detail),secondary,11);
+            if (key_width) {
+                rectangle({x+w-20-key_width,top,key_width,21},raised,4,seam,1);
+                label({x+w-12-key_width,top+3,key_width-16,15},shortcut,secondary,10);
             }
         }
-        if (!rename_open_ && commands.empty()) label({x+16,y+50,w-32,20},"No matching commands",secondary,12);
+        if (!rename_open_ && commands.empty()) {
+            label({x+20,y+60,w-40,21},palette_background_only_ && query_.empty()?"No background terminals":"No matching commands",text,14);
+            label({x+20,y+83,w-40,18},query_.empty()?"Move a terminal to background to keep it running here.":"Try fewer letters or a different action name.",secondary,11);
+        }
+        const auto hint=rename_open_?"Enter  Save":palette_background_only_?"↑ ↓  Navigate     Enter  Restore":"↑↓  Move     Enter  Run     Alt+Enter  Shortcut";
+        line(x+1,y+h-29,x+w-1,y+h-29,seam);
+        label({x+20,y+h-22,w-40,16},hint,secondary,10);
     }
     if (palette_open_ || rename_open_) {
         closing_palette_primitives_.assign(result.primitives.begin()+palette_primitive_start,result.primitives.end());
@@ -2056,7 +2139,7 @@ bool NativeWindow::key_message(MSG& message) {
         if (vk == VK_RETURN) {
             if (palette_open_ && (modifiers&Modifier::alt) && !altgr) {
                 const auto commands=palette_commands();
-                if (!commands.empty()) open_settings(std::string(commands[std::min(palette_index_,commands.size()-1)]->id));
+                if (!commands.empty() && !commands[std::min(palette_index_,commands.size()-1)].session) open_settings(commands[std::min(palette_index_,commands.size()-1)].id);
                 if (vk<consumed_keys_.size()) consumed_keys_[vk]=true;
                 return true;
             }
@@ -2064,11 +2147,22 @@ bool NativeWindow::key_message(MSG& message) {
             else {
                 const auto commands = palette_commands();
                 if (!commands.empty()) {
-                    const auto command = std::string(commands[std::min(palette_index_,commands.size()-1)]->id);
-                    if (host_availability(command,command_context()).enabled) { palette_open_=false; query_.clear(); dispatch(command); }
+                    activate_palette_entry(commands[std::min(palette_index_,commands.size()-1)]);
                 }
             }
             caret_schedule(); return true;
+        }
+        if (!rename_open_ && (vk==VK_HOME || vk==VK_END || vk==VK_PRIOR || vk==VK_NEXT)) {
+            const auto commands=palette_commands();
+            if (!commands.empty()) {
+                const auto last=commands.size()-1, step=palette_layout(commands).rows;
+                palette_index_=std::min(palette_index_,last);
+                if (vk==VK_HOME) palette_index_=0;
+                else if (vk==VK_END) palette_index_=last;
+                else if (vk==VK_PRIOR) palette_index_=palette_index_>step?palette_index_-step:0;
+                else palette_index_=std::min(last,palette_index_+step);
+            }
+            changed(); return true;
         }
         if (!rename_open_ && (vk == VK_UP || vk == VK_DOWN)) {
             const auto commands = palette_commands();
@@ -2301,12 +2395,15 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
     }
     notice_.clear();
     if (palette_open_ || rename_open_) {
-        const double w=std::min(560.0,std::max(0.0,width_-32)),x=(width_-w)/2,y=std::min(72.0,std::max(0.0,height_-80));
-        const auto commands=palette_commands(); const std::size_t first=palette_index_>=8?palette_index_-7:0;
-        if (!rename_open_ && Rect{x,y+53,w,352}.contains(point)) {
-            const auto index=first+static_cast<std::size_t>((point.y-y-53)/44);
-            if (index<commands.size()) { palette_index_=index; const auto id=std::string(commands[index]->id); if (host_availability(id,command_context()).enabled) { palette_open_=false; dispatch(id); } }
-        } else if (!Rect{x,y,w,64+std::min<std::size_t>(8,commands.size())*44.0}.contains(point)) { palette_open_=rename_open_=false; query_.clear(); }
+        const auto commands=palette_commands(); const auto layout=palette_layout(commands);
+        const auto& panel=layout.panel;
+        if (!rename_open_) for (std::size_t row=0;row<layout.row_bounds.size();++row) {
+            if (layout.row_bounds[row].contains(point)) {
+                palette_index_=layout.first+row; activate_palette_entry(commands[palette_index_]);
+                changed(); return;
+            }
+        }
+        if (!panel.contains(point)) { palette_open_=rename_open_=false; query_.clear(); }
         changed(); return;
     }
     if (zoom_return_.contains(point)) { dispatch("pane.zoom"); return; }
@@ -2643,6 +2740,42 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
     std::fprintf(stderr,"Native motion values settings=%.6f menu=%.6f selected_workspace=%.6f active_pane=%.6f chrome_timer=%d\n",
         settings_transition_.value(chrome_now()),menu_transition_.value(chrome_now()),
         workspace_focus_[projects_.active_id()].value(chrome_now()),pane_focus_[workspace().active_pane()].value(chrome_now()),motion_timer_active_);
+}
+bool NativeWindow::smoke_palette_evidence(SessionId parked) {
+    const auto actor=sessions_.at(parked);
+    const auto actor_count=sessions_.size();
+    const auto fail=[&](std::string_view message){smoke_finish(message); return false;};
+    smoke_chrome_time_=GetTickCount64()+1000;
+    toggle_palette(); palette_transition_.finish();
+    smoke_motion_capture(L"palette-commands",0);
+    query_="splr";
+    auto entries=palette_commands();
+    if (entries.empty() || entries.front().id!="pane.split_right") return fail("Palette fuzzy ranking did not resolve split-right abbreviation.");
+    smoke_motion_capture(L"palette-fuzzy",0);
+    query_="zzzzzzzzzzzzzzzz";
+    if (!palette_commands().empty()) return fail("Palette no-result query unexpectedly matched.");
+    smoke_motion_capture(L"palette-no-results",0);
+    toggle_palette(); dispatch("background.restore"); palette_transition_.finish();
+    entries=palette_commands();
+    if (entries.size()!=1 || !entries.front().session || entries.front().session->local!=parked || focused_session_)
+        return fail("Background picker lost the qualified parked identity or leaked terminal focus.");
+    const auto stale=entries.front();
+    smoke_motion_capture(L"palette-background",0);
+    MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam=VK_RETURN;
+    if (!key_message(key)) return fail("Background picker did not consume Enter.");
+    key.message=WM_KEYUP; key_message(key);
+    if (palette_open_ || active_session()!=actor.get() || sessions_.size()!=actor_count ||
+        !projects_.active()->parked_sessions.empty() || palette_availability(stale).enabled)
+        return fail("Keyboard background restore restarted/replaced an actor or left a stale entry enabled.");
+    // Repeated stale activation is rejected before touching placement or ownership.
+    activate_palette_entry(stale); notice_.clear();
+    if (active_session()!=actor.get() || sessions_.size()!=actor_count) return fail("Stale palette activation changed session ownership.");
+    park_pane(workspace().active_pane());
+    if (projects_.active()->parked_sessions.size()!=1 || projects_.active()->parked_sessions.front().session!=parked)
+        return fail("Palette smoke could not restore the original background fixture.");
+    smoke_chrome_time_.reset();
+    std::fputs("Native palette smoke: fuzzy rank, empty results, keyboard background restore, stale identity rejection and same session actor verified; real framebuffer captures emitted.\n",stderr);
+    return true;
 }
 void NativeWindow::smoke_focus_evidence(bool project) {
     smoke_chrome_time_=GetTickCount64()+1000; motion_schedule();
@@ -3009,6 +3142,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             sessions_.at(smoke_parked_session_)!=actor || actor->process_finished() || !projects_.validate()) {
             smoke_finish("Parking the final pane did not retain the original live actor in an empty workspace."); return;
         }
+        if (!smoke_palette_evidence(smoke_parked_session_)) return;
         close_parked({smoke_primary_project_,smoke_parked_session_});
         if (!modal_ || modal_focus_.activate()!=ModalDecision::cancel) { smoke_finish("Background close did not show Cancel-default styled confirmation."); return; }
         answer_modal(ModalDecision::cancel);
@@ -3185,7 +3319,8 @@ void NativeWindow::position_ime() {
     if (!hwnd_ || !renderer_) return;
     POINT position{}; RECT exclusion{};
     if (palette_open_ || rename_open_) {
-        position={static_cast<LONG>(std::max(16.0,(width_-560)/2+16)*scale_),static_cast<LONG>(96*scale_)};
+        const auto panel=palette_layout({}).panel;
+        position={static_cast<LONG>((panel.x+20)*scale_),static_cast<LONG>((panel.y+16)*scale_)};
         exclusion={position.x,position.y,position.x+1,position.y+static_cast<LONG>(20*scale_)};
     } else for (const auto& pane:layout_.panes) if (pane.pane==workspace().active_pane()) {
         const auto content=content_bounds(pane); const auto metrics=renderer_->metrics();

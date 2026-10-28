@@ -222,6 +222,22 @@ void bounds_and_unbound_workspaces() {
     CHECK(catalog.create({"Available again", {}, {}})); CHECK(catalog.validate());
 }
 
+void parked_user_title() {
+    ProjectWorkspaceCatalog catalog;
+    Workspace source;
+    CHECK(source.create_tab({40},"shell-profile"));
+    const auto pane=source.active_pane();
+    CHECK(source.set_pane_title(pane,"zsh.exe"));
+    CHECK(source.rename_tab(source.active_tab(),"Release build"));
+    const auto project=create(catalog,"One",source);
+    CHECK(catalog.park({project,pane}));
+    CHECK(catalog.find(project)->parked_sessions.front().title=="zsh.exe");
+    CHECK(catalog.find(project)->parked_sessions.front().user_title=="Release build");
+    const auto restored=catalog.reattach_to_new_tab({project,{40}}); CHECK(restored);
+    CHECK(catalog.workspace(project)->tab(*restored.value)->title=="Release build");
+    CHECK(catalog.workspace(project)->pane(catalog.workspace(project)->active_pane())->session==SessionId{40});
+    CHECK(catalog.validate());
+}
 void parked_ownership_and_identity() {
     ProjectWorkspaceCatalog catalog;
     Workspace source;
@@ -237,7 +253,7 @@ void parked_ownership_and_identity() {
     CHECK(catalog.active_id() == b);
     CHECK(catalog.find(a)); CHECK(catalog.workspace(a)->state().tabs.empty());
     CHECK(catalog.workspace(a)->validate()); CHECK(catalog.validate());
-    CHECK(catalog.find(a)->parked_sessions == std::vector<ParkedSession>({{{41}, "shell-profile", "Build output"}}));
+    CHECK(catalog.find(a)->parked_sessions == std::vector<ParkedSession>({{{41}, "shell-profile", "Build output", {}}}));
     CHECK(catalog.all_session_ids() == sessions); CHECK(catalog.contains_session({41}));
     CHECK(catalog.session_ids(a) == std::vector<SessionId>({{41}}));
     const auto before = snapshot(catalog);
@@ -441,6 +457,6 @@ int main() {
     return run_core_tests("project_workspaces", [] {
         lifecycle_and_hidden_sessions(); identity_domains(); deliberate_removal();
         failures_are_transactional(); bounds_and_unbound_workspaces(); operation_trace();
-        parked_ownership_and_identity(); parked_bounds_and_rollback(); parked_attention_placement_lifecycle();
+        parked_user_title(); parked_ownership_and_identity(); parked_bounds_and_rollback(); parked_attention_placement_lifecycle();
     });
 }
