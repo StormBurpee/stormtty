@@ -74,6 +74,25 @@ jobs:
             print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
             if result.exit_code:failures.append(mode)
           raise SystemExit(1 if failures else 0)
+      - name: Validate and replay the exact initial Ink frame
+        shell: python
+        run: |
+          import pathlib,os,sys,subprocess,importlib.util,json
+          root=pathlib.Path('build-width/artifacts').resolve()
+          exe=pathlib.Path('build-width/conpty_width_probe.exe').resolve()
+          fixture=pathlib.Path('tests/ink/conpty-width-probe/first-frame-56.bin').resolve()
+          subprocess.run([sys.executable,'tests/ink/conpty-width-probe/verify-first-frame.py',str(exe),str(fixture),str(root/'fixture-validation')],check=True,timeout=120)
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
+          failures=[]
+          for mode in ('inbox','packaged'):
+            args=[str(exe),'--first-frame',str(fixture),str(root/('first-frame-'+mode))]
+            if mode=='packaged':args+=['--packaged-provider',str(pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-width-provider')]
+            result=runner.run_owned(args,timeout=60,output_dir=root)
+            print('FIRST_FRAME_PROCESS_RESULT='+json.dumps({'provider':mode,**result.metadata()},sort_keys=True),flush=True)
+            print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+            if result.exit_code:failures.append(mode)
+          raise SystemExit(1 if failures else 0)
       - name: Record bounded controlled evidence in logs
         if: always()
         shell: python

@@ -113,3 +113,58 @@ No undocumented flags, blank clears, stream replay, or VT filtering are proposed
 Linux-host Windows GNU strict compilation and linking are compile gates only.
 Native MSVC execution, inbox/package comparisons and artifact interpretation
 remain required. No production source is modified by this diagnostic target.
+
+## Exact captured first-frame replay
+
+The initial two native width-probe runs (`40709921562`, `40709935901`) agree:
+all captured process files were byte-identical. Inbox counts the combining acute
+as one cell; packaged counts it as zero. Simple primary-screen Unicode rows still
+render coherently, so that probe did **not** reproduce the original missing
+border. The next mode changes no frame bytes:
+
+```powershell
+$frame = "$PWD/tests/ink/conpty-width-probe/first-frame-56.bin"
+python tests/ink/conpty-width-probe/verify-first-frame.py "$PWD/build-width/conpty_width_probe.exe" $frame "$PWD/fixture-validation"
+./build-width/conpty_width_probe.exe --first-frame $frame "$PWD/inbox-first-frame"
+./build-width/conpty_width_probe.exe --first-frame $frame "$PWD/packaged-first-frame" --packaged-provider "$PWD/conpty-probe"
+```
+
+`first-frame-56.bin` is exactly the first 1,942 bytes of the controlled producer
+stdout captured by native Windows job `122654507942`, commit `edf353d`, static
+56x20 transport probe. Extraction ends immediately after the first `CSI ?2026l`:
+
+- Complete producer capture SHA256:
+  `143154963fe9b837fc62be56ce1ef61f5628ae64042b90af415691794fe11c99`.
+- Extracted first-frame SHA256:
+  `1b400fe291a59ff91cb66d07eb4e80a86c68a2f7bdfa20f46cb75295c4815b59`.
+- Associated complete ConPTY capture SHA256:
+  `bd3f4e33071e83b43d78350e5ce7a4192de4dfed35a0319cc4b3abccbd469061`.
+
+Only fixed test content is present. Git attributes preserve all bytes, including
+19 bare LF bytes, alternate-screen entry, synchronized-output boundaries and
+SGR. There is no EL in this source frame. Native parent and child each verify
+length and SHA256; the parent rejects invalid input before creating a process
+or output directory. `--verify-first-frame` performs this check without starting
+a child. The Python preflight verifies valid, changed, truncated, newline-altered
+and missing fixtures, including fail-closed prelaunch behavior.
+
+The child decodes the exact UTF-8 into UTF-16 and makes **one WriteConsoleW call**.
+Original write-call boundaries and timing were not retained by the stdout capture;
+identical concatenated bytes do not imply identical producer timing. No per-row
+sample forces an artificial write boundary. GSBI samples occur only before the
+write, after it, and after a two-second observation window. No resize, LF→CRLF
+source rewrite, screen-mode variant or EL workaround is applied. Console output
+mode remains the inherited mode OR VT (observed mode7 in the prior native runs);
+its own newline behavior is part of the measured provider.
+
+The parent preserves its last observed live alternate-screen snapshot and the
+exact consumed transport prefix in `*-observed-prefix.bin`, with the prefix
+length and snapshot availability in `*-observation.txt`. `*-ghostty-viewport.txt`
+uses that snapshot in first-frame mode, rather than allowing teardown to hide it.
+The observation also reports whether row3/column55 retains the expected Unicode
+border. Missing border is **diagnostic output**, not a waived acceptance assertion;
+no observed alternate snapshot is a collection failure. Full transport through
+process exit is still retained separately. No first-frame native result is claimed
+until this mode runs on Windows. If it does not reproduce, original write timing,
+subsequent redraws and real Node initialization remain open factors rather than
+permission to alter consumer EL semantics.

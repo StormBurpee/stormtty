@@ -3,6 +3,7 @@
 #include "stormtty/terminal.hpp"
 #define NOMINMAX
 #include <windows.h>
+#include <bcrypt.h>
 #include <array>
 #include <chrono>
 #include <filesystem>
@@ -33,7 +34,27 @@ struct File {
     ~File() { if (h != INVALID_HANDLE_VALUE) CloseHandle(h); }
     void write(std::string_view b) { DWORD n{}; check(WriteFile(h, b.data(), static_cast<DWORD>(b.size()), &n, nullptr) && n == b.size(), "Evidence write failed"); }
 };
-int child(const std::filesystem::path& evidence, unsigned columns, bool file_route) {
+std::string first_frame(const std::filesystem::path& path) {
+    check(path.is_absolute(), "First-frame fixture path must be absolute");
+    check(std::filesystem::file_size(path) == 1942, "First-frame fixture length mismatch");
+    std::ifstream input(path, std::ios::binary);
+    std::array<char, 1943> bounded{};
+    input.read(bounded.data(), static_cast<std::streamsize>(bounded.size()));
+    check(!input.bad() && input.eof() && input.gcount() == 1942, "First-frame fixture read failed");
+    std::string bytes(bounded.data(), 1942);
+    BCRYPT_ALG_HANDLE algorithm{};
+    check(BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0, "Open SHA256 failed");
+    std::array<unsigned char, 32> digest{};
+    const auto status = BCryptHash(algorithm, nullptr, 0, reinterpret_cast<PUCHAR>(bytes.data()), static_cast<ULONG>(bytes.size()), digest.data(), static_cast<ULONG>(digest.size()));
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    check(status >= 0, "SHA256 failed");
+    constexpr char hex[] = "0123456789abcdef";
+    std::string actual;
+    for (auto c : digest) { actual += hex[c >> 4]; actual += hex[c & 15]; }
+    check(actual == "1b400fe291a59ff91cb66d07eb4e80a86c68a2f7bdfa20f46cb75295c4815b59", "First-frame fixture SHA256 mismatch");
+    return bytes;
+}
+int child(const std::filesystem::path& evidence, unsigned columns, bool file_route, const std::filesystem::path& fixture = {}) {
     File log(evidence);
     auto source_path = evidence; source_path.replace_extension(".stdout.bin"); File source(source_path);
     const auto out = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -58,6 +79,16 @@ int child(const std::filesystem::path& evidence, unsigned columns, bool file_rou
         if (file_route) check(WriteFile(out, bytes.data(), static_cast<DWORD>(bytes.size()), &n, nullptr) && n == bytes.size(), "Console WriteFile failed");
         else { const auto w = wide(bytes); check(WriteConsoleW(out, w.data(), static_cast<DWORD>(w.size()), &n, nullptr) && n == w.size(), "WriteConsoleW failed"); }
     };
+    if (!fixture.empty()) {
+        const auto frame = first_frame(fixture);
+        log.write("original_write_boundaries=unknown; replay_write_calls=1; no_frame_byte_changes\n");
+        sample("before_exact_frame"); emit(frame); sample("after_exact_frame");
+        // Permit observation before exit/ConPTY teardown changes terminal modes.
+        // This does not recreate the missing original write-call timing.
+        std::this_thread::sleep_for(2000ms);
+        sample("after_observation_window");
+        check(FlushFileBuffers(log.h), "Flush evidence failed"); return 0;
+    }
     emit("\x1b[2J\x1b[H"); sample("initial");
     emit(std::string(columns, 'A')); sample("ascii_exact_fill");
     std::this_thread::sleep_for(150ms);
@@ -88,26 +119,33 @@ int child(const std::filesystem::path& evidence, unsigned columns, bool file_rou
 }
 void save(const std::filesystem::path& p, std::string_view b) { File f(p); f.write(b); }
 struct Capture { std::mutex mutex; std::string bytes; std::optional<ProcessExit> exit; };
-int parent(const std::filesystem::path& directory, const std::string& provider) {
+int parent(const std::filesystem::path& directory, const std::string& provider, const std::filesystem::path& fixture = {}) {
+    if (!fixture.empty()) (void)first_frame(fixture); // Reject before creating a child or evidence directory.
     check(directory.is_absolute() && !std::filesystem::exists(directory), "Capture directory must be absolute and fresh");
     check(std::filesystem::create_directories(directory), "Create capture directory failed");
     std::wstring exe(32768, L'\0'); const auto count = GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size()));
     check(count > 0 && count < exe.size(), "Get executable path failed"); exe.resize(count);
     unsigned failures{};
     for (const std::uint16_t columns : {56, 72, 73}) for (const bool file_route : {false, true}) {
+        if (!fixture.empty() && (columns != 56 || file_route)) continue;
         const auto stem = std::to_string(columns) + (file_route ? "-writefile" : "-writeconsole");
         auto capture = std::make_shared<Capture>();
         ProcessOptions options; options.executable = utf8(exe); options.grid = {columns, 20};
         options.arguments = {"--child", utf8((directory / (stem + "-cursor.tsv")).wstring()), std::to_string(columns), file_route ? "file" : "console"};
+        if (!fixture.empty()) options.arguments.push_back(utf8(fixture.wstring()));
         if (!provider.empty()) { options.provider = ProcessProvider::windows_packaged_experimental; options.provider_directory = provider; }
         auto process = Process::start(std::move(options), {
             [capture](std::string_view b, std::stop_token) { std::lock_guard lock(capture->mutex); check(b.size() <= 1024 * 1024 - capture->bytes.size(), "Transport capture exceeds 1 MiB"); capture->bytes.append(b); },
             [capture](ProcessExit exit) { std::lock_guard lock(capture->mutex); capture->exit = std::move(exit); }});
         TerminalOptions opts; opts.size = {columns, 20, 8, 16}; TerminalCore core(opts);
-        std::size_t consumed{};
+        std::size_t consumed{}, alternate_offset{}; FramePtr alternate_frame;
         auto feed = [&] {
             std::string bytes; { std::lock_guard lock(capture->mutex); bytes = capture->bytes.substr(consumed); consumed = capture->bytes.size(); }
             core.feed(bytes);
+            if (!fixture.empty()) {
+                const auto frame = core.snapshot();
+                if (frame->alternate_screen) { alternate_frame = frame; alternate_offset = consumed; }
+            }
             for (const auto& effect : core.take_effects()) if (effect.kind == EffectKind::write_pty)
                 check(process->try_send(effect.text) == ProcessSendResult::accepted, "Terminal reply rejected");
         };
@@ -122,7 +160,16 @@ int parent(const std::filesystem::path& directory, const std::string& provider) 
         std::string bytes; std::optional<ProcessExit> result;
         { std::lock_guard lock(capture->mutex); bytes = capture->bytes; result = capture->exit; }
         save(directory / (stem + "-transport.bin"), bytes);
-        const auto frame = core.snapshot();
+        const auto final_frame = core.snapshot();
+        const auto frame = !fixture.empty() && alternate_frame ? alternate_frame : final_frame;
+        if (!fixture.empty()) {
+            std::string observation = "last_alternate_snapshot_available=" + std::to_string(bool(alternate_frame)) + "\ntransport_prefix_bytes=" + std::to_string(alternate_offset) + "\nfinal_alternate=" + std::to_string(final_frame->alternate_screen) + "\n";
+            if (alternate_frame && alternate_frame->lines.size() > 3 && alternate_frame->lines[3]->cells.size() == 56)
+                observation += "unicode_row3_column55_border=" + std::to_string(alternate_frame->lines[3]->cells[55].grapheme == "│") + "\n";
+            save(directory / (stem + "-observation.txt"), observation);
+            if (alternate_frame) save(directory / (stem + "-observed-prefix.bin"), std::string_view(bytes).substr(0, alternate_offset));
+            else ++failures; // No live alternate evidence means failed collection.
+        }
         std::string viewport;
         for (const auto& row : frame->lines) {
             for (const auto& cell : row->cells) if (cell.span != 0)
@@ -142,11 +189,18 @@ int parent(const std::filesystem::path& directory, const std::string& provider) 
 }
 int main(int argc, char** argv) {
     try {
-        if (argc == 5 && std::string_view(argv[1]) == "--child") {
+        if ((argc == 5 || argc == 6) && std::string_view(argv[1]) == "--child") {
             const auto columns = static_cast<unsigned>(std::stoul(argv[3]));
             check(columns == 56 || columns == 72 || columns == 73, "Invalid child grid");
             check(std::string_view(argv[4]) == "file" || std::string_view(argv[4]) == "console", "Invalid route");
-            return child(wide(argv[2]), columns, std::string_view(argv[4]) == "file");
+            return child(wide(argv[2]), columns, std::string_view(argv[4]) == "file", argc == 6 ? std::filesystem::path(wide(argv[5])) : std::filesystem::path{});
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--verify-first-frame") {
+            (void)first_frame(wide(argv[2])); return 0;
+        }
+        if ((argc == 4 || argc == 6) && std::string_view(argv[1]) == "--first-frame") {
+            check(argc == 4 || std::string_view(argv[4]) == "--packaged-provider", "Invalid first-frame provider option");
+            return parent(wide(argv[3]), argc == 6 ? argv[5] : "", wide(argv[2]));
         }
         check(argc == 2 || (argc == 4 && std::string_view(argv[2]) == "--packaged-provider"), "Usage: conpty_width_probe <fresh-absolute-dir> [--packaged-provider <verified-dir>]");
         return parent(wide(argv[1]), argc == 4 ? argv[3] : "");
