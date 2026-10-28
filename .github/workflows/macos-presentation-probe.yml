@@ -1,0 +1,112 @@
+name: Isolated macOS presentation diagnostic
+on:
+  push:
+    branches: ['diagnostics/macos-present']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: macos-presentation-probe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  presentation:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Record bounded environment and selected display metadata
+        shell: python3 {0}
+        run: |
+          import json, os, pathlib, subprocess
+          out = pathlib.Path('build/artifacts/macos-presentation')
+          out.mkdir(parents=True, exist_ok=True)
+          evidence = {'source_revision': os.environ['GITHUB_SHA'],
+                      'runner_os': os.environ.get('RUNNER_OS'),
+                      'runner_arch': os.environ.get('RUNNER_ARCH'),
+                      'image_os': os.environ.get('ImageOS'),
+                      'image_version': os.environ.get('ImageVersion')}
+          def bounded(command, timeout):
+              try:
+                  result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                          timeout=timeout, check=False)
+                  return {'command': command, 'returncode': result.returncode,
+                          'stdout': result.stdout.decode('utf-8', errors='replace'),
+                          'stderr': result.stderr.decode('utf-8', errors='replace')}
+              except subprocess.TimeoutExpired:
+                  return {'command': command, 'timed_out': True, 'timeout_seconds': timeout}
+              except OSError as error:
+                  return {'command': command, 'error': str(error)}
+          for key, command in (
+              ('os', ['sw_vers']),
+              ('architecture', ['uname', '-m']),
+              ('sdk_version', ['xcrun', '--sdk', 'macosx', '--show-sdk-version']),
+              ('sdk_path', ['xcrun', '--sdk', 'macosx', '--show-sdk-path']),
+              ('compiler', ['xcrun', '--sdk', 'macosx', 'clang++', '--version'])):
+              evidence[key] = bounded(command, 10)
+          profile = bounded(['system_profiler', 'SPDisplaysDataType', '-json'], 20)
+          raw = profile.pop('stdout', '')
+          # Keep only useful GPU/display properties; do not publish hardware serials/EDID.
+          try:
+              devices = json.loads(raw).get('SPDisplaysDataType', []) if raw else []
+              gpu_keys = ('_name', 'sppci_model', 'spdisplays_vendor', 'spdisplays_device-id',
+                          'spdisplays_metal', 'spdisplays_vram', 'spdisplays_vram_shared',
+                          'spdisplays_bus', 'spdisplays_cores')
+              display_keys = ('_name', 'spdisplays_resolution', 'spdisplays_pixelresolution',
+                              'spdisplays_online', 'spdisplays_main', 'spdisplays_mirror',
+                              'spdisplays_connection_type', 'spdisplays_display_type')
+              profile['selected_devices'] = []
+              for device in devices:
+                  selected = {key: device[key] for key in gpu_keys if key in device}
+                  selected['displays'] = [{key: display[key] for key in display_keys if key in display}
+                                          for display in device.get('spdisplays_ndrvs', [])]
+                  profile['selected_devices'].append(selected)
+          except (ValueError, TypeError, AttributeError) as error:
+              profile['parse_error'] = str(error)
+          evidence['display_profile'] = profile
+          (out / 'environment.json').write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(evidence, indent=2, sort_keys=True), flush=True)
+      - name: Compile standalone baseline with official SDK
+        shell: bash
+        run: |
+          mkdir -p build/artifacts/macos-presentation
+          xcrun --sdk macosx clang++ -std=c++17 -fobjc-arc -Wall -Wextra \
+            -mmacosx-version-min=11.0 tools/macos-presentation-probe.mm \
+            -framework AppKit -framework Metal -framework QuartzCore -framework CoreGraphics \
+            -o build/macos-presentation-probe 2>&1 | tee build/artifacts/macos-presentation/compile.log
+      - name: Observe strict presentation result with owned-process deadline
+        shell: python3 {0}
+        run: |
+          import importlib.util, json, pathlib, sys
+          out = pathlib.Path('build/artifacts/macos-presentation')
+          spec = importlib.util.spec_from_file_location('owned_runner', pathlib.Path('tools/run-owned-process.py'))
+          runner = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = runner
+          spec.loader.exec_module(runner)
+          command = [str(pathlib.Path('build/macos-presentation-probe').resolve())]
+          try:
+              result = runner.run_owned(command, timeout=30, tail_bytes=1024*1024, output_dir=out)
+              # This bounded fixture produces far less than 1 MiB. Never label a truncated tail a full log.
+              (out / 'probe.log').write_bytes(result.output_tail)
+              code = result.exit_code
+              if code not in (0, 1, 2) or result.output_truncated or result.cleanup_error or not result.reaped:
+                  code = 1
+              metadata = result.metadata()
+              metadata.update(command=command, owned_runner_exit_code=result.exit_code, exit_code=code,
+                              outcome={0: 'PASS', 1: 'ERROR', 2: 'INCONCLUSIVE'}[code],
+                              log_complete=not result.output_truncated)
+              print(result.output_tail.decode('utf-8', errors='replace'), flush=True)
+          except (OSError, ValueError) as error:
+              code = 1
+              metadata = {'command': command, 'exit_code': code, 'outcome': 'ERROR', 'start_error': str(error)}
+          (out / 'process.json').write_text(json.dumps(metadata, indent=2, sort_keys=True) + '\n')
+          print('PRESENTATION_PROCESS_RESULT=' + json.dumps(metadata, sort_keys=True), flush=True)
+          print('Diagnostic only: INCONCLUSIVE remains failing; no native acceptance waiver.', flush=True)
+          raise SystemExit(code)
+      - name: Preserve diagnostic evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-presentation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/artifacts/macos-presentation/
+          if-no-files-found: error
+          retention-days: 14

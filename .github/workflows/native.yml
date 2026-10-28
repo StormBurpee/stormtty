@@ -1,9 +1,9 @@
 name: Native build and runtime evidence
 on:
   push:
-    paths-ignore: ['README.md', 'docs/**']
+    paths-ignore: ['README.md', 'docs/**', 'tools/macos-presentation-probe.mm', 'tools/macos-presentation-probe.md', '.github/workflows/macos-presentation-probe.yml']
   pull_request:
-    paths-ignore: ['README.md', 'docs/**']
+    paths-ignore: ['README.md', 'docs/**', 'tools/macos-presentation-probe.mm', 'tools/macos-presentation-probe.md', '.github/workflows/macos-presentation-probe.yml']
   workflow_dispatch:
 permissions:
   contents: read
