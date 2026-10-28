@@ -75,7 +75,8 @@ def download(url: str, destination: Path, expected: str, offline: bool) -> None:
     try:
         if shutil.which("curl"):
             run(["curl", "--fail", "--location", "--proto", "=https", "--tlsv1.2",
-                 "--retry", "2", "--connect-timeout", "20", "--max-time", "300",
+                 "--http1.1", "--retry", "3", "--retry-all-errors", "--retry-max-time", "360",
+                 "--connect-timeout", "20", "--max-time", "300",
                  "--output", str(partial), url])
         else:
             with urllib.request.urlopen(url, timeout=300) as response, partial.open("wb") as out:

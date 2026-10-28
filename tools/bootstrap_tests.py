@@ -6,12 +6,35 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 import bootstrap
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_curl_retries_partial_transfers_without_weakening_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "archive.tar.gz"
+            data = b"verified dependency"
+            observed = []
+            def transfer(command, **kwargs):
+                observed.append(command)
+                Path(command[command.index("--output") + 1]).write_bytes(data)
+            with mock.patch.object(bootstrap.shutil, "which", return_value="curl"), mock.patch.object(bootstrap, "run", side_effect=transfer):
+                bootstrap.download("https://example.invalid/pinned", destination, hashlib.sha256(data).hexdigest(), False)
+            self.assertEqual(destination.read_bytes(), data)
+            for flag in ("--http1.1", "--retry-all-errors", "--retry-max-time", "--fail", "--tlsv1.2"):
+                self.assertIn(flag, observed[0])
+            self.assertNotIn("--insecure", observed[0])
+            self.assertFalse(destination.with_suffix(".gz.part").exists())
+            destination.unlink()
+            with mock.patch.object(bootstrap.shutil, "which", return_value="curl"), mock.patch.object(bootstrap, "run", side_effect=transfer):
+                with self.assertRaisesRegex(RuntimeError, "SHA256 mismatch"):
+                    bootstrap.download("https://example.invalid/pinned", destination, "0" * 64, False)
+            self.assertFalse(destination.exists())
+            self.assertFalse(destination.with_suffix(".gz.part").exists())
+
     def test_cache_lock_excludes_concurrent_bootstrap_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = Path(directory)
