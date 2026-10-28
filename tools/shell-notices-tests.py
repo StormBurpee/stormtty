@@ -128,7 +128,8 @@ class NoticeTests(unittest.TestCase):
                 path.write_bytes(b"inert build evidence\n")
                 records.append({"path": name, "sha256": notices.bootstrap.digest(path), "bytes": path.stat().st_size})
             (runtime / "stormtty-shell-manifest.json").write_text(json.dumps({
-                "lock_sha256": notices.bootstrap.digest(notices.TOOLS / "shell-bootstrap.lock.json"), "files": records}))
+                "lock_sha256": notices.bootstrap.digest(notices.TOOLS / "shell-bootstrap.lock.json"),
+                "managed_addons_lock_sha256": notices.bootstrap.digest(notices.TOOLS / "shell-addons.lock.json"), "files": records}))
             archive = root / "source-fixture.tar.zst"
             archive.write_bytes(b"opaque unit-test source archive")
             source_record = {"filename": archive.name, "bytes": archive.stat().st_size, "sha256": notices.bootstrap.digest(archive)}
@@ -136,6 +137,7 @@ class NoticeTests(unittest.TestCase):
             args = argparse.Namespace(output=output, runtime=runtime, cache=root / "cache", source_packet=True, offline=True)
             with mock.patch.object(notices, "ASSETS", assets), \
                     mock.patch.object(notices, "source_records", return_value=[source_record]), \
+                    mock.patch.object(notices.addons, "read_lock", return_value={"components": []}), \
                     mock.patch.object(notices.bootstrap, "download", return_value=archive):
                 notices.emit(args)
             self.assertEqual(source.read_bytes(), raw)
@@ -146,6 +148,17 @@ class NoticeTests(unittest.TestCase):
                 for asset in ("shell-runtime.fstab", "shell-runtime.nsswitch.conf", "shell-path-tests.py"):
                     self.assertEqual(bundle.read("stormtty-packaging/tools/" + asset),
                                      (notices.TOOLS / asset).read_bytes())
+
+    def test_mismatched_or_absent_addon_lock_refuses_source_packet(self):
+        for addon_hash in [None, '0'*64]:
+            with self.subTest(addon_hash=addon_hash), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp); runtime=root/'runtime';runtime.mkdir()
+                manifest={'lock_sha256':notices.bootstrap.digest(notices.TOOLS/'shell-bootstrap.lock.json'), 'files':[]}
+                if addon_hash is not None: manifest['managed_addons_lock_sha256']=addon_hash
+                (runtime/'stormtty-shell-manifest.json').write_text(json.dumps(manifest))
+                args=argparse.Namespace(output=root/'output', runtime=runtime, cache=root/'cache',source_packet=True,offline=True)
+                with self.assertRaisesRegex(RuntimeError,'managed addons lock'): notices.emit(args)
+                self.assertFalse(args.output.exists())
 
     def test_existing_output_not_modified(self):
         with tempfile.TemporaryDirectory() as tmp:

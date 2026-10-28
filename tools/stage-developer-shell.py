@@ -16,9 +16,9 @@ MAX_FILES = 100_000
 MAX_BYTES = 256 * 1024 * 1024
 MANIFEST = "stormtty-shell-manifest.json"
 RECEIPT = "stormtty-developer-runtime.json"
-REQUIRED = ("usr/bin/zsh.exe", "usr/bin/msys-2.0.dll", "stormtty/zsh/.zshrc", "etc/fstab", "etc/nsswitch.conf")
+REQUIRED = ("usr/bin/zsh.exe", "usr/bin/msys-2.0.dll", "stormtty/zsh/.zshrc", "etc/fstab", "etc/nsswitch.conf", "stormtty/vendor/addons.lock.json", "stormtty/vendor/oh-my-zsh/oh-my-zsh.sh", "stormtty/vendor/zsh-autosuggestions/zsh-autosuggestions.zsh", "stormtty/vendor/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh")
 
-CONFIG = {"etc/fstab": "shell-runtime.fstab", "etc/nsswitch.conf": "shell-runtime.nsswitch.conf"}
+CONFIG = {"etc/fstab": "shell-runtime.fstab", "etc/nsswitch.conf": "shell-runtime.nsswitch.conf", "stormtty/vendor/addons.lock.json": "shell-addons.lock.json"}
 
 def validation_inputs(lock, preset):
     return [digest(lock), digest(preset), digest(Path(__file__))] + [digest(Path(__file__).with_name(name)) for name in CONFIG.values()]

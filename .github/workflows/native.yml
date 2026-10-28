@@ -135,6 +135,27 @@ jobs:
         id: staged_shell
         if: always() && runner.os == 'Windows' && steps.shell_safety.outcome == 'success'
         run: python tools/shell-bootstrap.py --destination .deps/stormtty-shell --cache .cache/shell-bootstrap
+      - name: Qualify real managed OMZ state and interactive editing
+        id: managed_omz
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,subprocess
+          runtime=pathlib.Path('.deps/stormtty-shell').resolve()
+          probe=pathlib.Path('build/managed_shell_state_probe.exe').resolve()
+          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
+          # The native harness itself creates an isolated Unicode known-folder
+          # root and calls the actual owner/DACL validator before EVERY launch.
+          # It fails (never skips) absent persistence/modules/editing evidence.
+          # Only fixed result codes and numeric timings are emitted; no private
+          # config/history/state tree or terminal transcript becomes an artifact.
+          failures=[]
+          for name,extra in [('inbox',[]),('packaged',[str(provider)])]:
+            print('MANAGED_OMZ_PROVIDER='+name,flush=True)
+            result=subprocess.run([str(probe),str(runtime),*extra],timeout=180)
+            print('MANAGED_OMZ_RESULT='+name+':'+str(result.returncode),flush=True)
+            if result.returncode: failures.append(name)
+          if failures: raise SystemExit(1)
       - name: Verify managed shell HOME and drive paths
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         run: python tools/shell-path-tests.py --runtime .deps/stormtty-shell --resolver-probe build/bundled_shell_probe.exe

@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "components": [
+    {
+      "name": "oh-my-zsh",
+      "repository": "https://github.com/ohmyzsh/ohmyzsh",
+      "revision": "17a2b4c3a5855524ad4772a17ada0dc474e2fdf3",
+      "url": "https://codeload.github.com/ohmyzsh/ohmyzsh/tar.gz/17a2b4c3a5855524ad4772a17ada0dc474e2fdf3",
+      "filename": "oh-my-zsh-17a2b4c3a5855524ad4772a17ada0dc474e2fdf3.tar.gz",
+      "bytes": 3516494,
+      "sha256": "eb6f2788316ff75f9be60c00372da0da97d4bcab202d64a9229e1f6365166932",
+      "license": "MIT",
+      "notice": "LICENSE.txt"
+    },
+    {
+      "name": "zsh-autosuggestions",
+      "repository": "https://github.com/zsh-users/zsh-autosuggestions",
+      "revision": "e52ee8ca55bcc56a17c828767a3f98f22a68d4eb",
+      "url": "https://codeload.github.com/zsh-users/zsh-autosuggestions/tar.gz/e52ee8ca55bcc56a17c828767a3f98f22a68d4eb",
+      "filename": "zsh-autosuggestions-e52ee8ca55bcc56a17c828767a3f98f22a68d4eb.tar.gz",
+      "bytes": 29986,
+      "sha256": "166fad9326c99904fd3b16b5d770efb4f5df39a674599e72bba8fc41636ab065",
+      "license": "MIT",
+      "notice": "LICENSE"
+    },
+    {
+      "name": "zsh-syntax-highlighting",
+      "repository": "https://github.com/zsh-users/zsh-syntax-highlighting",
+      "revision": "db085e4661f6aafd24e5acb5b2e17e4dd5dddf3e",
+      "url": "https://codeload.github.com/zsh-users/zsh-syntax-highlighting/tar.gz/db085e4661f6aafd24e5acb5b2e17e4dd5dddf3e",
+      "filename": "zsh-syntax-highlighting-db085e4661f6aafd24e5acb5b2e17e4dd5dddf3e.tar.gz",
+      "bytes": 156434,
+      "sha256": "874999413d147b7ad6776077e1b756d31d68284f9ef2ef240b33a4c842f0e1d8",
+      "license": "BSD-3-Clause",
+      "notice": "COPYING.md"
+    }
+  ]
+}

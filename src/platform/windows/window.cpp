@@ -19,6 +19,7 @@
 #include <shobjidl.h>
 #include "stormtty/native_window.hpp"
 #include "stormtty/windows_managed_shell.hpp"
+#include "stormtty/windows_shell_state.hpp"
 #include "stormtty/windows_console_runtime.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/cursor_motion.hpp"
@@ -914,7 +915,18 @@ SessionId NativeWindow::new_session() {
     }
     if (using_managed_shell()) {
         // Resolve only an absent HOME through wide APIs; explicit/empty HOME wins.
-        for (auto& entry:managed_shell_home_environment()) process.environment.push_back(std::move(entry));
+        const auto home_environment = managed_shell_home_environment();
+        bool empty_home = false;
+        for (const auto& entry : home_environment) {
+            if (entry.name == "STORMTTY_EMPTY_HOME") empty_home = entry.value == "1";
+            process.environment.push_back(entry);
+        }
+        // Launch-scoped native DACL validation, never an ambient trust switch.
+        // Override inherited state even on failure; no startup subprocess, HOME
+        // replacement, or changes to an existing user's files/permissions.
+        const auto state = prepare_managed_shell_state(empty_home);
+        process.environment.push_back({"STORMTTY_NATIVE_ZSH_STATE", state ?
+            std::optional<std::string>(narrow(state.directory.generic_wstring())) : std::nullopt});
         // Child environment only: user startup hooks must not override this preset.
         for (const char* name:{"MSYS","ENV","BASH_ENV"}) process.environment.push_back({name,std::nullopt});
     }
