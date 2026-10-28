@@ -33,3 +33,32 @@ Real POSIX child/session tests distinguish command completion from process exit,
 then exercise EOF and an injected actor callback failure with transport reaping.
 These are core/POSIX evidence, not Windows ConPTY, bundled MSYS2 Zsh, macOS runtime,
 UI/footer rendering, or notification delivery verification.
+
+## Parked Windows footer attention
+
+The host keeps one `ParkedAttention` value per parked SessionId, outside project
+placement persistence. Successful parking baselines existing completions; a newer
+completion sets a subtle persistent footer dot and emits one “Command finished”
+notice (with an explicit status when supplied). Repeated wakes cannot replay it,
+and C-D-C bursts remain observable even when the latest phase is running. The
+footer tooltip/menu includes “command finished” while ordinary process state
+remains visible. Restoring successfully acknowledges it; failed restore and
+canceled close preserve it. Retirement removes the entry, and reparking starts a
+fresh baseline without replaying old work.
+
+Overflow chips also carry a dot when a hidden parked entry has unread completion.
+Within one host update, the single notice slot prioritizes failure over process
+exit over command completion, independent of session iteration order.
+
+The same bounded policy chooses process-exit notices. Simultaneous completion and
+exit produce one notice. A later exit matching the already-notified completed
+command/result is suppressed; a failure, different process result, or exit of a
+new running/interrupted command is not suppressed. This is a conservative display
+heuristic, not proof that an OSC marker identifies the OS process that exited.
+
+Portable policy and placement tests cover these decisions. The Windows project
+smoke additionally emits C/D inside a still-live parked shell, checks attention
+survives failed restore/canceled close, and checks successful restore clears it.
+The Cmd fixture uses Windows PowerShell to construct control bytes inside the
+child; managed Zsh uses builtin printf. Cross-compiling that smoke is not evidence
+that it ran, nor visual verification of the footer dot.

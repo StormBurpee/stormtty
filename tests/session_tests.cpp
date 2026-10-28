@@ -1,3 +1,4 @@
+#include "stormtty/parked_attention.hpp"
 #include "stormtty/session.hpp"
 #include <atomic>
 #include <chrono>
@@ -105,6 +106,60 @@ struct CloseSession {
     std::shared_ptr<Session> session;
     ~CloseSession() { session->request_close(); (void)session->wait_closed(5s); }
 };
+void parked_attention_policy() {
+    for (const bool reversed : {false,true}) {
+        ParkedNoticeBatch batch;
+        const auto first=reversed?ParkedNotice::command_finished:ParkedNotice::process_failed;
+        const auto second=reversed?ParkedNotice::process_failed:ParkedNotice::command_finished;
+        check(batch.consider(first),"first notice not selected");
+        (void)batch.consider(second);
+        check(batch.selected()==ParkedNotice::process_failed,"cross-session completion hid failure");
+        check(!batch.consider(ParkedNotice::process_exited)&&!batch.consider(ParkedNotice::none),"lower-priority notice replaced failure");
+    }
+    ParkedNoticeBatch exits;
+    check(exits.consider(ParkedNotice::command_finished)&&exits.consider(ParkedNotice::process_exited),"exit did not outrank completion");
+    check(!exits.consider(ParkedNotice::command_finished)&&exits.selected()==ParkedNotice::process_exited,"completion replaced process exit");
+    SessionInfo info; info.state=SessionState::running;
+    info.command={CommandPhase::completed,4,4,0};
+    ParkedAttention first(info), independent(info);
+    check(first.observe(info)==ParkedNotice::none&&!first.unread_completion(),"parking replayed old completion");
+    info.command={CommandPhase::running,6,5,19}; // C-D-C in one publication.
+    check(first.observe(info)==ParkedNotice::command_finished&&first.unread_completion(),"coalesced command completion lost");
+    for(int i=0;i<10;++i)check(first.observe(info)==ParkedNotice::none,"repeat wake replayed completion");
+    check(!independent.unread_completion(),"sessions shared acknowledgement state");
+    check(independent.observe(info)==ParkedNotice::command_finished,"independent session completion lost");
+    // Failed restore and canceled close perform no acknowledgement/removal.
+    check(first.unread_completion()&&first.observe(info)==ParkedNotice::none,"failed/canceled placement lost attention");
+    info.command.phase=CommandPhase::interrupted;
+    check(first.observe(info)==ParkedNotice::none&&first.unread_completion(),"interruption fabricated completion or cleared attention");
+    info.state=SessionState::exited; info.exit_code=0;
+    check(first.observe(info)==ParkedNotice::process_exited,"new command exit hidden behind previous completion");
+    check(first.observe(info)==ParkedNotice::none,"process exit repeated");
+    // Successful restore removes the host entry; a later park gets a fresh baseline.
+    ParkedAttention reparked(info);
+    check(!reparked.unread_completion()&&reparked.observe(info)==ParkedNotice::none,"repark replayed acknowledged completion");
+
+    SessionInfo live; live.state=SessionState::running;
+    live.command={CommandPhase::running,1,0,std::nullopt};
+    ParkedAttention together(live), separate(live), failed(live), different(live), interrupted(live);
+    auto end=live; end.command={CommandPhase::completed,1,1,0};
+    check(separate.observe(end)==ParkedNotice::command_finished,"live completion not notified");
+    end.state=SessionState::exited; end.exit_code=0;
+    check(together.observe(end)==ParkedNotice::command_finished,"same-wake completion/exit not coalesced");
+    check(together.observe(end)==ParkedNotice::none&&separate.observe(end)==ParkedNotice::none,"completion/exit duplicated notice");
+    end.state=SessionState::failed; end.error="transport failure";
+    check(failed.observe(end)==ParkedNotice::process_failed&&failed.unread_completion(),"completion hid process failure");
+    check(failed.observe(end)==ParkedNotice::none,"failure notice repeated");
+    end.state=SessionState::running; end.exit_code.reset();
+    check(different.observe(end)==ParkedNotice::command_finished,"different-result setup lost completion");
+    end.state=SessionState::exited; end.exit_code=7;
+    check(different.observe(end)==ParkedNotice::process_exited,"different process result hidden");
+    live.command.phase=CommandPhase::interrupted;
+    check(interrupted.observe(live)==ParkedNotice::none&&!interrupted.unread_completion(),"interruption invented unread completion");
+    live.command={CommandPhase::completed,3,3,std::nullopt};
+    check(interrupted.observe(live)==ParkedNotice::command_finished,"generation jump/optional status lost");
+    check(interrupted.observe(live)==ParkedNotice::none,"generation jump replayed");
+}
 void command_lifecycle(const std::string& executable) {
     for (const auto mode : {"command-complete", "command-interrupted", "command-failure"}) {
         auto wake=std::make_shared<WakeCounter>();
@@ -405,6 +460,7 @@ int main(int argc,char** argv) {
             auto session=Session::start(p,{});session->request_close();
             check(session->wait_closed(5s),"immediate close race hung");
         }
+        parked_attention_policy();
         command_lifecycle(executable);
         retained_document(executable);
         retained_bounds_failure_and_destructor(executable);
