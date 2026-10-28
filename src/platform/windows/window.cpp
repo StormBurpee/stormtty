@@ -1323,8 +1323,8 @@ WindowScene NativeWindow::scene() {
     auto line = [&](double x1, double y1, double x2, double y2, Color color, double width = 1) {
         result.primitives.push_back({pixels({x1,y1,x2-x1,y2-y1}), {}, color, 0, static_cast<float>(width * scale_), ChromePrimitiveKind::line});
     };
-    auto label = [&](Rect bounds, std::string value, Color color, float size = 13, bool bold = false) {
-        result.texts.push_back({pixels(bounds), std::move(value), color, size, bold, "Segoe UI Variable Text"});
+    auto label = [&](Rect bounds, std::string value, Color color, float size = 13, bool bold = false, ChromeTextAlignment alignment = ChromeTextAlignment::leading) {
+        result.texts.push_back({pixels(bounds), std::move(value), color, size, bold, "Segoe UI Variable Text", alignment});
     };
     const auto now=GetTickCount64();
     auto opacity=[](Color color,double amount) { color.a=static_cast<std::uint8_t>(std::clamp(std::lround(color.a*amount),0L,255L)); return color; };
@@ -1395,7 +1395,7 @@ WindowScene NativeWindow::scene() {
         button(chrome_.menu,1); button(chrome_.new_tab,2); button(chrome_.palette,3);
         if (zoom_return_.width) {
             button(zoom_return_,7);
-            label({zoom_return_.x+8,zoom_return_.y+5,zoom_return_.width-16,20},"Return to split",accent,12);
+            label({zoom_return_.x+8,zoom_return_.y+5,zoom_return_.width-16,20},"Return to split",accent,12,false,ChromeTextAlignment::center);
         }
         for (const auto& tab : chrome_.tabs) {
             const bool selected = tab.tab == workspace().active_tab();
@@ -1432,7 +1432,7 @@ WindowScene NativeWindow::scene() {
         const auto bounds=*drop_preview_; const auto tag_width=std::min(132.0,std::max(0.0,bounds.width-16));
         const Rect tag{bounds.x+(bounds.width-tag_width)/2,bounds.y+std::max(0.0,(bounds.height-28)/2),tag_width,28};
         rectangle(tag,raised,4);
-        label({tag.x+8,tag.y+5,std::max(0.0,tag.width-16),20},drop_direction_?"Move pane here":"Swap panes",text,12);
+        label({tag.x+8,tag.y+5,std::max(0.0,tag.width-16),20},drop_direction_?"Move pane here":"Swap panes",text,12,false,ChromeTextAlignment::center);
     }
     if (drag_ == Drag::tab && drag_started_) {
         for (const auto& tab : chrome_.tabs) if (tab.bounds.contains(hover_)) rectangle({tab.bounds.x,tab.bounds.y,2,tab.bounds.height},accent);
@@ -1512,7 +1512,7 @@ WindowScene NativeWindow::scene() {
             if (high_contrast_) fill=background;
             if (bounds.contains(hover_) && !high_contrast_) fill=blend(fill,Color{80,92,120,255},.25);
             rectangle(bounds,fill,5,focused?accent:Color{65,75,94,255},focused?2/scale_:1/scale_);
-            label({bounds.x+12,bounds.y+7,std::max(0.0,bounds.width-24),20},std::move(title),text,13,focused);
+            label({bounds.x+12,bounds.y+7,std::max(0.0,bounds.width-24),20},std::move(title),text,13,focused,ChromeTextAlignment::center);
         };
         paint_button(box.cancel,"Cancel",false); paint_button(box.confirm,modal_->confirm_label,true);
     }

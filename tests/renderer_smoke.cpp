@@ -399,6 +399,28 @@ void chrome_material_test() {
     require(pixel(fallback.read_pixels(),128,20,16).a==255,"opaque fallback left material band translucent");
     require(pixel(fallback.read_pixels(),128,20,80).a==255,"opaque fallback left canvas translucent");
 }
+void chrome_alignment_test() {
+    RendererOptions options;options.font.family="Consolas";
+    Renderer renderer(nullptr,options);
+    for(const float dpi:{96.f,192.f}) {
+        renderer.resize(256,160,dpi);
+        WindowScene scene;scene.background={0,0,0,255};scene.chrome_generation=1;
+        for(unsigned row=0;row<4;++row) {
+            ChromeText text;text.rect={12,float(row*40),220,36};text.text="Save";text.color={255,255,255,255};
+            text.alignment=row==1?ChromeTextAlignment::center:row==2?ChromeTextAlignment::trailing:ChromeTextAlignment::leading;
+            scene.texts.push_back(text);
+        }
+        renderer.render(scene);const auto pixels=renderer.read_pixels();
+        std::array<unsigned,4> left{256,256,256,256},right{};
+        for(unsigned row=0;row<4;++row) for(unsigned y=row*40;y<row*40+36;++y) for(unsigned x=0;x<256;++x) {
+            if(pixels[(y*256+x)*4]>80) {left[row]=std::min(left[row],x);right[row]=std::max(right[row],x);}
+        }
+        require(left[0]<24 && right[0]>left[0],"Leading chrome has no readable label");
+        require(left[1]>left[0]+40 && left[2]>left[1]+40,"Centered/trailing labels remained leading");
+        require(std::abs(int(left[1]+right[1])-236)<=6,"Button text is not horizontally centered");
+        require(left[3]==left[0] && right[3]==right[0],"Centered button contaminated subsequent leading label");
+    }
+}
 void chrome_ellipsis_and_opacity_test() {
     RendererOptions options;options.force_warp=true;options.font.family="Consolas";options.font.size_dip=20;
     options.background_opacity=0;
@@ -458,7 +480,7 @@ int main() {
         const auto previous_directory=std::filesystem::current_path();
         struct RestoreDirectory {std::filesystem::path path;~RestoreDirectory(){std::error_code ignored;std::filesystem::current_path(path,ignored);}} restore{previous_directory};
         std::filesystem::current_path(std::filesystem::temp_directory_path());
-        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();cache_pressure_test();rejected_image_test();
+        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();cache_pressure_test();rejected_image_test();
         std::cout<<"PASS Windows WARP renderer: HWND/DComp style lifecycle and fallback, private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
         return 0;
     } catch(const std::exception& error) { std::cerr<<"FAIL renderer smoke: "<<error.what()<<'\n';return 1; }

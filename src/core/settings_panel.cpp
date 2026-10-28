@@ -387,10 +387,10 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         scene.primitives.push_back({pixels(r),fill,stroke,float(radius*scale),float(weight*scale),ChromePrimitiveKind::rectangle,replace});
     };
     auto line=[&](double x,double y,double width,Color color) {box({x,y,width,1},color);};
-    auto text=[&](Rect r,std::string value,Color color=ink,float size=13,bool bold=false,std::string family="Segoe UI Variable Text",bool content=false) {
+    auto text=[&](Rect r,std::string value,Color color=ink,float size=13,bool bold=false,std::string family="Segoe UI Variable Text",bool content=false,ChromeTextAlignment alignment=ChromeTextAlignment::leading) {
         if (content && !contains(layout_.content,r)) return;
         r=intersection(r,content?layout_.content:p);if (r.width<=0 || r.height<=0) return;
-        scene.texts.push_back({pixels(r),std::move(value),color,size,bold,std::move(family)});
+        scene.texts.push_back({pixels(r),std::move(value),color,size,bold,std::move(family),alignment});
     };
     auto label=[&](Rect r,std::string value,Color color=ink,float size=13,bool bold=false,bool content=false) {text(r,std::move(value),color,size,bold,"Segoe UI Variable Text",content);};
     auto button=[&](std::string_view id,std::string title,bool selected=false,bool primary=false) {
@@ -402,7 +402,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         box(c->bounds,fill,focused?accent:selected?Color{78,94,137,255}:border,6,focused?1.5:1);
         if (!c->enabled) {fill.a=140;box(c->bounds,{24,29,36,100},transparent,6);}
         const auto fg=!c->enabled?subdued:primary?Color{17,21,32,255}:selected?Color{197,207,255,255}:ink;
-        label(inset(c->bounds,c->bounds.width<=40?8:12,0),std::move(title),fg,13,primary||selected);
+        text(inset(c->bounds,c->bounds.width<=40?8:12,0),std::move(title),fg,13,primary||selected,"Segoe UI Variable Text",false,ChromeTextAlignment::center);
     };
     box(window,{4,6,10,148});
     for (int i=4;i>=1;--i) box({p.x-i*3.0,p.y-i+5.0,p.width+i*6.0,p.height+i*4.0},{0,0,0,static_cast<std::uint8_t>(8+(4-i)*4)},transparent,12+i*2);

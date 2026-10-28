@@ -55,6 +55,7 @@ struct ChromePrimitive {
     bool background_replace{}; // Material fill replaces canvas alpha; never fade text.
     bool operator==(const ChromePrimitive&) const = default;
 };
+enum class ChromeTextAlignment { leading, center, trailing };
 struct ChromeText {
     PixelRect rect;
     std::string text;
@@ -62,6 +63,7 @@ struct ChromeText {
     float size_dip{13};
     bool semibold{};
     std::string family{"Segoe UI Variable Text"};
+    ChromeTextAlignment alignment{ChromeTextAlignment::leading}; // Per label, never terminal cells.
     bool operator==(const ChromeText&) const = default;
 };
 struct WindowScene {

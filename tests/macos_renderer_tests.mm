@@ -1,6 +1,8 @@
 #import <AppKit/AppKit.h>
 #include "stormtty/renderer.hpp"
 #include <cmath>
+#include <array>
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 namespace {
@@ -8,6 +10,28 @@ using namespace stormtty;
 void require(bool value,const char* text){if(!value)throw std::runtime_error(text);}
 Color pixel(const std::vector<std::uint8_t>& bytes,unsigned x,unsigned y){auto i=(std::size_t(y)*256+x)*4;return {bytes.at(i),bytes.at(i+1),bytes.at(i+2),bytes.at(i+3)};}
 bool near(Color a,Color b){return std::abs(int(a.r)-b.r)<=3&&std::abs(int(a.g)-b.g)<=3&&std::abs(int(a.b)-b.b)<=3&&std::abs(int(a.a)-b.a)<=3;}
+void chrome_alignment_test() {
+    RendererOptions options;options.font.family="Menlo";
+    Renderer renderer(nullptr,options);
+    for(const float dpi:{96.f,192.f}) {
+        renderer.resize(256,160,dpi);
+        WindowScene scene;scene.background={0,0,0,255};scene.chrome_generation=1;
+        for(unsigned row=0;row<4;++row) {
+            ChromeText text;text.rect={12,float(row*40),220,36};text.text="Save";text.color={255,255,255,255};
+            text.alignment=row==1?ChromeTextAlignment::center:row==2?ChromeTextAlignment::trailing:ChromeTextAlignment::leading;
+            scene.texts.push_back(text);
+        }
+        renderer.render(scene);const auto pixels=renderer.read_pixels();
+        std::array<unsigned,4> left{256,256,256,256},right{};
+        for(unsigned row=0;row<4;++row) for(unsigned y=row*40;y<row*40+36;++y) for(unsigned x=0;x<256;++x) {
+            if(pixels[(y*256+x)*4]>80) {left[row]=std::min(left[row],x);right[row]=std::max(right[row],x);}
+        }
+        require(left[0]<24 && right[0]>left[0],"Leading chrome has no readable label");
+        require(left[1]>left[0]+40 && left[2]>left[1]+40,"Centered/trailing labels remained leading");
+        require(std::abs(int(left[1]+right[1])-236)<=6,"Button text is not horizontally centered");
+        require(left[3]==left[0] && right[3]==right[0],"Centered button contaminated subsequent leading label");
+    }
+}
 void test(){
     RendererOptions options;options.font.family="Menlo";options.background_opacity=.9f;options.image_cache_bytes=4096;
     Renderer renderer(nullptr,options);renderer.resize(256,160);
@@ -50,5 +74,5 @@ void test(){
     require(renderer.stats().image_cache_bytes<=options.image_cache_bytes,"Image cache exceeded budget");
 }
 }
-int main(){@autoreleasepool{try{test();std::cout<<"PASS native macOS CoreText/Metal offscreen raster/composition/readback\n";return 0;}
+int main(){@autoreleasepool{try{test();chrome_alignment_test();std::cout<<"PASS native macOS CoreText/Metal offscreen raster/composition/readback\n";return 0;}
 catch(const std::exception& e){std::cerr<<"FAIL macOS renderer: "<<e.what()<<'\n';return 1;}}}

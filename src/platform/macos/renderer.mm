@@ -479,7 +479,9 @@ struct Renderer::Impl {
                 auto fg=label.color;NSColor* color=[NSColor colorWithSRGBRed:fg.r/255. green:fg.g/255. blue:fg.b/255. alpha:1];
                 NSAttributedString* text=[[NSAttributedString alloc] initWithString:string(label.text) attributes:@{NSFontAttributeName:label_font,NSForegroundColorAttributeName:color}];
                 CfOwner<CTLineRef> line(CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)text));
-                CGContextSetTextPosition(bitmap.context.get(),0,std::max(0.,(h-label_font.ascender+label_font.descender)/2.));
+                const CGFloat flush=label.alignment==ChromeTextAlignment::center?.5:label.alignment==ChromeTextAlignment::trailing?1:0;
+                const double pen=std::max(0.,CTLineGetPenOffsetForFlush(line.get(),flush,label.rect.width));
+                CGContextSetTextPosition(bitmap.context.get(),pen,std::max(0.,(h-label_font.ascender+label_font.descender)/2.));
                 CTLineDraw(line.get(),bitmap.context.get());draw(encoder,texture(w,h,bitmap.bytes.data()),label.rect);
             }
             [encoder endEncoding];

@@ -1038,6 +1038,8 @@ struct Renderer::Impl {
             Com<IDWriteTextFormat> format;
             check(write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*dpi/96,L"en-US",format.put()),"Create chrome font");
+            check(format->SetTextAlignment(label.alignment==ChromeTextAlignment::center?DWRITE_TEXT_ALIGNMENT_CENTER:
+                label.alignment==ChromeTextAlignment::trailing?DWRITE_TEXT_ALIGNMENT_TRAILING:DWRITE_TEXT_ALIGNMENT_LEADING),"Set chrome alignment");
             check(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP),"Set chrome no-wrap");
             check(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER),"Center chrome baseline");
             // DirectWrite owns grapheme/cluster-safe end truncation and the real
