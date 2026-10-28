@@ -70,6 +70,29 @@ jobs:
       - name: Run real native tests
         id: native_tests
         run: ctest --test-dir build --output-on-failure --output-junit test-results.xml --parallel 1
+      - name: Diagnose Windows Ink transport boundary
+        if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
+        shell: python
+        run: |
+          import pathlib,subprocess,shutil,base64,hashlib
+          capture=pathlib.Path('build/artifacts/ink-transport').resolve()
+          probe=subprocess.run([str(pathlib.Path('build/ink_session_tests.exe').resolve()),shutil.which('node'),str(pathlib.Path('tests/ink/fixture.mjs').resolve()),'transport-probe',str(capture)])
+          reference=pathlib.Path('build/ink-reference').resolve()
+          install=subprocess.run([shutil.which('npm'), 'install','--prefix',str(reference),'--ignore-scripts','--no-audit','--no-fund','--save-exact','@xterm/headless@6.0.0','@xterm/addon-unicode11@0.9.0'],shell=True)
+          replay=1
+          if install.returncode == 0:
+            replay=subprocess.run([shutil.which('node'),'tests/ink/replay-transport.cjs',str(reference/'node_modules/@xterm/headless'),str(capture)]).returncode
+          for p in sorted(capture.glob('*.bin')):
+            if p.name.endswith('-live.bin'): continue
+            b=p.read_bytes()
+            if len(b)>1024*1024: raise RuntimeError('Capture too large')
+            print('INK_CAPTURE_NAME='+p.name,flush=True)
+            print('INK_CAPTURE_SHA256='+hashlib.sha256(b).hexdigest(),flush=True)
+            print('INK_CAPTURE_BASE64_BEGIN',flush=True)
+            data=base64.b64encode(b).decode()
+            for i in range(0,len(data),4096): print(data[i:i+4096],flush=True)
+            print('INK_CAPTURE_BASE64_END',flush=True)
+          raise SystemExit(1 if probe.returncode or install.returncode or replay else 0)
       - name: Collect targeted macOS GUI failure evidence
         if: always() && runner.os == 'macOS' && steps.build.outcome == 'success' && steps.native_tests.outcome == 'failure'
         run: python tools/macos-crash-evidence.py
@@ -101,6 +124,7 @@ jobs:
             build/artifacts/*.png
             build/artifacts/macos-debugger.log
             build/artifacts/stormtty-crash.*
+            build/artifacts/ink-transport/*.bin
             .deps/ghostty-native/stormtty-build.json
             .deps/ghostty-native/stormtty-bootstrap.lock.json
           if-no-files-found: warn

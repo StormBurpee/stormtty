@@ -3,6 +3,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
+#include <thread>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -395,6 +397,112 @@ void exercise(const std::string& node, const std::string& fixture, FixtureMode m
         << test.session->diagnostics().provider << '\n';
 }
 
+// Lower-level diagnostic, deliberately outside Session acceptance coverage.
+// Process reader copies bounded bytes; all TerminalCore access stays here.
+int transport_probe(const std::string& node, const std::string& fixture, const std::string& destination) {
+    const auto directory = utf8_path(destination);
+    check(directory.is_absolute(), "Capture destination must be absolute");
+    std::filesystem::create_directories(directory);
+    unsigned failures = 0;
+    for (const std::uint16_t columns : {56, 72, 73}) {
+        const auto stem = std::to_string(columns) + "x20";
+        try {
+            struct Capture { std::mutex mutex; std::string bytes; bool overflow{}; };
+            const auto capture = std::make_shared<Capture>();
+            const auto source_path = directory / (stem + "-stdout-live.bin");
+            check(!std::filesystem::exists(source_path), "Refusing to replace an existing stdout capture");
+            ProcessOptions options;
+            options.executable = node;
+            const auto source_utf8 = source_path.u8string();
+            options.arguments = {fixture, "--alternate-screen", "--incremental", "--fullscreen",
+                "--capture-stdout", std::string(source_utf8.begin(), source_utf8.end())};
+            const auto cwd = utf8_path(fixture).parent_path().u8string();
+            options.working_directory.assign(cwd.begin(), cwd.end());
+            options.grid = {columns, 20};
+            options.environment = {{"NO_COLOR", std::nullopt}, {"FORCE_COLOR", "3"},
+                {"INK_SCREEN_READER", std::nullopt}, {"NODE_OPTIONS", std::nullopt}};
+            auto process = Process::start(std::move(options), {
+                [capture](std::string_view bytes, std::stop_token) {
+                    std::lock_guard lock(capture->mutex);
+                    if (bytes.size() > 1024 * 1024 - capture->bytes.size()) {
+                        capture->overflow = true;
+                        throw std::runtime_error("Diagnostic transport capture exceeded 1 MiB");
+                    }
+                    capture->bytes.append(bytes);
+                }, {}});
+            TerminalOptions terminal;
+            terminal.size = {columns, 20, 8, 16};
+            terminal.default_foreground = Color{230, 230, 230, 255};
+            terminal.default_background = Color{16, 20, 30, 255};
+            TerminalCore live(terminal);
+            std::size_t parsed = 0;
+            // A bounded observation window, not a compatibility wait or pass.
+            const auto deadline = std::chrono::steady_clock::now() + 3s;
+            while (std::chrono::steady_clock::now() < deadline) {
+                std::string bytes;
+                { std::lock_guard lock(capture->mutex); bytes = capture->bytes.substr(parsed); parsed = capture->bytes.size(); }
+                live.feed(bytes);
+                for (const auto& effect : live.take_effects()) {
+                    if (effect.kind == EffectKind::write_pty)
+                        check(process->try_send(effect.text) == ProcessSendResult::accepted, "Probe reply rejected");
+                }
+                std::this_thread::sleep_for(10ms);
+            }
+            std::string transported;
+            { std::lock_guard lock(capture->mutex); transported = capture->bytes; }
+            check(std::filesystem::file_size(source_path) <= 1024 * 1024, "Stdout capture file too large");
+            std::ifstream source_input(source_path, std::ios::binary);
+            const std::string produced{std::istreambuf_iterator<char>(source_input), std::istreambuf_iterator<char>()};
+            source_input.close();
+            process->request_close();
+            check(process->wait_for_exit(5s), "Probe process did not reap");
+            { std::lock_guard lock(capture->mutex); check(!capture->overflow, "Transport capture overflowed"); }
+            const auto frozen_source_path = directory / (stem + "-stdout.bin");
+            check(!std::filesystem::exists(frozen_source_path), "Refusing to replace an existing stdout prefix");
+            std::ofstream source_output(frozen_source_path, std::ios::binary);
+            source_output.write(produced.data(), static_cast<std::streamsize>(produced.size()));
+            source_output.close(); check(bool(source_output), "Could not write stdout prefix");
+            // The transport file is the exact pre-close prefix. Stdout may lead
+            // it slightly; each is independently replayable at a static size.
+            const auto transport_path = directory / (stem + "-transport.bin");
+            check(!std::filesystem::exists(transport_path), "Refusing to replace an existing transport capture");
+            std::ofstream output(transport_path, std::ios::binary);
+            output.write(transported.data(), static_cast<std::streamsize>(transported.size()));
+            output.close(); check(bool(output), "Could not write transport capture");
+            for (const auto& kind : {"stdout", "transport"}) {
+                const auto path = directory / (stem + "-" + kind + ".bin");
+                check(std::filesystem::file_size(path) <= 1024 * 1024, "Capture file too large");
+                std::ifstream input(path, std::ios::binary);
+                const std::string bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+                check(!bytes.empty(), "Empty probe capture");
+                TerminalCore replay(terminal);
+                // Child writes use LF. A TTY applies newline processing before
+                // the host parser sees them; source replay models that explicitly.
+                // Raw capture remains unchanged; transport replay is byte-exact.
+                if (std::string_view(kind) == "stdout") replay.feed("\x1b[20h");
+                replay.feed(bytes);
+                const auto frame = replay.snapshot();
+                std::cout << "Transport probe " << stem << " " << kind << (std::string_view(kind) == "stdout" ? " (LNM source replay)" : " (byte-exact replay)") << " bytes=" << bytes.size() << '\n'
+                          << frame_diagnostic(frame);
+                try {
+                    FixtureSession::check_live_frame(frame);
+                    const auto box = active_box(frame);
+                    check(frame->alternate_screen && box && box->top == 0 && box->bottom + 1 == frame->rows,
+                          "Probe fullscreen geometry is wrong");
+                    std::cout << "Transport probe " << stem << " " << kind << ": coherent\n";
+                } catch (const std::exception& error) {
+                    ++failures;
+                    std::cout << "Transport probe " << stem << " " << kind << ": FAIL: " << error.what() << '\n';
+                }
+            }
+        } catch (const std::exception& error) {
+            ++failures;
+            std::cerr << "Transport probe " << stem << ": FAIL: " << error.what() << '\n';
+        }
+    }
+    return failures ? 1 : 0;
+}
+
 // Diagnostic only: no resize requests and no changes to the fixture or its
 // assertions. At 72/73 columns the same 72-column box touches/leaves the margin;
 // 56 columns reproduces the failing shrink geometry without an in-flight resize.
@@ -420,13 +528,18 @@ int static_margin_probe(const std::string& node, const std::string& fixture) {
 
 int main(int argc, char** argv) {
     try {
-        check(argc == 3 || argc == 4,
-            "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs> [all|primary|fullscreen|compact-alt|host-close|static-margin-probe]");
+        check(argc == 3 || argc == 4 || argc == 5,
+            "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs> [all|primary|fullscreen|compact-alt|host-close|static-margin-probe|transport-probe <absolute-capture-dir>]");
         check(utf8_path(argv[1]).is_absolute(), "Node executable path must be absolute");
         check(utf8_path(argv[2]).is_absolute(), "Ink fixture path must be absolute");
         check(std::filesystem::is_regular_file(utf8_path(argv[1])), "Node executable is missing");
         check(std::filesystem::is_regular_file(utf8_path(argv[2])), "Ink fixture is missing");
-        const std::string_view mode = argc == 4 ? argv[3] : "all";
+        const std::string_view mode = argc >= 4 ? argv[3] : "all";
+        if (mode == "transport-probe") {
+            check(argc == 5, "transport-probe requires an absolute fresh capture directory");
+            return transport_probe(argv[1], argv[2], argv[4]);
+        }
+        check(argc != 5, "Capture directory is only valid for transport-probe");
         check(mode == "all" || mode == "primary" || mode == "fullscreen" || mode == "compact-alt" || mode == "host-close" || mode == "static-margin-probe",
             "Unknown Ink scenario; use all, primary, fullscreen, compact-alt, host-close, or static-margin-probe");
         if (mode == "static-margin-probe") return static_margin_probe(argv[1], argv[2]);

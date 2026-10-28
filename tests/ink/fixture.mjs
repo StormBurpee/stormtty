@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import React, {useEffect, useState} from 'react';
 import {Box, Text, render, useAnimation, useApp, useInput, usePaste, useWindowSize} from 'ink';
 
@@ -5,6 +6,25 @@ import {Box, Text, render, useAnimation, useApp, useInput, usePaste, useWindowSi
 // The C++ test starts this process through Session's actual platform PTY.
 if (!process.stdin.isTTY || !process.stdout.isTTY || typeof process.stdin.setRawMode !== 'function') {
   throw new Error('The Ink compatibility fixture requires a real input/output TTY');
+}
+
+// Opt-in diagnostic tee only; never enabled by the acceptance fixture modes.
+// Capture this synthetic child's stdout, not environment or arbitrary PTY history.
+const captureIndex = process.argv.indexOf('--capture-stdout');
+if (captureIndex !== -1) {
+  const fd = fs.openSync(process.argv[captureIndex + 1], 'wx');
+  const originalWrite = process.stdout.write;
+  let captured = 0;
+  process.stdout.write = function (...args) {
+    const chunk = args[0];
+    const bytes = typeof chunk === 'string'
+      ? Buffer.from(chunk, typeof args[1] === 'string' ? args[1] : 'utf8')
+      : Buffer.from(chunk);
+    captured += bytes.length;
+    if (captured > 1024 * 1024) throw new Error('Diagnostic stdout capture exceeded 1 MiB');
+    fs.writeSync(fd, bytes);
+    return Reflect.apply(originalWrite, this, args);
+  };
 }
 
 const h = React.createElement;
