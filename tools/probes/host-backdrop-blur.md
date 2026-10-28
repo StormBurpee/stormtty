@@ -39,7 +39,7 @@ adding any project dependency or requiring libghostty:
 
 ```powershell
 New-Item -ItemType Directory -Force out/host-backdrop-probe | Out-Null
-cl /nologo /std:c++20 /EHsc /W4 /utf-8 /DUNICODE /D_UNICODE tools/probes/host-backdrop-blur.cpp /Fe:out/host-backdrop-probe/host-backdrop-blur.exe /Fo:out/host-backdrop-probe/host-backdrop-blur.obj /link windowsapp.lib CoreMessaging.lib d3d11.lib dxgi.lib d2d1.lib dwrite.lib dwmapi.lib user32.lib gdi32.lib advapi32.lib ole32.lib
+cl /nologo /std:c++20 /EHsc /W4 /utf-8 /DUNICODE /D_UNICODE tools/probes/host-backdrop-blur.cpp /Fe:out/host-backdrop-probe/host-backdrop-blur.exe /Fo:out/host-backdrop-probe/host-backdrop-blur.obj /link windowsapp.lib CoreMessaging.lib d3d11.lib dxgi.lib d2d1.lib dxguid.lib dwrite.lib dwmapi.lib user32.lib gdi32.lib advapi32.lib ole32.lib
 if ($LASTEXITCODE -ne 0) { throw 'Probe compilation failed' }
 ```
 
@@ -108,3 +108,5 @@ Acceptance checklist (record OS build, SDK, adapter/driver, display/DPI and resu
 macOS remains separate: NSVisualEffectView behindWindow samples behind the window
 but exposes no public blur-radius setting. No macOS implementation or parity claim
 is part of this Windows experiment.
+
+The Gaussian effect GUID is provided by `dxguid.lib`; see the [Direct2D Gaussian blur library requirements](https://learn.microsoft.com/en-us/windows/win32/direct2d/gaussian-blur#requirements).

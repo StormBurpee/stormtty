@@ -18,6 +18,7 @@
 #include <commctrl.h>
 #include <shobjidl.h>
 #include "stormtty/native_window.hpp"
+#include "stormtty/windows_managed_shell.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/session.hpp"
 #include "stormtty/settings_panel.hpp"
@@ -868,16 +869,9 @@ SessionId NativeWindow::new_session() {
         for (const auto& [name,value]:selected->environment) process.environment.push_back({name,value});
     }
     if (using_managed_shell()) {
-        // MSYS2 converts HOME at its Windows boundary, including empty values.
-        // Preserve an explicitly empty HOME without inventing a default or
-        // rewriting a caller's path. This marker is child-only and consumed
-        // by our preset; never let an inherited marker affect a later launch.
-        SetLastError(ERROR_SUCCESS);
-        const auto home_length=GetEnvironmentVariableW(L"HOME",nullptr,0);
-        const bool empty_home=home_length==0 && GetLastError()==ERROR_SUCCESS;
-        process.environment.push_back({"STORMTTY_EMPTY_HOME",empty_home?"1":""});
-        // Child environment only. HOME is deliberately inherited unchanged;
-        // existing user startup hooks must not override this managed preset.
+        // Resolve only an absent HOME through wide APIs; explicit/empty HOME wins.
+        for (auto& entry:managed_shell_home_environment()) process.environment.push_back(std::move(entry));
+        // Child environment only: user startup hooks must not override this preset.
         for (const char* name:{"MSYS","ENV","BASH_ENV"}) process.environment.push_back({name,std::nullopt});
     }
     if (const auto* project=projects_.active(); project && !project->metadata.working_directory.empty()) process.working_directory=project->metadata.working_directory;

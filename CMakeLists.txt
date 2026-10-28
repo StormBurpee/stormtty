@@ -64,7 +64,7 @@ if(STORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE)
     target_compile_features(stormtty_host_backdrop_probe PRIVATE cxx_std_20)
     stormtty_warnings(stormtty_host_backdrop_probe)
     target_compile_definitions(stormtty_host_backdrop_probe PRIVATE UNICODE _UNICODE)
-    target_link_libraries(stormtty_host_backdrop_probe PRIVATE windowsapp CoreMessaging d3d11 dxgi d2d1 dwrite dwmapi user32 gdi32 advapi32 ole32)
+    target_link_libraries(stormtty_host_backdrop_probe PRIVATE windowsapp CoreMessaging d3d11 dxgi d2d1 dxguid dwrite dwmapi user32 gdi32 advapi32 ole32)
 endif()
 
 add_library(stormtty_workspace src/core/settings_panel.cpp src/core/context_menu.cpp src/core/project_workspaces.cpp src/core/workspace.cpp src/core/workspace_serialization.cpp src/core/commands.cpp src/core/config.cpp)

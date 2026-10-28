@@ -66,8 +66,10 @@ Windows environment. Drive roots appear as `/c`, `/d`, etc. (not `/cygdrive/c`),
 with case-insensitive/no-POSIX-ACL drive mounts. UNC paths remain UNC paths.
 The runtime root `/` still points to the bundled runtime, not the Windows drive.
 
-An existing `HOME` wins. When absent, `db_home: env windows` asks the runtime for
-`HOMEDRIVE` + `HOMEPATH`, then `USERPROFILE`, then Windows account information.
+An existing `HOME` wins. When absent, the host reads a **wide Windows environment
+snapshot** and supplies `HOMEDRIVE` + `HOMEPATH`, then `USERPROFILE`, to this child
+only. This avoids the runtime's early ANSI passwd lookup losing Unicode. If those
+are absent, `db_home: env windows` retains Windows account-database fallback.
 Windows-form paths receive the runtime's normal POSIX conversion. An explicit
 POSIX `HOME`, including an old `/cygdrive/...` value, is **not** silently repaired:
 update that caller setting if it no longer names the desired location. Explicit
@@ -97,8 +99,10 @@ its MSYS2 mount/empty-environment patches (0005, 0013, 0030, 0031), and official
 - [Cygwin mount table and usertemp](https://cygwin.com/cygwin-ug-net/using.html)
 - [Cygwin home lookup](https://cygwin.com/cygwin-ug-net/ntsec.html)
 
-Run `python tools/shell-path-tests.py --runtime <absolute-staged-root>` on Windows
-from a local-drive workspace. It checks the actual managed preset, HOME fallback,
+Run `python tools/shell-path-tests.py --runtime <absolute-staged-root>
+--resolver-probe <build>/bundled_shell_probe.exe` on Windows
+from a local-drive workspace. It invokes the actual host wide-API resolver and
+checks the managed preset, HOME fallback,
 explicit/empty HOME, Unicode/spaced project CWD, drive navigation, `/tmp` writes,
 and user-dotfile isolation. It fails explicitly on non-Windows hosts; Linux
 staging tests/cross-compilation do **not** qualify native path behavior. This new

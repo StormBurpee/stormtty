@@ -18,9 +18,10 @@ def decode_output(result):
         ) from error
 
 
-def qualify(runtime):
+def qualify(runtime, resolver_probe):
     runtime = runtime.resolve(strict=True)
     shell = runtime / 'usr/bin/zsh.exe'
+    resolver_probe = resolver_probe.resolve(strict=True)
     original = dict(os.environ)
     # Keep the drive test outside Windows TEMP: /tmp deliberately takes priority
     # over /c for paths inside the usertemp mount.
@@ -39,13 +40,26 @@ def qualify(runtime):
                     ZDOTDIR=str(runtime / 'stormtty/zsh'), STORMTTY_SESSION_ID='path-test',
                     TERM='xterm-256color', MSYSTEM='MSYS', LANG='C.UTF-8', LC_ALL='C.UTF-8',
                     USERPROFILE=str(home), TMP=str(temp), TEMP=str(temp))
-        # These are the same child-only empty-HOME marker semantics as the host.
+        # Run the exact C++ wide-API helper used by the app, not a Python substitute.
         def run(changes, command="print -r -- HOME=$HOME CWD=$PWD; print -r -- PRESET=$STORMTTY_MANAGED_ZSH"):
             env = dict(base)
             for name, value in changes.items():
                 if value is None: env.pop(name, None)
                 else: env[name] = value
-            env['STORMTTY_EMPTY_HOME'] = '1' if env.get('HOME') == '' else ''
+            resolved = subprocess.run([str(resolver_probe), '--managed-home-environment'],
+                                      cwd=project, env=env, capture_output=True, timeout=30)
+            if resolved.returncode:
+                raise AssertionError(f'Native home resolver failed: {resolved.stdout!r} {resolved.stderr!r}')
+            overrides = {}
+            for line in resolved.stdout.decode('ascii').splitlines():
+                name, value = line.split('=', 1)
+                if name not in ('HOME', 'STORMTTY_EMPTY_HOME') or name in overrides:
+                    raise AssertionError(f'Unexpected resolver override: {line!r}')
+                overrides[name] = bytes.fromhex(value).decode('utf-8')
+            assert 'STORMTTY_EMPTY_HOME' in overrides, overrides
+            if 'HOME' in env:
+                assert 'HOME' not in overrides, 'Resolver overwrote explicit HOME'
+            env.update(overrides)
             diagnostic = 'print -r -- "LOCALE=$LANG|$LC_ALL"; /usr/bin/locale charmap; '
             result = subprocess.run([str(shell), '-d', '-i', '-c', diagnostic + command], cwd=project,
                                     env=env, capture_output=True, timeout=30)
@@ -74,6 +88,7 @@ def qualify(runtime):
         check({'HOME': '/cygdrive/c/explicit'}, '/cygdrive/c/explicit')  # never silently repair callers
         check({'HOME': '//server/share/custom'}, '//server/share/custom')
         check({'HOME': ''}, '')
+        check({'HOME': '/explicit/custom home', 'STORMTTY_EMPTY_HOME': '1'}, '/explicit/custom home')
         output = run({}, 'cd -- "$HOME" && print -r -- AT_HOME=$PWD; cd /c && print -r -- DRIVE=$PWD; '
                          ': > /tmp/stormtty-path-write; print -r -- TEMP_OK')
         assert 'AT_HOME=' + posix(home) in output and 'DRIVE=/c' in output and 'TEMP_OK' in output, output
@@ -87,10 +102,11 @@ def qualify(runtime):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime', type=Path, required=True)
+    parser.add_argument('--resolver-probe', type=Path, required=True)
     args = parser.parse_args()
     if os.name != 'nt':
         parser.exit(2, 'Windows runtime required; native path checks were NOT run.\n')
-    qualify(args.runtime)
+    qualify(args.runtime, args.resolver_probe)
 
 
 if __name__ == '__main__':

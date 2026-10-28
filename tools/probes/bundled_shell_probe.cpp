@@ -14,6 +14,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include "stormtty/windows_managed_shell.hpp"
 #else
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -158,6 +159,24 @@ int native_handles() {
 }
 }
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    if (argc==2 && std::string_view(argv[1])=="--managed-home-environment") {
+        try {
+            // ASCII hex protocol keeps Python/console codepages out of the
+            // resolver test. These are real host-helper UTF-8 child overrides.
+            constexpr char hex[]="0123456789abcdef";
+            for (const auto& entry:managed_shell_home_environment()) {
+                std::cout << entry.name << '=';
+                for (const unsigned char byte:*entry.value) std::cout << hex[byte>>4] << hex[byte&15];
+                std::cout << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "managed home resolver: " << error.what() << '\n';
+            return 1;
+        }
+    }
+#endif
     if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--native-size")
         return native_size(argc==3?std::string_view(argv[2]):std::string_view{});
     if (argc == 2 && std::string_view(argv[1]) == "--native-handles") return native_handles();
