@@ -66,67 +66,68 @@ private:
     }
 };
 void check(HRESULT hr, const char* action) { if (FAILED(hr)) throw GraphicsError(hr, action); }
-// A DComp visual sits above ordinary HWND pixels. Remove that backing surface
-// only while DComp owns presentation; an opaque HWND swapchain needs it back.
-// Own just this bit, not a stale copy of the shell's complete extended style.
-class HostRedirectionStyle {
+HRESULT win32_error() noexcept {
+    const auto error=GetLastError();
+    return error ? HRESULT_FROM_WIN32(error) : E_FAIL;
+}
+LONG_PTR extended_style(HWND window) {
+    SetLastError(ERROR_SUCCESS);
+    const auto style=GetWindowLongPtrW(window,GWL_EXSTYLE);
+    const auto error=GetLastError();
+    if(!style && error) check(HRESULT_FROM_WIN32(error),"Read renderer host extended style");
+    return style;
+}
+// NOREDIRECTIONBITMAP is a creation-time choice, not a mutable style. Keep the
+// shell HWND stable and give opaque fallback its own ordinary presentation HWND.
+// This child is never an input/focus owner; all chrome and modals remain pixels
+// in the same renderer scene and their input stays with the parent shell.
+class OpaquePresentationWindow {
 public:
-    explicit HostRedirectionStyle(HWND window) noexcept : window_(window) {}
-    const char* operation() const noexcept { return operation_; }
-    HRESULT set(bool no_redirection) noexcept {
-        if (!window_) return S_OK;
-        LONG_PTR style{};
-        operation_ = "GetWindowLongPtrW(initial)";
-        auto hr = read(style);
-        if (FAILED(hr)) return hr;
-        if (!saved_) { original_ = (style & WS_EX_NOREDIRECTIONBITMAP) != 0; saved_ = true; }
-        const auto desired = no_redirection ? style | WS_EX_NOREDIRECTIONBITMAP : style & ~LONG_PTR(WS_EX_NOREDIRECTIONBITMAP);
-        if (desired != style) {
-            // Zero is a valid previous EXSTYLE, not necessarily an API failure.
-            operation_ = "SetWindowLongPtrW";
-            SetLastError(ERROR_SUCCESS);
-            const auto previous = SetWindowLongPtrW(window_, GWL_EXSTYLE, desired);
-            const auto error = GetLastError();
-            if (!previous && error) return HRESULT_FROM_WIN32(error);
-            refresh_pending_ = true;
-        }
-        if (refresh_pending_) {
-            operation_ = "SetWindowPos(FRAMECHANGED)";
-            SetLastError(ERROR_SUCCESS);
-            if (!SetWindowPos(window_, nullptr, 0, 0, 0, 0,
-                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER))
-                return last_error();
-            refresh_pending_ = false;
-        }
-        // A WM_STYLECHANGING handler may modify the requested style. Do not
-        // report a composition host (or use HWND fallback) with the wrong bit.
-        operation_ = "GetWindowLongPtrW(readback)";
-        hr = read(style);
-        if (FAILED(hr)) return hr;
-        return ((style & WS_EX_NOREDIRECTIONBITMAP) != 0) == no_redirection ? S_OK : E_FAIL;
+    ~OpaquePresentationWindow() { reset(); }
+    OpaquePresentationWindow()=default;
+    OpaquePresentationWindow(const OpaquePresentationWindow&)=delete;
+    OpaquePresentationWindow& operator=(const OpaquePresentationWindow&)=delete;
+    HWND get() const noexcept { return window_; }
+    void reset() noexcept {
+        if(const auto window=std::exchange(window_,nullptr); window && IsWindow(window)) DestroyWindow(window);
     }
-    HRESULT restore() noexcept {
-        if (!saved_) return S_OK;
-        // The owner may already have destroyed its HWND during app shutdown.
-        if (!IsWindow(window_)) { saved_ = refresh_pending_ = false; return S_OK; }
-        const auto hr = set(original_);
-        if (SUCCEEDED(hr)) saved_ = false;
-        return hr;
+    void create(HWND parent, UINT width, UINT height) {
+        constexpr const wchar_t* class_name=L"StormTTY.Renderer.OpaqueSurface.v1";
+        static const bool registered=[] {
+            WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);
+            wc.lpszClassName=L"StormTTY.Renderer.OpaqueSurface.v1";wc.lpfnWndProc=dispatch;
+            if(!RegisterClassW(&wc)) {
+                const auto error=GetLastError();
+                WNDCLASSW existing{};
+                if(error!=ERROR_CLASS_ALREADY_EXISTS || !GetClassInfoW(wc.hInstance,wc.lpszClassName,&existing) ||
+                   existing.lpfnWndProc!=dispatch)
+                    check(error ? HRESULT_FROM_WIN32(error) : E_FAIL,"Register opaque presentation window");
+            }
+            return true;
+        }();
+        (void)registered;
+        window_=CreateWindowExW(WS_EX_NOPARENTNOTIFY,class_name,L"",WS_CHILD|WS_VISIBLE|WS_DISABLED,
+            0,0,static_cast<int>(width),static_cast<int>(height),parent,nullptr,GetModuleHandleW(nullptr),nullptr);
+        if(!window_) check(win32_error(),"Create opaque presentation child");
+        if(extended_style(window_) & WS_EX_NOREDIRECTIONBITMAP)
+            throw std::runtime_error("Opaque presentation child unexpectedly lacks redirection");
+    }
+    void resize(UINT width, UINT height) {
+        if(window_ && !SetWindowPos(window_,HWND_TOP,0,0,static_cast<int>(width),static_cast<int>(height),
+            SWP_NOACTIVATE|SWP_NOOWNERZORDER))
+            check(win32_error(),"Resize opaque presentation child");
     }
 private:
-    static HRESULT last_error() noexcept {
-        const auto error = GetLastError();
-        return error ? HRESULT_FROM_WIN32(error) : E_FAIL;
-    }
-    HRESULT read(LONG_PTR& style) const noexcept {
-        SetLastError(ERROR_SUCCESS);
-        style = GetWindowLongPtrW(window_, GWL_EXSTYLE);
-        const auto error = GetLastError();
-        return !style && error ? HRESULT_FROM_WIN32(error) : S_OK;
+    static LRESULT CALLBACK dispatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam) noexcept {
+        switch(message) {
+        case WM_NCHITTEST: return HTTRANSPARENT;
+        case WM_MOUSEACTIVATE: return MA_NOACTIVATEANDEAT;
+        case WM_ERASEBKGND: return 1;
+        case WM_PAINT: { PAINTSTRUCT paint{};BeginPaint(window,&paint);EndPaint(window,&paint);return 0; }
+        default: return DefWindowProcW(window,message,wparam,lparam);
+        }
     }
     HWND window_{};
-    const char* operation_{"not attempted"};
-    bool saved_{}, original_{}, refresh_pending_{};
 };
 bool device_lost(HRESULT hr) noexcept {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
@@ -389,7 +390,7 @@ constexpr Color selection_foreground{236,238,242,255};
 struct Renderer::Impl {
     Apartment apartment;
     HWND window{};
-    HostRedirectionStyle host_style;
+    OpaquePresentationWindow opaque_window;
     RendererOptions options;
     CellMetrics cell;
     RendererStats counters;
@@ -422,7 +423,7 @@ struct Renderer::Impl {
     std::unordered_map<ImageKey, CachedImage, ImageHash> images;
     WindowScene previous;
 
-    Impl(void* hwnd, RendererOptions opts) : window(static_cast<HWND>(hwnd)), host_style(window), options(std::move(opts)) {
+    Impl(void* hwnd, RendererOptions opts) : window(static_cast<HWND>(hwnd)), options(std::move(opts)) {
         if (FAILED(apartment.hr) && apartment.hr != RPC_E_CHANGED_MODE) check(apartment.hr, "COM initialization");
         validate_font(options.font);
         if (!options.maximum_image_dimension || options.maximum_image_dimension > 8192 ||
@@ -439,30 +440,27 @@ struct Renderer::Impl {
         create_device();
         measure_font();
     }
-    ~Impl() {
-        if (FAILED(release_gpu()))
-            OutputDebugStringW(L"StormTTY: failed to restore HWND redirection style during renderer destruction.\n");
-    }
+    ~Impl() { release_gpu(); }
     static void validate_font(const FontOptions& font) {
         if (font.family.empty() || font.family.size() > 256 || font.locale.size() > 85 ||
             !std::isfinite(font.size_dip) || font.size_dip < 4 || font.size_dip > 128)
             throw std::invalid_argument("Invalid terminal font");
     }
-    HRESULT release_swapchain() noexcept {
+    void release_swapchain() noexcept {
         composition_visual.reset(); composition_target.reset(); composition.reset();
         latency.reset(); swapchain2.reset(); swapchain.reset();
+        if(immediate) { immediate->ClearState(); immediate->Flush(); }
+        opaque_window.reset();
         counters.composition = false;
-        return host_style.restore();
     }
-    HRESULT release_gpu() noexcept {
+    void release_gpu() noexcept {
         if (dc) dc->SetTarget(nullptr);
         canvas.reset(); canvas_texture.reset(); brush.reset(); images.clear();
         counters.image_cache_bytes = 0;
-        const auto style_result = release_swapchain();
+        release_swapchain();
         dc4.reset(); dc.reset(); d2d_device.reset();
         if (immediate) { immediate->ClearState(); immediate->Flush(); }
         immediate.reset(); device.reset();
-        return style_result;
     }
     void create_device() {
         D3D_FEATURE_LEVEL level{};
@@ -507,7 +505,10 @@ struct Renderer::Impl {
             desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
             desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             counters.composition = false;
-            if (options.composition) {
+            const bool no_redirection=(extended_style(window) & WS_EX_NOREDIRECTIONBITMAP)!=0;
+            // Never compose translucent pixels above an ordinary backing surface.
+            // An ordinary caller-provided HWND safely selects the opaque path.
+            if (options.composition && no_redirection) {
                 desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
                 const char* stage = "DCompositionCreateDevice";
                 auto hr = DCompositionCreateDevice(dxgi_device.get(), __uuidof(IDCompositionDevice),
@@ -521,7 +522,6 @@ struct Renderer::Impl {
                 step("SetContent", [&] { return composition_visual->SetContent(swapchain.get()); });
                 step("SetRoot", [&] { return composition_target->SetRoot(composition_visual.get()); });
                 step("Commit", [&] { return composition->Commit(); });
-                step("Enable NOREDIRECTIONBITMAP", [&] { return host_style.set(true); });
                 counters.composition = SUCCEEDED(hr);
                 if (!counters.composition) {
                     SetLastError(ERROR_SUCCESS);
@@ -529,21 +529,25 @@ struct Renderer::Impl {
                     const auto style_error = GetLastError();
                     char diagnostic[320]{};
                     std::snprintf(diagnostic, sizeof diagnostic,
-                        "StormTTY renderer: DComp fallback stage=%s style_operation=%s hr=0x%08lx warp=%u exstyle=0x%08lx style_error=%lu visible=%u size=%ux%u\n",
-                        stage, host_style.operation(), static_cast<unsigned long>(hr), unsigned(counters.warp),
+                        "StormTTY renderer: DComp fallback stage=%s hr=0x%08lx warp=%u exstyle=0x%08lx style_error=%lu visible=%u size=%ux%u\n",
+                        stage, static_cast<unsigned long>(hr), unsigned(counters.warp),
                         static_cast<unsigned long>(style), static_cast<unsigned long>(style_error),
                         unsigned(IsWindowVisible(window)!=FALSE), width, height);
                     OutputDebugStringA(diagnostic);
                     std::fputs(diagnostic, stderr);
-                    check(release_swapchain(), "Restore HWND redirection after composition failure");
+                    release_swapchain();
                 }
             }
             if (!swapchain) {
-                // Do not carry DComp-only no-redirection into HWND presentation,
-                // even when the caller originally supplied that extended style.
-                check(host_style.set(false), "Enable HWND swapchain redirection");
+                // A no-redirection host cannot be switched back at runtime. The
+                // fallback target is an ordinary disabled child, not that host.
+                HWND presentation_window=window;
+                if(no_redirection) {
+                    opaque_window.create(window,width,height);
+                    presentation_window=opaque_window.get();
+                }
                 desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-                check(factory->CreateSwapChainForHwnd(device.get(), window, &desc, nullptr, nullptr, swapchain.put()), "Create HWND swapchain");
+                check(factory->CreateSwapChainForHwnd(device.get(), presentation_window, &desc, nullptr, nullptr, swapchain.put()), "Create HWND swapchain");
             }
             factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
             check(swapchain.as(swapchain2), "Query swapchain2");
@@ -551,6 +555,7 @@ struct Renderer::Impl {
             latency.reset(swapchain2->GetFrameLatencyWaitableObject());
             if (!latency.value) throw std::runtime_error("Swapchain did not provide frame latency handle");
         }
+        opaque_window.resize(width,height);
         D3D11_TEXTURE2D_DESC texture{};
         texture.Width = width; texture.Height = height; texture.MipLevels = 1; texture.ArraySize = 1;
         texture.Format = DXGI_FORMAT_B8G8R8A8_UNORM; texture.SampleDesc.Count = 1;
@@ -563,7 +568,7 @@ struct Renderer::Impl {
         dc->SetTarget(canvas.get()); invalid = true; pending_present = false;
         } catch (...) {
             dc->SetTarget(nullptr); canvas.reset(); canvas_texture.reset();
-            check(release_swapchain(), "Restore HWND redirection after surface failure");
+            release_swapchain();
             throw;
         }
     }
@@ -1184,7 +1189,7 @@ void Renderer::resize(std::uint32_t width,std::uint32_t height,float dpi) {
     if(width==p.width && height==p.height && p.canvas) return;
     p.width=width;p.height=height;
     p.dc->SetTarget(nullptr);p.canvas.reset();p.canvas_texture.reset();p.invalid=true;
-    if(!width || !height) return;
+    if(!width || !height) { p.opaque_window.resize(width,height); return; }
     try {
         if(p.swapchain) check(p.swapchain->ResizeBuffers(2,width,height,DXGI_FORMAT_B8G8R8A8_UNORM,
                                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT),"Resize swapchain");
@@ -1213,7 +1218,7 @@ void* Renderer::frame_latency_wait_handle() const noexcept {return impl_->latenc
 RendererStats Renderer::stats() const noexcept {return impl_->counters;}
 void Renderer::recreate_device() {
     auto& p=*impl_;
-    check(p.release_gpu(),"Restore HWND redirection before device recovery");
+    p.release_gpu();
     p.create_device();p.invalid=true;++p.counters.device_recoveries;
 }
 std::vector<std::uint8_t> Renderer::read_pixels() {

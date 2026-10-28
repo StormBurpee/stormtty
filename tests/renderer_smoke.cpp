@@ -22,8 +22,7 @@ using namespace stormtty;
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 struct HostWindow {
     HWND hwnd{};
-    bool reject_no_redirection{}, reject_redirection{};
-    unsigned no_redirection_requests{};
+    unsigned style_changes{};
     static constexpr const wchar_t* class_name = L"StormTTYRendererHostSmoke";
     static LRESULT CALLBACK dispatch(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) noexcept {
         if (message == WM_NCCREATE) {
@@ -31,13 +30,8 @@ struct HostWindow {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
         }
         auto* self = reinterpret_cast<HostWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-        if (self && message == WM_STYLECHANGING && static_cast<int>(wparam) == GWL_EXSTYLE) {
-            auto* style = reinterpret_cast<STYLESTRUCT*>(lparam);
-            if (style->styleNew & WS_EX_NOREDIRECTIONBITMAP) {
-                ++self->no_redirection_requests;
-                if (self->reject_no_redirection) style->styleNew &= ~DWORD(WS_EX_NOREDIRECTIONBITMAP);
-            } else if (self->reject_redirection) style->styleNew |= WS_EX_NOREDIRECTIONBITMAP;
-        }
+        if (self && message == WM_STYLECHANGING && static_cast<int>(wparam) == GWL_EXSTYLE)
+            ++self->style_changes;
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
     explicit HostWindow(bool no_redirection, DWORD base_style=WS_EX_TOOLWINDOW) {
@@ -62,39 +56,12 @@ struct HostWindow {
 };
 template<class T> struct ProbeCom {
     T* value{};
-    ~ProbeCom() { if(value)value->Release(); }
+    ~ProbeCom() { reset(); }
+    void reset() { if(value) {value->Release();value=nullptr;} }
     ProbeCom()=default;
     ProbeCom(const ProbeCom&)=delete;
     ProbeCom& operator=(const ProbeCom&)=delete;
 };
-void raw_redirection_transition_probe(HWND window, const char* when) {
-    const auto original=GetWindowLongPtrW(window,GWL_EXSTYLE);
-    const auto requested=original ^ LONG_PTR(WS_EX_NOREDIRECTIONBITMAP);
-    SetLastError(ERROR_SUCCESS);
-    const auto previous=SetWindowLongPtrW(window,GWL_EXSTYLE,requested);
-    const auto set_error=GetLastError();
-    const auto after_set=GetWindowLongPtrW(window,GWL_EXSTYLE);
-    const bool position_called=previous!=0 || set_error==ERROR_SUCCESS;
-    BOOL position_ok=FALSE;DWORD position_error=ERROR_SUCCESS;
-    if(position_called) {
-        SetLastError(ERROR_SUCCESS);
-        position_ok=SetWindowPos(window,nullptr,0,0,0,0,
-            SWP_FRAMECHANGED|SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
-        position_error=GetLastError();
-    }
-    std::cerr<<"Raw no-redirection transition: when="<<when<<" original=0x"<<std::hex<<original
-             <<" requested=0x"<<requested<<" previous=0x"<<previous<<" after_set=0x"<<after_set
-             <<" final=0x"<<GetWindowLongPtrW(window,GWL_EXSTYLE)<<std::dec<<" set_error="<<set_error
-             <<" position_called="<<position_called<<" position_ok="<<(position_ok!=FALSE)
-             <<" position_error="<<position_error<<'\n';
-}
-void unbound_redirection_transition_probe(bool initial_no_redirection) {
-    struct ProbeWindow {HWND value{};~ProbeWindow(){if(value)DestroyWindow(value);}} window;
-    window.value=CreateWindowExW(initial_no_redirection ? WS_EX_NOREDIRECTIONBITMAP : 0,
-        HostWindow::class_name,L"Unbound style probe",WS_POPUP,0,0,96,48,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
-    if(window.value) raw_redirection_transition_probe(window.value,"before-any-DComp");
-    else std::cerr<<"Raw style probe CreateWindowExW failed error="<<GetLastError()<<'\n';
-}
 void direct_composition_probe(bool initial_no_redirection, bool waitable, D3D_DRIVER_TYPE driver) {
     // Failure-only diagnostic, independent of Renderer and its dynamic style
     // guard. The enclosing HostWindow keeps this class registered. Each probe
@@ -151,94 +118,133 @@ void direct_composition_probe(bool initial_no_redirection, bool waitable, D3D_DR
              <<" vendor=0x"<<adapter_description.VendorId<<" device=0x"<<adapter_description.DeviceId<<std::dec
              <<" adapter_known="<<have_adapter_description<<" adapter="<<description
              <<" session_known="<<have_session<<" session="<<session<<'\n';
-    if(SUCCEEDED(hr)) raw_redirection_transition_probe(window.value,"after-DComp-Commit");
+}
+struct ReservedCompositionTarget {
+    ProbeCom<ID3D11Device> device;
+    ProbeCom<IDXGIDevice> dxgi;
+    ProbeCom<IDCompositionDevice> composition;
+    ProbeCom<IDCompositionTarget> target;
+    explicit ReservedCompositionTarget(HWND window) {
+        // A real API failure fixture: a window can have only one topmost target.
+        // No production failpoint and no mutation of the immutable host style.
+        auto checked=[](HRESULT hr,const char* action) {
+            if(FAILED(hr)) {
+                std::cerr<<"Target reservation failed: "<<action<<" hr=0x"<<std::hex<<static_cast<unsigned long>(hr)<<std::dec<<'\n';
+                throw std::runtime_error(action);
+            }
+        };
+        checked(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            nullptr,0,D3D11_SDK_VERSION,&device.value,nullptr,nullptr),"Reserve D3D device");
+        checked(device.value->QueryInterface(__uuidof(IDXGIDevice),reinterpret_cast<void**>(&dxgi.value)),"Reserve DXGI device");
+        checked(DCompositionCreateDevice(dxgi.value,__uuidof(IDCompositionDevice),reinterpret_cast<void**>(&composition.value)),"Reserve DComp device");
+        checked(composition.value->CreateTargetForHwnd(window,TRUE,&target.value),"Reserve topmost DComp target");
+    }
+    void release() { target.reset();composition.reset();dxgi.reset();device.reset(); }
+};
+HWND require_opaque_child(HWND host, UINT width, UINT height) {
+    const auto child=GetWindow(host,GW_CHILD);
+    require(child!=nullptr,"No ordinary child presentation HWND under no-redirection host");
+    require(GetParent(child)==host,"Opaque child changed top-level host identity");
+    require((GetWindowLongPtrW(child,GWL_EXSTYLE)&WS_EX_NOREDIRECTIONBITMAP)==0,"Opaque HWND target has no-redirection style");
+    const auto style=GetWindowLongPtrW(child,GWL_STYLE);
+    require((style&(WS_CHILD|WS_DISABLED|WS_VISIBLE))==(WS_CHILD|WS_DISABLED|WS_VISIBLE),"Opaque child can take input or is not visible");
+    require(!IsWindowEnabled(child),"Opaque child must not own keyboard focus");
+    require(SendMessageW(child,WM_NCHITTEST,0,0)==HTTRANSPARENT,"Opaque child intercepts parent chrome hit tests");
+    require(SendMessageW(child,WM_MOUSEACTIVATE,0,0)==MA_NOACTIVATEANDEAT,"Opaque child can activate instead of the shell");
+    require(GetDpiForWindow(child)==GetDpiForWindow(host),"Opaque child DPI context differs from parent");
+    RECT bounds{};require(GetWindowRect(child,&bounds)!=FALSE,"Get opaque child bounds failed");
+    POINT origin{bounds.left,bounds.top};require(ScreenToClient(host,&origin)!=FALSE,"Map opaque child bounds failed");
+    require(origin.x==0 && origin.y==0 && bounds.right-bounds.left==static_cast<LONG>(width) &&
+            bounds.bottom-bounds.top==static_cast<LONG>(height),"Opaque child does not cover the renderer's physical viewport");
+    require(GetWindow(child,GW_HWNDNEXT)==nullptr,"Unexpected renderer-owned child siblings");
+    return child;
+}
+void present_visible_host(Renderer& renderer,const WindowScene& scene) {
+    const auto deadline=GetTickCount64()+3000;
+    for(;;) {
+        const auto result=renderer.render(scene);
+        if(result==RenderResult::presented) return;
+        require(result==RenderResult::busy || result==RenderResult::occluded,"Visible host did not have a presentable frame");
+        require(GetTickCount64()<deadline,"Visible native HWND presentation remained busy/occluded");
+        MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {TranslateMessage(&message);DispatchMessageW(&message);}
+        const auto handle=static_cast<HANDLE>(renderer.frame_latency_wait_handle());
+        if(handle) WaitForSingleObject(handle,16); else Sleep(16);
+    }
 }
 void native_host_surface_test() {
-    // A real HWND, not offscreen alpha readback: both initial bit states, both
-    // presentation paths, recovery, and mutations owned by the host itself.
-    for (const bool original_no_redirection : {false,true}) {
-        for (const bool composition : {false,true}) {
-            HostWindow host(original_no_redirection,composition ? 0 : WS_EX_TOOLWINDOW);
-            const auto original=host.style();
-            std::cerr<<"Renderer HWND case: original_no_redirection="<<original_no_redirection
-                     <<" composition_requested="<<composition<<" original_exstyle=0x"<<std::hex<<original<<std::dec<<'\n';
-            RendererOptions options;options.force_warp=true;options.composition=composition;
+    // The immutable creation style, not an optimistic request, determines which
+    // HWND may host DComp. Valid static DComp must initialize; it is not skipped.
+    for(const bool no_redirection : {false,true}) {
+        for(const bool requested_composition : {false,true}) {
+            HostWindow host(no_redirection,requested_composition ? 0 : WS_EX_TOOLWINDOW);
+            const auto original=host.style();const auto initial_changes=host.style_changes;
+            const bool expected_composition=no_redirection && requested_composition;
+            RendererOptions options;options.force_warp=true;options.composition=requested_composition;
             {
-                Renderer renderer(host.hwnd,options);
-                require(host.style()==original,"Renderer changed host style before creating a surface");
-                renderer.resize(96,48);
-                std::cerr<<"Renderer HWND result: composition="<<renderer.stats().composition
-                         <<" warp="<<renderer.stats().warp<<" exstyle=0x"<<std::hex<<host.style()<<std::dec<<'\n';
-                if(renderer.stats().composition!=composition) {
-                    unbound_redirection_transition_probe(false);
-                    unbound_redirection_transition_probe(true);
-                    direct_composition_probe(false,true,D3D_DRIVER_TYPE_WARP);
+                Renderer renderer(host.hwnd,options);renderer.resize(96,48);
+                std::cerr<<"Renderer immutable HWND: no_redirection="<<no_redirection
+                         <<" requested="<<requested_composition<<" actual="<<renderer.stats().composition<<'\n';
+                if(renderer.stats().composition!=expected_composition) {
                     direct_composition_probe(true,true,D3D_DRIVER_TYPE_WARP);
                     direct_composition_probe(true,false,D3D_DRIVER_TYPE_WARP);
                     direct_composition_probe(true,true,D3D_DRIVER_TYPE_HARDWARE);
                 }
-                require(renderer.stats().composition==composition,"Requested native composition/opaque test path unavailable");
-                require(((host.style() & WS_EX_NOREDIRECTIONBITMAP)!=0)==composition,
-                        "Host redirection style does not match active swapchain path");
-                require((host.style() & ~LONG_PTR(WS_EX_NOREDIRECTIONBITMAP))==
-                        (original & ~LONG_PTR(WS_EX_NOREDIRECTIONBITMAP)),"Renderer clobbered unrelated host styles");
-                host.add_unrelated_style();
+                require(renderer.stats().composition==expected_composition,"Valid creation-time composition/opaque path did not initialize");
+                require(host.style()==original && host.style_changes==initial_changes,"Renderer attempted to mutate host extended styles");
+                if(no_redirection && !expected_composition) require_opaque_child(host.hwnd,96,48);
+                else require(GetWindow(host.hwnd,GW_CHILD)==nullptr,"Unexpected child HWND on direct host presentation");
+                host.add_unrelated_style();const auto shell_changes=host.style_changes;
                 WindowScene scene;renderer.render(scene);
                 require(renderer.read_pixels().size()==96*48*4,"Native host surface did not render");
                 renderer.recreate_device();renderer.render(scene);
-                require(renderer.stats().composition==composition && renderer.stats().device_recoveries==1,
-                        "Native host did not reconstruct its selected presentation path");
-                require(((host.style() & WS_EX_NOREDIRECTIONBITMAP)!=0)==composition,
-                        "Recovery left the wrong host redirection style");
-                require((host.style() & WS_EX_ACCEPTFILES)!=0,"Recovery lost host-owned extended style change");
-                if (composition && !original_no_redirection) {
-                    host.reject_no_redirection=true;renderer.recreate_device();
-                    require(!renderer.stats().composition && (host.style() & WS_EX_NOREDIRECTIONBITMAP)==0,
-                            "Composition-to-opaque recovery retained the no-redirection bit");
-                    require((host.style() & WS_EX_ACCEPTFILES)!=0,"Fallback recovery lost unrelated host style");
-                    host.reject_no_redirection=false;renderer.recreate_device();
-                    require(renderer.stats().composition && (host.style() & WS_EX_NOREDIRECTIONBITMAP)!=0,
-                            "Opaque-to-composition recovery did not restore the required host style");
-                }
+                require(renderer.stats().composition==expected_composition && renderer.stats().device_recoveries==1,
+                        "Native host did not reconstruct its valid presentation path");
+                require(host.style()==(original|WS_EX_ACCEPTFILES) && host.style_changes==shell_changes,
+                        "Recovery mutated host creation style or shell-owned flags");
+                if(no_redirection && !expected_composition) require_opaque_child(host.hwnd,96,48);
             }
-            require(host.style()==(original | WS_EX_ACCEPTFILES),"Renderer destruction did not restore only its owned style bit");
+            require(GetWindow(host.hwnd,GW_CHILD)==nullptr,"Renderer destruction leaked an opaque child HWND");
+            require(host.style()==(original|WS_EX_ACCEPTFILES),"Renderer destruction changed immutable host style");
         }
     }
     {
-        // WM_STYLECHANGING can reject a successfully requested SetWindowLongPtr.
-        // That must fall back, not leave a translucent visual above HWND pixels.
-        HostWindow host(false);host.reject_no_redirection=true;
-        const auto original=host.style();
+        HostWindow host(true);const auto identity=host.hwnd;const auto original=host.style();
         RendererOptions options;options.force_warp=true;
-        {
-            Renderer renderer(host.hwnd,options);renderer.resize(96,48);
-            require(host.no_redirection_requests>0,"Rejected-style fixture never reached composition host setup");
-            require(!renderer.stats().composition,"Rejected DComp host style did not select opaque fallback");
-            require(host.style()==original,"Composition failure left a stale no-redirection bit");
-            host.reject_no_redirection=false;
-            renderer.recreate_device();
-            require(renderer.stats().composition && (host.style() & WS_EX_NOREDIRECTIONBITMAP)!=0,
-                    "Recovery from opaque fallback failed to enable composition hosting");
-        }
-        require(host.style()==original,"Fallback-to-composition destruction lost original host style");
+        Renderer renderer(host.hwnd,options);
+        ReservedCompositionTarget blocker(host.hwnd);
+        renderer.resize(96,48);
+        require(!renderer.stats().composition,"Occupied DComp target did not trigger real opaque fallback");
+        require_opaque_child(host.hwnd,96,48);
+        const auto active=GetActiveWindow();ShowWindow(host.hwnd,SW_SHOWNOACTIVATE);
+        require(GetActiveWindow()==active,"Opaque fallback host stole activation");
+        WindowScene scene;scene.background={21,27,32,255};scene.chrome_generation=1;
+        ChromePrimitive modal;modal.rect={16,12,48,24};modal.fill={190,60,110,255};scene.primitives.push_back(modal);
+        present_visible_host(renderer,scene);
+        auto rgba=renderer.read_pixels();const auto center=(24*96+32)*4;
+        require(rgba[center]==190 && rgba[center+1]==60 && rgba[center+2]==110 && rgba[center+3]==255,
+                "Opaque fallback did not render custom modal above canvas");
+        require(SetWindowPos(host.hwnd,nullptr,0,0,128,80,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE,"Resize test host failed");
+        renderer.resize(128,80,144);require_opaque_child(host.hwnd,128,80);present_visible_host(renderer,scene);
+        renderer.resize(0,0);require_opaque_child(host.hwnd,0,0);
+        require(renderer.render(scene)==RenderResult::suspended,"Zero-size child fallback did not suspend");
+        renderer.resize(128,80,144);present_visible_host(renderer,scene);
+        // Retaining the reservation forces a real opaque-to-opaque recovery.
+        renderer.recreate_device();require(!renderer.stats().composition,"Reserved target disappeared during recovery");
+        require_opaque_child(host.hwnd,128,80);present_visible_host(renderer,scene);
+        blocker.release();renderer.recreate_device();
+        require(renderer.stats().composition,"Opaque-to-DComp recovery did not bind the now-free target");
+        require(GetWindow(host.hwnd,GW_CHILD)==nullptr,"DComp recovery left stale opaque child above content");
+        present_visible_host(renderer,scene);
+        require(host.hwnd==identity && host.style()==original,"Fallback/recovery replaced the shell HWND or changed its style");
+        require(GetActiveWindow()==active,"Fallback/recovery moved focus away from the previous active window");
     }
     {
-        // Conversely an HWND path may not proceed when redirection is refused.
-        // Its thrown setup failure must roll back and permit a later clean retry.
-        HostWindow host(true);host.reject_redirection=true;
-        const auto original=host.style();
-        RendererOptions options;options.force_warp=true;options.composition=false;
-        {
-            Renderer renderer(host.hwnd,options);
-            bool rejected=false;
-            try { renderer.resize(96,48); } catch(const std::exception&) { rejected=true; }
-            require(rejected,"HWND swapchain creation proceeded without a redirection surface");
-            require(host.style()==original && !renderer.stats().composition,
-                    "Failed surface construction did not restore original host style");
-            host.reject_redirection=false;renderer.resize(96,48);
-            require((host.style() & WS_EX_NOREDIRECTIONBITMAP)==0,"Retry did not enable opaque HWND redirection");
-        }
-        require(host.style()==original,"Opaque renderer did not restore caller's original no-redirection bit");
+        // Parent-first teardown is permitted by app shutdown. The child may
+        // already be gone when the renderer releases its swapchain/resources.
+        HostWindow host(true);RendererOptions options;options.force_warp=true;options.composition=false;
+        Renderer renderer(host.hwnd,options);renderer.resize(96,48);
+        require_opaque_child(host.hwnd,96,48);
+        require(DestroyWindow(host.hwnd)!=FALSE,"Destroy renderer host failed");host.hwnd=nullptr;
     }
 }
 Color pixel(const std::vector<std::uint8_t>& rgba, std::size_t width, std::size_t x, std::size_t y) {

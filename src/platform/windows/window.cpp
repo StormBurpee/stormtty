@@ -401,7 +401,7 @@ private:
 };
 
 void NativeWindow::create() {
-    hwnd_ = CreateWindowExW(0, L"StormTTY.NativeWindow", L"StormTTY", WS_OVERLAPPEDWINDOW & ~WS_CAPTION,
+    hwnd_ = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, L"StormTTY.NativeWindow", L"StormTTY", WS_OVERLAPPEDWINDOW & ~WS_CAPTION,
                            CW_USEDEFAULT, CW_USEDEFAULT, 1100, 720, nullptr, nullptr, GetModuleHandleW(nullptr), this);
     if (!hwnd_) throw std::runtime_error("Could not create the native StormTTY window.");
     enforce_custom_frame_style(hwnd_,options_.smoke_test);

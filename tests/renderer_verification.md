@@ -195,84 +195,81 @@ and [Direct2D layer opacity](https://learn.microsoft.com/en-us/windows/win32/dir
 
 ## DirectComposition HWND backing-surface ownership
 
-The physical Windows screenshots from 2026-10-28 showed the stock native title,
-icon and caption buttons **under** the translucent custom crown, including while
-the stock close-confirmation dialog had deactivated the window. Offscreen canvas
-readback cannot detect that second desktop layer.
+The physical Windows screenshots from 2026-10-28 showed stock native title/icon/
+caption pixels **under** the translucent custom crown. Offscreen canvas readback
+cannot detect that second desktop layer.
 
-The renderer now enables `WS_EX_NOREDIRECTIONBITMAP` only after creating and
-committing its actual DirectComposition swapchain/visual target. A checked style
-failure discards that target and selects the opaque HWND fallback. Immediately
-before `CreateSwapChainForHwnd`, the bit must be cleared: the ordinary HWND path
-requires its redirection surface. This applies even when the caller originally
-supplied the bit; teardown restores that original value.
+### Native diagnosis: the style is a creation-time choice
 
-Only the one renderer-owned bit is changed. Other extended styles are read fresh
-and preserved, including changes made by the shell during the renderer lifetime.
-Zero-valued `Get/SetWindowLongPtrW` results use `GetLastError` correctly; changes
-are refreshed using checked `SetWindowPos(SWP_FRAMECHANGED)` without moving,
-resizing, activating or reordering the window. Readback also rejects a style
-silently altered by `WM_STYLECHANGING`. Surface-creation failure and device
-reconstruction release the swapchain and restore the bit before proceeding;
-failure to restore blocks recovery instead of creating an incorrectly styled
-fallback. Destruction is nonthrowing and emits a debugger diagnostic if a live
-HWND refuses restoration. An already-destroyed HWND needs no restoration.
-The shell must defer nested layout/render work while these synchronous style
-notifications run; the Windows shell owns that renderer-call reentrancy guard.
+The initial dynamic `WS_EX_NOREDIRECTIONBITMAP` guard was wrong, despite passing
+cross-compilation. Native [job 122626442595](https://github.com/StormBurpee/stormtty/actions/runs/40630798275/job/122626442595)
+showed all independent DComp baselines committing successfully, including WARP
+with a waitable swapchain, while the renderer's dynamic style step failed.
+[Job 122640299995](https://github.com/StormBurpee/stormtty/actions/runs/40635151790/job/122640299995)
+then identified `SetWindowLongPtrW` error 87 for both enable and disable, before
+any DComp binding **and** after Commit. The style remained unchanged. This was
+not unavailable WARP/DComp capability and was not solved by relaxing assertions.
+Microsoft's WinUI maintainer identifies the same
+[creation-time constraint](https://github.com/microsoft/microsoft-ui-xaml/issues/11523#issuecomment-5470068383);
+Windows Terminal likewise [supplies the flag to CreateWindowEx](https://github.com/microsoft/terminal/blob/main/src/cascadia/WindowsTerminal/IslandWindow.cpp).
 
-`renderer_smoke` now creates hidden real HWNDs and requires both native WARP
-DirectComposition and opaque HWND presentation to initialize, rather than treating
-an unavailable path as a pass. Assertions cover initial zero/nonzero EXSTYLE,
-caller-preexisting no-redirection, unrelated-style preservation, reconstruction,
-DComp-to-opaque-to-DComp recovery, and original-bit restoration on destruction.
-A test window's `WM_STYLECHANGING` handler deliberately refuses each direction
-of the bit change: rejected DComp hosting must fall back, while rejected HWND
-redirection must throw and roll back; removing the rejection must permit retry.
-No production fault-injection option or shared renderer API was added.
+### Immutable host and ordinary child fallback
 
-These assertions require a **new native Windows run**. GNU Windows object/EXE
-compilation is not execution. Even a successful hidden-HWND smoke cannot verify
-the visible DWM layering, inactive crown, custom-alert layout, or physical
-hardware behavior; focused/blurred windows and all close/cancel/paste flows still
-require physical acceptance screenshots. The shell's separate native-caption
-and custom-alert changes are complementary, not proven by these renderer tests.
+The shell now creates its top-level window with `WS_EX_NOREDIRECTIONBITMAP`.
+The renderer **never changes parent extended styles** on setup, failure, recovery,
+or teardown. All shell-owned flags and the parent HWND identity remain intact.
 
-Microsoft's [DirectComposition target layering contract](https://learn.microsoft.com/en-us/windows/win32/api/dcomp/nf-dcomp-idcompositiondevice-createtargetforhwnd)
-places the visual above ordinary HWND content. The
-[extended-style reference](https://learn.microsoft.com/en-us/windows/win32/winmsg/extended-window-styles)
-defines redirection suppression, and Microsoft's
-[DirectComposition layering walkthrough](https://learn.microsoft.com/en-us/archive/msdn-magazine/2014/june/windows-with-c-high-performance-window-layering-using-the-windows-composition-engine)
-explicitly distinguishes composition swapchains from `CreateSwapChainForHwnd`
-when that surface is absent. Checked updates follow
-[SetWindowLongPtrW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw)
-and [SetWindowPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos).
+- A host created with no-redirection, with composition enabled, uses the real
+  premultiplied DirectComposition swapchain and visual target.
+- An ordinary caller-supplied host cannot be converted into that host at runtime;
+  it safely uses an opaque HWND swapchain instead of blending translucent pixels
+  over a hidden redirection surface.
+- If DComp fails, or composition is explicitly disabled, a no-redirection parent
+  gets a renderer-owned **ordinary child HWND** for `CreateSwapChainForHwnd`.
+  The swapchain target itself never has `WS_EX_NOREDIRECTIONBITMAP`. No top-level
+  recreation, session replacement, or undocumented composition API is needed.
+- The fallback child covers the physical viewport at parent-client origin, uses
+  the parent's DPI context, and is raised within the parent's child z-order on
+  resize. It is disabled, returns `HTTRANSPARENT` and refuses mouse activation;
+  chrome, terminal input, focus, IME and accessibility ownership stay in the shell.
+  Custom modals, menus and settings remain primitives in the same composited
+  scene, not separate controls hidden behind the fallback child.
+- Swapchain references are released/flushed before destroying the owned child.
+  Surface-creation failure, renderer destruction and device reconstruction remove
+  it. Recovery back to DComp leaves no stale child over the composition visual.
+  Parent-first destruction is also handled. The private class is process-local.
 
-The first native run of these new host checks
-([Windows job 122609459062](https://github.com/StormBurpee/stormtty/actions/runs/40625544947/job/122609459062))
-failed at the requested-versus-actual composition-path assertion. This is **not**
-a native pass for backing-surface ownership; the original one-line failure did
-not identify which DirectComposition API failed. Fallback now logs the exact API
-stage, HRESULT, WARP choice, EXSTYLE/read error, window visibility and dimensions,
-and the test prints each requested/actual path. These diagnostics contain no
-terminal text, paths or user payload. The strict assertion is retained pending
-that evidence. Only on that assertion's failure, four independent direct-API
-probes compare ordinary versus statically no-redirection HWNDs, waitable versus
-non-waitable WARP composition swapchains, and a hardware-device control. Each
-uses a separate hidden HWND/device, logs exact failure stage and HRESULT plus
-adapter description/flags/vendor/device, requested driver, feature level and
-process session, then releases its resources. They do not call Renderer or its
-style-changing guard and do not suppress the original failure.
-WARP alone is not sufficient reason to skip it: Microsoft's
-[composition sample](https://github.com/microsoft/Windows.UI.Composition-Win32-Samples/blob/master/cpp/ScreenCaptureforHWND/ScreenCaptureforHWND/d3dHelpers.h)
-supports WARP device fallback followed by a composition swapchain.
+DComp fallback diagnostics retain exact API stage/HRESULT, WARP choice, host
+EXSTYLE/read error, visibility and dimensions, without user text or paths.
+Independent static DComp probes remain failure diagnostics; the unsupported raw
+style-toggling experiments are no longer part of the active renderer tests.
 
-The subsequent native diagnostic run
-([Windows job 122626442595](https://github.com/StormBurpee/stormtty/actions/runs/40630798275/job/122626442595))
-established that all four independent DirectComposition probes successfully
-committed, including forced WARP with the waitable flag. The production path
-failed only at dynamic no-redirection enable (`0x80070057`, unchanged EXSTYLE0).
-This rules out unavailable DComp/WARP capability for that runner; it does not
-establish whether a particular Win32 call, binding order, or a creation-time-only
-style caused the rejection. Diagnostics now name the exact style operation and
-compare raw enable/disable transitions before any DComp binding and after a
-successful Commit. The strict composition assertion remains unchanged.
+### Required checks and honest verification boundary
+
+`renderer_smoke` requires the valid **creation-time** DComp path to initialize;
+it does not skip that assertion. The HWND matrix verifies ordinary direct HWND,
+static DComp and static-parent/ordinary-child fallback, with zero renderer-owned
+style changes, shell-added-style preservation, reconstruction and child cleanup.
+A separately reserved topmost DComp target forces a genuine `CreateTargetForHwnd`
+failure without a production fault-injection option. That fixture requires the
+child fallback to present a real visible frame without activation, checks custom
+modal pixels, child bounds/DPI/z-order/hit-test policy, resize and zero-size
+suspension, opaque-to-opaque reconstruction, then recovery to DComp after the
+reservation is released. Parent-first teardown is checked separately. Hardware
+adapter removal and a forced same-renderer DComp-to-opaque device-loss transition
+are not simulated; the real target-creation failure exercises their common
+fallback construction path.
+
+The immutable-host/child-fallback revision has strict GNU Windows compilation and
+EXE-link evidence only until a **new native run** executes it. Neither this native
+fixture nor renderer canvas screenshots prove the visible physical desktop
+material, inactive crown, mixed-monitor DPI/Snap, IME or mouse interaction on user
+hardware. Focused/blurred windows, custom close/cancel/paste, settings/menu flows
+and hardware recovery still need physical acceptance. No visual approval is
+claimed from the earlier successful shell tests.
+
+API basis: [DComp target layering and one-target-per-layer lifetime](https://learn.microsoft.com/en-us/windows/win32/api/dcomp/nf-dcomp-idcompositiondevice-createtargetforhwnd),
+[extended window styles](https://learn.microsoft.com/en-us/windows/win32/winmsg/extended-window-styles),
+[HWND swapchain target](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgifactory2-createswapchainforhwnd),
+[child window/input behavior](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features),
+and [composition rather than redirection-surface presentation](https://learn.microsoft.com/en-us/archive/msdn-magazine/2014/june/windows-with-c-high-performance-window-layering-using-the-windows-composition-engine).
