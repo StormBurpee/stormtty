@@ -43,3 +43,61 @@ when one fails. A timeout is failure, never an allowed skip. This bounds the two
 qualification cases to 360 seconds plus bounded runner cleanup; Linux timings
 are not evidence for Windows performance. Native results must be reported
 separately for the two providers.
+
+### Qualification-only Windows input evidence
+
+With `BUILD_TESTING=ON` and `STORMTTY_TEST_SHELL_PROBE=ON`, the Windows probe
+links **only** `stormtty_qualification_session` and
+`stormtty_qualification_process`, both compiled with
+`STORMTTY_QUALIFICATION_INPUT_EVIDENCE`. The production application continues to
+link the normal Session/Process libraries; its `ProcessOptions` layout and writer
+code contain no recorder, branch, callback or filesystem operation. Do not define
+this macro globally, mix the two Session/Process variants, or use this path for a
+user session. The shared terminal library does not use `ProcessOptions`.
+
+The existing explicit private synthetic fixture invocation opts in via a shared
+recorder. Native helper modes and normal process launches do not opt in. This does
+not inspect launch environment or history. The process options retain shared
+ownership until detached workers finish; there are no observer callbacks or
+reentrancy into Session/Process. The single writer records immediately after
+`WriteFile` returns, preserving its error before instrumentation. Snapshots use a
+separate mutex and never hold a Process/Session lock; no new sleeps, barriers or
+queue-drain synchronization are introduced. Instrumentation still has finite
+copy/mutex cost and must not be mistaken for an uninstrumented timing run.
+
+`PTY_WRITE` records include ordered call sequence, dequeued message identity and
+byte offset, requested byte count, BOOL success, reported count, error and accepted
+count. `accepted_hex` is **only** the successful WriteFile prefix; a failed call's
+reported count is diagnostic, not proof of acceptance. `requested_hex` is separate.
+Protocol replies and fixture input take the same writer path and are included in
+actual order (without guessing their source from text). Windows pipe acceptance
+is not proof of ConPTY translation or MSYS/ZLE consumption.
+
+Memory is fixed at 256 records with at most 1024 requested bytes per record.
+Snapshots/hex formatting happen only on test-driven phase success/failure or final
+result, outside the writer. Dumps are incremental; `missing_since_after` identifies
+records lost before the next dump, `overwritten` is the cumulative ring overwrite
+count, and byte truncation is explicit per record and cumulatively. An incomplete
+trace must never be called byte-complete evidence. The original failure is dumped
+before shell diagnostic commands; final dumps retain any subsequent calls without
+changing the original test result.
+
+`qualification_input_evidence_tests` deterministically covers partial writes,
+protocol reply ordering, failed/zero writes, ring eviction, byte truncation and
+concurrent snapshots. Linux execution verifies recorder mechanics only; Windows
+cross-builds do not qualify native runtime behavior. After a Windows cross-build,
+inspect the link graph: the probe must contain qualification libraries but no
+`libstormtty_session.a`/`libstormtty_process.a`; the app must contain normal
+libraries and no qualification libraries. `strings stormtty.exe` must have no
+`PTY_INPUT_EVIDENCE` or `PTY_WRITE` format tokens; the probe must have the
+trace format. This is a build-isolation check, not a Windows runtime result.
+
+For a Ninja Windows build (MSVC native or GNU cross-build) containing both targets, run:
+
+```sh
+python3 tools/probes/check_input_evidence_isolation.py /absolute/build-directory
+```
+
+This checks both link dependency lists and the actual two executable artifacts.
+It does not execute either binary or claim native runtime coverage; optimized C++
+class names are deliberately not required as evidence markers.

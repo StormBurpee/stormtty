@@ -1,9 +1,9 @@
 name: Native build and runtime evidence
 on:
   push:
-    paths-ignore: ['README.md', 'docs/**']
+    paths-ignore: ['README.md', 'docs/**', 'tools/probes/msys-runtime-experiment/**', '.github/workflows/msys-resize-experiment.yml']
   pull_request:
-    paths-ignore: ['README.md', 'docs/**']
+    paths-ignore: ['README.md', 'docs/**', 'tools/probes/msys-runtime-experiment/**', '.github/workflows/msys-resize-experiment.yml']
   workflow_dispatch:
 permissions:
   contents: read

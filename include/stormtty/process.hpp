@@ -12,6 +12,9 @@
 #include <vector>
 
 namespace stormtty {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+namespace qualification { class InputEvidence; }
+#endif
 
 struct ProcessGridSize {
     std::uint16_t columns{80};
@@ -30,6 +33,10 @@ enum class ProcessState { starting, running, close_requested, draining, exited, 
 enum class ProcessSendResult { accepted, would_block, closed, too_large };
 
 struct ProcessOptions {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+    // Isolated synthetic-fixture build only; absent from the shipped ABI.
+    std::shared_ptr<qualification::InputEvidence> qualification_input_evidence;
+#endif
     // UTF-8. executable must be an absolute path. arguments excludes argv[0].
     // No shell interpolation is performed. For a shell command, launch that shell
     // explicitly. Environment inherits the parent, then applies these overrides.

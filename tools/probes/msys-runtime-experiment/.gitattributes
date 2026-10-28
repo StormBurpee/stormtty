@@ -1,0 +1,4 @@
+# Hash-checked experimental patches and build scripts must retain LF on Windows.
+* text eol=lf
+# Unified-diff context deliberately contains a prefix space before upstream tabs.
+*.patch -whitespace

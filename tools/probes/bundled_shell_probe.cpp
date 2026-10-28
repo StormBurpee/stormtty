@@ -1,5 +1,8 @@
 // Real Zsh -> StormTTY Process -> Session/libghostty qualification; no fake shell.
 #include "stormtty/session.hpp"
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+#include "stormtty/qualification_input_evidence.hpp"
+#endif
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -196,6 +199,15 @@ int main(int argc, char** argv) {
     std::cout << std::unitbuf;
     std::shared_ptr<Session> session;
     fs::path journal;
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+    auto input_evidence = std::make_shared<qualification::InputEvidence>();
+    std::uint64_t last_input_sequence = 0;
+    auto dump_input = [&](std::string_view label) {
+        const auto snapshot = input_evidence->snapshot(last_input_sequence);
+        qualification::InputEvidence::dump(std::cout, snapshot, label);
+        last_input_sequence = snapshot.completed;
+    };
+#endif
     try {
         const auto shell = fs::absolute(path_utf8(argv[1]));
         const auto fixture = fs::absolute(path_utf8(argv[2]));
@@ -244,6 +256,11 @@ int main(int argc, char** argv) {
             {"MSYSTEM", "MSYS"}, {"MSYS", std::nullopt}, {"ENV", std::nullopt}, {"BASH_ENV", std::nullopt}};
         TerminalOptions terminal; terminal.size = {100, 30, 8, 16};
         const auto started = std::chrono::steady_clock::now();
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        // Only this explicit private synthetic fixture session can opt in. Do
+        // not attach to the managed-home helper, user launch, or arbitrary app.
+        p.qualification_input_evidence = input_evidence;
+#endif
         session = Session::start(std::move(p), terminal);
         expect(session, "__STORMTTY_READY__");
         PromptProtocol prompt{session};
@@ -290,12 +307,18 @@ int main(int argc, char** argv) {
                 expect(session, "__STORMTTY_NATIVE_SIZE_ACK:"+std::to_string(native_sequence)+":"+dimensions+"__");
                 dump_process_diagnostics(session, "phase-complete");
                 flush();
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                dump_input("resize-phase-success");
+#endif
                 std::cout << "[resize phase " << phase+1 << "] PASS\n";
             } catch (...) {
                 // Preserve evidence before flushing or running any child, which
                 // may redraw the terminal or incidentally refresh shell state.
                 std::cerr << "Original resize failure frame (before diagnostics):\n" << screen(session);
                 dump_process_diagnostics(session, "original-failure-before-diagnostics");
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                dump_input("original-resize-failure-before-diagnostics");
+#endif
                 // Diagnostics only after the original failure. Neither a
                 // successful flush nor new observations can change that result.
                 try {
@@ -340,6 +363,9 @@ int main(int argc, char** argv) {
         require(session->wait_closed(10s), "zsh natural exit did not close Session");
         require(session->info().state == SessionState::exited, "zsh exited in failed state");
         require(session->info().exit_code == 37, "zsh exit status lost");
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        dump_input("final-result");
+#endif
         dump_journal(journal);
 #ifdef _WIN32
         std::cout << "PASS native Windows bundled-shell candidate through Process/Session\n";
@@ -349,6 +375,9 @@ int main(int argc, char** argv) {
         return 0;
     } catch (const std::exception& e) {
         if (session) { std::cerr << "Failure frame:\n" << screen(session); session->request_close(); (void)session->wait_closed(10s); }
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        dump_input("final-result");
+#endif
         dump_journal(journal);
         std::cerr << "FAIL: " << e.what() << '\n'; return 1;
     }

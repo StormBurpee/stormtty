@@ -1,5 +1,8 @@
 #include "stormtty/process.hpp"
 #include "process_control.hpp"
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+#include "stormtty/qualification_input_evidence.hpp"
+#endif
 
 #if defined(_WIN32)
 #ifndef _WIN32_WINNT
@@ -367,6 +370,9 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
         publish_flag(reader_done);
     }
     void write_loop() noexcept {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        std::uint64_t message_sequence = 0;
+#endif
         if (!register_cancel_handle(writer_cancel)) { publish_flag(writer_done); return; }
         try {
             while (!closing.load()) {
@@ -377,11 +383,25 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
                     if (closing.load()) break;
                     bytes = std::move(input.front()); input.pop_front();
                 }
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                ++message_sequence;
+#endif
                 std::size_t offset = 0;
                 while (offset < bytes.size() && !closing.load()) {
                     DWORD count = 0;
                     const auto amount = static_cast<DWORD>(std::min<std::size_t>(bytes.size() - offset, 64 * 1024));
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                    const BOOL succeeded = WriteFile(input_write.value, bytes.data() + offset, amount, &count, nullptr);
+                    const DWORD write_error = succeeded ? ERROR_SUCCESS : GetLastError();
+                    if (options.qualification_input_evidence)
+                        options.qualification_input_evidence->completed_write(message_sequence, offset,
+                            {bytes.data() + offset, amount}, succeeded != FALSE, count, write_error);
+                    // Preserve the original error branch's last-error observation.
+                    if (!succeeded) SetLastError(write_error);
+                    if (!succeeded) {
+#else
                     if (!WriteFile(input_write.value, bytes.data() + offset, amount, &count, nullptr)) {
+#endif
                         if (!closing.load() && GetLastError() != ERROR_BROKEN_PIPE) fail("WriteFile(ConPTY input) failed");
                         goto finished;
                     }
