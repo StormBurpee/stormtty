@@ -155,8 +155,8 @@ zmodload zsh/datetime
 zmodload zsh/stat
 typeset -gF _stormtty_started=0
 typeset -gi _stormtty_exit=0 _stormtty_command_active=0
-# Plain structured shell context is the single input to our prompt. A future
-# native footer transport must validate/escape it as data, never run its strings.
+# Plain structured shell context feeds the prompt and bounded native footer
+# snapshot. The host treats every field as untrusted presentation data.
 typeset -gA STORMTTY_CONTEXT
 _stormtty_read_small() {
   local -A meta
@@ -171,6 +171,9 @@ _stormtty_read_small() {
 _stormtty_git_context() {
   local dir=$PWD gitdir REPLY depth=0
   STORMTTY_CONTEXT[branch]=''
+  STORMTTY_CONTEXT[repository_root]=''
+  STORMTTY_CONTEXT[head]=''
+  STORMTTY_CONTEXT[kind]=none
   # No Git subprocess, status scan, hooks, network, or repository config reads.
   # Resolve normal checkouts, submodules and worktrees, at most 64 ancestors.
   while (( depth++ < 64 )); do
@@ -181,7 +184,13 @@ _stormtty_git_context() {
       _stormtty_read_small "$dir/.git" || return
       [[ $REPLY == 'gitdir: '* ]] || return
       gitdir=${REPLY#gitdir: }
-      [[ $gitdir == /* ]] || gitdir=$dir/$gitdir
+      # Git for Windows writes drive-absolute worktree metadata paths. MSYS
+      # and Cygwin accept these directly; do not turn C:/... into $PWD/C:/....
+      # Forward-slash UNC paths already satisfy /*. Drive-relative C:foo
+      # remains relative, and a POSIX filename containing ':' stays relative.
+      if [[ $gitdir != /* && ! ( $OSTYPE == (msys*|cygwin*) && $gitdir == [a-zA-Z]:/* ) ]]; then
+        gitdir=$dir/$gitdir
+      fi
       break
     fi
     [[ $dir != / ]] || return
@@ -190,9 +199,94 @@ _stormtty_git_context() {
   [[ -n $gitdir ]] || return
   _stormtty_read_small "$gitdir/HEAD" || return
   case $REPLY in
-    'ref: refs/heads/'*) STORMTTY_CONTEXT[branch]=${REPLY#ref: refs/heads/} ;;
-    *) [[ -n $REPLY && $REPLY != *[^0-9a-f]* ]] && STORMTTY_CONTEXT[branch]="detached:${REPLY[1,8]}" ;;
+    'ref: refs/heads/'*)
+      [[ -n ${REPLY#ref: refs/heads/} ]] || return
+      STORMTTY_CONTEXT[head]=${REPLY#ref: refs/heads/}
+      STORMTTY_CONTEXT[branch]=${STORMTTY_CONTEXT[head]}
+      STORMTTY_CONTEXT[kind]=branch ;;
+    *)
+      [[ ${#REPLY} -ge 7 && ${#REPLY} -le 64 && $REPLY != *[^0-9a-fA-F]* ]] || return
+      STORMTTY_CONTEXT[head]=${REPLY[1,8]}
+      STORMTTY_CONTEXT[branch]="detached:${STORMTTY_CONTEXT[head]}"
+      STORMTTY_CONTEXT[kind]=detached ;;
   esac
+  STORMTTY_CONTEXT[repository_root]=$dir
+}
+_stormtty_display_directory() {
+  local value=$1 home=${HOME%/}
+  [[ $HOME == / ]] && home=/
+  if [[ -n $home && $value == "$home" ]]; then
+    REPLY='~'
+  elif [[ -n $home && $home != / && $value == "$home/"* ]]; then
+    REPLY="~/${value#"$home/"}"
+  elif [[ $home == / && $value == /* ]]; then
+    REPLY="~${value}"
+  elif [[ $OSTYPE == (msys*|cygwin*) && $value == /[A-Za-z](|/*) ]]; then
+    REPLY="${(U)value[2]}:/${value[4,-1]}"
+  else
+    REPLY=$value
+  fi
+}
+_stormtty_encode_context() {
+  # Byte-wise UTF-8 encoding via Zsh builtins only. No eval, external encoder,
+  # or substitution of field data into the printf format. Consumer validates
+  # UTF-8; controls are rejected here before any OSC is emitted.
+  emulate -L zsh
+  unsetopt MULTIBYTE
+  local value=$1 byte encoded
+  local -i i code
+  REPLY=''
+  (( ${#value} <= $2 )) || return 1
+  for (( i=1; i<=${#value}; ++i )); do
+    byte=$value[i]
+    builtin printf -v code '%d' "'$byte"
+    (( code >= 32 && code != 127 )) || return 1
+    case $byte in
+      [a-zA-Z0-9._~-]|/|:) REPLY+=$byte ;;
+      *) builtin printf -v encoded '%%%02X' $code; REPLY+=$encoded ;;
+    esac
+  done
+  return 0
+}
+_stormtty_emit_context() {
+  local REPLY uri display root key encoded_display encoded_root encoded_head payload
+  if [[ ${STORMTTY_SHELL_CONTEXT:-1} == 0 ]]; then
+    builtin printf '\e]7400;stormtty-context;1;clear\a'
+    return 0
+  fi
+  # Empty authority is deliberate: no hostname lookup or claim that the host
+  # should open this path. Ghostty retains this exact opaque OSC7 URI.
+  if [[ $PWD != /* ]] || ! _stormtty_encode_context "$PWD" 2048; then
+    builtin printf '\e]7400;stormtty-context;1;clear\a'; return 0
+  fi
+  uri="file://$REPLY"
+  _stormtty_display_directory "$PWD"; display=$REPLY
+  _stormtty_display_directory "${STORMTTY_CONTEXT[repository_root]}"; root=$REPLY
+  # Validate the opaque URI before emitting the ordinary directory update.
+  # Git/display rejection must not leave the host showing the previous CWD.
+  if ! _stormtty_encode_context "$uri" 2048; then
+    builtin printf '\e]7400;stormtty-context;1;clear\a'; return 0
+  fi
+  key=$REPLY
+  builtin printf '\e]7;%s\a' "$uri"
+  if ! _stormtty_encode_context "$display" 2048; then
+    builtin printf '\e]7400;stormtty-context;1;clear\a'; return 0
+  fi
+  encoded_display=$REPLY
+  if ! _stormtty_encode_context "$root" 2048; then
+    builtin printf '\e]7400;stormtty-context;1;clear\a'; return 0
+  fi
+  encoded_root=$REPLY
+  if ! _stormtty_encode_context "${STORMTTY_CONTEXT[head]}" 256; then
+    builtin printf '\e]7400;stormtty-context;1;clear\a'; return 0
+  fi
+  encoded_head=$REPLY
+  payload="7400;stormtty-context;1;set;$key;$encoded_display;$encoded_root;${STORMTTY_CONTEXT[kind]};$encoded_head"
+  if (( ${#payload} > 8192 )); then
+    builtin printf '\e]7400;stormtty-context;1;clear\a'; return 0
+  fi
+  builtin printf '\e]%s\a' "$payload"
+  return 0
 }
 _stormtty_prompt_literal() {
   # Zsh prompt percent sequences and terminal controls are independently escaped.
@@ -226,13 +320,13 @@ _stormtty_precmd() {
   STORMTTY_CONTEXT[exit]=$previous
   STORMTTY_CONTEXT[duration]=$elapsed
   _stormtty_git_context
+  _stormtty_emit_context
   # Zsh supplies the original command status to every hook. Returning that
   # failure would abort later OMZ/ZLE hooks; our bookkeeping must return success.
   [[ ${STORMTTY_PROMPT:-managed} == managed ]] || return 0
   unsetopt PROMPT_SUBST
-  path_label=$PWD
-  [[ -n $HOME && $PWD == "$HOME" ]] && path_label='~'
-  [[ -n $HOME && $PWD == "$HOME/"* ]] && path_label="~/${PWD#"$HOME/"}"
+  _stormtty_display_directory "$PWD"
+  path_label=$REPLY
   _stormtty_prompt_literal "$path_label"
   PROMPT=$'%{\e]133;A\a%}'"%B%F{cyan}${REPLY}%f%b"
   if [[ -n ${STORMTTY_CONTEXT[branch]} ]]; then
