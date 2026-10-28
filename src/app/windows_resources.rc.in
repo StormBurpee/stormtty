@@ -1,0 +1,5 @@
+#include "@CMAKE_CURRENT_SOURCE_DIR@/src/app/windows_resources.h"
+
+// A single application icon group: Explorer, taskbar, Alt+Tab and our windows
+// must all select the supplied StormTTY artwork rather than a stock icon.
+IDI_STORMTTY ICON "@CMAKE_CURRENT_SOURCE_DIR@/assets/branding/stormtty.ico"

@@ -265,3 +265,14 @@ style-changing guard and do not suppress the original failure.
 WARP alone is not sufficient reason to skip it: Microsoft's
 [composition sample](https://github.com/microsoft/Windows.UI.Composition-Win32-Samples/blob/master/cpp/ScreenCaptureforHWND/ScreenCaptureforHWND/d3dHelpers.h)
 supports WARP device fallback followed by a composition swapchain.
+
+The subsequent native diagnostic run
+([Windows job 122626442595](https://github.com/StormBurpee/stormtty/actions/runs/40630798275/job/122626442595))
+established that all four independent DirectComposition probes successfully
+committed, including forced WARP with the waitable flag. The production path
+failed only at dynamic no-redirection enable (`0x80070057`, unchanged EXSTYLE0).
+This rules out unavailable DComp/WARP capability for that runner; it does not
+establish whether a particular Win32 call, binding order, or a creation-time-only
+style caused the rejection. Diagnostics now name the exact style operation and
+compare raw enable/disable transitions before any DComp binding and after a
+successful Commit. The strict composition assertion remains unchanged.

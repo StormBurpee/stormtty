@@ -139,22 +139,35 @@ struct WakeCounter {
     }
 };
 
+enum class FixtureMode { primary, fullscreen, compact_alternate };
+
+std::string_view mode_name(FixtureMode mode) {
+    switch (mode) {
+    case FixtureMode::primary: return "primary/default";
+    case FixtureMode::fullscreen: return "alternate/fullscreen-incremental";
+    case FixtureMode::compact_alternate: return "alternate/compact-incremental";
+    }
+    return "unknown";
+}
+
 class FixtureSession {
 public:
     std::shared_ptr<WakeCounter> wake = std::make_shared<WakeCounter>();
     std::shared_ptr<Session> session;
     const std::string scenario;
     const bool expected_alternate;
+    const bool expected_fullscreen;
 
-    FixtureSession(const std::string& node, const std::string& fixture, bool alternate)
-        : scenario(alternate ? "alternate/incremental" : "primary/default"), expected_alternate(alternate) {
+    FixtureSession(const std::string& node, const std::string& fixture, FixtureMode mode)
+        : scenario(mode_name(mode)), expected_alternate(mode != FixtureMode::primary), expected_fullscreen(mode == FixtureMode::fullscreen) {
         ProcessOptions process;
         process.executable = node;
         process.arguments = {fixture};
-        if (alternate) {
+        if (expected_alternate) {
             process.arguments.emplace_back("--alternate-screen");
             process.arguments.emplace_back("--incremental");
         }
+        if (mode == FixtureMode::fullscreen) process.arguments.emplace_back("--fullscreen");
         const auto directory = utf8_path(fixture).parent_path().u8string();
         process.working_directory.assign(directory.begin(), directory.end());
         // CI remains inherited on purpose. Ink's interactive:true override is
@@ -195,6 +208,11 @@ public:
                 try {
                     check_live_frame(frame);
                     check(frame->alternate_screen == expected_alternate, "Ink is not in the requested screen mode");
+                    if (expected_fullscreen) {
+                        const auto box = active_box(frame);
+                        check(box && box->top == 0 && box->bottom + 1 == frame->rows,
+                            "The fullscreen Ink box does not fill the viewport height");
+                    }
                     coherent = true;
                 } catch (const std::runtime_error& error) {
                     // A pipe read / ConPTY repaint is not a frame transaction.
@@ -332,10 +350,10 @@ public:
     }
 };
 
-void exercise(const std::string& node, const std::string& fixture, bool alternate) {
-    FixtureSession test(node, fixture, alternate);
+void exercise(const std::string& node, const std::string& fixture, FixtureMode mode) {
+    FixtureSession test(node, fixture, mode);
     const auto first = test.text("Interactive TTY | Size: 80x24");
-    check(first->alternate_screen == alternate, "Ink alternate-screen mode not represented in VT state");
+    check(first->alternate_screen == (mode != FixtureMode::primary), "Ink alternate-screen mode not represented in VT state");
     check(!first->cursor.visible, "Interactive Ink did not hide the editing cursor");
     const auto retained = frame_text(first);
     test.animation();
@@ -371,7 +389,7 @@ void exercise(const std::string& node, const std::string& fixture, bool alternat
     check(final->cursor.visible, "Ink did not restore the cursor on exit");
     check(!final->alternate_screen, "Ink did not restore the primary screen on exit");
     check(test.session->text("late") == SessionSendResult::closed, "Exited Ink session accepted input");
-    std::cout << (alternate ? "alternate/incremental" : "primary/default")
+    std::cout << mode_name(mode)
         << ": interactive PTY, styled Unicode cells, live animation, key selection/editing, paste, shrink/grow, clean exit passed; provider="
         << test.session->diagnostics().provider << '\n';
 }
@@ -379,15 +397,22 @@ void exercise(const std::string& node, const std::string& fixture, bool alternat
 
 int main(int argc, char** argv) {
     try {
-        check(argc == 3, "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs>");
+        check(argc == 3 || argc == 4,
+            "Usage: ink_session_tests <absolute-node-executable> <absolute-fixture.mjs> [all|primary|fullscreen|compact-alt|host-close]");
         check(utf8_path(argv[1]).is_absolute(), "Node executable path must be absolute");
         check(utf8_path(argv[2]).is_absolute(), "Ink fixture path must be absolute");
         check(std::filesystem::is_regular_file(utf8_path(argv[1])), "Node executable is missing");
         check(std::filesystem::is_regular_file(utf8_path(argv[2])), "Ink fixture is missing");
-        exercise(argv[1], argv[2], false);
-        exercise(argv[1], argv[2], true);
-        {
-            FixtureSession interrupted(argv[1], argv[2], true);
+        const std::string_view mode = argc == 4 ? argv[3] : "all";
+        check(mode == "all" || mode == "primary" || mode == "fullscreen" || mode == "compact-alt" || mode == "host-close",
+            "Unknown Ink scenario; use all, primary, fullscreen, compact-alt, or host-close");
+        if (mode == "all" || mode == "primary") exercise(argv[1], argv[2], FixtureMode::primary);
+        if (mode == "all" || mode == "fullscreen") exercise(argv[1], argv[2], FixtureMode::fullscreen);
+        // This remains a strict regression, including the known resize gap.
+        // It is neither converted to expected-pass nor skipped by 'all'.
+        if (mode == "all" || mode == "compact-alt") exercise(argv[1], argv[2], FixtureMode::compact_alternate);
+        if (mode == "all" || mode == "host-close") {
+            FixtureSession interrupted(argv[1], argv[2], FixtureMode::compact_alternate);
             interrupted.text("Interactive TTY | Size: 80x24");
             interrupted.animation();
             interrupted.session->request_close();

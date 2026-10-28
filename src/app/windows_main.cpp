@@ -37,7 +37,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
         Arguments args;
         if (!args.values) throw std::runtime_error("Could not read command-line arguments.");
-        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects") smoke=true;
+        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-settings") smoke=true;
         stormtty::NativeRunOptions options; options.smoke_test=smoke;
         // Must precede creation of any HWND, including startup error dialogs.
         // ERROR_ACCESS_DENIED means the executable manifest already set it.
@@ -56,6 +56,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             else if (argument == L"--smoke-layout") { options.smoke_layout=true; ++smoke_modes; }
             else if (argument == L"--smoke-modal") { options.smoke_modal=true; ++smoke_modes; }
             else if (argument == L"--smoke-projects") { options.smoke_projects=true; ++smoke_modes; }
+            else if (argument == L"--smoke-settings") { options.smoke_settings=true; ++smoke_modes; }
             else if (argument == L"--capture" && i+1<args.count) options.capture_path=args.values[++i];
             else if (argument == L"--help") {
                 constexpr std::string_view help="StormTTY [--config path]\n\n"
@@ -63,7 +64,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                     "--smoke [--capture frame.png]\n"
                     "--smoke-layout --capture layout.png\n"
                     "--smoke-modal --capture modal.png\n"
-                    "--smoke-projects --capture projects.png\n\n"
+                    "--smoke-projects --capture projects.png\n"
+                    "--smoke-settings --capture settings.png\n\n"
                     "Ctrl+Shift+P opens commands.\nCtrl+Shift+T creates a tab.\n"
                     "Ctrl+Tab changes tabs.\nCtrl+Shift+V pastes.\nAlt+Space opens the system menu.";
                 if (smoke) { std::fprintf(stdout,"%.*s\n",static_cast<int>(help.size()),help.data()); return 0; }
@@ -81,6 +83,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 if (written && written < count) { directory.resize(written); config_path = std::filesystem::path(directory) / L"StormTTY" / L"config.stormtty"; }
             }
         }
+        if (!config_path.empty()) { config_path=std::filesystem::absolute(config_path).lexically_normal(); options.config_path=config_path; }
         if (!config_path.empty() && (required || std::filesystem::exists(config_path))) {
             auto loaded = stormtty::load_config(config_path, stormtty::Platform::windows);
             if (!loaded) {

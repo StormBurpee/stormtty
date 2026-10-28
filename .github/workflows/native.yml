@@ -38,8 +38,21 @@ jobs:
       - name: Install macOS C++20 toolchain
         if: runner.os == 'macOS'
         run: brew install llvm@20
+      - name: Restore pinned terminal engine
+        id: engine_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
       - name: Bootstrap pinned terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
         run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Cache successfully built terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ${{ steps.engine_cache.outputs.cache-primary-key }}
       - name: Check bootstrap boundary tests
         run: python -m unittest discover -s tools -p 'bootstrap_test*.py' -v
       - name: Configure native Windows application
@@ -65,7 +78,7 @@ jobs:
         shell: python
         run: |
           import pathlib,base64,hashlib
-          for name in ('native-window.png', 'native-layout.png', 'native-modal.png', 'native-projects.png'):
+          for name in ('native-window.png', 'native-layout.png', 'native-modal.png', 'native-projects.png', 'native-settings.png'):
             p=pathlib.Path('build/artifacts')/name
             print('STORMTTY_NATIVE_FRAME_NAME='+name)
             if p.exists():

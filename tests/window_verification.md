@@ -28,7 +28,7 @@ path to enter a harmless echo marker and `exit /b 0`, and requires all of:
 
 A 20-second native timer fails startup/output/presentation hangs. Smoke-only
 post-message-loop cleanup has an additional bounded five-second actor wait per
-session. Normal UI callbacks and normal close never join a worker. Failure exits
+session. Normal UI callbacks and normal close never wait for active process or file I/O; a completed settings worker is reaped only after it publishes its result. Failure exits
 nonzero and avoids modal dialogs. Output identifies the actual ConPTY provider.
 
 The PNG is actual **renderer framebuffer readback**, encoded with WIC. It is not
@@ -43,7 +43,7 @@ The parent CI owner records whether this entry point actually ran and passed.
   Alt+Space, Alt+F4, signed multi-monitor coordinates, PMv2 DPI, maximized work
   bounds, and fullscreen restoration.
 - Actual workspace tabs and split trees; click/select, explicit close,
-  rename, reordering, compact native tab picker, pane focus/move/swap/zoom,
+  rename, reordering, compact renderer-backed tab picker, pane focus/move/swap/zoom,
   keyboard and pointer resize, escape/capture-loss cancellation. Moves retain
   session IDs and do not restart children.
 - Native command palette/menu dispatch through the shared command registry;
@@ -61,8 +61,9 @@ The parent CI owner records whether this entry point actually ran and passed.
   IMM32 implementation is not proof of Japanese/Chinese/Korean IME correctness.
 - No cross-window pane/tab tear-off. Out-of-band tab drags cancel and preserve
   ownership; the app does not pretend a process was transferred.
-- Retained-terminal find and in-app settings editing are visibly disabled in
-  the palette. Declarative `--config` startup loading exists; no live reload UI.
+- Retained-terminal Find UI remains disabled; its backend is not yet surfaced.
+  Settings editing is implemented below; external-file changes require restart
+  before editing rather than silently replacing a stale baseline.
 - No physical validation of Snap hover, mixed-DPI monitors, high contrast,
   keyboard layouts, Narrator/NVDA, RDP, device loss, or GPU latency/idle budgets.
 - Finite presentation-only hover (80 ms), selected-tab settle/split-label reveal
@@ -144,3 +145,47 @@ The parent CI owner records whether this entry point actually ran and passed.
   real shells. It checks live actor identity across activation/retirement, hidden
   terminal output, and removal of only one project. It does not prove interactive
   folder-picker behavior or physical visual/accessibility quality.
+
+
+## Settings, shared menus and input-feel regression
+
+- `Ctrl+,` opens renderer-backed Graphite Settings. Appearance controls preview
+  font/size/ligatures, material/opacity and motion reversibly; Escape/Cancel restores
+  the original presentation. Shell selection merges only an explicitly chosen
+  discovered candidate into existing profiles. Git Bash is discovered as an actual
+  executable plus discrete arguments; opening Settings never starts a shell.
+- The exact absolute startup config path is retained. One background job performs
+  bounded snapshot/discovery or explicit atomic Save; no filesystem probing runs
+  in a WndProc. The same-read parsed Config must match the running baseline, and
+  Save checks the original snapshot for conflicts. Failed Save retains the draft;
+  pending Save traps Cancel/close until its result. Profiles/bindings apply only
+  after successful persistence, and existing Session actors are never restarted.
+  Worker results own data and hold no NativeWindow pointer. Active I/O is not
+  joined while a window is visible; shutdown joins only after DestroyWindow.
+- `Alt+Enter` on a palette action opens its shortcut-capture editor without
+  dispatching the action. Duplicate, OS-reserved and disallowed terminal chords
+  are rejected by shared binding validation. Explicit Save persists accepted
+  bindings. The host traps keyboard, text, IME and pointer channels in Settings.
+- Main/pane menus, compact task-tab picker, pane destinations and Alt+Space now
+  use shared renderer-backed ContextMenu, including submenus/disabled reasons,
+  Unicode committed-text typeahead and bounded scrolling. There are no remaining
+  HMENU/TrackPopupMenu calls in the owned-window host. Callbacks capture and
+  revalidate project/pane/session identities. A dismissing outside click cannot
+  begin a terminal selection, and consumed menu keys bypass TranslateMessage.
+  The actual Windows folder picker is still the system file-selection UI.
+- Settings and menus accept OS high-contrast colors; every panel surface is opaque
+  in that mode, including HighlightText/disabled text, rather than retaining a
+  low-contrast Graphite palette. They do not yet expose UIA semantics.
+- The caret uses a tested deadline clock: accepted terminal text/key activity
+  restarts a full visible interval; queued old timer messages cannot immediately
+  hide it. Output does not reset the deadline. Reduced motion suppresses both
+  caret and VT text blink, without changing the application's cursor shape.
+  No cursor timer remains when blinking is disabled or an overlay owns focus.
+- `--smoke-settings --capture settings.png` is an opt-in actual HWND/WARP/ConPTY
+  scenario. A GUID-namespaced temporary config avoids user files. It verifies
+  asynchronous load, styled Settings pixels, input trapping, preview rollback,
+  custom system-menu cancellation/outside-click routing, shortcut capture and
+  explicit atomic Save, retained actor identity, then real shell marker/exit.
+  The temporary file/directory are cleaned after UI shutdown. This is synthetic
+  routing plus actual renderer/process/file-service integration, not physical
+  keyboard-layout, IME, accessibility, DWM blur or visual-quality evidence.

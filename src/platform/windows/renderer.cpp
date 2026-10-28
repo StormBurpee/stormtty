@@ -72,15 +72,18 @@ void check(HRESULT hr, const char* action) { if (FAILED(hr)) throw GraphicsError
 class HostRedirectionStyle {
 public:
     explicit HostRedirectionStyle(HWND window) noexcept : window_(window) {}
+    const char* operation() const noexcept { return operation_; }
     HRESULT set(bool no_redirection) noexcept {
         if (!window_) return S_OK;
         LONG_PTR style{};
+        operation_ = "GetWindowLongPtrW(initial)";
         auto hr = read(style);
         if (FAILED(hr)) return hr;
         if (!saved_) { original_ = (style & WS_EX_NOREDIRECTIONBITMAP) != 0; saved_ = true; }
         const auto desired = no_redirection ? style | WS_EX_NOREDIRECTIONBITMAP : style & ~LONG_PTR(WS_EX_NOREDIRECTIONBITMAP);
         if (desired != style) {
             // Zero is a valid previous EXSTYLE, not necessarily an API failure.
+            operation_ = "SetWindowLongPtrW";
             SetLastError(ERROR_SUCCESS);
             const auto previous = SetWindowLongPtrW(window_, GWL_EXSTYLE, desired);
             const auto error = GetLastError();
@@ -88,6 +91,7 @@ public:
             refresh_pending_ = true;
         }
         if (refresh_pending_) {
+            operation_ = "SetWindowPos(FRAMECHANGED)";
             SetLastError(ERROR_SUCCESS);
             if (!SetWindowPos(window_, nullptr, 0, 0, 0, 0,
                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER))
@@ -96,6 +100,7 @@ public:
         }
         // A WM_STYLECHANGING handler may modify the requested style. Do not
         // report a composition host (or use HWND fallback) with the wrong bit.
+        operation_ = "GetWindowLongPtrW(readback)";
         hr = read(style);
         if (FAILED(hr)) return hr;
         return ((style & WS_EX_NOREDIRECTIONBITMAP) != 0) == no_redirection ? S_OK : E_FAIL;
@@ -120,6 +125,7 @@ private:
         return !style && error ? HRESULT_FROM_WIN32(error) : S_OK;
     }
     HWND window_{};
+    const char* operation_{"not attempted"};
     bool saved_{}, original_{}, refresh_pending_{};
 };
 bool device_lost(HRESULT hr) noexcept {
@@ -523,8 +529,8 @@ struct Renderer::Impl {
                     const auto style_error = GetLastError();
                     char diagnostic[320]{};
                     std::snprintf(diagnostic, sizeof diagnostic,
-                        "StormTTY renderer: DComp fallback stage=%s hr=0x%08lx warp=%u exstyle=0x%08lx style_error=%lu visible=%u size=%ux%u\n",
-                        stage, static_cast<unsigned long>(hr), unsigned(counters.warp),
+                        "StormTTY renderer: DComp fallback stage=%s style_operation=%s hr=0x%08lx warp=%u exstyle=0x%08lx style_error=%lu visible=%u size=%ux%u\n",
+                        stage, host_style.operation(), static_cast<unsigned long>(hr), unsigned(counters.warp),
                         static_cast<unsigned long>(style), static_cast<unsigned long>(style_error),
                         unsigned(IsWindowVisible(window)!=FALSE), width, height);
                     OutputDebugStringA(diagnostic);

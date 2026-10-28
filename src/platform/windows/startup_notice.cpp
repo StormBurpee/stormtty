@@ -11,6 +11,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include "app_icons.hpp"
 #include <windowsx.h>
 #include "startup_notice.hpp"
 #include <algorithm>
@@ -87,6 +88,7 @@ public:
         wc.cbSize = sizeof(wc); wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpfnWndProc = dispatch; wc.lpszClassName = notice_class;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon=windows::app_icon(GetDpiForSystem(),false); wc.hIconSm=windows::app_icon(GetDpiForSystem(),true);
         if (RegisterClassExW(&wc)) registered_ = true;
         else {
             WNDCLASSEXW existing{}; existing.cbSize = sizeof(existing);
@@ -100,6 +102,7 @@ public:
             640, 440, nullptr, nullptr, wc.hInstance, this);
         if (!created) return -1;
         hwnd_ = created;
+        windows::set_app_icons(hwnd_);
         dpi_ = GetDpiForWindow(hwnd_); if (!dpi_) dpi_ = 96;
         if (!create_controls() || !set_fonts()) return -1;
         MONITORINFO monitor{sizeof(monitor), {}, {}, 0};
@@ -311,6 +314,7 @@ private:
         }
         case WM_DPICHANGED: {
             dpi_ = HIWORD(wparam); if (!dpi_) dpi_ = 96;
+            windows::set_app_icons(hwnd_);
             if (body_ && !set_fonts()) { failed_ = true; DestroyWindow(hwnd_); return 0; }
             const auto* suggested = reinterpret_cast<const RECT*>(lparam);
             SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,

@@ -87,6 +87,20 @@ int main() {
     require(!transition.active(300) && transition.value(300)==1, "reduced motion commits immediately without timer");
     transition.target(0,400,120); transition.finish();
     require(!transition.active(401) && transition.value(401)==0, "minimize/accessibility finishes timer work");
+    CursorBlinkClock blink;
+    blink.configure(true,500,1000);
+    require(blink.visible() && !blink.tick(1499),"caret starts with a complete visible interval");
+    require(blink.tick(1500) && !blink.visible(),"caret deadline toggles visible phase");
+    blink.restart(1999);
+    require(blink.visible() && !blink.tick(2000),"queued old timer cannot hide just-typed caret");
+    blink.configure(true,500,2200); // Output/settings checks do not restart unchanged policy.
+    require(!blink.tick(2498) && blink.tick(2499) && !blink.visible(),"typing restarts a full visible interval");
+    blink.configure(false,500,2500);
+    require(blink.visible() && !blink.enabled() && !blink.tick(9000),"reduced motion or hidden focus yields steady visible phase and no work");
+    blink.configure(true,300,10000);
+    require(!blink.tick(10299) && blink.tick(10300),"system interval changes restart the deadline");
+    blink.configure(false,0,10301);
+    require(blink.visible() && !blink.tick(999999),"system no-blink setting restores steady cursor");
     Utf16Input input;
     require(input.feed(0xd83d).empty(), "hold high surrogate");
     require(input.feed(0xde80) == "\xf0\x9f\x9a\x80", "supplementary scalar");

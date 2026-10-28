@@ -12,6 +12,10 @@ const choices = ['Aurora', 'Borealis', 'Cirrus'];
 const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 const alternateScreen = process.argv.includes('--alternate-screen');
 const incrementalRendering = process.argv.includes('--incremental');
+const fullscreen = process.argv.includes('--fullscreen');
+if (fullscreen && !alternateScreen) {
+  throw new Error('--fullscreen requires --alternate-screen');
+}
 
 function Workbench() {
   const {exit, waitUntilRenderFlush} = useApp();
@@ -57,6 +61,9 @@ function Workbench() {
     // resize event is being delivered to React, causing the app itself to wrap.
     width: '100%',
     maxWidth: 72,
+    // A genuine full-height layout, not a host escape/erase workaround. Ink's
+    // own renderer decides how to redraw this frame when viewport rows change.
+    height: fullscreen ? rows : undefined,
   },
   h(Text, {bold: true, color: 'cyan'}, 'StormTTY Ink Workbench'),
   h(Text, null, `Interactive TTY | Size: ${columns}x${rows}`),

@@ -67,6 +67,34 @@ template<class T> struct ProbeCom {
     ProbeCom(const ProbeCom&)=delete;
     ProbeCom& operator=(const ProbeCom&)=delete;
 };
+void raw_redirection_transition_probe(HWND window, const char* when) {
+    const auto original=GetWindowLongPtrW(window,GWL_EXSTYLE);
+    const auto requested=original ^ LONG_PTR(WS_EX_NOREDIRECTIONBITMAP);
+    SetLastError(ERROR_SUCCESS);
+    const auto previous=SetWindowLongPtrW(window,GWL_EXSTYLE,requested);
+    const auto set_error=GetLastError();
+    const auto after_set=GetWindowLongPtrW(window,GWL_EXSTYLE);
+    const bool position_called=previous!=0 || set_error==ERROR_SUCCESS;
+    BOOL position_ok=FALSE;DWORD position_error=ERROR_SUCCESS;
+    if(position_called) {
+        SetLastError(ERROR_SUCCESS);
+        position_ok=SetWindowPos(window,nullptr,0,0,0,0,
+            SWP_FRAMECHANGED|SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
+        position_error=GetLastError();
+    }
+    std::cerr<<"Raw no-redirection transition: when="<<when<<" original=0x"<<std::hex<<original
+             <<" requested=0x"<<requested<<" previous=0x"<<previous<<" after_set=0x"<<after_set
+             <<" final=0x"<<GetWindowLongPtrW(window,GWL_EXSTYLE)<<std::dec<<" set_error="<<set_error
+             <<" position_called="<<position_called<<" position_ok="<<(position_ok!=FALSE)
+             <<" position_error="<<position_error<<'\n';
+}
+void unbound_redirection_transition_probe(bool initial_no_redirection) {
+    struct ProbeWindow {HWND value{};~ProbeWindow(){if(value)DestroyWindow(value);}} window;
+    window.value=CreateWindowExW(initial_no_redirection ? WS_EX_NOREDIRECTIONBITMAP : 0,
+        HostWindow::class_name,L"Unbound style probe",WS_POPUP,0,0,96,48,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    if(window.value) raw_redirection_transition_probe(window.value,"before-any-DComp");
+    else std::cerr<<"Raw style probe CreateWindowExW failed error="<<GetLastError()<<'\n';
+}
 void direct_composition_probe(bool initial_no_redirection, bool waitable, D3D_DRIVER_TYPE driver) {
     // Failure-only diagnostic, independent of Renderer and its dynamic style
     // guard. The enclosing HostWindow keeps this class registered. Each probe
@@ -123,6 +151,7 @@ void direct_composition_probe(bool initial_no_redirection, bool waitable, D3D_DR
              <<" vendor=0x"<<adapter_description.VendorId<<" device=0x"<<adapter_description.DeviceId<<std::dec
              <<" adapter_known="<<have_adapter_description<<" adapter="<<description
              <<" session_known="<<have_session<<" session="<<session<<'\n';
+    if(SUCCEEDED(hr)) raw_redirection_transition_probe(window.value,"after-DComp-Commit");
 }
 void native_host_surface_test() {
     // A real HWND, not offscreen alpha readback: both initial bit states, both
@@ -141,6 +170,8 @@ void native_host_surface_test() {
                 std::cerr<<"Renderer HWND result: composition="<<renderer.stats().composition
                          <<" warp="<<renderer.stats().warp<<" exstyle=0x"<<std::hex<<host.style()<<std::dec<<'\n';
                 if(renderer.stats().composition!=composition) {
+                    unbound_redirection_transition_probe(false);
+                    unbound_redirection_transition_probe(true);
                     direct_composition_probe(false,true,D3D_DRIVER_TYPE_WARP);
                     direct_composition_probe(true,true,D3D_DRIVER_TYPE_WARP);
                     direct_composition_probe(true,false,D3D_DRIVER_TYPE_WARP);
