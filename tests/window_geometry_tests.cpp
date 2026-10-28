@@ -19,6 +19,23 @@ int main() {
         if (!count) require(footer.chips.empty() && !footer.overflow.width,"empty footer has no filler");
     }
     require(layout_background_footer({0,700,1100,0},4).chips.empty(),"focus mode hides background geometry");
+    const auto compact_notice=layout_notice({184,104,860,590},140,16);
+    require(compact_notice.panel==Rect{196,646,164,36},"short notice is compact, workspace-local, and above footer");
+    require(compact_notice.text==Rect{208,656,140,16},"notice retains 12px horizontal and 10px vertical padding");
+    const auto long_notice=layout_notice({184,104,860,590},536,120);
+    require(long_notice.panel.width==560 && long_notice.panel.height==140,"wrapped errors expand within a bounded readable width");
+    for(double width:{0.,12.,24.,44.,120.,300.,640.,1100.}) for(double height:{0.,12.,24.,36.,80.,590.}) {
+        const Rect viewport{184,104,width,height};
+        for(const auto measured:std::array<Point,3>{{{140,16},{2000,2000},{0,0}}}) {
+            const auto notice=layout_notice(viewport,measured.x,measured.y);
+            require(notice.panel.x>=viewport.x && notice.panel.y>=viewport.y &&
+                notice.panel.x+notice.panel.width<=viewport.x+width && notice.panel.y+notice.panel.height<=viewport.y+height,
+                "notice stays inside narrow/short viewport without covering footer or rail");
+            require(notice.text.x>=notice.panel.x && notice.text.y>=notice.panel.y && notice.text.width>=0 && notice.text.height>=0 &&
+                notice.text.x+notice.text.width<=notice.panel.x+notice.panel.width && notice.text.y+notice.text.height<=notice.panel.y+notice.panel.height,
+                "notice text remains clipped to owned panel");
+        }
+    }
     AppearanceConfig appearance;appearance.backdrop=BackdropPreference::automatic;
     auto material=window_material_policy(appearance,true,false,false,true);
     require(material.system_backdrop==3 && material.opacity<1,"Auto requests behind-window Acrylic, not wallpaper-only Mica");

@@ -1096,7 +1096,7 @@ struct Renderer::Impl {
                     DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*dpi/96,L"en-US",format.put()),"Create chrome font");
                 check(format->SetTextAlignment(label.alignment==ChromeTextAlignment::center?DWRITE_TEXT_ALIGNMENT_CENTER:
                     label.alignment==ChromeTextAlignment::trailing?DWRITE_TEXT_ALIGNMENT_TRAILING:DWRITE_TEXT_ALIGNMENT_LEADING),"Set chrome alignment");
-                check(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP),"Set chrome no-wrap");
+                check(format->SetWordWrapping(label.wrap?DWRITE_WORD_WRAPPING_WRAP:DWRITE_WORD_WRAPPING_NO_WRAP),"Set chrome wrapping");
                 check(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER),"Center chrome baseline");
                 // DirectWrite owns grapheme/cluster-safe end truncation and the real
                 // omission glyph; never shorten UTF-8 strings or clip a partial glyph.
@@ -1315,6 +1315,23 @@ std::optional<RendererAlphaProbe> Renderer::poll_alpha_probe() {
         for(UINT x=0;x<p.alpha_width;++x) {const auto alpha=bytes[x*4+3];result.minimum=std::min(result.minimum,alpha);result.maximum=std::max(result.maximum,alpha);}
     }
     p.immediate->Unmap(p.alpha_staging.get(),0);p.alpha_staging.reset();return result;
+}
+PixelRect Renderer::measure_chrome_text(const ChromeText& label) const {
+    if (label.text.empty() || label.text.size()>32768 || label.family.empty() || label.family.size()>256 ||
+        !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256 ||
+        !std::isfinite(label.rect.width) || !std::isfinite(label.rect.height) ||
+        label.rect.width<=0 || label.rect.height<=0) return {};
+    const auto text=utf16(label.text),family=utf16(label.family);
+    Com<IDWriteTextFormat> format;
+    check(impl_->write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*impl_->dpi/96,L"en-US",format.put()),"Measure chrome font");
+    check(format->SetWordWrapping(label.wrap?DWRITE_WORD_WRAPPING_WRAP:DWRITE_WORD_WRAPPING_NO_WRAP),"Measure chrome wrapping");
+    Com<IDWriteTextLayout> layout;
+    check(impl_->write_factory->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format.get(),
+        label.rect.width,label.rect.height,layout.put()),"Measure chrome layout");
+    DWRITE_TEXT_METRICS metrics{};
+    check(layout->GetMetrics(&metrics),"Read chrome metrics");
+    return {0,0,metrics.widthIncludingTrailingWhitespace,metrics.height};
 }
 std::vector<std::uint8_t> Renderer::read_pixels() {
     auto& p=*impl_;if(!p.canvas_texture) return {};

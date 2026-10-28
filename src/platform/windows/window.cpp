@@ -301,6 +301,7 @@ private:
     void smoke_finish(std::string_view error = {});
     void smoke_settings_stage(unsigned stage);
     void capture_frame();
+    NoticeLayout notice_layout();
     void submit(std::function<SessionSendResult()> action, std::size_t bytes = 64);
     void drain_input();
     WindowScene scene();
@@ -440,6 +441,10 @@ private:
     WINDOWPLACEMENT restore_placement_{};
     LONG_PTR restore_style_{};
     std::string query_, preedit_, notice_;
+    std::string measured_notice_;
+    Rect measured_notice_viewport_{};
+    double measured_notice_scale_{};
+    NoticeLayout measured_notice_layout_{};
     struct Modal { std::string title; std::vector<std::string> body; std::string confirm_label; std::function<void()> confirm; bool destructive{}; };
     std::optional<Modal> modal_;
     ModalFocus modal_focus_;
@@ -681,11 +686,24 @@ void NativeWindow::queue_material_probe(bool invalidate) {
     if(invalidate || material_probe_status_.empty())material_probe_status_="Canvas check after overlays close; DWM may use solid fallback.";
     publish_material_status();
 }
+NoticeLayout NativeWindow::notice_layout() {
+    if (measured_notice_!=notice_ || measured_notice_viewport_!=navigation_.viewport || measured_notice_scale_!=scale_) {
+        const auto available=layout_notice(navigation_.viewport,560,0);
+        ChromeText label;
+        label.text=notice_; label.size_dip=12; label.wrap=true;
+        label.rect={0,0,static_cast<float>(available.text.width*scale_),
+            static_cast<float>(std::max(1.0,navigation_.viewport.height)*scale_)};
+        const auto measured=renderer_->measure_chrome_text(label);
+        measured_notice_layout_=layout_notice(navigation_.viewport,measured.width/scale_,measured.height/scale_);
+        measured_notice_=notice_; measured_notice_viewport_=navigation_.viewport; measured_notice_scale_=scale_;
+    }
+    return measured_notice_layout_;
+}
 void NativeWindow::begin_material_probe(const WindowScene& rendered) {
     if(!material_probe_requested_ || material_probe_running_ || !renderer_ || minimized_ || in_size_move_ || settings_pending_ ||
         overlay_open() || modal_ || palette_open_ || rename_open_ || palette_transition_.value(GetTickCount64())>0 || drag_!=Drag::none) return;
     std::vector<Rect> occluders;
-    if(!notice_.empty())occluders.push_back({12,std::max(44.0,navigation_.footer.y-56),std::max(0.0,width_-24),44});
+    if(!notice_.empty())occluders.push_back(notice_layout().panel);
     std::optional<Rect> patch;SessionId sampled;
     // Prefer the active pane; if it has no uncovered padding, don't silently
     // call another pane's cell flags the active grid.
@@ -1777,8 +1795,10 @@ WindowScene NativeWindow::scene() {
     }
     z={ChromeLayer::toast};
     if (!notice_.empty()) {
-        rectangle({12,std::max(44.0,navigation_.footer.y-56),std::max(0.0,width_-24),44},raised,6);
-        label({24,std::max(49.0,navigation_.footer.y-51),std::max(0.0,width_-64),34},notice_,text,12);
+        const auto notice=notice_layout();
+        rectangle(notice.panel,raised,6);
+        label(notice.text,notice_,text,12);
+        result.texts.back().wrap=true;
     }
     z={ChromeLayer::palette}; // Cached closing primitives/text retain this same surface.
     const auto palette_primitive_start=result.primitives.size(), palette_text_start=result.texts.size();

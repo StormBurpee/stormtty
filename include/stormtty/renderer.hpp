@@ -82,6 +82,7 @@ struct ChromeText {
     std::string family{"Segoe UI Variable Text"};
     ChromeTextAlignment alignment{ChromeTextAlignment::leading}; // Per label, never terminal cells.
     ChromeZOrder z{};
+    bool wrap{}; // Owned multiline notices only; other chrome stays single-line.
     bool operator==(const ChromeText&) const = default;
 };
 struct WindowScene {
@@ -146,6 +147,10 @@ public:
     void set_font(FontOptions font);
     void set_background_opacity(float opacity);
     CellMetrics metrics() const noexcept;
+#ifdef _WIN32
+    // Actual DirectWrite chrome-font bounds in pixels, using the label's wrapping.
+    PixelRect measure_chrome_text(const ChromeText& label) const;
+#endif
     RenderResult render(const WindowScene& scene);
     // Borrowed Win32 HANDLE, invalidated on device recovery/destruction.
     // Add it to the shell's message/work wait set; never CloseHandle it.

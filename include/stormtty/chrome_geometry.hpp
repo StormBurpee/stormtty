@@ -20,6 +20,23 @@ struct ChromeLayout {
     bool compact{};
 };
 
+// Owned notices stay in the active workspace, above (never over) its footer.
+// Text dimensions are measured by the native chrome font; geometry stays portable.
+struct NoticeLayout { Rect panel, text; };
+inline NoticeLayout layout_notice(Rect viewport, double text_width, double text_height) {
+    const double width=std::max(0.0,viewport.width), height=std::max(0.0,viewport.height);
+    const double margin_x=std::min(12.0,width/2), margin_y=std::min(12.0,height/2);
+    const double available_width=std::min(560.0,std::max(0.0,width-2*margin_x));
+    const double available_height=std::max(0.0,height-2*margin_y);
+    const double measured_width=std::isfinite(text_width)?std::max(0.0,text_width):available_width;
+    const double measured_height=std::isfinite(text_height)?std::max(0.0,text_height):available_height;
+    const double panel_width=std::min(available_width,std::ceil(measured_width)+24);
+    const double panel_height=std::min(available_height,std::max(36.0,std::ceil(measured_height)+20));
+    const Rect panel{viewport.x+margin_x,viewport.y+height-margin_y-panel_height,panel_width,panel_height};
+    const double padding_x=std::min(12.0,panel_width/2),padding_y=std::min(10.0,panel_height/2);
+    return {panel,{panel.x+padding_x,panel.y+padding_y,std::max(0.0,panel_width-2*padding_x),std::max(0.0,panel_height-2*padding_y)}};
+}
+
 // The global caption owns only app controls and native drag/Snap. Task tabs
 // belong to the workspace column below it, never to the navigation column.
 inline ChromeLayout layout_chrome(double width, double height,

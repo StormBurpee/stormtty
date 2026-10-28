@@ -487,6 +487,29 @@ void cache_pressure_test() {
     require(renderer.stats().image_uploads==2 && renderer.stats().image_cache_bytes<=8,"image eviction budget failed");
     require(renderer.stats().shape_cache_bytes<=512,"shape cache budget failed");
 }
+void chrome_notice_measurement_test() {
+    RendererOptions options; options.force_warp=true;
+    Renderer renderer(nullptr,options); renderer.resize(800,600,96);
+    ChromeText label; label.text="build · Command finished"; label.size_dip=12; label.wrap=true; label.rect={0,0,536,500};
+    const auto compact=renderer.measure_chrome_text(label);
+    require(compact.width>100 && compact.width<220 && compact.height>0 && compact.height<24,"short notice uses real chrome-font measurement");
+    label.text="A long process diagnostic must remain readable and wrap within the active workspace rather than spanning the navigation rail. ";
+    label.text+=label.text; label.rect.width=160;
+    const auto wrapped=renderer.measure_chrome_text(label);
+    require(wrapped.height>compact.height*2 && wrapped.width<=161,"long notice wraps to measured width");
+    WindowScene scene; scene.texts.push_back(label); renderer.render(scene);
+    const auto pixels=renderer.read_pixels(); unsigned ink_rows{};
+    for(unsigned y=0;y<500;++y) {
+        bool ink{};
+        for(unsigned x=0;x<160;++x) if(!colors_near(pixel(pixels,800,x,y),scene.background,16)) { ink=true; break; }
+        if(ink)++ink_rows;
+        require(colors_near(pixel(pixels,800,180,y),scene.background),"wrapped notice escaped its text clip");
+    }
+    require(ink_rows>2*compact.height,"wrapped notice did not rasterize multiple readable lines");
+    renderer.resize(1200,900,144); label.text="build · Command finished"; label.rect.width=804;
+    const auto scaled=renderer.measure_chrome_text(label);
+    require(std::abs(scaled.width/1.5f-compact.width)<1 && std::abs(scaled.height/1.5f-compact.height)<1,"notice measurement respects DPI");
+}
 void rejected_image_test() {
     RendererOptions options;options.force_warp=true;options.image_cache_bytes=4;
     Renderer renderer(nullptr,options);renderer.resize(64,48);
@@ -506,7 +529,7 @@ int main() {
         std::filesystem::current_path(std::filesystem::temp_directory_path());
         RendererOptions layer_options;layer_options.force_warp=true;layer_options.font.family="Consolas";
         stormtty::test::chrome_layer_raster_tests(layer_options);
-        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();
+        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();chrome_notice_measurement_test();
         std::cout<<"PASS Windows WARP renderer: HWND/DComp style lifecycle and fallback, private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
         return 0;
     } catch(const std::exception& error) { std::cerr<<"FAIL renderer smoke: "<<error.what()<<'\n';return 1; }
