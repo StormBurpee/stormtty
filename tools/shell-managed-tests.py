@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 import time
 import unittest
+import re
+from urllib.parse import unquote
 
 TOOLS = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('addons', TOOLS / 'shell-addons.py')
@@ -224,6 +226,118 @@ class ManagedTests(unittest.TestCase):
         self.assertIn('\x1b]133;D;1\x07',result.stdout)
         self.assertIn('exit:1',result.stdout)
         self.assertNotIn('242',result.stdout)
+    def context_packets(self, output):
+        return re.findall(r'\x1b\]7400;stormtty-context;1;([^\x07]*)\x07', output)
+    def decoded_context(self, packet):
+        fields=packet.split(';')
+        self.assertEqual(len(fields),6)
+        self.assertEqual(fields[0],'set')
+        return [unquote(value) for value in fields[1:]]
+    def test_native_context_quoted_unicode_paths_and_order(self):
+        path=self.home/'folder é 路径 % ; $(touch PWNED) `noop`'
+        path.mkdir()
+        (path/'.git').mkdir()
+        head='feature/é%;$(touch PWNED)'
+        (path/'.git/HEAD').write_text('ref: refs/heads/'+head+'\n')
+        self.env['QUAL_PATH']=str(path)
+        result=self.run_shell('cd -- "$QUAL_PATH"; PATH=/no-external-commands; STORMTTY_PROMPT=custom; _stormtty_precmd')
+        self.assertEqual(result.returncode,0,result.stderr)
+        packets=self.context_packets(result.stdout)
+        self.assertEqual(len(packets),1)
+        key,display,root,kind,branch=self.decoded_context(packets[0])
+        self.assertIn('\x1b]7;'+key+'\x07\x1b]7400;',result.stdout)
+        self.assertEqual(unquote(key.removeprefix('file://')),str(path))
+        self.assertEqual(display,'~/'+path.name)
+        self.assertEqual(root,display)
+        self.assertEqual(kind,'branch')
+        self.assertEqual(branch,head)
+        self.assertFalse((path/'PWNED').exists())
+        self.assertTrue(packets[0].isascii())
+    def test_context_leaving_repo_clears_all_git_fields(self):
+        repo=self.root/'repository';repo.mkdir();(repo/'.git').mkdir()
+        (repo/'.git/HEAD').write_text('ref: refs/heads/main\n')
+        outside=self.root/'outside';outside.mkdir()
+        self.env.update(QUAL_REPO=str(repo),QUAL_OUTSIDE=str(outside))
+        result=self.run_shell('cd -- "$QUAL_REPO"; _stormtty_precmd; cd -- "$QUAL_OUTSIDE"; _stormtty_precmd')
+        self.assertEqual(result.returncode,0,result.stderr)
+        first,last=map(self.decoded_context,self.context_packets(result.stdout))
+        self.assertEqual(first[-2:],['branch','main'])
+        self.assertEqual(last[2:],['','none',''])
+        self.assertNotEqual(first[0],last[0])
+    def test_context_indirection_and_detached(self):
+        metadata=self.root/'metadata';metadata.mkdir()
+        (metadata/'HEAD').write_text('ABCDEF0123456789'+'a'*24+'\n')
+        (self.root/'.git').write_text('gitdir: metadata\n')
+        result=self.run_shell('_stormtty_precmd')
+        self.assertEqual(result.returncode,0,result.stderr)
+        fields=self.decoded_context(self.context_packets(result.stdout)[0])
+        self.assertEqual(fields[2:], [str(self.root),'detached','ABCDEF01'])
+    def test_context_gitdir_absolute_path_classification(self):
+        # Run the real resolver with a bounded-read stub so Windows paths can
+        # be classified on POSIX without pretending they are native I/O proof.
+        (self.root/'.git').write_text('fixture\n')
+        for platform, path, absolute in [
+                ('msys', 'C:/metadata é % ; $(touch PWNED)', True),
+                ('cygwin', 'd:/metadata', True),
+                ('msys', '//server/share/metadata', True),
+                ('msys', '/absolute/metadata', True),
+                ('msys', 'C:relative', False),
+                ('linux-gnu', 'C:/metadata', False),
+                ('msys', '../metadata', False)]:
+            with self.subTest(platform=platform,path=path):
+                self.env.update(QUAL_PLATFORM=platform,QUAL_GITDIR=path)
+                result=self.run_shell('''OSTYPE=$QUAL_PLATFORM
+_stormtty_read_small() {
+  if [[ $1 == */.git ]]; then REPLY="gitdir: $QUAL_GITDIR"
+  else print -r -- "READ_PATH=$1"; REPLY='ref: refs/heads/main'; fi
+}
+PATH=/no-external-commands
+_stormtty_git_context
+''')
+                self.assertEqual(result.returncode,0,result.stderr)
+                expected=path if absolute else str(self.root)+'/'+path
+                self.assertIn('READ_PATH='+expected+'/HEAD\n',result.stdout)
+                self.assertFalse((self.root/'PWNED').exists())
+
+    def test_context_optout_emits_clear_for_custom_prompt(self):
+        result=self.run_shell('STORMTTY_SHELL_CONTEXT=0; STORMTTY_PROMPT=custom; PROMPT="custom> "; false; _stormtty_precmd; [[ $PROMPT == "custom> " && ${STORMTTY_CONTEXT[exit]} == 1 ]]')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.context_packets(result.stdout),['clear'])
+        self.assertNotIn('\x1b]7;',result.stdout)
+    def test_context_controls_and_oversized_fields_clear(self):
+        commands=[
+            "PWD=$'/path\\e]2;injected\\a'; _stormtty_emit_context",
+            "STORMTTY_CONTEXT[head]=${(l:257::a:)}; _stormtty_emit_context",
+            "PWD=/${(l:2050::a:)}; _stormtty_emit_context",
+            "PWD=/${(l:690::é:)}; _stormtty_emit_context",
+            "PWD=relative; _stormtty_emit_context",
+            "PWD=/${(l:500::%:)}; STORMTTY_CONTEXT[repository_root]=${(l:2000::%:)}; STORMTTY_CONTEXT[kind]=branch; STORMTTY_CONTEXT[head]=main; _stormtty_emit_context",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                result=self.run_shell('_stormtty_git_context; '+command)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(self.context_packets(result.stdout),['clear'])
+                self.assertNotIn('\x1b]2;',result.stdout)
+                if 'head]=' not in command and 'repository_root]=' not in command:
+                    self.assertNotIn('\x1b]7;',result.stdout)
+                else:
+                    self.assertIn('\x1b]7;',result.stdout)
+    def test_context_drive_home_and_unc_display(self):
+        for value,home,expected in [('/c/Users/Storm/work','/c/Users/Storm','~/work'),
+                                   ('/d/projects','/c/Users/Storm','D:/projects'),
+                                   ('/c','/c/Users/Storm','C:/'),
+                                   ('//server/share/project','/c/Users/Storm','//server/share/project'),
+                                   ('/home/a','/home/a','~'),
+                                   ('/home/another','/home/a','/home/another')]:
+            self.env.update(QUAL_VALUE=value,QUAL_HOME=home)
+            result=self.run_shell('OSTYPE=msys; HOME=$QUAL_HOME; _stormtty_display_directory "$QUAL_VALUE"; print -r -- "$REPLY"')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout.strip(),expected)
+    def test_context_encoder_preserves_multibyte_option(self):
+        result=self.run_shell('setopt MULTIBYTE; _stormtty_encode_context "é% ;" 256; [[ -o MULTIBYTE && $REPLY == "%C3%A9%25%20%3B" ]]')
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_real_modules(self):
         if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
         result=self.run_shell('[[ $STORMTTY_OMZ_LOADED == 1 && ${+functions[git_current_branch]} == 1 && ${+functions[_zsh_autosuggest_start]} == 1 && ${+functions[_zsh_highlight]} == 1 ]]')

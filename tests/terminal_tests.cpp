@@ -514,12 +514,49 @@ void thread_confinement() {
     TerminalCore t(small()); std::atomic<bool> rejected{};
     std::thread foreign([&] { try { t.feed("bad"); } catch (const std::logic_error&) { rejected = true; } });
     foreign.join(); CHECK(rejected.load()); CHECK(line(t.snapshot(), 0).empty());
+    rejected = false;
+    std::thread context_reader([&] { try { (void)t.shell_context(); } catch (const std::logic_error&) { rejected = true; } });
+    context_reader.join(); CHECK(rejected.load());
+}
+
+void shell_context_stream() {
+    const std::string payload="7400;stormtty-context;1;set;file:///c/repo;C:/repo;C:/repo;branch;main";
+    const std::string pwd="\x1b]7;file:///c/repo\a";
+    for (const std::string& end : {std::string("\a"), std::string("\x1b\\")}) {
+        const auto stream=pwd+"\x1b]"+payload+end;
+        for (std::size_t split=0; split<=stream.size(); ++split) {
+            TerminalCore core;
+            core.feed(std::string_view(stream).substr(0,split));
+            core.feed(std::string_view(stream).substr(split));
+            CHECK(core.shell_context() && core.shell_context()->head=="main");
+            CHECK(core.shell_context()->display_directory=="C:/repo");
+        }
+    }
+    TerminalCore core;
+    const auto seed=[&] { core.feed(pwd+"\x1b]"+payload+"\a"); };
+    seed(); const auto owned=core.shell_context();
+    core.feed("\x1b]7400;stormtty-context;1;set;cancelled\x18");
+    CHECK(core.shell_context()==owned); // CAN never delivers a completed OSC.
+    core.feed("\x1b]7400;stormtty-context;1;set;cancelled\x1a");
+    CHECK(core.shell_context()==owned); // SUB is cancelled too.
+    core.feed("\x1b]777;unrelated\a"); CHECK(core.shell_context()==owned);
+    core.feed("\x1b]7400;stormtty-context;1;set;"+std::string(9000,'x')+"\a");
+    CHECK(!core.shell_context()); // Engine truncation must not retain stale Git.
+    seed(); core.feed("\x1b]7;file:///c/elsewhere\a"); CHECK(!core.shell_context());
+    core.feed("\x1b]"+payload+"\a"); CHECK(!core.shell_context()); // Wrong cwd.
+    seed(); core.feed("\x1b]7;\a"); CHECK(!core.shell_context());
+    seed(); core.feed("\x1b]7400;stormtty-context;1;clear\a"); CHECK(!core.shell_context());
+    seed(); core.feed("\x1b" "c"); CHECK(!core.shell_context());
+    core.feed("\x1b]"+payload+"\a"); CHECK(!core.shell_context()); // RIS cleared correlation.
+    seed(); core.finish_output(); CHECK(core.shell_context()==owned); // Frozen final context.
+    CHECK(owned && owned->head=="main");
+    TerminalCore other; CHECK(!other.shell_context());
 }
 } // namespace
 int main() {
     install_png_decoder(rejecting_png_decoder);
     const std::vector<std::pair<const char*, std::function<void()>>> tests{
-        {"split UTF-8/ANSI feeds", split_feeds}, {"fragmented stream equivalence", fragmented_stream_equivalence}, {"ANSI styles and default backgrounds", ansi_styles},
+        {"bounded shell context stream/order/reset", shell_context_stream}, {"split UTF-8/ANSI feeds", split_feeds}, {"fragmented stream equivalence", fragmented_stream_equivalence}, {"ANSI styles and default backgrounds", ansi_styles},
         {"configured theme defaults/query replies", configured_theme_defaults_and_queries},
         {"theme OSC/reset/alpha validation", theme_overrides_reset_and_validation},
         {"live theme defaults/cancel/explicit colors", live_theme_defaults},

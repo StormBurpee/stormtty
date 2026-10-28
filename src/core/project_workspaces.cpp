@@ -166,7 +166,12 @@ Result<SessionId> ProjectWorkspaceCatalog::park(ProjectPaneReference source) {
         return {{}, "Parked session limit exceeded"};
     const auto session = pane->session;
     auto staged = *project;
-    staged.parked_sessions.push_back({session, pane->profile, pane->title});
+    std::string user_title;
+    for (const auto& tab:project->workspace.state().tabs) {
+        const auto panes=project->workspace.pane_order(tab.id);
+        if (std::find(panes.begin(),panes.end(),source.local)!=panes.end()) { user_title=tab.title; break; }
+    }
+    staged.parked_sessions.push_back({session, pane->profile, pane->title, std::move(user_title)});
     if (auto status = staged.workspace.close_pane(source.local); !status)
         return {{}, std::move(status.error)};
     *project = std::move(staged);
@@ -183,6 +188,8 @@ Result<TabId> ProjectWorkspaceCatalog::reattach_to_new_tab(ProjectSessionReferen
     if (parked == staged.parked_sessions.end()) return {{}, "Parked session no longer exists"};
     auto result = staged.workspace.create_tab(parked->session, parked->profile);
     if (!result) return result;
+    if (auto status = staged.workspace.rename_tab(*result.value, parked->user_title); !status)
+        return {{}, std::move(status.error)};
     if (auto status = staged.workspace.set_pane_title(staged.workspace.active_pane(), parked->title); !status)
         return {{}, std::move(status.error)};
     staged.parked_sessions.erase(parked);

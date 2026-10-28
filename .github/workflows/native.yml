@@ -175,6 +175,27 @@ jobs:
             print('SHELL_NAVIGATION_RESULT='+name+':'+str(result.exit_code),flush=True)
             if result.exit_code: failures.append(name)
           if failures: raise SystemExit(1)
+      - name: Qualify live shell directory and Git context
+        id: managed_context
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,subprocess
+          runtime=pathlib.Path('.deps/stormtty-shell').resolve()
+          probe=pathlib.Path('build/managed_shell_context_probe.exe').resolve()
+          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
+          # The native harness itself creates an isolated Unicode known-folder
+          # root and calls the actual owner/DACL validator before EVERY launch.
+          # It fails (never skips) absent persistence/modules/editing evidence.
+          # Only fixed result codes and numeric timings are emitted; no private
+          # config/history/state tree or terminal transcript becomes an artifact.
+          failures=[]
+          for name,extra in [('inbox',[]),('packaged',[str(provider)])]:
+            print('MANAGED_CONTEXT_PROVIDER='+name,flush=True)
+            result=subprocess.run([str(probe),str(runtime),*extra],timeout=180)
+            print('MANAGED_CONTEXT_RESULT='+name+':'+str(result.returncode),flush=True)
+            if result.returncode: failures.append(name)
+          if failures: raise SystemExit(1)
       - name: Verify managed shell HOME and drive paths
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         run: python tools/shell-path-tests.py --runtime .deps/stormtty-shell --resolver-probe build/bundled_shell_probe.exe

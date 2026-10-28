@@ -2,6 +2,8 @@
 """Linux structural/mocked shell tests, NOT native MSYS2/UCRT qualification."""
 import importlib.util
 import json
+import re
+import shlex
 import os
 from pathlib import Path
 import shutil
@@ -41,6 +43,18 @@ class ToolsTests(unittest.TestCase):
         result = subprocess.run(['zsh','-f','-i','-c',text],env=self.env,text=True,capture_output=True)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         return result.stdout.strip()
+
+    def test_native_fixture_options_are_shellword_safe(self):
+        # Upstream go-shellwords stops at unquoted ; & | < >. Keep this
+        # authored fixture in a deliberately narrower safe subset rather than
+        # pretending Python shlex is an execution test of that Go parser.
+        source = (TOOLS.parent / 'tests/shell_navigation_probe.cpp').read_text()
+        value = re.search(r"export FZF_DEFAULT_OPTS='([^']*)'", source).group(1)
+        self.assertFalse(any(char in value for char in ";&|<>"))
+        words = shlex.split(value)
+        self.assertIn('--pointer=@', words)
+        self.assertIn('--prompt=QFZF_SELECT:', words)
+        self.assertIn('--no-scrollbar', words)
 
     def test_shell_default_and_override(self):
         output = self.shell('unset SHELL; ' + self.prefix + 'print -r -- "$SHELL"')

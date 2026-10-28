@@ -102,7 +102,7 @@ struct ManagedSessionProbe {
         // The walker and query matcher run asynchronously. Prompt visibility
         // alone does not mean Enter can accept a candidate. Observe the actual
         // selected row, with a fixed fixture-only ASCII pointer, before accepting.
-        check(until([&] {
+        const bool found = until([&] {
             const auto value = screen(session);
             if (value.find("QFZF_SELECT:") == std::string::npos) return false;
             std::size_t start{};
@@ -110,7 +110,7 @@ struct ManagedSessionProbe {
                 const auto end = value.find('\n', start);
                 auto line = value.substr(start, end == std::string::npos ? end : end - start);
                 const auto first = line.find_first_not_of(' ');
-                if (first != std::string::npos && line[first] == '>') {
+                if (first != std::string::npos && line[first] == '@') {
                     line.erase(0, first + 1);
                     const auto item = line.find_first_not_of(' ');
                     if (item != std::string::npos) {
@@ -123,7 +123,31 @@ struct ManagedSessionProbe {
                 start = end + 1;
             }
             return false;
-        }));
+        });
+        if (!found) {
+            // Only the authored fixture's fzf query and selected rows, never a
+            // general frame/history dump. Hex preserves exact Unicode bytes.
+            const auto value = screen(session);
+            std::size_t start{}; unsigned emitted{};
+            while (start < value.size() && emitted < 3) {
+                const auto end = value.find('\n', start);
+                auto line = value.substr(start, end == std::string::npos ? end : end - start);
+                const auto first = line.find_first_not_of(' ');
+                if (first != std::string::npos &&
+                    (line[first] == '@' || line.compare(first, 12, "QFZF_SELECT:") == 0)) {
+                    line.erase(0, first); line.erase(line.find_last_not_of(' ') + 1);
+                    if (line.size() > 240) line.resize(240);
+                    constexpr char hex[] = "0123456789abcdef";
+                    std::string encoded;
+                    for (const unsigned char byte : line) { encoded += hex[byte >> 4]; encoded += hex[byte & 15]; }
+                    std::cout << "SHELL_WALKER_ROW index=" << emitted++ << " hex=" << encoded << std::endl;
+                }
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+            std::cout << "SHELL_WALKER_READY phase=" << phase << " selected=0 rows=" << emitted << std::endl;
+        }
+        check(found);
     }
     void text(std::string value) { check(session->text(std::move(value)) == SessionSendResult::accepted); }
     void key(Key value, std::uint16_t mods = 0) { KeyInput input; input.key = value; input.modifiers = mods; if (value == Key::t) input.unshifted_codepoint = 't'; if (value == Key::r) input.unshifted_codepoint = 'r'; if (value == Key::c) input.unshifted_codepoint = 'c'; if (value == Key::u) input.unshifted_codepoint = 'u'; check(session->key(input) == SessionSendResult::accepted); }
@@ -139,7 +163,7 @@ struct ManagedSessionProbe {
     }
 };
 const char config[] = R"ZSH(bindkey -e
-export FZF_DEFAULT_OPTS='--height=12 --layout=reverse --no-mouse --no-scrollbar --pointer=> --prompt=QFZF_SELECT:'
+export FZF_DEFAULT_OPTS='--height=12 --layout=reverse --no-mouse --no-scrollbar --pointer=@ --prompt=QFZF_SELECT:'
 export FZF_CTRL_T_COMMAND='printf "%s\n" "qualification_unique_completion.txt"'
 export FZF_ALT_C_COMMAND='printf "%s\n" "navigation space é"'
 typeset -g _qual_config=73

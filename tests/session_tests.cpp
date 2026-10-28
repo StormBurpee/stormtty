@@ -49,6 +49,15 @@ int child(std::string_view mode, std::string_view exit_signal = {}) {
     if (GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &output_mode))
         SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), output_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 #endif
+    if(mode=="shell-context") {
+        std::cout << "\x1b]7;file:///c/repo\a\x1b]7400;stormtty-context;1;set;file:///c/repo;C:/repo;C:/repo;branch;main\a" << std::flush;
+        std::string input; std::getline(std::cin,input);
+        std::cout << "\x1b]7;file:///c/other\a" << std::flush;
+        std::getline(std::cin,input);
+        std::cout << "\x1b]7400;stormtty-context;1;set;file:///c/other;C:/other;;none;\a" << std::flush;
+        std::getline(std::cin,input);
+        return 0;
+    }
     if(mode=="command-complete" || mode=="command-interrupted") {
         std::cout << "\x1b]133;A\a\x1b]133;B\a\x1b]133;D;0\a\x1b]133;C\a";
         if(mode=="command-complete") std::cout << "\x1b]133;D;19\a";
@@ -200,6 +209,26 @@ void command_lifecycle(const std::string& executable) {
         check(final.last_exit_code==observed.last_exit_code,"EOF/failure invented command exit status");
         check(observed.phase==(complete?CommandPhase::completed:CommandPhase::running),"owned command snapshot mutated");
     }
+}
+void shell_context_publication(const std::string& executable) {
+    auto wake=std::make_shared<WakeCounter>();
+    ProcessOptions p; p.executable=executable; p.arguments={"--child","shell-context"};
+    auto session=Session::start(p,{},[wake]{wake->signal();});
+    CloseSession close{session};
+    check(await([&]{return session->info().shell_context.has_value();},wake),"shell context not published");
+    const auto owned=session->info();
+    check(owned.working_directory==owned.shell_context->directory_key && owned.shell_context->head=="main","cwd/context publication reordered");
+    KeyInput enter; enter.key=Key::enter;
+    check(session->key(enter)==SessionSendResult::accepted,"context child input rejected");
+    check(await([&]{return session->info().working_directory=="file:///c/other";},wake),"new cwd not published");
+    check(!session->info().shell_context,"previous directory Git leaked");
+    check(session->key(enter)==SessionSendResult::accepted,"context child second input rejected");
+    check(await([&]{auto i=session->info();return i.shell_context && i.shell_context->git==GitHeadKind::none;},wake),"non-repository context not published");
+    const auto last=session->info().shell_context;
+    check(session->key(enter)==SessionSendResult::accepted,"context child final input rejected");
+    check(session->wait_for_process_exit(5s),"context child did not exit");
+    check(session->info().shell_context==last,"final owned context lost");
+    check(owned.shell_context->head=="main","published owned context mutated");
 }
 void retained_document(const std::string& executable) {
     auto wake=std::make_shared<WakeCounter>();
@@ -466,6 +495,7 @@ int main(int argc,char** argv) {
         }
         parked_attention_policy();
         command_lifecycle(executable);
+        shell_context_publication(executable);
         retained_document(executable);
         retained_bounds_failure_and_destructor(executable);
         retained_transition_releases_completed_callbacks(executable);

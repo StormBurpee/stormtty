@@ -157,12 +157,12 @@ struct BackgroundFooterLayout {
     Rect label, overflow;
     std::vector<Rect> chips;
 };
-inline BackgroundFooterLayout layout_background_footer(Rect footer, std::size_t count) {
+inline BackgroundFooterLayout layout_background_footer(Rect footer, std::size_t count, bool show_heading = true) {
     BackgroundFooterLayout result;
     if (footer.width<=0 || footer.height<=0 || !count) return result;
-    const double inset=std::min(6.0,footer.width/2);
+    const double inset=show_heading?std::min(6.0,footer.width/2):std::min(4.0,footer.width/4);
     const double available=std::max(0.0,footer.width-inset*2);
-    const double heading=available>=300?100:0;
+    const double heading=show_heading && available>=300?100:0;
     result.label={footer.x+inset,footer.y+3,heading,std::max(0.0,footer.height-6)};
     double x=footer.x+inset+heading;
     const double room=std::max(0.0,available-heading);
@@ -174,6 +174,39 @@ inline BackgroundFooterLayout layout_background_footer(Rect footer, std::size_t 
         result.chips.push_back({x,footer.y+3,180,std::max(0.0,footer.height-6)}); x+=184;
     }
     if (shown<count) result.overflow={x,footer.y+3,std::max(0.0,footer.x+footer.width-inset-x),std::max(0.0,footer.height-6)};
+    return result;
+}
+
+// Active shell context and background sessions share one strip. Geometry is
+// presentation-only: all restore targets remain host-owned SessionIds.
+struct SessionFooterLayout {
+    Rect directory, git, status, divider;
+    BackgroundFooterLayout background;
+};
+inline SessionFooterLayout layout_session_footer(Rect footer, std::size_t parked,
+        bool active, bool git, bool status) {
+    SessionFooterLayout result;
+    if (footer.width<=0 || footer.height<=0) return result;
+    if (!active) { result.background=layout_background_footer(footer,parked,false); return result; }
+    const double inset=std::min(8.0,footer.width/2);
+    const double usable=std::max(0.0,footer.width-inset*2);
+    const double background_width=parked?std::min(usable*0.46,std::max(64.0,std::min(560.0,parked*184.0+12))):0;
+    const double gap=parked?std::min(12.0,std::max(0.0,usable-background_width)):0;
+    const double context=std::max(0.0,usable-background_width-gap);
+    const double row_y=footer.y+std::min(3.0,footer.height/2), row_h=std::max(0.0,footer.height-6);
+    // Drop secondary details before shrinking the directory or hiding overflow.
+    const double status_width=status && context>=320?72:0;
+    const double git_width=git && context>=240?std::min(180.0,context*0.34):0;
+    const double status_gap=status_width?12:0, git_gap=git_width?16:0;
+    const double directory_width=std::max(0.0,context-status_width-status_gap-git_width-git_gap);
+    result.directory={footer.x+inset,row_y,directory_width,row_h};
+    if (git_width) result.git={result.directory.x+directory_width+git_gap,row_y,git_width,row_h};
+    if (status_width) result.status={footer.x+inset+context-status_width,row_y,status_width,row_h};
+    if (parked) {
+        const double x=footer.x+inset+context+gap;
+        result.divider={x-gap/2,footer.y+6,1,std::max(0.0,footer.height-12)};
+        result.background=layout_background_footer({x,footer.y,background_width,footer.height},parked,false);
+    }
     return result;
 }
 
