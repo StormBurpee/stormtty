@@ -65,6 +65,35 @@ stormtty_probe_line_init() {
   # old prompt and reset-prompt could overwrite preceding command output.
   PROMPT="__STORMTTY_PROMPT:${stormtty_probe_sequence}:${stormtty_probe_status}__"$'\n''probe> '
   zle reset-prompt
+  stormtty_probe_journal "line-init status=${stormtty_probe_status}"
 }
 zle -N zle-line-init stormtty_probe_line_init
+# Controlled-fixture diagnostic only. Journal what ZLE actually receives, not
+# just terminal echo. No terminal output, delays, retries or signal traps added.
+# Each record is bounded; wrappers preserve the underlying widget's status.
+typeset -gi stormtty_probe_journal_count=0
+stormtty_probe_journal() {
+  [[ -n ${STORMTTY_PROBE_JOURNAL-} ]] || return 0
+  (( stormtty_probe_sequence >= 5 && stormtty_probe_sequence <= 9 )) || return 0
+  (( stormtty_probe_journal_count < 512 )) || return 0
+  (( ++stormtty_probe_journal_count ))
+  local entry="${1[1,512]}"
+  print -r -- "${stormtty_probe_journal_count} seq=${stormtty_probe_sequence} size=${COLUMNS}x${LINES} ${entry}" >> "$STORMTTY_PROBE_JOURNAL"
+}
+stormtty_probe_insert() {
+  stormtty_probe_journal "insert-before keys=${(qqqq)KEYS} buffer=${(qqqq)BUFFER}"
+  zle .self-insert
+  local widget_result=$?
+  stormtty_probe_journal "insert-after buffer=${(qqqq)BUFFER}"
+  return $widget_result
+}
+stormtty_probe_accept() {
+  stormtty_probe_journal "accept buffer=${(qqqq)BUFFER}"
+  zle .accept-line
+}
+preexec() { stormtty_probe_journal "preexec command=${(qqqq)1}" }
+if [[ -n ${STORMTTY_PROBE_JOURNAL-} ]]; then
+  zle -N self-insert stormtty_probe_insert
+  zle -N accept-line stormtty_probe_accept
+fi
 stormtty_probe_emit READY

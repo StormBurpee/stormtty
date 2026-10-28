@@ -59,6 +59,7 @@ void key(const std::shared_ptr<Session>& s, Key k, std::uint16_t mods = 0) {
     require(s->key(input) == SessionSendResult::accepted, "key rejected");
 }
 void command(const std::shared_ptr<Session>& s, std::string text) {
+    std::cout << "[submit] bytes=" << text.size() << " text=" << text << '\n';
     require(s->text(std::move(text)) == SessionSendResult::accepted, "command rejected");
     key(s, Key::enter);
 }
@@ -77,6 +78,17 @@ struct PromptProtocol {
         ++sequence;
     }
 };
+void dump_journal(const fs::path& path) {
+    if (path.empty()) return;
+    std::ifstream input(path, std::ios::binary);
+    // The fixture contains no user commands or secrets. Never read beyond the
+    // diagnostic bound, even if a broken fixture ignores its own record cap.
+    std::string bytes(128 * 1024, '\0');
+    input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<std::size_t>(input.gcount()));
+    std::cout << "ZLE journal (controlled fixture; max128KiB):\n" << bytes
+              << "\nEnd ZLE journal\n";
+}
 std::string inherited_path() {
 #ifdef _WIN32
     const auto count = GetEnvironmentVariableW(L"PATH", nullptr, 0);
@@ -133,12 +145,14 @@ int main(int argc, char** argv) {
     }
     std::cout << std::unitbuf;
     std::shared_ptr<Session> session;
+    fs::path journal;
     try {
         const auto shell = fs::absolute(path_utf8(argv[1]));
         const auto fixture = fs::absolute(path_utf8(argv[2]));
         const auto scratch = fs::absolute(path_utf8(argv[3]));
         // Require a new directory: never overwrite a user's files.
         require(!fs::exists(scratch), "scratch directory must not exist");
+        journal = scratch / "zle-input.log";
         const auto dotdir = scratch / "dotdir";
         const auto home = scratch / "home";
         const auto cwd = scratch / path_utf8("workspace caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84");
@@ -169,6 +183,7 @@ int main(int argc, char** argv) {
         require(fs::is_regular_file(sleep), "candidate sleep executable missing");
         p.environment = {{"STORMTTY_PROBE_SLEEP", utf8(sleep)}, {"ZDOTDIR", utf8(dotdir)}, {"HOME", utf8(home)},
             {"STORMTTY_PROBE_FIXTURE", utf8(fixture)},
+            {"STORMTTY_PROBE_JOURNAL", utf8(journal)},
             {"STORMTTY_PROBE_NATIVE", utf8(fs::absolute(path_utf8(argv[0])))},
             {"PATH", path}, {"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"},
             {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"},
@@ -230,6 +245,7 @@ int main(int argc, char** argv) {
         require(session->wait_closed(10s), "zsh natural exit did not close Session");
         require(session->info().state == SessionState::exited, "zsh exited in failed state");
         require(session->info().exit_code == 37, "zsh exit status lost");
+        dump_journal(journal);
 #ifdef _WIN32
         std::cout << "PASS native Windows bundled-shell candidate through Process/Session\n";
 #else
@@ -238,6 +254,7 @@ int main(int argc, char** argv) {
         return 0;
     } catch (const std::exception& e) {
         if (session) { std::cerr << "Failure frame:\n" << screen(session); session->request_close(); (void)session->wait_closed(10s); }
+        dump_journal(journal);
         std::cerr << "FAIL: " << e.what() << '\n'; return 1;
     }
 }
