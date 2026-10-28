@@ -229,7 +229,9 @@ def main() -> int:
         source = resolve_source(args, lock)
         prepare_dependencies(lock, zig, cache, env, args.offline)
         prefix = (args.prefix or ROOT / ".deps" / "ghostty-vt" / target).resolve()
-        flags = ["-Demit-lib-vt", f"-Dtarget={target}", "-Dcpu=baseline",
+        flags = ["-Demit-lib-vt", "-Demit-exe=false", "-Demit-macos-app=false",
+                 "-Demit-xcframework=false", "-Demit-docs=false",
+                 f"-Dtarget={target}", "-Dcpu=baseline",
                  f"-Doptimize={args.optimize}", f"-Dsimd={'false' if args.no_simd else 'true'}", f"-j{args.jobs}"]
         command = [str(zig), "build", *flags, "--prefix", str(prefix)]
         run([*command, "--fetch=needed"] if args.fetch_only else command, cwd=source, env=env)
