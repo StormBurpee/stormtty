@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -135,8 +136,22 @@ int main() {
         {
             ManagedSessionProbe shell(runtime, provider, fixture); cold_ms = shell.startup_ms;
             phase = 3;
-            shell.command("[[ $STORMTTY_OMZ_LOADED == 1 && $STORMTTY_EPHEMERAL == 0 && $_qual_config == 73 && ${+functions[_zsh_autosuggest_start]} == 1 && ${+functions[_zsh_highlight]} == 1 && ${+STORMTTY_NATIVE_ZSH_STATE} == 0 && ${+QUAL_GLOBAL_RC_READ} == 0 && $HOME == $QUAL_EXPECT_HOME && $PWD == $QUAL_EXPECT_CWD ]] && print -r -- QMODULE$((40+2))");
-            shell.expect("QMODULE42"); shell.ready(0);
+            // Keep each contract independently observable without logging paths,
+            // shell contents or history. A failed bit identifies the invariant;
+            // the same required predicates still block qualification.
+            const std::array<const char*, 9> contracts = {
+                "$STORMTTY_OMZ_LOADED == 1", "$STORMTTY_EPHEMERAL == 0", "$_qual_config == 73",
+                "${+functions[_zsh_autosuggest_start]} == 1", "${+functions[_zsh_highlight]} == 1",
+                "${+STORMTTY_NATIVE_ZSH_STATE} == 0", "${+QUAL_GLOBAL_RC_READ} == 0",
+                "$HOME == $QUAL_EXPECT_HOME", "$PWD == $QUAL_EXPECT_CWD"};
+            for (std::size_t index = 0; index < contracts.size(); ++index) {
+                const std::string marker = "QCONTRACT" + std::to_string(index + 1);
+                shell.command("[[ " + std::string(contracts[index]) + " ]]; print -r -- " + marker + "_$?");
+                shell.ready(0);
+                const bool passed = screen(shell.session).find(marker + "_0") != std::string::npos;
+                std::cout << "MANAGED_STATE_CONTRACT index=" << index + 1 << " passed=" << passed << '\n';
+                check(passed);
+            }
             phase = 4;
             shell.command("false"); shell.ready(1);
             shell.command("(( _stormtty_exit == 1 )) && [[ ${STORMTTY_CONTEXT[exit]} == 1 ]] && print -r -- QHOOK$((40+3))");

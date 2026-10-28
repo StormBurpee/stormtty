@@ -27,7 +27,7 @@ struct Fixture {
     ~Fixture() { std::error_code ignored; std::filesystem::remove_all(root, ignored); }
 };
 void write(const std::filesystem::path& path) {
-    std::ofstream stream(path); stream << "# test\n"; stream.close(); CHECK(stream.good());
+    std::ofstream stream(path, std::ios::binary); stream << "# test\n"; stream.close(); CHECK(stream.good());
 }
 void unsafe_acl(const std::filesystem::path& path, bool read_only = false) {
     PSECURITY_DESCRIPTOR descriptor{};
@@ -122,7 +122,10 @@ int main() { return run_core_tests("windows_shell_state (Windows native)", [] {
     write(config);
     unsafe_acl(config);
     CHECK(!prepare_managed_shell_state_at(fixture.root, false));
-    CHECK(std::filesystem::file_size(config) == 7); // Not overwritten/repaired.
+    std::ifstream preserved(config, std::ios::binary);
+    const std::string bytes{std::istreambuf_iterator<char>(preserved), {}};
+    CHECK(bytes == "# test\n"); // Exact bytes, not overwritten/repaired.
+    preserved.close();
     CHECK(std::filesystem::remove(config));
     CHECK(prepare_managed_shell_state_at(fixture.root, false));
     unsafe_acl(dump);
