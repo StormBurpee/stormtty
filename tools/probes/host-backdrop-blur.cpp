@@ -118,6 +118,60 @@ struct SyntheticBackdrop {
     }
 };
 
+// Isolated recovery qualification, not a production renderer replacement.
+// Ordinary disabled child retains a redirection surface when its parent has none.
+struct OpaqueChild {
+    HWND hwnd{};
+    unsigned paints{};
+    ~OpaqueChild() { reset(); }
+    void reset() noexcept { if (IsWindow(hwnd)) DestroyWindow(hwnd); hwnd=nullptr; }
+    static LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) noexcept {
+        auto* self=reinterpret_cast<OpaqueChild*>(GetWindowLongPtrW(window,GWLP_USERDATA));
+        if(message==WM_NCCREATE) {
+            self=static_cast<OpaqueChild*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
+            SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self));
+        }
+        switch(message) {
+        case WM_NCHITTEST: return HTTRANSPARENT;
+        case WM_MOUSEACTIVATE: return MA_NOACTIVATEANDEAT;
+        case WM_ERASEBKGND: return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT paint{};const auto dc=BeginPaint(window,&paint);
+            RECT rect{};GetClientRect(window,&rect);
+            FillRect(dc,&rect,GetSysColorBrush(COLOR_WINDOW));
+            SetTextColor(dc,GetSysColor(COLOR_WINDOWTEXT));SetBkMode(dc,TRANSPARENT);
+            DrawTextW(dc,L"Opaque ordinary-child recovery — no blur\nParent remains the input owner",-1,&rect,DT_WORDBREAK);
+            EndPaint(window,&paint);if(self) ++self->paints;return 0;
+        }
+        default: return DefWindowProcW(window,message,wparam,lparam);
+        }
+    }
+    void resize(HWND parent) {
+        if(!hwnd) return;
+        RECT rect{};if(!GetClientRect(parent,&rect)) winrt::throw_last_error();
+        if(!SetWindowPos(hwnd,HWND_TOP,0,0,rect.right,rect.bottom,SWP_NOACTIVATE)) winrt::throw_last_error();
+        InvalidateRect(hwnd,nullptr,FALSE);UpdateWindow(hwnd);
+    }
+    void create(HWND parent) {
+        reset();paints=0;
+        WNDCLASSW klass{};klass.hInstance=GetModuleHandleW(nullptr);klass.lpfnWndProc=procedure;
+        klass.lpszClassName=L"StormTTY.Probe.OpaqueChild";
+        if(!RegisterClassW(&klass) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS) winrt::throw_last_error();
+        hwnd=CreateWindowExW(WS_EX_NOPARENTNOTIFY,klass.lpszClassName,L"",WS_CHILD|WS_VISIBLE|WS_DISABLED,
+            0,0,1,1,parent,nullptr,klass.hInstance,this);
+        if(!hwnd) winrt::throw_last_error();
+        if(GetWindowLongPtrW(hwnd,GWL_EXSTYLE)&WS_EX_NOREDIRECTIONBITMAP) winrt::throw_hresult(E_FAIL);
+        resize(parent);
+    }
+    bool valid(HWND parent) const noexcept {
+        RECT child{},host{};
+        return IsWindow(hwnd) && GetParent(hwnd)==parent && !IsWindowEnabled(hwnd) &&
+            !(GetWindowLongPtrW(hwnd,GWL_EXSTYLE)&WS_EX_NOREDIRECTIONBITMAP) &&
+            GetClientRect(hwnd,&child) && GetClientRect(parent,&host) &&
+            child.right==host.right && child.bottom==host.bottom && paints>0;
+    }
+};
+
 // Narrow, explicit runtime capability failures. Invalid effect metadata,
 // invalid arguments, device removal and generic E_FAIL remain real failures.
 bool unsupported_runtime(HRESULT hr) noexcept {
@@ -128,6 +182,8 @@ struct Probe {
     HWND hwnd{};
     bool force_warp{}, warp{}, active{}, failed{}, blocked_test{}, high_contrast{}, smoke{}, require_host{};
     bool no_redirection{}, synthetic{}, sweep{}, graph_validated{};
+    bool fallback_smoke{}, inject_failure{}, fallback_seen{}, fallback_resized{}, fallback_restored{};
+    OpaqueChild opaque_child;
     ULONGLONG started{};
     unsigned smoke_step{};
     int smoke_result{};
@@ -272,6 +328,7 @@ struct Probe {
     }
     void resize() {
         RECT r{}; GetClientRect(hwnd, &r);
+        opaque_child.resize(hwnd);
         if (!r.right || !r.bottom || !swapchain) return;
         width = r.right; height = r.bottom;
         dc->SetTarget(nullptr); bitmap = nullptr;
@@ -298,7 +355,13 @@ struct Probe {
         check_hresult(dc->EndDraw()); check_hresult(swapchain->Present(1, 0));
     }
     void safe_update(bool rebuild = false) noexcept {
-        try { if (rebuild) initialize(); draw(); }
+        const bool injecting=inject_failure;
+        try {
+            if (inject_failure) { inject_failure=false; winrt::throw_hresult(E_FAIL); }
+            if (rebuild) initialize();
+            draw();
+            if (rebuild) opaque_child.reset(); // Retain recovery surface until successful presentation.
+        }
         catch (...) {
             const auto hr = winrt::to_hresult();
             // One bounded automatic recreation for a real lost graphics device.
@@ -307,15 +370,20 @@ struct Probe {
             }
             const bool unsupported=unsupported_runtime(hr) &&
                 (std::string_view(initialization_stage)=="desktop-composition" || std::string_view(initialization_stage)=="owned-effect-graph");
-            smoke_result=unsupported?3:1;
+            const bool expected_fault=fallback_smoke && injecting && hr==E_FAIL && !rebuild;
+            if(!expected_fault) smoke_result=unsupported?3:1;
             std::fprintf(stderr,"PROBE_RUNTIME_UNSUPPORTED=%u stage=%s hr=0x%08lx\n",unsigned(unsupported),initialization_stage,static_cast<unsigned long>(hr));
             release_graphics(); failed = true;
             status = L"Graphics initialization/render failed HRESULT=" +
                 std::to_wstring(static_cast<unsigned long>(hr));
             if (no_redirection) {
-                // This HWND cannot promise the ordinary-window GDI fallback.
-                // Fail closed instead of claiming a usable production fallback.
-                if(!smoke_result) smoke_result=1;DestroyWindow(hwnd);
+                if(fallback_smoke) {
+                    try { opaque_child.create(hwnd); }
+                    catch (...) { smoke_result=1;DestroyWindow(hwnd); }
+                } else {
+                    // Ordinary GDI on this parent cannot recover its missing backing surface.
+                    if(!smoke_result) smoke_result=1;DestroyWindow(hwnd);
+                }
             } else InvalidateRect(hwnd, nullptr, TRUE);
         }
     }
@@ -366,6 +434,26 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
                 }
                 return 0;
             }
+            if (wparam==1 && probe->fallback_smoke) {
+                ++probe->smoke_step;
+                if(probe->smoke_step==1) {
+                    if(probe->failed || !probe->graph_validated) probe->smoke_result=1;
+                    probe->inject_failure=true;probe->safe_update();
+                    probe->fallback_seen=probe->failed && !probe->active && !probe->target && probe->opaque_child.valid(hwnd);
+                } else if(probe->smoke_step==2) {
+                    SetWindowPos(hwnd,nullptr,0,0,800,500,SWP_NOMOVE|SWP_NOZORDER);
+                    probe->fallback_resized=probe->opaque_child.valid(hwnd);
+                } else if(probe->smoke_step==3) {
+                    probe->safe_update(true);
+                    probe->fallback_restored=!probe->failed && probe->graph_validated && !probe->opaque_child.hwnd && IsWindow(hwnd);
+                } else {
+                    if(!probe->fallback_seen || !probe->fallback_resized || !probe->fallback_restored) probe->smoke_result=1;
+                    std::printf("Opaque child recovery: injected=1 child=%u resized=%u restored=%u result=%d physical_blur_verified=0\n",
+                        unsigned(probe->fallback_seen),unsigned(probe->fallback_resized),unsigned(probe->fallback_restored),probe->smoke_result);
+                    KillTimer(hwnd,1);DestroyWindow(hwnd);
+                }
+                return 0;
+            }
             if (wparam == 1 && probe->smoke) {
                 ++probe->smoke_step;
                 if (probe->failed || !probe->graph_validated || (probe->warp && probe->active)) {if(!probe->smoke_result) probe->smoke_result=1;}
@@ -403,13 +491,13 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             case VK_DOWN: probe->opacity = std::max(0.f, probe->opacity-.05f); break;
             case 'F': probe->blocked_test = !probe->blocked_test; probe->policy(); break;
             case 'R': probe->safe_update(true); return 0;
-            case VK_ESCAPE: if(probe->smoke || probe->sweep) probe->smoke_result=2;DestroyWindow(hwnd);return 0;
+            case VK_ESCAPE: if(probe->smoke || probe->sweep || probe->fallback_smoke) probe->smoke_result=2;DestroyWindow(hwnd);return 0;
             default: return DefWindowProcW(hwnd, message, wparam, lparam);
             }
             if (probe->effect) probe->effect.Properties().InsertScalar(L"Blur.BlurAmount", probe->sigma);
             probe->safe_update(); return 0;
-        case WM_CLOSE: if(probe->smoke || probe->sweep) probe->smoke_result=2;DestroyWindow(hwnd);return 0;
-        case WM_DESTROY: probe->release_graphics(); PostQuitMessage(0); return 0;
+        case WM_CLOSE: if(probe->smoke || probe->sweep || probe->fallback_smoke) probe->smoke_result=2;DestroyWindow(hwnd);return 0;
+        case WM_DESTROY: probe->opaque_child.reset(); probe->release_graphics(); PostQuitMessage(0); return 0;
         }
     } catch (...) { if (probe) probe->safe_update(true); }
     // In particular WM_NCACTIVATE always receives the normal DWM/default path.
@@ -431,15 +519,17 @@ int main(int argc, char** argv) {
             Probe probe;
             for (int i = 1; i < argc; ++i) {
                 if (std::string(argv[i]) == "--warp") probe.force_warp = true;
+                else if (std::string(argv[i]) == "--fallback-smoke") probe.fallback_smoke=true;
                 else if (std::string(argv[i]) == "--smoke") probe.smoke = true;
                 else if (std::string(argv[i]) == "--require-host") probe.require_host = true;
                 else if (std::string(argv[i]) == "--no-redirection") probe.no_redirection=true;
                 else if (std::string(argv[i]) == "--synthetic-backdrop") probe.synthetic=true;
                 else if (std::string(argv[i]) == "--sweep") {probe.sweep=true;probe.synthetic=true;}
-                else { std::fputs("Usage: host-backdrop-blur [--warp] [--smoke | --sweep] [--require-host] [--no-redirection] [--synthetic-backdrop]\n", stderr); return 2; }
+                else { std::fputs("Usage: host-backdrop-blur [--warp] [--smoke | --sweep | --fallback-smoke] [--require-host] [--no-redirection] [--synthetic-backdrop]\n", stderr); return 2; }
             }
-            if ((probe.force_warp && probe.require_host) || (probe.smoke && probe.sweep)) {
-                std::fputs("Incompatible probe modes: WARP cannot require a host; choose smoke OR sweep.\n",stderr);return 2;
+            if ((probe.force_warp && probe.require_host) || (probe.smoke && probe.sweep) ||
+                (probe.fallback_smoke && (!probe.force_warp || !probe.no_redirection || probe.smoke || probe.sweep || probe.require_host))) {
+                std::fputs("Incompatible probe modes: WARP cannot require a host; choose one smoke/sweep mode; fallback-smoke requires WARP and no-redirection.\n",stderr);return 2;
             }
             SyntheticBackdrop synthetic;
             SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -460,7 +550,7 @@ int main(int argc, char** argv) {
                 std::printf("Blur sweep: phase=0 sigma=0 opacity=0.25 host_active=%u elapsed_ms=0\n",unsigned(probe.active));
                 if(!SetTimer(hwnd,3,100,nullptr)) winrt::throw_last_error();
             }
-            if (probe.smoke && !SetTimer(hwnd, 1, 250, nullptr)) winrt::throw_last_error();
+            if ((probe.smoke || probe.fallback_smoke) && !SetTimer(hwnd, 1, 250, nullptr)) winrt::throw_last_error();
             MSG message{}; int result;
             while ((result = GetMessageW(&message, nullptr, 0, 0)) > 0) { TranslateMessage(&message); DispatchMessageW(&message); }
             if (IsWindow(hwnd)) DestroyWindow(hwnd);

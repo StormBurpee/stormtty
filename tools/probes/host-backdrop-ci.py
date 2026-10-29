@@ -8,11 +8,15 @@ from pathlib import Path
 import sys
 
 
-def classify(returncode, timed_out, reaped, cleanup_error, output):
+def classify(returncode, timed_out, reaped, cleanup_error, output, fallback=False):
     if timed_out or not reaped or cleanup_error:
         return "failed"
     if returncode == 3 and "PROBE_RUNTIME_UNSUPPORTED=1" in output:
         return "runtime-unsupported"
+    if fallback:
+        if returncode == 0 and "Opaque child recovery: injected=1 child=1 resized=1 restored=1 result=0 physical_blur_verified=0" in output:
+            return "opaque-child-recovery-passed"
+        return "failed"
     if (returncode == 0 and
             "Owned surface Gaussian graph: constructed=1 scalar_sweep=0,8,24,48 software=1 host_pixel_proof=0" in output and
             "Host backdrop smoke: result=0 software=1 host_active=0" in output):
@@ -31,15 +35,14 @@ def main():
     sys.modules[spec.name] = runner
     spec.loader.exec_module(runner)
     records = []
-    for no_redirection in (False, True):
-        variant = "no-redirection" if no_redirection else "ordinary"
-        command = [str(args.exe.resolve()), "--warp", "--smoke"]
+    for variant, no_redirection, fallback in (("ordinary", False, False), ("no-redirection", True, False), ("opaque-child-recovery", True, True)):
+        command = [str(args.exe.resolve()), "--warp", "--fallback-smoke" if fallback else "--smoke"]
         if no_redirection:
             command.append("--no-redirection")
         try:
             result = runner.run_owned(command, timeout=30, reap_timeout=5, output_dir=args.output)
             output = result.output_tail.decode("utf-8", errors="replace")
-            status = classify(result.returncode, result.timed_out, result.reaped, result.cleanup_error, output)
+            status = classify(result.returncode, result.timed_out, result.reaped, result.cleanup_error, output, fallback)
             record = dict(variant=variant, status=status, **result.metadata())
         except (OSError, ValueError) as error:
             output = str(error)

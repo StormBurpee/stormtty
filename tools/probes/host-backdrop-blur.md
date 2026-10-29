@@ -198,3 +198,28 @@ The artifact retains the native executable, configure log and bounded diagnostic
 logs/JSON for root review. Do not offer the interactive probe to a user before its
 native compile has succeeded. The Python classifier's negative cases run on Linux
 and Windows; this does not substitute for native compilation or execution.
+
+## Opt-in opaque-child recovery diagnostic
+
+`--warp --no-redirection --fallback-smoke` is an additional isolated safety gate.
+It first creates the owned composition graph, injects one deterministic `E_FAIL`
+into presentation, detaches/releases that graph, and creates an ordinary redirected
+**disabled child HWND** without changing the parent's creation-time styles. The
+child paints an opaque system-color GDI notice and cannot become the input owner.
+The diagnostic checks parent identity, redirection style, disabled state, paint
+callback completion and client-size equality. It then resizes the host, verifies
+the child follows, recreates the composition graph and removes the child only
+after successful presentation. A four-step timer bounds this sequence; the CI
+owned-process runner supplies the external timeout and teardown checks.
+
+The existing CI runner now executes this third variant and requires all of
+`child=1 resized=1 restored=1 result=0`, not just an exit code. The new status
+`opaque-child-recovery-passed` means these API/lifecycle assertions passed. It is
+**not** pixel visibility, real driver removal, physical blur, focus interaction,
+or production renderer recovery proof. The child is a GDI probe, whereas
+production's ordinary child uses its own renderer presentation path. Other probe
+modes keep their prior fail-closed behavior. No app code or default changes.
+
+The earlier native compile/WARP evidence predates this new diagnostic. Re-run
+the isolated MSVC workflow for the new revision before treating it as compiled
+or executed on Windows. Linux classifier unit tests do not satisfy that gate.
