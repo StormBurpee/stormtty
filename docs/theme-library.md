@@ -57,11 +57,19 @@ suite; the native smoke checks host/config propagation and actor identity/defaul
 
 ## Additional Windows blur
 
-Appearance now has a separate **Additional blur** slider (0–64). It is persisted
+Appearance has a separate **Blur** slider (0–64). It is persisted
 as `appearance.additional_blur`, previews immediately, and follows the existing
-Cancel/Save/reload lifecycle. Background opacity remains independent. At zero,
-the existing system material renderer is unchanged: zero does **not** mean a
-sharp desktop, because Windows already blurs its host backdrop.
+Cancel/Save/reload lifecycle. Background opacity remains independent. At zero with Auto/Acrylic, both system and host backdrop effects are disabled:
+the existing premultiplied DirectComposition surface reveals the clear desktop
+according to the independent background opacity. This intentionally corrects the
+previous zero behavior that selected a different acrylic recipe. Default zero
+now means no blur, not a hidden default blur. Solid remains opaque; explicitly
+selected Mica remains its separate system material.
+
+Positive values still add Gaussian blur to Windows' already-blurred host source.
+In particular, 1 is **not** near-clear blur. A continuously adjustable physical
+radius from clear through a small sigma is not supported by this source. The
+slider labels state this OS floor rather than claiming to control absolute radius.
 
 On native MSVC/Windows SDK builds, positive values with Acrylic/Auto request a
 Gaussian CompositionEffectBrush over CreateHostBackdropBrush. A separate sibling
@@ -94,3 +102,11 @@ continues pumping bounded batches after a five-second warning; it does not relea
 a still-started controller or balance WinRT early. An exceptional shutdown failure
 returns failure and retains that owner until process exit. This ownership test
 still cannot prove hardware host-backdrop sampling or spatial blur quality.
+
+
+Zero-clear uses the documented [premultiplied DirectComposition/no-redirection
+window path](https://learn.microsoft.com/en-us/archive/msdn-magazine/2014/june/windows-with-c-high-performance-window-layering-using-the-windows-composition-engine),
+not CreateBackdropBrush, desktop capture, global window opacity, or a blurred
+layer blended to simulate a radius. The compositor blends only the app's own
+per-pixel alpha; foreground glyphs and explicitly colored ANSI backgrounds remain
+opaque. Software/accessibility/transparency-off paths stay safely opaque.

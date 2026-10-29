@@ -278,6 +278,14 @@ void native_host_surface_test() {
                     require(renderer.stats().composition==expected_composition,"Blur preference changed safe fallback presentation");
                     require(renderer.read_pixels()==unblurred,"Unavailable blur altered foreground pixels or faked blur with opacity");
                 }
+                if(expected_composition) {
+                    renderer.set_background_opacity(0);renderer.render(scene);
+                    const auto clear=renderer.read_pixels();
+                    bool transparent=true;
+                    for(std::size_t i=3;i<clear.size();i+=4) transparent=transparent && clear[i]==0;
+                    require(transparent && !renderer.stats().host_backdrop,"Zero blur/zero tint did not preserve clear premultiplied canvas");
+                    renderer.set_background_opacity(1);renderer.render(scene);
+                }
                 bool rejected=false;
                 try {renderer.set_additional_blur(65);} catch(const std::invalid_argument&) {rejected=true;}
                 require(rejected,"Additional blur accepted out-of-range sigma");

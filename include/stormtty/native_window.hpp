@@ -98,13 +98,14 @@ inline bool settings_baseline_matches(const Config& loaded, const Config& runnin
 }
 
 // Host material policy is independent of terminal colors. Auto intentionally
-// requests Desktop Acrylic (3), not Mica (2), so it can reveal other windows.
+// uses clear composition at zero blur, and Desktop Acrylic (3) otherwise.
 // Windows may still substitute a solid material for system/power conditions.
 enum class MaterialFallback { none, solid_selected, no_composition, software, high_contrast, transparency_disabled };
 struct WindowMaterialPolicy {
     std::uint32_t system_backdrop{1}; // Documented DWM_SYSTEMBACKDROP_TYPE values.
     float opacity{1};
     MaterialFallback fallback{MaterialFallback::none};
+    bool clear{}; // No system/host backdrop; preserve premultiplied canvas alpha.
 };
 inline WindowMaterialPolicy window_material_policy(const AppearanceConfig& appearance,bool composition,bool software,bool high_contrast,bool transparency) {
     MaterialFallback fallback=MaterialFallback::none;
@@ -114,6 +115,8 @@ inline WindowMaterialPolicy window_material_policy(const AppearanceConfig& appea
     else if(software) fallback=MaterialFallback::software;
     else if(!composition) fallback=MaterialFallback::no_composition;
     if(fallback!=MaterialFallback::none) return {1,1,fallback};
+    if(appearance.backdrop!=BackdropPreference::mica && appearance.additional_blur==0)
+        return {1,static_cast<float>(appearance.background_opacity),fallback,true};
     return {appearance.backdrop==BackdropPreference::mica?2U:3U,static_cast<float>(appearance.background_opacity),fallback};
 }
 struct MaterialRenderState {

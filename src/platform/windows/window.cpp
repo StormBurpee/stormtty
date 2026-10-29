@@ -796,14 +796,14 @@ void NativeWindow::settings_changed() {
     DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(33), &corners, sizeof(corners));
     auto render_capability = renderer_ ? renderer_->stats() : RendererStats{};
     material_tracker_.observe({render_capability.composition,render_capability.warp,render_capability.device_recoveries,render_capability.host_backdrop});
-    const auto policy=window_material_policy(config_.appearance,render_capability.composition,render_capability.warp,high_contrast_,transparency!=0);
+    const auto policy=window_material_policy(config_.appearance,render_capability.composition,render_capability.warp,!contrast_known || high_contrast_,transparency_result==ERROR_SUCCESS && transparency!=0);
     const bool extra_requested=config_.appearance.additional_blur>0;
     const bool extra_eligible=policy.fallback==MaterialFallback::none &&
         config_.appearance.backdrop!=BackdropPreference::mica && contrast_known && transparency_result==ERROR_SUCCESS;
     if(renderer_) {
         RendererCallGuard guard(renderer_call_);
-        // Never stack system acrylic under the host-effect recipe. Zero returns
-        // to the original OS material; opacity remains a separate canvas value.
+        // Never stack system acrylic under the host-effect recipe. Zero disables
+        // backdrop effects entirely; opacity remains a separate canvas value.
         if(extra_requested && extra_eligible) {
             const DWORD none=1;
             DwmSetWindowAttribute(hwnd_,static_cast<DWMWINDOWATTRIBUTE>(38),&none,sizeof none);
@@ -812,12 +812,15 @@ void NativeWindow::settings_changed() {
         render_capability=renderer_->stats();
     }
     const bool extra_active=render_capability.host_backdrop;
+    const bool clear_requested=policy.clear && render_capability.composition && !render_capability.warp;
     const DWORD material=extra_active?1:policy.system_backdrop;
     const HRESULT material_result=DwmSetWindowAttribute(hwnd_,static_cast<DWMWINDOWATTRIBUTE>(38),&material,sizeof(material));
+    const bool clear_material=clear_requested && SUCCEEDED(material_result);
     const bool material_requested=SUCCEEDED(material_result) && material!=1;
-    MARGINS margins=extra_active?MARGINS{0,0,0,0}:material_requested?MARGINS{-1,-1,-1,-1}:MARGINS{1,1,1,1};
+    MARGINS margins=(extra_active || clear_material)?MARGINS{0,0,0,0}:material_requested?MARGINS{-1,-1,-1,-1}:MARGINS{1,1,1,1};
     const HRESULT frame_result=DwmExtendFrameIntoClientArea(hwnd_,&margins);
-    backdrop_=extra_active || (material_requested && SUCCEEDED(frame_result));
+    const bool clear_active=clear_material && SUCCEEDED(frame_result);
+    backdrop_=extra_active || clear_active || (material_requested && SUCCEEDED(frame_result));
     if (renderer_) renderer_->set_background_opacity(backdrop_?policy.opacity:1.0f);
     std::string status;
     switch(policy.fallback) {
@@ -833,11 +836,12 @@ void NativeWindow::settings_changed() {
         else status=std::string(material==3?"Acrylic requested":"Mica (wallpaper) requested")+" · "+std::to_string(std::lround(policy.opacity*100))+"% tint.";
         break;
     }
-    if(extra_active) status="Additional blur "+std::to_string(std::lround(config_.appearance.additional_blur))+" · added to the Windows backdrop.";
+    if(policy.clear) status=clear_active?"Clear background · no blur.":"Opaque fallback: clear composition unavailable.";
+    if(extra_active) status="Additional blur "+std::to_string(std::lround(config_.appearance.additional_blur))+" · Windows base blur remains.";
     else if(extra_requested) status="Additional blur unavailable · "+status;
     if(extra_requested && config_.appearance.backdrop==BackdropPreference::mica)
         status="Additional blur needs Acrylic or Auto, not Mica.";
-    if(extra_active && policy.opacity>=1) status="100% opacity hides additional blur. Lower Background opacity.";
+    if((extra_active || clear_active) && policy.opacity>=1) status="100% opacity hides the background. Lower Background opacity.";
     const bool policy_changed=status!=material_status_;
     if(policy_changed) {
         material_status_=std::move(status);
@@ -3779,6 +3783,12 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 smoke_finish("Additional blur default/preview or WARP fallback failed.");return;
             }
             capture_settings(L"appearance-blur-preview");
+            if(!set_blur(0)) {smoke_finish("Blur zero did not preview clear preference.");return;}
+            for(unsigned i=0;i<256 && settings_panel_.focused_control()!="appearance.opacity";++i) settings_panel_.key({{"TAB"}});
+            settings_panel_.key({{"HOME"}});settings_input_changed();
+            if(config_.appearance.background_opacity!=0 || renderer_->stats().host_backdrop) {smoke_finish("Clear-zero preference altered blur or tint semantics.");return;}
+            if(!set_blur(0)) {smoke_finish("Clear-zero control unreachable.");return;}
+            capture_settings(L"appearance-clear-zero");
             if (!activate_setting("nav.ribbon") || !activate_setting("ribbon.toggle:session.git") ||
                 config_.ribbon.hidden[ribbon_index(RibbonBinding::git)]==smoke_settings_original_.ribbon.hidden[ribbon_index(RibbonBinding::git)]) {
                 smoke_finish("Ribbon toggle did not live preview before Cancel.");return;

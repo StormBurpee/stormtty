@@ -150,7 +150,7 @@ public:
     void set_background_opacity(float opacity);
     CellMetrics metrics() const noexcept;
 #ifdef _WIN32
-    // Background-only extra Gaussian sigma; 0 keeps the default OS material path.
+    // Background-only extra Gaussian sigma; 0 removes the host effect; the window selects clear/system policy.
     void set_additional_blur(float sigma);
     // Actual DirectWrite chrome-font bounds in pixels, using the label's wrapping.
     PixelRect measure_chrome_text(const ChromeText& label) const;
