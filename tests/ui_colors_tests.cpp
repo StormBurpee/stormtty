@@ -28,6 +28,14 @@ void check_palette(const Theme& theme) {
     const Color os_background{251,241,231,255},os_foreground{11,21,31,255};
     const auto contrast_tab=tab_selection_colors(c,true,os_background,os_foreground);
     CHECK(contrast_tab.surface==os_background && contrast_tab.border==os_foreground);
+    for(const bool selected:{false,true})for(const double amount:{0.,.7037037037037037,1.}) {
+        const auto pane=pane_focus_colors(c,selected,amount);
+        auto wash=ui_mix(c.surface,c.selected,amount);wash.a=89;
+        CHECK(pane.wash==wash);CHECK(pane.marker==c.accent);
+        CHECK(pane.label==(selected?c.ink:c.secondary));CHECK(pane.show_marker==selected);
+        const auto hc=pane_focus_colors(c,selected,amount,true,os_foreground,os_background);
+        CHECK(hc.wash.a==0 && hc.label==os_foreground && hc.marker==os_background && hc.show_marker==selected);
+    }
     for(auto color:{c.canvas,c.surface,c.navigation,c.raised,c.ink,c.secondary,c.subdued,c.divider,c.accent,c.control,c.hover,c.pressed,c.selected,c.selected_hover,c.selected_border,c.on_accent,c.positive,c.danger}) CHECK(color.a==255);
     CHECK(contrast(c.on_accent,c.accent)>=4.5);
     const auto floor=std::min(4.5,std::max(

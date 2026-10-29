@@ -66,6 +66,7 @@ jobs:
                       if 'Native menu theme capture=appearance-menu-'+state+' normal=1 narrow=1 palette=1 frontend_input_unchanged=1' not in log: failures.append('menu-theme-'+state)
               if mode=='layout' and 'Native command watch: explicit arm' not in log: failures.append('layout-command-watch')
               if mode=='layout' and 'Native pane context: three distinct owned actors' not in log: failures.append('layout-pane-context')
+              if mode=='layout' and 'Native pane focus: identity_immediate=1 synthetic_normal_motion_interpolation=1 samples_ms=0,40,120 rapid_reversal=1 reduced_motion_cancellation=1 actors_bounds_grids_unchanged=1 frontend_input_unchanged=1 focus_protocol_writes_allowed=1 pane_motion_ended=1 shared_timer_accounted=1' not in log: failures.append('layout-pane-focus')
               if mode=='layout' and 'Native palette ownership smoke:' not in log: failures.append('layout-input-ownership')
               if mode=='settings' and 'Native Settings loading intent: held completion, Escape, immediate reopen and latest binding reuse same owned worker.' not in log: failures.append('settings-loading-intent')
               if mode=='settings' and 'Native theme gallery: nine preset cards, normal3/narrow2 columns' not in log: failures.append('theme-gallery')
@@ -92,7 +93,9 @@ jobs:
           missing.extend(name for name in expected_semantic if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
           expected_menus=['craft-settings-appearance-menu-'+state+'-'+size+'.png' for state in ['cancelled','saved-custom','reloaded'] for size in ['normal','narrow']]
           missing.extend(name for name in expected_menus if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
-          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'required_menu_theme_captures':expected_menus,'required_previous_terminal_captures':expected_previous_terminal,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
+          expected_pane_focus=['craft-layout-pane-focus-'+sample+'.png' for sample in ['000ms','040ms','reversed-040ms','settled-160ms','settled-120ms','reduced-040ms']]
+          missing.extend(name for name in expected_pane_focus if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
+          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'required_menu_theme_captures':expected_menus,'required_pane_focus_captures':expected_pane_focus,'required_previous_terminal_captures':expected_previous_terminal,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
           if failures or missing: raise SystemExit(1)
       - name: Publish native screenshots immediately
         if: always() && steps.capture.outcome != 'skipped'
