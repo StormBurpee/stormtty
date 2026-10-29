@@ -326,7 +326,7 @@ int main() {
         phase = 3;
         // Actual upstream Ctrl-T widget selection, then ordinary ZLE input.
         shell.text("[[ -f "); shell.key(Key::t, control); shell.expect("QFZF_SELECT:");
-        shell.key(Key::enter); shell.absent("QFZF_SELECT:"); shell.expect("qualification_unique_completion.txt");
+        shell.selected("qualification_unique_completion.txt"); shell.key(Key::enter); shell.absent("QFZF_SELECT:"); shell.expect("qualification_unique_completion.txt");
         shell.text(" ]] && print -r -- QFILE$((30+4))"); shell.key(Key::enter); shell.expect("QFILE34"); shell.zle_idle();
         phase = 4;
         // Cancel must return to the original editable buffer without executing it.
@@ -340,7 +340,8 @@ int main() {
         command("(( _qhistory == 2 )) && print -r -- QHISTORY_DONE$((40+6))", "QHISTORY_DONE46");
         phase = 6;
         // Alt-C is an upstream accept-line widget and changes prompt sequence.
-        shell.key(Key::c, alt); shell.expect("QFZF_SELECT:"); shell.key(Key::enter); shell.absent("QFZF_SELECT:");
+        shell.key(Key::c, alt); shell.expect("QFZF_SELECT:");
+        shell.selected("navigation space é"); shell.key(Key::enter); shell.absent("QFZF_SELECT:");
         command("[[ $PWD == */'navigation space é' ]] && print -r -- QDIR$((40+7))", "QDIR47");
         phase = 7;
         command("builtin cd -- ..; z 'navigation space'; [[ $PWD == */'navigation space é' ]] && print -r -- QJUMP$((40+8))", "QJUMP48");

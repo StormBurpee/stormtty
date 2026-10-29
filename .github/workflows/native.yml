@@ -84,6 +84,7 @@ jobs:
           path: |
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
+            build/artifacts/workspace-*.png
       - name: Verify bundled console cached repair and portable install
         if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
         shell: python
@@ -165,6 +166,7 @@ jobs:
             if result.returncode: failures.append(name)
           if failures: raise SystemExit(1)
       - name: Qualify bundled fzf and zoxide navigation
+        id: shell_navigation
         if: always() && runner.os == 'Windows' && steps.managed_omz.outcome == 'success'
         shell: python
         run: |
@@ -178,11 +180,22 @@ jobs:
           for name,extra in [('inbox',[]),('packaged',[str(provider)])]:
             print('SHELL_NAVIGATION_PROVIDER='+name,flush=True)
             result=runner.run_owned([str(probe),str(runtime),*extra],timeout=240,output_dir=pathlib.Path('build/artifacts'))
-            print(json.dumps(result.metadata(),sort_keys=True),flush=True)
-            print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+            metadata=json.dumps(result.metadata(),sort_keys=True)
+            output=result.output_tail.decode('utf-8',errors='replace')
+            pathlib.Path('build/artifacts/shell-navigation-'+name+'.log').write_text(metadata+'\n'+output,encoding='utf-8')
+            print(metadata,flush=True)
+            print(output,flush=True)
             print('SHELL_NAVIGATION_RESULT='+name+':'+str(result.exit_code),flush=True)
             if result.exit_code: failures.append(name)
           if failures: raise SystemExit(1)
+      - name: Preserve navigation evidence immediately
+        if: always() && runner.os == 'Windows' && steps.shell_navigation.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: shell-navigation-${{ runner.os }}
+          path: |
+            build/artifacts/shell-navigation-*.log
+            build/artifacts/shell-tools-zoxide-init.zsh
       - name: Qualify live shell directory and Git context
         id: managed_context
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'

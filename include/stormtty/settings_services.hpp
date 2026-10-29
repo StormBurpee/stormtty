@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stormtty/config.hpp"
+#include "stormtty/workspace_presets.hpp"
 #include <cstdint>
 #include <optional>
 
@@ -52,5 +53,17 @@ struct ConfigSaveResult {
 // for optimistic-concurrency and supported-path limitations.
 ConfigSaveResult save_settings_config(const std::filesystem::path&, const Config&,
                                       const ConfigFileSnapshot& loaded);
+
+// Uses the same guarded atomic local-file service, separate from config.toml.
+// Missing file returns an empty library; malformed files never become defaults.
+struct WorkspaceLibrarySnapshotResult {
+    std::optional<ConfigFileSnapshot> snapshot;
+    std::optional<WorkspaceLibrary> library;
+    std::string error;
+    explicit operator bool() const noexcept { return snapshot && library && error.empty(); }
+};
+WorkspaceLibrarySnapshotResult load_workspace_library_snapshot(const std::filesystem::path&);
+ConfigSaveResult save_workspace_library(const std::filesystem::path&, const WorkspaceLibrary&,
+                                       const ConfigFileSnapshot& loaded);
 
 } // namespace stormtty

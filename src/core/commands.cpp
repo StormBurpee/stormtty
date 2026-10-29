@@ -9,6 +9,7 @@
 namespace stormtty {
 namespace {
 constexpr std::array commands{
+    Command{"workspace.settings", "Workspace settings…", "Name, icon, colour, shell and saved layouts"},
     Command{"workspace.new", "New workspace…", "Choose a real folder and start its configured shell"},
     Command{"workspace.next", "Next workspace", "Switch projects without restarting hidden sessions"},
     Command{"workspace.previous", "Previous workspace", "Switch projects without restarting hidden sessions"},
