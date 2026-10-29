@@ -86,7 +86,9 @@ int main() {
         probe.text("edited caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84"); probe.key(Key::enter);
         probe.expect("edited caf");
         phase = 4;
-        probe.key(Key::o, true); probe.expect("File Name to Write"); probe.key(Key::enter);
+        // Pinned nano 9.2 src/files.c uses msg = _("Write to File").
+        // Older nano prompts differ; retain the exact prompt handshake before Enter.
+        probe.key(Key::o, true); probe.expect("Write to File"); probe.key(Key::enter);
         probe.expect("Wrote 1 line"); probe.key(Key::x, true);
         probe.expect("QNANO_EXIT_0");
         check(read(fixture.file) == "edited caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84\n");

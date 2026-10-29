@@ -580,6 +580,14 @@ void chrome_notice_measurement_test() {
         require(colors_near(pixel(pixels,800,180,y),scene.background),"wrapped notice escaped its text clip");
     }
     require(ink_rows>2*compact.height,"wrapped notice did not rasterize multiple readable lines");
+    label.text="Approval required · 1 pending · PageDown for scope\nRead source files\nRead-only fixture scope: src/platform/windows/window.cpp";label.rect.width=600;
+    const auto approval_lines=renderer.wrap_chrome_text(label);
+    require(approval_lines.size()==3,"native approval scope wasted available line width");
+    require(approval_lines.back()=="Read-only fixture scope: src/platform/windows/window.cpp","native scope split an ordinary path unnecessarily");
+    label.text="Unicode café 文件 😀 and a longer path src/platform/windows/window.cpp";label.rect.width=160;
+    const auto unicode_lines=renderer.wrap_chrome_text(label);std::string reconstructed;
+    for(const auto& line:unicode_lines){reconstructed+=line;auto probe=label;probe.text=line;probe.wrap=false;require(renderer.measure_chrome_text(probe).width<=161,"native wrapped line exceeds measured width");}
+    require(reconstructed==label.text,"native wrapping lost or split Unicode evidence");
     renderer.resize(1200,900,144); label.text="build · Command finished"; label.rect.width=804;
     const auto scaled=renderer.measure_chrome_text(label);
     require(std::abs(scaled.width/1.5f-compact.width)<1 && std::abs(scaled.height/1.5f-compact.height)<1,"notice measurement respects DPI");

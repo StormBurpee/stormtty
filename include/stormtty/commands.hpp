@@ -30,6 +30,7 @@ struct CommandContext {
     std::size_t project_workspaces{};
     bool supports_focus_mode{};
     bool supports_settings_reload{};
+    bool supports_agent_panel{};
     bool supports_background_sessions{};
     std::size_t parked_sessions{};
 };

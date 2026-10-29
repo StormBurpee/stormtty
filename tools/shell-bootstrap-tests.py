@@ -54,6 +54,19 @@ class ShellBootstrapTests(unittest.TestCase):
         self.assertEqual(lock["nano_qualification"]["status"], "pending")
         self.assertFalse(lock["public_source_availability_verified"])
 
+    def test_nano_write_prompt_tracks_pinned_source_version(self):
+        # nano-9.2/src/files.c write_it_out(): msg = _("Write to File").
+        # An upgrade needs an explicit source/UI handshake review, not accepting
+        # arbitrary output and potentially sending Enter before the save prompt.
+        lock = shell.read_lock(shell.LOCK)
+        nano = next(p for p in lock["packages"] if p["name"] == "nano")
+        self.assertEqual(nano["version"], "9.2-1")
+        fixture = (shell.LOCK.parent.parent / "tests/managed_nano_probe.cpp").read_text()
+        self.assertIn('probe.expect("Write to File")', fixture)
+        self.assertNotIn('probe.expect("File Name to Write")', fixture)
+        self.assertIn('probe.expect("Wrote 1 line")', fixture)
+        self.assertIn('probe.expect("QNANO_EXIT_0")', fixture)
+
     def test_reject_windows_aliases_and_traversal(self):
         for name in ("../escape", "/absolute", "usr/../escape", "C:/escape", "usr\\bin\\bad",
                      "usr/file:ads", "usr/nul", "usr/COM1.txt", "usr/file.", "usr/file ",

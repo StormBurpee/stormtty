@@ -1338,6 +1338,32 @@ PixelRect Renderer::measure_chrome_text(const ChromeText& label) const {
     check(layout->GetMetrics(&metrics),"Read chrome metrics");
     return {0,0,metrics.widthIncludingTrailingWhitespace,metrics.height};
 }
+std::vector<std::string> Renderer::wrap_chrome_text(const ChromeText& label) const {
+    if(label.text.empty()||label.text.size()>4u*1024u*1024u||label.family.empty()||label.family.size()>256||
+       !std::isfinite(label.size_dip)||label.size_dip<1||label.size_dip>256||!std::isfinite(label.rect.width)||label.rect.width<=0)return {};
+    const auto text=utf16(label.text),family=utf16(label.family);Com<IDWriteTextFormat> format;
+    check(impl_->write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*impl_->dpi/96,L"en-US",format.put()),"Wrap chrome font");
+    check(format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP),"Wrap chrome words");
+    Com<IDWriteTextLayout> layout;
+    check(impl_->write_factory->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format.get(),label.rect.width,1.0e8f,layout.put()),"Wrap chrome layout");
+    UINT32 count{};const auto hr=layout->GetLineMetrics(nullptr,0,&count);
+    if(hr!=E_NOT_SUFFICIENT_BUFFER)check(hr,"Count chrome lines");
+    if(count>text.size()+1)throw std::runtime_error("Invalid chrome line count");
+    std::vector<DWRITE_LINE_METRICS> metrics(count);check(layout->GetLineMetrics(metrics.data(),count,&count),"Read chrome lines");
+    std::vector<std::string> lines;lines.reserve(count);std::size_t offset=0;
+    for(const auto& metric:metrics) {
+        if(metric.newlineLength>metric.length||metric.length>text.size()-offset)throw std::runtime_error("Invalid chrome line boundary");
+        const auto length=metric.length-metric.newlineLength;
+        if(length&&text[offset+length-1]>=0xd800&&text[offset+length-1]<=0xdbff)throw std::runtime_error("Chrome line split a Unicode scalar");
+        const auto required=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,text.data()+offset,static_cast<int>(length),nullptr,0,nullptr,nullptr);
+        if(length&&!required)throw std::runtime_error("Invalid Unicode chrome line");
+        std::string line(static_cast<std::size_t>(required),'\0');
+        if(required&&!WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,text.data()+offset,static_cast<int>(length),line.data(),required,nullptr,nullptr))throw std::runtime_error("Could not encode chrome line");
+        lines.push_back(std::move(line));offset+=metric.length;
+    }
+    return lines;
+}
 std::vector<std::uint8_t> Renderer::read_pixels() {
     auto& p=*impl_;if(!p.canvas_texture) return {};
     D3D11_TEXTURE2D_DESC desc{};p.canvas_texture->GetDesc(&desc);

@@ -443,6 +443,21 @@ ConfigSaveResult save_workspace_library(const std::filesystem::path& input, cons
         return save_document_bytes(input, *bytes.value, loaded);
     } catch (const std::exception& error) { return {{}, error.what(), false}; }
 }
+AgentSettingsSnapshotResult load_agent_provider_settings(const std::filesystem::path& input) {
+    AgentSettingsSnapshotResult result;
+    try {
+        const auto path=checked_path(input);const auto directories=guard_directories(path,false);
+        OpenSnapshot opened;opened.token.path=path;if(directories.complete)opened=read_snapshot(path);
+        if(opened.token.existed)result.settings=parse_agent_provider_settings(opened.token.bytes,result.error);
+        else result.settings.emplace();
+        if(result.settings)result.snapshot=std::move(opened.token);
+    }catch(const std::exception& error){result.error=error.what();}
+    return result;
+}
+ConfigSaveResult save_agent_provider_settings(const std::filesystem::path& path,const AgentProviderSettings& settings,const ConfigFileSnapshot& baseline) {
+    const auto error=validate_agent_provider_settings(settings);if(!error.empty())return {{},error,false};
+    return save_document_bytes(path,serialize_agent_provider_settings(settings),baseline);
+}
 } // namespace stormtty
 
 #else
@@ -458,5 +473,7 @@ WorkspaceLibrarySnapshotResult load_workspace_library_snapshot(const std::filesy
 ConfigSaveResult save_workspace_library(const std::filesystem::path&, const WorkspaceLibrary&, const ConfigFileSnapshot&) {
     return {{}, "Windows workspace persistence is unavailable on this platform.", false};
 }
+AgentSettingsSnapshotResult load_agent_provider_settings(const std::filesystem::path&) {return {{},{},"Local agent settings require the Windows host."};}
+ConfigSaveResult save_agent_provider_settings(const std::filesystem::path&,const AgentProviderSettings&,const ConfigFileSnapshot&) {return {{},"Local agent settings require the Windows host.",false};}
 } // namespace stormtty
 #endif

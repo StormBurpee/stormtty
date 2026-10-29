@@ -85,6 +85,9 @@ jobs:
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
             build/artifacts/workspace-*.png
+            build/artifacts/native-agent*.png
+            build/artifacts/native-settings*appearance*.png
+            build/artifacts/native-settings*ribbon*.png
       - name: Verify bundled console cached repair and portable install
         if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
         shell: python
