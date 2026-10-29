@@ -669,7 +669,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         const auto material=draft_.appearance.backdrop;
         const int selected=material==BackdropPreference::automatic?0:material==BackdropPreference::none?1:material==BackdropPreference::mica?2:3;
         for (std::size_t i=0;i<ids.size();++i) button(ids[i],names[i],selected==static_cast<int>(i));
-        row_labels(582,"Additional blur",platform_==Platform::windows?"0 retains OS blur · Auto / Acrylic":"Unavailable on macOS",lw);
+        row_labels(582,"Blur",platform_==Platform::windows?"Auto/Acrylic: 0 clear · 1+ Windows base blur":"Unavailable on macOS",lw);
         if (const auto* slider=find_control(layout_,"appearance.blur");slider && slider->visible) {
             const auto r=slider->bounds;
             if (focus_==slider->id) box(r,transparent,accent,5,1);
@@ -678,7 +678,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             box({r.x+8,track_y,width,3},border,transparent,1.5);
             box({r.x+8,track_y,width*progress,3},slider->enabled?accent:border,transparent,1.5);
             box({r.x+8+width*progress-5,track_y-4,10,11},ink,transparent,5);
-            label({r.x+8,r.y-2,std::max(0.0,r.width-16),21},number(draft_.appearance.additional_blur)+" sigma",ink,12,true,true);
+            label({r.x+8,r.y-2,std::max(0.0,r.width-16),21},(draft_.appearance.additional_blur==0 && (material==BackdropPreference::automatic || material==BackdropPreference::acrylic)?std::string("0 · clear"):number(draft_.appearance.additional_blur)+" extra"),ink,12,true,true);
         }
         row_labels(638,"Reduce motion","Use system settings or reduce animations",lw);
         const std::string motion=draft_.appearance.reduced_motion==ReducedMotionPreference::system?"Follow system":draft_.appearance.reduced_motion==ReducedMotionPreference::enabled?"Always reduce":"Allow motion";

@@ -278,6 +278,14 @@ void native_host_surface_test() {
                     require(renderer.stats().composition==expected_composition,"Blur preference changed safe fallback presentation");
                     require(renderer.read_pixels()==unblurred,"Unavailable blur altered foreground pixels or faked blur with opacity");
                 }
+                // A real WARP HWND deliberately fails closed, even if DComp
+                // itself exists. Exact clear-alpha math is tested offscreen below.
+                renderer.set_background_opacity(0);renderer.render(scene);
+                const auto fallback=renderer.read_pixels();
+                bool opaque=true;
+                for(std::size_t i=3;i<fallback.size();i+=4) opaque=opaque && fallback[i]==255;
+                require(opaque && !renderer.stats().host_backdrop,"Real WARP HWND ignored opaque fallback at zero blur/tint");
+                renderer.set_background_opacity(1);renderer.render(scene);
                 bool rejected=false;
                 try {renderer.set_additional_blur(65);} catch(const std::invalid_argument&) {rejected=true;}
                 require(rejected,"Additional blur accepted out-of-range sigma");
@@ -456,6 +464,18 @@ void transparency_test() {
     auto changed_row=std::make_shared<FrameRow>(*row);changed_row->generation++;changed_row->cells[3].grapheme="A";
     changed->lines={changed_row};scene.panes[0].frame=changed;renderer.render(scene);
     require(std::abs(int(pixel(renderer.read_pixels(),96,8,12).a)-230)<=1,"damage repaint accumulated background alpha");
+    // Unlike a real software HWND, this offscreen composition fixture retains
+    // exact alpha. Exercise the same positive-to-zero renderer transition.
+    renderer.set_additional_blur(24);renderer.set_additional_blur(0);
+    renderer.set_background_opacity(0);renderer.render(scene);
+    const auto clear=renderer.read_pixels();
+    require(pixel(clear,96,8,12).a==0 && pixel(clear,96,80,36).a==0,
+            "Zero blur/tint did not clear default cell and canvas alpha");
+    require(pixel(clear,96,24,12).a==255,"Clear background faded explicit ANSI background");
+    bool opaque_glyph=false;
+    for(unsigned y=0;y<24;++y)for(unsigned x=48;x<64;++x)
+        opaque_glyph=opaque_glyph || pixel(clear,96,x,y).a==255;
+    require(opaque_glyph,"Clear background faded foreground glyph coverage");
     renderer.set_background_opacity(1);renderer.render(scene);
     require(pixel(renderer.read_pixels(),96,8,12).a==255,"opaque fallback not applied");
 }

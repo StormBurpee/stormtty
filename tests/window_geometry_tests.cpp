@@ -79,7 +79,11 @@ int main() {
     }
     AppearanceConfig appearance;appearance.backdrop=BackdropPreference::automatic;
     auto material=window_material_policy(appearance,true,false,false,true);
-    require(material.system_backdrop==3 && material.opacity<1,"Auto requests behind-window Acrylic, not wallpaper-only Mica");
+    require(material.system_backdrop==1 && material.clear && material.opacity<1,"Zero Auto blur disables system backdrop without forcing opaque tint");
+    appearance.additional_blur=1;
+    material=window_material_policy(appearance,true,false,false,true);
+    require(material.system_backdrop==3 && !material.clear,"Positive Auto blur retains explicit Windows base blur");
+    appearance.additional_blur=0;
     appearance.backdrop=BackdropPreference::mica;
     require(window_material_policy(appearance,true,false,false,true).system_backdrop==2,"explicit Mica choice preserved");
     appearance.backdrop=BackdropPreference::none;
@@ -87,7 +91,14 @@ int main() {
     appearance.backdrop=BackdropPreference::acrylic;
     for(const auto blocked:{window_material_policy(appearance,false,false,false,true),window_material_policy(appearance,true,true,false,true),
             window_material_policy(appearance,true,false,true,true),window_material_policy(appearance,true,false,false,false)})
-        require(blocked.system_backdrop==1 && blocked.opacity==1 && blocked.fallback!=MaterialFallback::none,"unsupported/accessibility paths stay opaque");
+        require(blocked.system_backdrop==1 && blocked.opacity==1 && blocked.fallback!=MaterialFallback::none && !blocked.clear,"unsupported/accessibility paths stay opaque");
+    appearance.background_opacity=0;
+    material=window_material_policy(appearance,true,false,false,true);
+    require(material.clear && material.opacity==0 && material.system_backdrop==1,"Zero Acrylic blur plus zero opacity requests clear desktop, not OS acrylic");
+    appearance.additional_blur=24;
+    require(!window_material_policy(appearance,true,false,false,true).clear,"Positive blur never advertises clear mode");
+    appearance.additional_blur=0;
+    require(window_material_policy(appearance,true,false,false,true).clear,"Returning to zero restores clear mode, not old material");
     appearance.background_opacity=1;
     require(window_material_policy(appearance,true,false,false,true).opacity==1,"saved 100 percent opacity is not silently changed");
     const Rect probe_pane{184,104,500,500},probe_content{204,148,460,440};

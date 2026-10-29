@@ -56,7 +56,7 @@ jobs:
           text=result.output_tail.decode('utf-8',errors='replace')
           (artifacts/'blur-owned.log').write_text(json.dumps(result.metadata(),sort_keys=True)+'\n'+text,encoding='utf-8')
           print(text,flush=True)
-          names=['appearance-blur-preview','appearance-blur-before-save','appearance-blur-saved-reopened']
+          names=['appearance-blur-preview','appearance-clear-zero','appearance-blur-before-save','appearance-blur-saved-reopened']
           expected=[artifacts/('blur-settings-'+name+'.png') for name in names]
           missing=[p.name for p in expected if not p.is_file() or p.stat().st_size<8 or p.read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n']
           fallback_verified='Additional blur settings: persisted=24 software=1 host_graph=0 physical_blur_verified=0' in text
@@ -71,6 +71,7 @@ jobs:
           name: blur-native-settings-${{ github.sha }}
           path: |
             build-ui/artifacts/blur-settings-appearance-blur-*.png
+            build-ui/artifacts/blur-settings-appearance-clear-zero.png
             build-ui/artifacts/blur-owned.log
             build-ui/artifacts/blur-manifest.json
           if-no-files-found: error
