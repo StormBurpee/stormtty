@@ -17,6 +17,7 @@
 #include "../platform/windows/startup_notice.hpp"
 #include "../platform/windows/smoke_teardown_trace.hpp"
 #include <fstream>
+#include <algorithm>
 #include <filesystem>
 #include <cstdio>
 #include <stdexcept>
@@ -67,7 +68,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
         Arguments args;
         if (!args.values) throw std::runtime_error("Could not read command-line arguments.");
-        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-settings" || std::wstring_view(args.values[i])==L"--smoke-workspaces") smoke=true;
+        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-agent" || std::wstring_view(args.values[i])==L"--smoke-settings" || std::wstring_view(args.values[i])==L"--smoke-workspaces") smoke=true;
         completed.enabled=smoke;
         stormtty::NativeRunOptions options; options.smoke_test=smoke;
         // Must precede creation of any HWND, including startup error dialogs.
@@ -94,6 +95,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             else if (argument == L"--smoke-layout") { options.smoke_layout=true; ++smoke_modes; }
             else if (argument == L"--smoke-modal") { options.smoke_modal=true; ++smoke_modes; }
             else if (argument == L"--smoke-projects") { options.smoke_projects=true; ++smoke_modes; }
+            else if (argument == L"--codex-executable" && i+1<args.count) {
+                options.codex_executable=args.values[++i];
+                if(!options.codex_executable.is_absolute()) throw std::invalid_argument("Codex executable must be an absolute path.");
+            }
+            else if ((argument==L"--codex-account-reference" || argument==L"--codex-runtime-version") && i+1<args.count) {
+                const std::wstring value=args.values[++i];
+                if(value.empty() || value.size()>256 || std::any_of(value.begin(),value.end(),[](wchar_t c){return c<32||c>126;})) throw std::invalid_argument("Codex reference/version must be printable ASCII, at most 256 characters; never supply a token.");
+                auto& target=argument==L"--codex-account-reference"?options.codex_account_reference:options.codex_runtime_version;
+                target.assign(value.begin(),value.end());
+            }
+            else if (argument == L"--smoke-agent") { options.smoke_agent=true; ++smoke_modes; }
             else if (argument == L"--smoke-settings") { options.smoke_settings=true; ++smoke_modes; }
             else if (argument == L"--capture" && i+1<args.count) options.capture_path=args.values[++i];
             else if ((argument == L"--console-runtime" || argument == L"--shell-runtime") && i+1<args.count) {
@@ -146,6 +158,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             options.shell_runtime_override=false;
         }
 
+        if(smoke && !options.codex_executable.empty()) throw std::invalid_argument("Native smoke cannot configure a live agent provider.");
         if (smoke_modes>1) throw std::invalid_argument("Choose only one native smoke scenario.");
         if (smoke && required) throw std::runtime_error("Smoke mode does not load user configuration or profile scripts.");
         if (!smoke && !options.capture_path.empty()) throw std::runtime_error("--capture is available only with explicit --smoke mode.");

@@ -49,6 +49,7 @@ constexpr std::array commands{
     Command{"edit.copy", "Copy selection", "Copy selected terminal text; never replace Ctrl+C interrupt"},
     Command{"edit.paste", "Paste", "Send clipboard text through terminal paste policy and bracketed-paste encoding"},
     Command{"terminal.find", "Find in terminal", "Search retained terminal text"},
+    Command{"agent.toggle", "Open or close Codex panel", "Workspace agent transcript, task composer and approvals"},
     Command{"settings.open", "Open settings", "Edit declarative settings and view configuration errors"},
     Command{"window.fullscreen", "Toggle fullscreen", "Enter or leave native fullscreen"}
 };
@@ -182,6 +183,7 @@ const Command* find_command(std::string_view id) noexcept {
 }
 CommandAvailability command_availability(std::string_view id, const CommandContext& c) noexcept {
     if (!find_command(id)) return {false, "Unknown command"};
+    if (id == "agent.toggle") return {c.supports_agent_panel,c.supports_agent_panel?"":"Native agent panel is not implemented by this host"};
     if (id == "window.focus_mode") return {c.supports_focus_mode, c.supports_focus_mode ? "" : "Focus mode is not implemented by this host"};
     if (id.starts_with("workspace.")) {
         if (!c.supports_project_workspaces) return {false,"Project workspaces are not implemented by this host"};
@@ -258,6 +260,7 @@ std::vector<Binding> default_bindings(Platform platform) {
     add("edit.copy", platform == Platform::windows ? "Ctrl+Shift+C" : "Cmd+C");
     add("edit.paste", platform == Platform::windows ? "Ctrl+Shift+V" : "Cmd+V");
     add("settings.open", "Primary+,");
+    if(platform==Platform::windows) add("agent.toggle", "Ctrl+Shift+J");
     return out;
 }
 bool is_os_reserved(const KeyChord& key, Platform platform) noexcept {

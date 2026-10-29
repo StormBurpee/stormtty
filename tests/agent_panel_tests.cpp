@@ -1,0 +1,57 @@
+#include "core_test.hpp"
+#include "stormtty/agent_panel.hpp"
+#include "stormtty/agent_display_text.hpp"
+#include <algorithm>
+using namespace stormtty;
+namespace {
+void click(AgentPanel& p,std::string_view id) {for(const auto& c:p.controls())if(c.id==id){Point point{c.bounds.x+1,c.bounds.y+1};p.pointer_down(point);p.pointer_up(point);return;}CHECK(false);}
+AgentPanelView view(std::string id="workspace-a") {AgentPanelView v;v.workspace_id=id;v.workspace_name="StormTTY";v.directory="C:/project";v.execution_scope="Read-only sandbox; untrusted commands require approval";return v;}
+}
+int main() {
+    AgentPanel p; p.open(view());p.text("Build tests");click(p,"start");CHECK(!p.take_action());CHECK(p.status_label()=="Unavailable");
+    p.close();p.open(view("workspace-b"));CHECK(p.draft().empty());p.text("Other task");p.close();p.open(view());CHECK(p.draft()=="Build tests");CHECK(!p.take_action());
+    auto ready=view();ready.state=AgentPanelState::ready;ready.provider_generation=5;p.update(ready);
+    click(p,"start");CHECK(!p.take_action()); // Review is not start consent.
+    p.key({{"ESCAPE"}});CHECK(p.is_open());click(p,"start");click(p,"start");
+    auto action=p.take_action();CHECK(action);CHECK(action->kind==AgentPanelActionKind::start);CHECK(action->prompt=="Build tests");CHECK(action->workspace_id=="workspace-a");CHECK(action->provider_generation==5);CHECK(!p.take_action());
+    p.close();p.open(ready);CHECK(!p.take_action()); // Restore/reopen never replay.
+    click(p,"start");ready.provider_generation=6;p.update(ready);click(p,"start");CHECK(!p.take_action()); // Reconnect invalidates review.
+    ready.state=AgentPanelState::running;ready.approvals.push_back({{6,"thread","turn","item","1"},"Run command","echo hello",false});p.update(ready);
+    CHECK(p.status_label()=="Needs approval");click(p,"allow");CHECK(!p.take_action());click(p,"decline");action=p.take_action();CHECK(action&&action->kind==AgentPanelActionKind::decline);CHECK(action->approval_key==ready.approvals[0].key);
+    p.pointer_down({p.controls()[0].bounds.x+1,p.controls()[0].bounds.y+1});p.pointer_cancel();p.pointer_up({p.controls()[0].bounds.x+1,p.controls()[0].bounds.y+1});CHECK(p.is_open());
+    WindowScene scene;p.append_scene(scene,Theme{},1.5f);CHECK(!scene.texts.empty());CHECK(!scene.primitives.empty());
+    AgentSnapshot snapshot;snapshot.association.workspace_persistent_id="saved";snapshot.connection=AgentConnection::ready;snapshot.conversation=AgentConversation::running;
+    CHECK(agent_panel_view(snapshot,"Saved","/saved",false).state==AgentPanelState::unavailable);
+    CHECK(agent_panel_view(snapshot,"Saved","/saved",true).state==AgentPanelState::running);
+    p.key({{"ESCAPE"}});CHECK(!p.is_open());CHECK(!p.key({{"ENTER"}}));
+    auto disconnected=view();disconnected.state=AgentPanelState::disconnected;disconnected.connection_scope="/fixture/codex · account-reference";
+    p.open(disconnected);click(p,"connect");CHECK(!p.take_action());click(p,"connect");action=p.take_action();CHECK(action&&action->kind==AgentPanelActionKind::connect);
+    p.close();p.open(disconnected);CHECK(!p.take_action());
+    p.update(ready);const auto allow=std::find_if(p.controls().begin(),p.controls().end(),[](auto& c){return c.id=="decline";})->bounds;
+    p.pointer_down({allow.x+1,allow.y+1});ready.approvals[0].key.request_id="new";p.update(ready);p.pointer_up({allow.x+1,allow.y+1});CHECK(!p.take_action());
+    p.pointer_down({allow.x+1,allow.y+1});ready.approvals[0].scope="changed scope";p.update(ready);p.pointer_up({allow.x+1,allow.y+1});CHECK(!p.take_action());
+    // Provider evidence is displayed visibly, but raw scope and canonical keys
+    // remain untouched for the permission broker.
+    const std::string bidi="\xE2\x80\xAE"; // RIGHT-TO-LEFT OVERRIDE U+202E
+    const std::string isolate="\xE2\x81\xA6"; // LEFT-TO-RIGHT ISOLATE U+2066
+    const std::string normal="caf\xC3\xA9 / \xE6\x96\x87\xE4\xBB\xB6 / \xF0\x9F\x98\x80";
+    const std::string crafted="rm C:/safe/"+bidi+"txt.exe "+isolate+"--force";
+    CHECK(agent_display_text(crafted)=="rm C:/safe/[U+202E]txt.exe [U+2066]--force");
+    CHECK(agent_display_text(normal)==normal);
+    CHECK(agent_display_text("a\t\r\x1b" "b")=="a[U+0009][U+000D][U+001B]b");
+    CHECK(agent_display_text("\xD8\x9C\xE2\x80\x8F\xE2\x81\xA9")=="[U+061C][U+200F][U+2069]");
+    CHECK(agent_display_text(std::string("\xF0\x80\x80\xAF",4))=="[byte:F0][byte:80][byte:80][byte:AF]");
+    CHECK(agent_display_text(std::string(8191,'x')+"\xF0\x9F\x98\x80")==std::string(8191,'x')+" [truncated]");
+    for(std::size_t width=1;width<12;++width) {
+        const auto lines=agent_display_lines(normal+crafted,width);std::string joined;
+        for(const auto& line:lines) {CHECK(agent_display_text(line)==line);joined+=line;}
+        CHECK(joined==normal+agent_display_text(crafted));
+        CHECK(std::any_of(lines.begin(),lines.end(),[](const auto& line){return line.find("[U+202E]")!=std::string::npos;}));
+    }
+    ready.approvals[0].title="Inspect "+bidi+"path";ready.approvals[0].scope=crafted+"\n"+normal;
+    p.update(ready);scene={};p.append_scene(scene,Theme{});
+    std::string rendered;for(const auto& item:scene.texts){rendered+=item.text;CHECK(item.text.find(bidi)==std::string::npos);CHECK(item.text.find(isolate)==std::string::npos);}
+    CHECK(rendered.find("[U+202E]")!=std::string::npos);CHECK(rendered.find("[U+2066]")!=std::string::npos);
+    CHECK(p.view().approvals[0].scope==ready.approvals[0].scope);CHECK(p.view().approvals[0].key==ready.approvals[0].key);
+    return 0;
+}
