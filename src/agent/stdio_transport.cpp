@@ -111,6 +111,13 @@ struct AgentStdioTransport::Impl {
     pid_t pid{-1};
     void spawn(const AgentStdioOptions& o) {
         Fd child_in,child_out,child_err; make_pipe(child_in,input); make_pipe(output,child_out); make_pipe(errors,child_err);
+#ifdef __APPLE__
+        // Darwin sends pipe-write SIGPIPE to the process, not necessarily the
+        // writing thread. Suppress it only on our stdin descriptor; never change
+        // the application's signal disposition or unrelated PTY behavior.
+        // Apple fcntl(2): F_SETNOSIGPIPE disables signal generation on EPIPE.
+        if(fcntl(input.value,F_SETNOSIGPIPE,1)<0) throw std::runtime_error("Cannot protect provider stdin from SIGPIPE");
+#endif
         posix_spawn_file_actions_t actions;
         if(posix_spawn_file_actions_init(&actions)!=0) throw std::runtime_error("Cannot prepare provider file actions");
         struct ActionsGuard { posix_spawn_file_actions_t* a; ~ActionsGuard(){posix_spawn_file_actions_destroy(a);} } guard{&actions};
@@ -133,9 +140,11 @@ struct AgentStdioTransport::Impl {
 #endif
     void pump() noexcept {
         try {
-#ifndef _WIN32
-            // A child closing stdin must not terminate the terminal application.
-            sigset_t signals; sigemptyset(&signals); sigaddset(&signals,SIGPIPE); pthread_sigmask(SIG_BLOCK,&signals,nullptr);
+#if !defined(_WIN32) && !defined(__APPLE__)
+            // Linux delivers pipe-write SIGPIPE to the writer. This worker-only
+            // mask does not change the application's disposition or caller mask.
+            sigset_t signals; sigemptyset(&signals); sigaddset(&signals,SIGPIPE);
+            if(pthread_sigmask(SIG_BLOCK,&signals,nullptr)!=0) throw std::runtime_error("Cannot protect provider writer from SIGPIPE");
 #endif
             std::array<char,16384> buffer{};
 #ifndef _WIN32

@@ -127,3 +127,18 @@ is unsupported under the execution environment's ptrace. These are separate gate
 Neither establishes native Windows execution, macOS execution, live authentication,
 actual provider sandbox confinement, account entitlement, inference, accessibility
 or physical UI quality. A bounded live task needs separate user approval.
+
+### Darwin broken-pipe handling
+
+Darwin's pipe write failure can deliver SIGPIPE to the process rather than the
+writing thread. The macOS transport therefore sets `F_SETNOSIGPIPE` only on its
+owned provider-stdin descriptor before launch; inability to set it aborts launch.
+Linux retains a checked writer-thread signal mask. Neither path installs a
+process-wide SIG_IGN handler or changes unrelated terminal pipes. The fake-child
+regression closes stdin while retaining stdout, then forces a large pending
+write and verifies disconnection without replay or caller signal-state changes.
+
+API/source basis: Apple's [fcntl(2)](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/man/man2/fcntl.2)
+(`F_SETNOSIGPIPE`) and [fp_writev](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/sys_generic.c)
+(`EPIPE` / `FG_NOSIGPIPE`). Linux fixture execution does not establish the Darwin
+runtime result; the macOS native CI gate must run this regression.
