@@ -13,9 +13,12 @@ CASES=('partial-zero','positive-prefix')
 ORDERS=(('stock','refined'),('refined','stock'))
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def lines(path):
- if path.stat().st_size>65536:raise ValueError('oversize fixture log')
- return [json.loads(line) for line in path.read_text().splitlines()]
-def assess(case,reader,controller,runner,trace,variant):
+ with path.open('rb') as stream:blob=stream.read(65537)
+ if len(blob)>65536:raise ValueError('oversize fixture log')
+ rows=[json.loads(line) for line in blob.decode('utf-8').splitlines()]
+ if any(not isinstance(row,dict) for row in rows):raise ValueError('non-object fixture row')
+ return rows
+def assess(case,reader,controller,runner,trace,variant,coverage=None):
  end=next((row for row in reversed(reader) if 'synthetic_hex' in row),{})
  done=next((row for row in reversed(controller) if 'cleanup_ok' in row),{})
  queue=next((row for row in reversed(controller) if 'remaining_native_records' in row),{})
@@ -24,12 +27,33 @@ def assess(case,reader,controller,runner,trace,variant):
  byte_ok=(bounded and end.get('result')==0 and end.get('synthetic_hex')==('6162' if case=='partial-zero' else '616263') and
           done.get('cleanup_ok') is True and done.get('timeout') is False and done.get('scenario_ok') is True and
           done.get('reader_exit')==0 and queue.get('remaining_native_records')==0)
- coverage=parser.analyze(trace,case,variant)
+ coverage=parser.analyze(trace,case,variant) if coverage is None else coverage
  # An incomplete owned outcome cannot qualify even a well-formed supplied trace.
- if (not bounded or done.get('cleanup_ok') is not True or done.get('timeout') is not False or
+ if (not end or not queue or not bounded or done.get('cleanup_ok') is not True or done.get('timeout') is not False or
      done.get('reader_exit')!=0 or done.get('scenario_ok') is not True):
   coverage.update(verdict='INCONCLUSIVE',reason='owned-outcome-incomplete')
  return dict(byte_verdict='PASS' if byte_ok else 'FAIL',coverage=coverage,native_promotion_allowed=False)
+def collect_assessment(case,run,runner,variant):
+ # Decode the bounded trace BEFORE fixture logs. An alarm/crash may truncate a
+ # log without invalidating already committed numeric observations in the map.
+ result=dict(byte_verdict='FAIL',native_promotion_allowed=False)
+ try:
+  with (run/'trace.bin').open('rb') as stream:trace=stream.read(parser.MAX_BYTES+1)
+ except OSError as error:
+  result.update(coverage=parser.analyze(b'',case,variant),fixture_error=type(error).__name__)
+  return result
+ coverage=parser.analyze(trace,case,variant)
+ result['coverage']=coverage
+ if len(trace)<=parser.MAX_BYTES:result['trace_sha256']=hashlib.sha256(trace).hexdigest()
+ try:
+  reader=lines(run/'reader.jsonl');controller=lines(run/'controller.jsonl')
+ except (OSError,ValueError) as error:
+  coverage.update(verdict='INCONCLUSIVE',reason='fixture-log-incomplete')
+  result['fixture_error']=type(error).__name__
+  return result
+ result.update(assess(case,reader,controller,runner,trace,variant,coverage=coverage))
+ return result
+
 def main():
  ap=argparse.ArgumentParser()
  for name in ('controller','reader','original','stock','refined','output'):ap.add_argument('--'+name,type=pathlib.Path,required=True)
@@ -57,9 +81,7 @@ def main():
      command=[str(a.controller.resolve()),str(private/variant/'reader.exe'),case,str(run/'reader.jsonl'),str(run/'ready.txt'),str(run/'controller.jsonl'),str(run/'trace.bin')]
      outcome=owned.run_owned(command,env=external.fixture_environment(os.environ.copy(),private/variant),timeout=25,reap_timeout=5,tail_bytes=65536,output_dir=run)
      record['runner']=outcome.metadata();(run/'launcher.log').write_bytes(outcome.output_tail)
-     with (run/'trace.bin').open('rb') as stream:trace=stream.read(parser.MAX_BYTES+1)
-     record.update(assess(case,lines(run/'reader.jsonl'),lines(run/'controller.jsonl'),record['runner'],trace,variant))
-     record['trace_sha256']=sha(run/'trace.bin')
+     record.update(collect_assessment(case,run,record['runner'],variant))
     except (OSError,ValueError) as error:
      record['fixture_error']=type(error).__name__
     result['trials'].append(record);save()

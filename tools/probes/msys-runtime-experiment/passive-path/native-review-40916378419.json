@@ -1,0 +1,192 @@
+{
+  "schema": 1,
+  "run_id": 40916378419,
+  "job_id": 123597586300,
+  "source_commit": "65b8801c4df3a21f49ab1593a4bae497d3c8aefb",
+  "artifact_id": 12917871915,
+  "artifact_sha256": "14a7680e08e205c8ffbfeeb026b2755f8efdbb51bbe1f927767ae773a4dee62c",
+  "fixtures_executed": false,
+  "path_coverage": "NOT_EXECUTED",
+  "general_async_signal_safety_proven": false,
+  "production_qualified": false,
+  "variants": {
+    "stock": {
+      "recorded_dll_sha256": "80b25091262a6973ce7405ebd1b018699f994b455383678f7a155b4d91f33759",
+      "recorded_console_object_sha256": "4e26b942842eeda556f74ac84549ee5856dbab361d4e0fed00fca4e468e8d70d",
+      "files_sha256": {
+        "console.cc.after": "378d6584d510ff9061e50367149e1545e9f3ecad96dede2bc6f901a7075373ff",
+        "passive.patch": "bb08413f0c34b41116e40a9a36ec06948f1be7c8a6caf8fb234cbe7df57697a4",
+        "stormtty-passive-path.h": "ece389f18e7d89f7a7744a16f6255b86c38b70c377132157a0d48ac16b5b3834",
+        "console-native-disassembly.txt": "9a7fe96f9cea987d2bfede7abdab25feebe4c7da1fa155c103a470bbd17e1f62",
+        "runtime-recorder-exports-disassembly.txt": "af8d17554e8db80442ef39214d70384921a199f3e43d318e1492cbeb0aa40b8d",
+        "compiler-packages.txt": "feecbbb9be9775ee80ed1cf95433fbd35c5e79ff4a138dc95d418e8f1d458d1f",
+        "pacman-before.txt": "8dd882d26cbf3eaff260b8fc1c34e0cdd676155881b2c61cf6c2be9a8a758282"
+      },
+      "observer_helpers": {
+        "_ZN7st_path7releaseEPvjj.isra.0": {
+          "disassembly_body_sha256": "d737c330dce3a5906b393552d1bbed0d052226fbf7aa7196cc0b88e0a8ccf1db",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "ReleaseMutex",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "stormtty_path_handler_v1": {
+          "disassembly_body_sha256": "494f4cf4f46f0f11f88798775856b056f6b363f2c65f5c2dc6a824e2a21c3042",
+          "relocation_targets": [
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt": {
+          "disassembly_body_sha256": "342bfe87188c91bc1e732044f6ae3478fc39a8f4143ac06d5e3dddc921b34531",
+          "relocation_targets": [
+            "GetLastError",
+            "SetLastError",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path5beginENS_5EventEmmmmm": {
+          "disassembly_body_sha256": "54a8b164d664a817594486e69bb0e9b77f78926dd292a38e767b14a7f837ae95",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path8read_endEmmi": {
+          "disassembly_body_sha256": "16bfc6b5a1e8698d55876d892f67ac25b6f1ce560327f75f48d9fe3feac78b5a",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path12signal_beginEi": {
+          "disassembly_body_sha256": "092e97251692ec694041ecdae39bab873ff9b6979f5a30b1137e730baf98f966",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path10signal_endEi": {
+          "disassembly_body_sha256": "5e4d893dfcbd31edc1aff097b4973d021f0844877c1464b84c2e1ea3fa5d9603",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        }
+      }
+    },
+    "refined": {
+      "recorded_dll_sha256": "ee1b73e82d225c9d527157004da7f1513c3dc0ba766aa34d18ab490c8e3ba60e",
+      "recorded_console_object_sha256": "df964e8eeb9d53b2a5cd7bce974d8c05faf6b3a543a622a99a9c9d206dbbb32a",
+      "files_sha256": {
+        "console.cc.after": "aaefc9779314100c7cc24e08a401947df334815b7e1ea168ea720326a10cc42b",
+        "passive.patch": "933f15331ee1dcfabb793eaf49a527f55015166bc8e71be13107a8047f8adab7",
+        "stormtty-passive-path.h": "ece389f18e7d89f7a7744a16f6255b86c38b70c377132157a0d48ac16b5b3834",
+        "console-native-disassembly.txt": "d78c5e60e1ad528a5c98fef76add4c7cc1e5b15aee70ecd7295e5aee3f2516dd",
+        "runtime-recorder-exports-disassembly.txt": "af8d17554e8db80442ef39214d70384921a199f3e43d318e1492cbeb0aa40b8d",
+        "compiler-packages.txt": "feecbbb9be9775ee80ed1cf95433fbd35c5e79ff4a138dc95d418e8f1d458d1f",
+        "pacman-before.txt": "8dd882d26cbf3eaff260b8fc1c34e0cdd676155881b2c61cf6c2be9a8a758282"
+      },
+      "observer_helpers": {
+        "_ZN7st_path7releaseEPvjj.isra.0": {
+          "disassembly_body_sha256": "d737c330dce3a5906b393552d1bbed0d052226fbf7aa7196cc0b88e0a8ccf1db",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "ReleaseMutex",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "stormtty_path_handler_v1": {
+          "disassembly_body_sha256": "494f4cf4f46f0f11f88798775856b056f6b363f2c65f5c2dc6a824e2a21c3042",
+          "relocation_targets": [
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt": {
+          "disassembly_body_sha256": "342bfe87188c91bc1e732044f6ae3478fc39a8f4143ac06d5e3dddc921b34531",
+          "relocation_targets": [
+            "GetLastError",
+            "SetLastError",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path5beginENS_5EventEmmmmm": {
+          "disassembly_body_sha256": "54a8b164d664a817594486e69bb0e9b77f78926dd292a38e767b14a7f837ae95",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path8read_endEmmi": {
+          "disassembly_body_sha256": "16bfc6b5a1e8698d55876d892f67ac25b6f1ce560327f75f48d9fe3feac78b5a",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path12signal_beginEi": {
+          "disassembly_body_sha256": "092e97251692ec694041ecdae39bab873ff9b6979f5a30b1137e730baf98f966",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        },
+        "_ZN7st_path10signal_endEi": {
+          "disassembly_body_sha256": "5e4d893dfcbd31edc1aff097b4973d021f0844877c1464b84c2e1ea3fa5d9603",
+          "relocation_targets": [
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetLastError",
+            "SetLastError",
+            "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt",
+            "__errno"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -50,6 +50,12 @@ def identities(roots):
             check(info['common_utility_patch_sha256'] == sha(HERE.parent / '0000-utils-const-compat.patch'), name + ': utility patch mismatch')
             check(info['compiler_dialect'] == 'gnu++17' and info['compiler_version'] == '15.3.0', name + ': compiler mismatch')
             prov = root / 'experimental-runtime-provenance'
+            linked = json.loads((prov / 'linked-preflight.json').read_text())
+            check(sha(prov / 'linked-preflight.json') == info['linked_preflight_sha256'] and
+                  linked.get('linked_code_gate_passed') is True and linked.get('dll_sha256') == sha(root / 'usr/bin/msys-2.0.dll') and
+                  linked.get('scope') == 'fixed-diagnostic-linked-preflight' and linked.get('variant') == name and
+                  linked.get('production_qualified') is False and linked.get('fixtures_executed') is False,
+                  name + ': linked gate missing or mismatched')
             check(info['passive_header_sha256'] == lock['header_sha256'] == sha(prov / 'stormtty-passive-path.h') == sha(HERE / 'recorder.hpp'), name + ': recorder mismatch')
             check(info['passive_patch_sha256'] == lock['variants'][name]['patch_sha256'] == sha(prov / 'passive.patch') == sha(HERE / (name + '.patch')), name + ': diagnostic patch mismatch')
             check((prov / 'passive-identities.json').read_bytes() == (HERE / 'identities.json').read_bytes(), name + ': diagnostic identities mismatch')

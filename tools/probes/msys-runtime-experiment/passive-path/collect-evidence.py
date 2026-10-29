@@ -12,7 +12,9 @@ NAMES=('variant.txt','compiler-mode.txt','compiler-packages.txt','selected-toolc
  'passive.patch','stormtty-passive-path.h','passive-identities.json','diagnostic-dll-pe.txt',
  'console-native-disassembly.txt','console-native-symbols.txt','console-native-object-sha256.txt',
  'recorder-native-disassembly.txt','recorder-native-symbols.txt',
- 'runtime-recorder-exports-disassembly.txt','static-review.json')
+ 'runtime-recorder-exports-disassembly.txt','static-review.json',
+ 'linked-errno-disassembly.txt','linked-handler-disassembly.txt','linked-emitter-disassembly.txt',
+ 'linked-preflight.json','linked-preflight-error.json')
 def collect(root,destination):
  if destination.exists():raise ValueError('new evidence destination required')
  destination.mkdir(parents=True);report=dict(schema=1,scope='build-only',fixtures_executed=False,review_required=True,files=[],missing=[],rejected=[])

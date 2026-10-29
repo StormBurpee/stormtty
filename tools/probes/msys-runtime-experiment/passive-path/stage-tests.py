@@ -61,6 +61,9 @@ class StagingTests(unittest.TestCase):
         shutil.copy2(HERE / 'refined.patch', prov / 'passive.patch')
         shutil.copy2(HERE / 'recorder.hpp', prov / 'stormtty-passive-path.h')
         (prov / 'diagnostic-dll-pe.txt').write_text('stormtty_path_init_v1\nstormtty_path_handler_v1\n')
+        self.linked = dict(scope='fixed-diagnostic-linked-preflight', variant='refined', linked_code_gate_passed=True,
+                           dll_sha256=stage.sha(self.build / 'experimental-msys-2.0.dll'), production_qualified=False, fixtures_executed=False)
+        (prov / 'linked-preflight.json').write_text(json.dumps(self.linked))
         (prov / 'hashes.txt').write_text(stage.sha(self.build / 'experimental-msys-2.0.dll') + '  dll\n')
 
     def test_stage_marks_experimental_and_preserves_original(self):
@@ -98,6 +101,14 @@ class StagingTests(unittest.TestCase):
                 stage.stage(self.base, self.build, self.dest)
             self.assertFalse(self.dest.exists())
             path.write_bytes(original)
+
+    def test_linked_gate_rejects_drift_and_false_success(self):
+        for field, value in (('linked_code_gate_passed',False),('dll_sha256','wrong'),('variant','stock'),('production_qualified',True),('fixtures_executed',True)):
+            changed = dict(self.linked);changed[field] = value
+            (self.build / 'provenance/linked-preflight.json').write_text(json.dumps(changed))
+            with self.assertRaisesRegex(ValueError,'Linked native'):
+                stage.stage(self.base,self.build,self.dest)
+            self.assertFalse(self.dest.exists())
 
     def test_existing_destination_rejected(self):
         self.dest.mkdir()
@@ -198,6 +209,8 @@ class StagingTests(unittest.TestCase):
     def test_stock_has_no_behavior_patch_but_same_trace(self):
         (self.build / 'provenance/variant.txt').write_text('stock\n')
         shutil.copy2(HERE / 'stock.patch', self.build / 'provenance/passive.patch')
+        self.linked['variant'] = 'stock'
+        (self.build / 'provenance/linked-preflight.json').write_text(json.dumps(self.linked))
         info = stage.stage(self.base, self.build, self.dest)
         self.assertFalse(info['behavior_patch_applied'])
         self.assertFalse(info['retirement_patch_applied'])

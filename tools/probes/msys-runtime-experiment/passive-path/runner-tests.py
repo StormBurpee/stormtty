@@ -3,6 +3,9 @@
 These tests cannot establish native ownership, byte behavior or path coverage.
 """
 import copy
+import json
+import tempfile
+import struct
 import importlib.util
 from pathlib import Path
 import unittest
@@ -80,12 +83,64 @@ class OutcomeTests(unittest.TestCase):
             result=self.assess()
             self.assertEqual(result['byte_verdict'], 'FAIL')
             # A complete observed path is not a proof of byte conservation.
-            self.assertEqual(result['coverage']['verdict'], 'PATH_OBSERVED')
+            self.assertEqual(result['coverage']['verdict'], 'PATH_OBSERVED' if reader else 'INCONCLUSIVE')
 
     def test_positive_case_has_distinct_expected_bytes(self):
         self.assertEqual(self.assess('positive-prefix')['byte_verdict'], 'FAIL')
         self.reader=[{'result':0,'bytes':3,'synthetic_hex':'616263'}]
         self.assertEqual(self.assess('positive-prefix')['byte_verdict'], 'PASS')
+
+
+class FailureEvidenceTests(unittest.TestCase):
+    def test_missing_truncated_oversize_logs_preserve_numeric_facts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            (root/'trace.bin').write_bytes(b'bounded-test-trace')
+            metadata=runner_module.owned.Result(1,0,False,None,True,0.1,b'',False,'').metadata()
+            good_reader=json.dumps(dict(result=0,bytes=2,synthetic_hex='6162'))+'\n'
+            good_controller=json.dumps(dict(remaining_native_records=0))+'\n'+json.dumps(dict(cleanup_ok=True,timeout=False,scenario_ok=True,reader_exit=0))+'\n'
+            def observed(*args):
+                return dict(verdict='PATH_OBSERVED',reason='synthetic-stub',
+                            recorded_observations=dict(interrupted_partial_reads=dict(count=1,max_copied=1)))
+            for filename in ('reader.jsonl','controller.jsonl'):
+                for bad in (None,'{"truncated":','[]\n','x'*65537):
+                    (root/'reader.jsonl').write_text(good_reader)
+                    (root/'controller.jsonl').write_text(good_controller)
+                    path=root/filename
+                    if bad is None:path.unlink()
+                    else:path.write_text(bad)
+                    with patch.object(runner_module.parser,'analyze',side_effect=observed) as analyze:
+                        result=runner_module.collect_assessment('partial-zero',root,metadata,'refined')
+                    analyze.assert_called_once_with(b'bounded-test-trace','partial-zero','refined')
+                    self.assertEqual(result['byte_verdict'],'FAIL')
+                    self.assertEqual(result['coverage']['verdict'],'INCONCLUSIVE')
+                    self.assertEqual(result['coverage']['recorded_observations']['interrupted_partial_reads'],dict(count=1,max_copied=1))
+                    self.assertIn('trace_sha256',result)
+                    self.assertIn('fixture_error',result)
+
+    def test_real_valid_trace_observation_survives_missing_logs(self):
+        header=struct.pack('<8sIIIIQQIIQQ',b'STPTH001',1,64,128,3,3,0,1,1,9,0)
+        rows=[]
+        for seq,(event,payload) in enumerate(((1,(2,0,2,0,0)),(2,(0,1,1,0,0,1)),(15,((1<<64)-1,1,4)))):
+            rows.append(struct.pack('<IHHQQIHHQQQQ8Q',1,1,event,seq,9,11,1,1,1,0,0,0,
+                                    *(payload+(0,)*(8-len(payload)))))
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'trace.bin').write_bytes(header+b''.join(rows))
+            metadata=runner_module.owned.Result(1,124,False,None,True,8.0,b'',False,'').metadata()
+            result=runner_module.collect_assessment('partial-zero',root,metadata,'refined')
+            self.assertEqual(result['byte_verdict'],'FAIL')
+            self.assertEqual(result['coverage']['verdict'],'INCONCLUSIVE')
+            self.assertEqual(result['coverage']['recorded_observations']['interrupted_partial_reads'],dict(count=1,max_copied=1))
+
+    def test_valid_but_unfinished_reader_log_cannot_inherit_path(self):
+        coverage=dict(verdict='PATH_OBSERVED',recorded_observations=dict(interrupted_partial_reads=dict(count=1,max_copied=1)))
+        reader=[dict(attempt=0,count=-1,errno=4)]
+        controller=[dict(remaining_native_records=0),dict(cleanup_ok=True,timeout=False,scenario_ok=True,reader_exit=0)]
+        metadata=runner_module.owned.Result(1,0,False,None,True,0.1,b'',False,'').metadata()
+        result=runner_module.assess('partial-zero',reader,controller,metadata,b'','refined',coverage)
+        self.assertEqual(result['byte_verdict'],'FAIL')
+        self.assertEqual(result['coverage']['verdict'],'INCONCLUSIVE')
+        self.assertEqual(result['coverage']['recorded_observations']['interrupted_partial_reads']['count'],1)
 
 
 if __name__ == '__main__': unittest.main()

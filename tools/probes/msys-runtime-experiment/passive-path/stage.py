@@ -104,6 +104,11 @@ def stage(base, build, destination):
     pe = (provenance / 'diagnostic-dll-pe.txt').read_text()
     if not all(name in pe for name in ('stormtty_path_init_v1', 'stormtty_path_handler_v1')):
         raise ValueError('Missing diagnostic exports')
+    linked = json.loads((provenance / 'linked-preflight.json').read_text())
+    if (linked.get('scope') != 'fixed-diagnostic-linked-preflight' or linked.get('variant') != variant or
+        linked.get('linked_code_gate_passed') is not True or linked.get('dll_sha256') != sha(dll) or
+        linked.get('production_qualified') is not False or linked.get('fixtures_executed') is not False):
+        raise ValueError('Linked native preflight missing or mismatched')
     manifest_path = base / 'stormtty-shell-manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     for path in base.rglob('*'):
@@ -139,6 +144,7 @@ def stage(base, build, destination):
         'diagnostic_kind': 'passive-path-v1',
         'passive_patch_sha256': lock['variants'][variant]['patch_sha256'],
         'passive_header_sha256': lock['header_sha256'],
+        'linked_preflight_sha256': sha(provenance / 'linked-preflight.json'),
         'behavior_patch_applied': variant == 'refined',
         'retirement_patch_applied': variant == 'refined',
         'trace_enabled': True,
