@@ -23,6 +23,14 @@ if [[ $OSTYPE == (msys*|cygwin*) ]]; then
     print -ru2 -- 'StormTTY: native Unicode input setup failed; console input may lose characters.'
   fi
 fi
+# Initialization acknowledgement is a native event, never interpreted PTY text.
+# The opt-in native planner overwrites both reserved values for every launch.
+typeset +x _stormtty_init_helper _stormtty_init_event _stormtty_completion_uncached
+typeset _stormtty_init_helper=$_stormtty_console_setup
+typeset _stormtty_init_event=${STORMTTY_NATIVE_ZSH_INIT_EVENT-}
+typeset -gi _stormtty_completion_uncached=0
+[[ ${STORMTTY_NATIVE_ZSH_NO_DUMP-} == 1 ]] && _stormtty_completion_uncached=1
+unset STORMTTY_NATIVE_ZSH_INIT_EVENT STORMTTY_NATIVE_ZSH_NO_DUMP
 unset _stormtty_console_setup
 # Only the native managed launch planner may supply this reserved path, after
 # overwriting any ambient value and validating its Windows owner/DACL/tree.
@@ -381,3 +389,20 @@ add-zsh-hook precmd _stormtty_precmd
 [[ ${STORMTTY_HIGHLIGHTING:-1} != 0 && -r $_stormtty_vendor/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]] && source "$_stormtty_vendor/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 typeset +x STORMTTY_MANAGED_ZSH
 typeset -gr STORMTTY_MANAGED_ZSH=1
+
+# Register last, after user config and widgets. The first ZLE line-init follows
+# initial precmd hooks; no prompt text or shell-context OSC is release authority.
+if [[ $OSTYPE == (msys*|cygwin*) && -n $_stormtty_init_event && -f $_stormtty_init_helper && ! -L $_stormtty_init_helper ]]; then
+  autoload -Uz add-zle-hook-widget
+  _stormtty_init_ready() {
+    emulate -L zsh
+    "$_stormtty_init_helper" --completion-ready "$_stormtty_init_event"
+    add-zle-hook-widget -d line-init _stormtty_init_ready
+    unset _stormtty_init_helper _stormtty_init_event
+    return 0
+  }
+  add-zle-hook-widget line-init _stormtty_init_ready
+else
+  unset _stormtty_init_helper _stormtty_init_event
+fi
+unset _stormtty_completion_uncached

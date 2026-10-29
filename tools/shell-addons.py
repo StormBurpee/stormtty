@@ -69,7 +69,7 @@ def patch_loader(data, revision):
     last = b'_omz_source() {'
     if data.count(first) != 1 or data.count(last) != 1: raise RuntimeError('OMZ completion patch no longer applies')
     begin, end = data.index(first), data.index(last)
-    data = data[:begin] + b'if [[ $STORMTTY_EPHEMERAL == 1 ]]; then\n  compinit -i -D\n  unset -f _omz_git_head\nelse\n' + data[begin:end] + b'fi\n\n' + data[end:]
+    data = data[:begin] + b'if [[ $STORMTTY_EPHEMERAL == 1 || ${_stormtty_completion_uncached:-0} == 1 ]]; then\n  compinit -i -D\n  unset -f _omz_git_head\nelse\n' + data[begin:end] + b'fi\n\n' + data[end:]
     # Avoid two cold-state utility processes, without changing compinit's audit,
     # cache freshness checks, lock protocol, or the upstream module set.
     old = b'  command rm -f "$ZSH_COMPDUMP"'

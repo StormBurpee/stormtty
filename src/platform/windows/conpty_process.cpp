@@ -486,6 +486,7 @@ finished:
                 std::wstring command = quote_argument(executable);
                 for (const auto& argument : options.arguments) { command += L' '; command += quote_argument(widen(argument)); }
                 if (command.size() >= 32767) throw std::invalid_argument("Windows command line exceeds 32766 UTF-16 code units");
+                if (options.initialization) options.initialization->prepare(options.environment);
                 auto environment = make_environment(options);
                 {
                     std::lock_guard lock(mutex);
@@ -557,14 +558,20 @@ finished:
                     writer = std::thread([this] { write_loop(); });
                     auto expected = ProcessState::starting;
                     phase.compare_exchange_strong(expected, ProcessState::running);
-                    const HANDLE events[]{process.value, control.value};
                     for (;;) {
+                        const auto initialization_event = options.initialization ? options.initialization->ready_event() : 0;
+                        const HANDLE events[]{process.value, control.value, reinterpret_cast<HANDLE>(initialization_event)};
                         { std::lock_guard lock(mutex); count(diagnostic.windows_control->wait_calls); }
                         // Child exit takes precedence if both handles are ready.
                         // No periodic polling while running; teardown below keeps
                         // its separate, finite drain/cancellation deadlines.
-                        const DWORD wait = WaitForMultipleObjects(2, events, FALSE, INFINITE);
+                        const DWORD wait = WaitForMultipleObjects(initialization_event ? 3 : 2, events, FALSE, INFINITE);
                         if (wait == WAIT_FAILED) throw win_error("WaitForMultipleObjects(child/control)");
+                        if (initialization_event && wait == WAIT_OBJECT_0 + 2) {
+                            { std::lock_guard lock(mutex); count(diagnostic.windows_control->initialization_wakes); }
+                            options.initialization->ready();
+                            continue;
+                        }
                         std::optional<ResizeRequest> next;
                         {
                             std::lock_guard lock(mutex);
@@ -628,6 +635,8 @@ finished:
         } catch (const std::exception& e) { fail(e.what()); }
         catch (...) { fail("unknown ConPTY provider failure"); }
         input_write.reset(); output_read.reset(); job.reset(); process.reset(); primary_thread.reset();
+        // Child/job retirement precedes gate release on every launch/exit path.
+        if (options.initialization) options.initialization->finished();
         ProcessExit result;
         {
             std::lock_guard lock(mutex);

@@ -1,0 +1,47 @@
+import importlib.util
+from pathlib import Path
+import unittest
+spec=importlib.util.spec_from_file_location('shipping_results',Path(__file__).with_name('run-shipping-completion-seed.py'))
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+class ResultTests(unittest.TestCase):
+    def data(self,candidate):
+        lines=[]
+        for i in range(1,7):
+            lines.append(f'STARTUP_SAMPLE sample={i} fresh_state={int(i<=3)} state_prepare_ms=2 launch_to_zle_ms=1000')
+            if candidate:
+                lines.append(f'SHIPPING_SAMPLE sample={i} adoption={1 if i<=3 else -1} verification_publish_ms=500 native_ack=1')
+                lines.append(f'SHIPPING_INITIALIZATION sample={i} prepare_ms=600 journal_create_write_ms=1 journal_flush_ms=2 native_ready_wait_ms=390 ready_cleanup_ms=3')
+        return ('\n'.join(lines+[m.RESULT])+'\n').encode()
+    def test_verification_not_double_counted(self):
+        _,ok,metrics=m.sanitized(self.data(True),True);self.assertTrue(ok)
+        self.assertEqual([r['total_ms'] for r in metrics],[1002]*6)
+    def test_timing_is_numeric_required_and_not_added_twice(self):
+        lines,ok,metrics=m.sanitized(self.data(True),True)
+        self.assertTrue(ok);self.assertEqual(metrics[0]['initialization']['journal_flush_ms'],2)
+        self.assertEqual(metrics[0]['total_ms'],1002)
+        broken=self.data(True).replace(b'journal_flush_ms=2',b'journal_flush_ms=secret/path',1)
+        lines,ok,_=m.sanitized(broken,True)
+        self.assertFalse(ok);self.assertNotIn('secret','\n'.join(lines))
+        self.assertFalse(m.sanitized(self.data(True).replace(b'native_ready_wait_ms=390',b'native_ready_wait_ms=-1',1),True)[1])
+    def test_rejected_seed_not_a_speedup_sample(self):
+        _,ok,_=m.sanitized(self.data(True).replace(b'adoption=1',b'adoption=0',1),True);self.assertFalse(ok)
+    def test_native_ack_required(self):
+        _,ok,_=m.sanitized(self.data(True).replace(b'native_ack=1',b'native_ack=0',1),True);self.assertFalse(ok)
+    def test_baseline_and_privacy(self):
+        lines,ok,_=m.sanitized(self.data(False)+b'secret/user/path\n',False)
+        self.assertTrue(ok);self.assertNotIn('secret','\n'.join(lines))
+    def test_numeric_verifier_diagnostic_cannot_validate_rejection(self):
+        diagnostic=b'SHIPPING_VERIFY sample=1 stage=4 object=6 win32_error=32\n'
+        lines,ok,_=m.sanitized(self.data(True).replace(b'adoption=1',b'adoption=0',1)+diagnostic,True)
+        self.assertFalse(ok);self.assertIn(diagnostic.decode().strip(),lines)
+        lines,_,_=m.sanitized(self.data(False)+b'SHIPPING_VERIFY sample=1 stage=path object=user win32_error=secret\n',False)
+        self.assertNotIn('secret','\n'.join(lines))
+    def test_durable_journal_evidence_required(self):
+        normal=b'INITIALIZATION_CHECKS code=0 contention=1 config_preserved=1 native_ack=1 child_exit_release=1 abandoned_owner_no_dump=1 public_runtime_acl=1 cross_process_contention=1\n'
+        journal=b'INITIALIZATION_JOURNAL code=0 process_exit_persistent=1 prior_journal_not_cleared=1\n'
+        self.assertFalse(m.lifecycle_evidence(normal)[1])
+        self.assertTrue(m.lifecycle_evidence(normal+journal)[1])
+        lines,ok=m.lifecycle_evidence(normal+journal+b'private/user/path\n')
+        self.assertTrue(ok);self.assertNotIn('private','\n'.join(lines))
+        self.assertFalse(m.lifecycle_evidence(journal)[1])
+if __name__=='__main__':unittest.main()

@@ -2,6 +2,7 @@
 """Small offline integrity/ownership fixtures, not native shell execution."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -61,6 +62,112 @@ class StagingTests(unittest.TestCase):
         self.assertFalse(json.loads((target/stager.RECEIPT).read_text())["release_qualified"])
         stager.stage(self.root,target,files,receipt)
         self.assertEqual((target/"notices/THIRD-PARTY-NOTICES.txt").read_text(),"fixture notices preserved")
+
+    def test_private_creation_collision_preserves_existing_directory(self):
+        target = self.base / "existing"
+        target.mkdir()
+        sentinel = target / "sentinel"
+        sentinel.write_bytes(b"do not change")
+        before = target.stat()
+        with self.assertRaises(OSError): stager.create_private_runtime_directory(target)
+        self.assertEqual(sentinel.read_bytes(), b"do not change")
+        self.assertEqual(target.stat().st_mode, before.st_mode)
+
+    def test_failed_private_creation_never_publishes_or_leaves_temp(self):
+        files, receipt = self.validate()
+        target = self.base / "app/runtimes/zsh"
+        stager.stage(self.root, target, files, receipt)
+        original = (target / stager.RECEIPT).read_bytes()
+        create = stager.create_private_runtime_directory
+        for created in (False, True):
+            def fail(path):
+                if created: create(path)
+                raise OSError("authored staging failure")
+            with patch.object(stager, "create_private_runtime_directory", side_effect=fail):
+                with self.assertRaises(OSError): stager.stage(self.root, target, files, receipt)
+            self.assertEqual((target / stager.RECEIPT).read_bytes(), original)
+            self.assertEqual(list(target.parent.glob(".stormtty-runtime-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "native Windows ACL evidence")
+    def test_windows_staged_root_and_children_keep_private_acl_after_rename(self):
+        files, receipt = self.validate()
+        target = self.base / "app/runtimes/zsh"
+        stager.stage(self.root, target, files, receipt)
+        # Read the authored fixtures through native ACL APIs; no PowerShell
+        # parser/module/runtime dependency can obscure this security assertion.
+        import ctypes
+        from ctypes import wintypes as w
+        pointer = ctypes.c_void_p
+        security = ctypes.WinDLL('advapi32', use_last_error=True)
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.LocalFree.argtypes = [pointer]; kernel.LocalFree.restype = pointer
+        kernel.GetCurrentProcess.argtypes = []; kernel.GetCurrentProcess.restype = w.HANDLE
+        kernel.CloseHandle.argtypes = [w.HANDLE]; kernel.CloseHandle.restype = w.BOOL
+        security.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+        security.OpenProcessToken.restype = w.BOOL
+        security.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, pointer, w.DWORD, ctypes.POINTER(w.DWORD)]
+        security.GetTokenInformation.restype = w.BOOL
+        security.ConvertSidToStringSidW.argtypes = [pointer, ctypes.POINTER(pointer)]
+        security.ConvertSidToStringSidW.restype = w.BOOL
+        security.GetNamedSecurityInfoW.argtypes = [w.LPWSTR, ctypes.c_int, w.DWORD,
+            ctypes.POINTER(pointer), pointer, ctypes.POINTER(pointer), pointer, ctypes.POINTER(pointer)]
+        security.GetNamedSecurityInfoW.restype = w.DWORD
+        security.GetSecurityDescriptorControl.argtypes = [pointer, ctypes.POINTER(w.WORD), ctypes.POINTER(w.DWORD)]
+        security.GetSecurityDescriptorControl.restype = w.BOOL
+        security.GetAce.argtypes = [pointer, w.DWORD, ctypes.POINTER(pointer)]
+        security.GetAce.restype = w.BOOL
+        class ACL(ctypes.Structure):
+            _fields_ = [('revision', w.BYTE), ('sbz1', w.BYTE), ('size', w.WORD),
+                        ('count', w.WORD), ('sbz2', w.WORD)]
+        class ACE(ctypes.Structure):
+            _fields_ = [('type', w.BYTE), ('flags', w.BYTE), ('size', w.WORD), ('mask', w.DWORD)]
+        def require(ok):
+            if not ok: raise ctypes.WinError(ctypes.get_last_error())
+        def sid_text(sid):
+            text = pointer()
+            require(security.ConvertSidToStringSidW(sid, ctypes.byref(text)))
+            try: return ctypes.wstring_at(text)
+            finally: kernel.LocalFree(text)
+        token = w.HANDLE()
+        require(security.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)))
+        try:
+            size = w.DWORD()
+            security.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+            self.assertGreater(size.value, 0)
+            buffer = ctypes.create_string_buffer(size.value)
+            require(security.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)))
+            user = sid_text(ctypes.cast(buffer, ctypes.POINTER(pointer)).contents.value)
+        finally: kernel.CloseHandle(token)
+        def snapshot(path):
+            owner = pointer(); acl = pointer(); descriptor = pointer()
+            error = security.GetNamedSecurityInfoW(str(path), 1, 5, ctypes.byref(owner), None,
+                                                   ctypes.byref(acl), None, ctypes.byref(descriptor))
+            if error: raise ctypes.WinError(error)
+            try:
+                self.assertTrue(acl.value)
+                control = w.WORD(); revision = w.DWORD()
+                require(security.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision)))
+                rules = []
+                for index in range(ctypes.cast(acl, ctypes.POINTER(ACL)).contents.count):
+                    raw = pointer(); require(security.GetAce(acl, index, ctypes.byref(raw)))
+                    ace = ctypes.cast(raw, ctypes.POINTER(ACE)).contents
+                    self.assertEqual(ace.type, 0)  # ACCESS_ALLOWED_ACE_TYPE only
+                    self.assertGreaterEqual(ace.size, ctypes.sizeof(ACE) + 8)
+                    rules.append((sid_text(raw.value + ctypes.sizeof(ACE)), ace.mask, ace.flags))
+                return sid_text(owner), bool(control.value & 0x1000), rules
+            finally: kernel.LocalFree(descriptor)
+        paths = [target, target / 'usr', target / 'usr/bin/zsh.exe']
+        before = [snapshot(path) for path in paths]
+        with self.assertRaises(OSError): stager.create_private_runtime_directory(target)
+        self.assertEqual([snapshot(path) for path in paths], before)
+        allowed = {user, 'S-1-5-18', 'S-1-5-32-544'}
+        self.assertTrue(before[0][1])  # protected root DACL
+        for index, (owner, protected, rules) in enumerate(before):
+            self.assertIn(owner, allowed)
+            self.assertEqual({r[0] for r in rules}, allowed)
+            self.assertTrue(all(r[1] == 0x1f01ff for r in rules))  # FILE_ALL_ACCESS
+            if index: self.assertTrue(all(r[2] & 0x10 for r in rules))  # inherited
+        self.assertEqual(list(target.parent.glob('.stormtty-runtime-*')), [])
 
     def test_nano_and_dependency_files_cannot_be_omitted(self):
         for name in ("usr/bin/nano.exe", "usr/bin/file.exe", "usr/bin/msys-magic-1.dll",

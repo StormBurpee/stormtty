@@ -27,6 +27,9 @@
 #include "stormtty/agent_display_text.hpp"
 #include "stormtty/windows_managed_shell.hpp"
 #include "stormtty/windows_shell_state.hpp"
+#ifdef STORMTTY_EXPERIMENTAL_COMPLETION_SEED
+#include "stormtty/windows_completion_seed.hpp"
+#endif
 #include "stormtty/windows_console_runtime.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/cursor_motion.hpp"
@@ -1174,6 +1177,14 @@ SessionId NativeWindow::new_session(std::string profile_id) {
         if (options_.smoke_test && !empty_home && !state) throw std::runtime_error("Private smoke shell state failed revalidation.");
         process.environment.push_back({"STORMTTY_NATIVE_ZSH_STATE", state ?
             std::optional<std::string>(narrow(state.directory.generic_wstring())) : std::nullopt});
+#ifdef STORMTTY_EXPERIMENTAL_COMPLETION_SEED
+        if (state) {
+            const auto runtime=std::filesystem::path(widen(process.executable)).parent_path().parent_path().parent_path();
+            // Every opted-in managed launch participates, even warm/custom state.
+            // Heavy integrity work, if fresh, runs on the controller before child launch.
+            process.initialization=completion_seed_launch(state.directory.parent_path().parent_path(),runtime).initialization;
+        }
+#endif
         // Child environment only: user startup hooks must not override this preset.
         for (const char* name:{"MSYS","ENV","BASH_ENV"}) process.environment.push_back({name,std::nullopt});
     }
