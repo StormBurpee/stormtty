@@ -3973,10 +3973,24 @@ bool NativeWindow::smoke_context_progress() {
         smoke_context_stage_=1;return false;
     }
     if(smoke_context_stage_==1) {
+        unsigned ready_index=0;
         for(const auto& [pane,actor]:smoke_context_actors_) {
             const auto info=actor->info();if(!info.shell_context)return false;
             if(!info.shell_context->directory_key.starts_with("file:///C:/context-fixture-"))return false;
-            if(pane_context(pane).directory!=info.shell_context->display_directory)return false;
+            const auto context=pane_context(pane);
+            if(context.directory!=info.shell_context->display_directory || context.primary!=pane_context_text(info.title))return false;
+            const auto expected_title=ready_index==0?"cmd.exe":ready_index==1?"Review · café":"Build · 日本語";
+            if(info.title!=expected_title)return false;
+            const auto frame=actor->frame();if(!frame || actor->diagnostics().queued_input_bytes)return false;
+            bool ready=false;const auto marker="STORMTTY_CONTEXT_READY_"+std::to_string(ready_index++);
+            for(const auto& row:frame->lines) {
+                std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;
+                while(!text.empty()&&text.back()==' ')text.pop_back();ready=ready||text==marker;
+            }
+            // Context metadata may arrive before the rest of this native child's
+            // startup packet. A final visible marker is the output/ready gate,
+            // never the echoed command or an arbitrary settling delay.
+            if(!ready)return false;
         }
         const auto original=workspace().active_pane();const auto count=sessions_.size();
         const auto baseline=smoke_terminal_input_submissions_;const auto mouse_baseline=smoke_terminal_mouse_submissions_;
@@ -3991,7 +4005,13 @@ bool NativeWindow::smoke_context_progress() {
             key(VK_RETURN);
             if(!palette_open_||!inspected_context_||focused_session_||inspected_context_->directory!=actor->info().shell_context->display_directory)return fail("Context inspection lost its owned snapshot or input ownership.");
             key(VK_END);key(VK_HOME);terminal_text("Repository");key(VK_RETURN);query_.clear();
-            if(actor->info().bytes_sent!=before||layout_.panes.size()!=geometry.size()||active_session()!=actor.get()||sessions_.size()!=count)return fail("Read-only context inspection changed transport or actor identity.");
+            const auto after_info=actor->info();
+            std::fprintf(stderr,"Native context isolation: pane=%llu bytes_before=%llu bytes_after=%llu frontend_delta=%llu mouse_delta=%llu actor_same=%u actors_before=%zu actors_after=%zu placements_before=%zu placements_after=%zu queued_input=%zu\n",
+                static_cast<unsigned long long>(pane.value),static_cast<unsigned long long>(before),static_cast<unsigned long long>(after_info.bytes_sent),
+                static_cast<unsigned long long>(smoke_terminal_input_submissions_-baseline),static_cast<unsigned long long>(smoke_terminal_mouse_submissions_-mouse_baseline),
+                unsigned(active_session()==actor.get()),count,sessions_.size(),geometry.size(),layout_.panes.size(),actor->diagnostics().queued_input_bytes);
+            if(after_info.bytes_sent!=before)return fail("Read-only context inspection changed PTY transport bytes.");
+            if(layout_.panes.size()!=geometry.size()||active_session()!=actor.get()||sessions_.size()!=count)return fail("Read-only context inspection changed pane or actor identity.");
             const auto after=actor->frame();if(!frame||!after||frame->columns!=after->columns||frame->rows!=after->rows)return fail("Context inspection changed the terminal grid.");
             capture(L"context-inspect");key(VK_ESCAPE);
         }
