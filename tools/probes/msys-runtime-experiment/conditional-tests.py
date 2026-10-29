@@ -68,13 +68,15 @@ class ConditionalTests(unittest.TestCase):
         self.assertIn('201703L',script);self.assertIn('15.3.0',script)
         self.assertNotIn('--skipinteg', '\n'.join(line for line in script.splitlines() if not line.startswith('#')))
 
-    def test_workflow_is_exact_draft_open_and_preserves_failed_raw_followup(self):
+    def test_workflow_is_exact_push_and_preserves_failed_raw_followup(self):
         workflow=(m.REPO/'.github/workflows/msys-conditional-retirement.yml').read_text()
-        self.assertIn('types: [opened]',workflow); self.assertNotIn('  push:',workflow)
-        self.assertIn('github.event.pull_request.draft == true',workflow)
-        self.assertIn("github.event.pull_request.head.ref == 'experiment/msys-conditional-retirement'",workflow)
-        self.assertIn('ref: ${{ github.event.pull_request.head.sha }}',workflow)
-        self.assertNotIn('synchronize',workflow)
+        self.assertIn("branches: ['experiment/msys-conditional-retirement']",workflow)
+        self.assertIn("paths: ['.github/workflows/msys-conditional-retirement.yml']",workflow)
+        self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/msys-conditional-retirement'",workflow)
+        self.assertIn('ref: ${{ github.sha }}',workflow)
+        self.assertNotIn('pull_request:',workflow)
+        self.assertNotIn('workflow_dispatch:',workflow)
+        self.assertIn('Do not push workflow edits to',workflow)
         settings=workflow.split('      - name: Fixed actual settings-close paste matrix')[1].split('      - name: Preserve')[0]
         self.assertIn("if: always() && steps.staging.outcome == 'success'",settings)
         self.assertNotIn('steps.raw.outcome',settings)

@@ -1,13 +1,11 @@
 # Isolated source-build experiment; never replaces a shipped runtime.
 name: Private MSYS stock versus conditional retirement experiment
 on:
-  pull_request:
-    types: [opened]
-    branches: [main]
-    paths:
-      - '.github/workflows/msys-conditional-retirement.yml'
-      - 'tools/probes/msys-runtime-experiment/**'
-      - '.gitattributes'
+  # One intentional publication commit only. Do not push workflow edits to
+  # retry failures; preserve the fixed matrix and stop for review.
+  push:
+    branches: ['experiment/msys-conditional-retirement']
+    paths: ['.github/workflows/msys-conditional-retirement.yml']
 permissions:
   contents: read
 concurrency:
@@ -15,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   compare:
-    if: github.event.pull_request.draft == true && github.event.pull_request.head.ref == 'experiment/msys-conditional-retirement' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/msys-conditional-retirement'
     runs-on: windows-2025
     timeout-minutes: 240
     env:
@@ -23,8 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          # Exact reviewed experiment commit, not the synthetic PR merge tree.
-          ref: ${{ github.event.pull_request.head.sha }}
+          # Exact intentionally pushed experiment commit; never the PR merge tree.
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.14'

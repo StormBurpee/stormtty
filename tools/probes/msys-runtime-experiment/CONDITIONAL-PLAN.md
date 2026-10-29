@@ -1,7 +1,7 @@
 # Private stock versus conditional-retirement native experiment
 
 This is a bounded hypothesis test, not a production runtime fix or a promotion.
-Root owns review, remote publication and opening the explicit experiment PR. This branch changes no
+Root owns review and the one intentional workflow publication push. This branch changes no
 production runtime pins/defaults, application assertions or raw-probe code.
 
 ## Exact probe and base
@@ -64,13 +64,17 @@ cover all native schedules or resolve the earlier-mouse/second-resize caveat.
 
 ## Prespecified matrix and stopping condition
 
-The workflow runs only on opening a **draft** PR to `main` from the same
-repository's exact `experiment/msys-conditional-retirement` branch, with changed
-experiment paths. Root must publish and intentionally open that experiment PR;
-this is not intended for merge to main. No default-branch workflow registration
-is required. Push/synchronize/reopen events do not launch or retry source builds.
-The job checks out the exact PR head SHA, not GitHub's synthetic merge commit.
-Normal `native.yml` remains unchanged and may independently run its normal PR CI.
+PR10 is dirty against main, so GitHub suppresses pull-request workflows. The
+exact experiment head remains preserved; no native trial started by that route.
+The workflow therefore runs only on **push** to the exact
+`experiment/msys-conditional-retirement` branch when this workflow file changes,
+with an explicit push-event/exact-ref job guard. It checks out `github.sha`.
+Root's one intentional workflow publication commit starts the fixed matrix
+without default-branch registration or a clean synthetic PR merge. Source-only
+pushes, PR events and unrelated branches do not start it. **Do not push workflow
+edits to retry failures or rerun until green.** Stop after the matrix and review
+all outcomes; any further run needs a separately authorized plan. Normal
+`native.yml` and source/app/probe/variant semantics remain unchanged.
 For **each** inbox/packaged provider, run three fresh trials in this order:
 stock→conditional, conditional→stock, stock→conditional.
 
