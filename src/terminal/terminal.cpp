@@ -266,6 +266,7 @@ struct TerminalCore::Impl {
         if ((config.default_foreground && config.default_foreground->a != 255) ||
             (config.default_background && config.default_background->a != 255))
             throw std::invalid_argument("terminal default colors must be opaque RGB; apply opacity in the renderer");
+        if (config.ansi) for (const auto c:*config.ansi) if (c.a!=255) throw std::invalid_argument("ANSI colors must be opaque RGB");
         if (config.render_hold_timeout <= std::chrono::milliseconds::zero() ||
             config.scrollback_budget_bytes > std::numeric_limits<std::size_t>::max() ||
             config.effect_queue_limit_bytes < 256 || config.clipboard_limit_bytes > config.effect_queue_limit_bytes)
@@ -306,6 +307,11 @@ struct TerminalCore::Impl {
         };
         set_default_color(GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, options.default_foreground.value_or(color(initial_colors.foreground)));
         set_default_color(GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, options.default_background.value_or(color(initial_colors.background)));
+        if (options.ansi) {
+            auto palette=initial_colors.palette;
+            for (std::size_t i=0;i<16;++i) { const auto c=(*options.ansi)[i]; palette[i]={c.r,c.g,c.b}; }
+            set(GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, palette);
+        }
         set(GHOSTTY_TERMINAL_OPT_RESIZE_PULL_SCROLLBACK, &options.resize_pull_scrollback);
         set(GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &options.image_budget_bytes);
         const bool disabled = false;
@@ -729,16 +735,24 @@ void TerminalCore::resize(TerminalSize size) {
     ghostty_mouse_encoder_reset(impl_->mouse_encoder);
     impl_->check_thread();
 }
-void TerminalCore::set_default_colors(Color foreground, Color background) {
+void TerminalCore::set_default_colors(Color foreground, Color background, std::optional<std::array<Color,16>> ansi) {
     impl_->check_thread();
     if (foreground.a != 255 || background.a != 255)
         throw std::invalid_argument("terminal default colors must be opaque RGB; apply opacity in the renderer");
-    if (impl_->options.default_foreground == foreground && impl_->options.default_background == background) return;
+    if (ansi) for (const auto c:*ansi) if (c.a!=255) throw std::invalid_argument("ANSI colors must be opaque RGB");
+    if (impl_->options.default_foreground == foreground && impl_->options.default_background == background && (!ansi || impl_->options.ansi==ansi)) return;
     const GhosttyColorRgb fg{foreground.r, foreground.g, foreground.b}, bg{background.r, background.g, background.b};
     // These options change defaults, not the effective OSC override or cell
     // styles. The pinned engine marks the palette dirty for render-state update.
     impl_->set(GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg);
     impl_->set(GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg);
+    if (ansi) {
+        GhosttyColorRgb palette[256];
+        checked(ghostty_terminal_get(impl_->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, &palette), "read default palette");
+        for (std::size_t i=0;i<16;++i) { const auto c=(*ansi)[i]; palette[i]={c.r,c.g,c.b}; }
+        impl_->set(GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, &palette);
+        impl_->options.ansi=ansi;
+    }
     impl_->options.default_foreground = foreground;
     impl_->options.default_background = background;
 }

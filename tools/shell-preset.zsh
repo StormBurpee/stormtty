@@ -83,7 +83,10 @@ _stormtty_private_state() {
     _stormtty_state=$_stormtty_native_state
     _stormtty_native_validated=1
     # New descendants inherit the host-created protected user/SYSTEM DACL.
-    (umask 077; command mkdir -p -- "$_stormtty_state/cache/completions") || {
+    # The host still validates the complete tree on every launch. Do not fork
+    # mkdir again when its validated completion directory already exists.
+    [[ -d $_stormtty_state/cache/completions ]] ||
+      (umask 077; command mkdir -p -- "$_stormtty_state/cache/completions") || {
       _stormtty_state=''; _stormtty_native_validated=0; return 1
     }
     return 0
@@ -166,9 +169,22 @@ zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
 [[ -r $_stormtty_vendor/shell-tools/init.zsh ]] && source "$_stormtty_vendor/shell-tools/init.zsh"
 # Only packaged modules; no plugin managers and no startup network calls.
 if [[ ${STORMTTY_AUTOSUGGESTIONS:-1} != 0 && -r $_stormtty_vendor/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
-  ZSH_AUTOSUGGEST_STRATEGY=(history)
+  (( ${+ZSH_AUTOSUGGEST_STRATEGY} )) || ZSH_AUTOSUGGEST_STRATEGY=(history)
+  typeset _stormtty_autosuggest_async_explicit=${+ZSH_AUTOSUGGEST_USE_ASYNC}
   ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'
   source "$_stormtty_vendor/zsh-autosuggestions/zsh-autosuggestions.zsh"
+  # The bundled history strategy is an in-process lookup in zsh's bounded
+  # history table. On MSYS, upstream async mode otherwise forks and reads a
+  # child PID for every character with no matching suggestion, then redraws
+  # again on its response. Typing inside an existing suggestion skips that
+  # path, which makes ordinary/quoted new text disproportionately expensive.
+  # Avoid the fork/console handoff here, not by delaying terminal input or
+  # filtering authoritative cursor updates. POSIX keeps upstream's policy.
+  if [[ $OSTYPE == (msys*|cygwin*) && $_stormtty_autosuggest_async_explicit == 0 &&
+        ${(j: :)ZSH_AUTOSUGGEST_STRATEGY} == history ]]; then
+    unset ZSH_AUTOSUGGEST_USE_ASYNC
+  fi
+  unset _stormtty_autosuggest_async_explicit
 fi
 zmodload zsh/datetime
 zmodload zsh/stat

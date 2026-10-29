@@ -229,6 +229,8 @@ public:
     SessionId start_session() {
         const SessionId id{next_session++};TerminalOptions terminal;terminal.scrollback_lines=config.scrollback_lines;terminal.resize_pull_scrollback=true;
         terminal.default_foreground=color(config.theme.foreground,{236,238,242,255});
+        terminal.ansi.emplace();
+        for (std::size_t i=0;i<16;++i) (*terminal.ansi)[i]=color(config.theme.ansi[i],{0,0,0,255});
         terminal.default_background=color(config.theme.background,{23,25,29,255});
         const auto metrics=renderer->metrics();terminal.size.cell_width=metrics.width;terminal.size.cell_height=metrics.height;
         auto weak=weak_from_this();auto session=Session::start(process_options(),terminal,[weak]{if(auto h=weak.lock())h->wake();});

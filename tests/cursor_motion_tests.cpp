@@ -32,5 +32,27 @@ int main() {
     require(m.observe(p,623,true)<1); // first keystroke after ordinary blink retains baseline
     row->selection=SelectionRange{0,1};
     require(m.observe(p,630,true)==1); // selection cancels in-flight motion
+    row->selection.reset();
+    m.reset(); f->cursor.column=39; m.observe(p,700,true);
+    // A shell repaint can publish an echoed character, then move back onto it
+    // (e.g. an asynchronous line-editor redraw). Presentation must not hide or
+    // postpone that authoritative retreat, nor manufacture a forward position.
+    m.input(710); ++row->generation; f->cursor.column=40;
+    require(m.observe(p,720,true)<1);
+    const auto forward_cursor=f->cursor;
+    f->cursor.column=39;
+    const auto retreat_cursor=f->cursor;
+    require(m.observe(p,750,true)==1 && !m.active(750));
+    require(f->cursor==retreat_cursor && f->cursor!=forward_cursor);
+    // Cursor-only restoration is not evidence of new input/character echo.
+    f->cursor.column=40;
+    require(m.observe(p,780,true)==1 && !m.active(780));
+    // The same rules hold with an autosuggestion occupying destination cells.
+    row->cells.resize(42); row->cells[40].grapheme="x";
+    m.input(790); ++row->generation; f->cursor.column=41;
+    require(m.observe(p,800,true)<1);
+    f->cursor.column=40;
+    require(m.observe(p,810,true)==1 && !m.active(810));
+    require(row->cells[40].grapheme=="x");
     std::cout<<"PASS finite input-gated cursor settle and cancellation\n";
 }

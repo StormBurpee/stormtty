@@ -144,6 +144,65 @@ jobs:
         id: staged_shell
         if: always() && runner.os == 'Windows' && steps.shell_safety.outcome == 'success'
         run: python tools/shell-bootstrap.py --destination .deps/stormtty-shell --cache .cache/shell-bootstrap
+      - name: Build optional managed shell startup measurement
+        id: startup_probe_build
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        timeout-minutes: 4
+        shell: python
+        run: |
+          import subprocess
+          # EXCLUDE_FROM_ALL target includes its app-owned console sidecar.
+          subprocess.run(['cmake','--build','build','--target','managed_shell_startup_probe','--parallel','2'],check=True,timeout=180)
+      - name: Measure managed shell startup on both console providers
+        id: startup_measurement
+        if: always() && runner.os == 'Windows' && steps.startup_probe_build.outcome == 'success'
+        timeout-minutes: 10
+        shell: python
+        run: |
+          import os,pathlib,importlib.util,sys,re
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
+          runtime=pathlib.Path('.deps/stormtty-shell').resolve()
+          probe=pathlib.Path('build/managed_shell_startup_probe.exe').resolve()
+          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
+          artifacts=pathlib.Path('build/artifacts'); artifacts.mkdir(parents=True,exist_ok=True)
+          number=r'[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?'
+          sample=re.compile(r'STARTUP_SAMPLE sample=([0-9]+) fresh_state=([01]) state_prepare_ms='+number+r' launch_to_zle_ms='+number)
+          terminal=re.compile(r'STARTUP_RESULT code=(?:0 fresh_samples=3 warm_samples=7|1 sample=[0-9]+ stage=[0-9]+)')
+          failures=[]
+          for name,extra in [('inbox',[]),('packaged',[str(provider)])]:
+            # Each invocation creates three new private states, then reuses the
+            # third for seven warm launches. No user state or transcript artifact.
+            lines=[]; passed=False
+            try:
+              result=runner.run_owned([str(probe),str(runtime),*extra],timeout=240,reap_timeout=10,tail_bytes=16384,output_dir=artifacts)
+              samples=[]
+              for line in result.output_tail.decode('utf-8',errors='replace').splitlines():
+                match=sample.fullmatch(line)
+                if match:
+                  samples.append((int(match[1]),int(match[2]))); lines.append(line)
+                elif terminal.fullmatch(line): lines.append(line)
+              expected=[(i,int(i<=3)) for i in range(1,11)]
+              passed=(result.exit_code==0 and result.reaped and not result.output_truncated and not result.cleanup_error and samples==expected and 'STARTUP_RESULT code=0 fresh_samples=3 warm_samples=7' in lines)
+              # Do not publish arbitrary stderr, paths, environment, or exception
+              # strings. Only allowlisted probe records and numeric runner facts.
+              lines.append('STARTUP_RUNNER exit_code=%d timed_out=%d reaped=%d truncated=%d cleanup_error=%d elapsed_seconds=%.3f' % (result.exit_code,result.timed_out,result.reaped,result.output_truncated,bool(result.cleanup_error),result.elapsed_seconds))
+            except OSError:
+              lines.append('STARTUP_LAUNCH_ERROR code=1')
+            lines.append('STARTUP_EVIDENCE_VALID code='+str(0 if passed else 1))
+            (artifacts/('shell-startup-'+name+'.log')).write_text('\n'.join(lines)+'\n',encoding='utf-8')
+            print('STARTUP_PROVIDER='+name,flush=True)
+            print('\n'.join(lines),flush=True)
+            if not passed: failures.append(name)
+          # Evidence integrity/liveness only: no latency threshold or speed claim.
+          if failures: raise SystemExit(1)
+      - name: Preserve sanitized shell startup measurements immediately
+        if: always() && runner.os == 'Windows' && steps.startup_measurement.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: shell-startup-${{ runner.os }}
+          path: build/artifacts/shell-startup-*.log
+          if-no-files-found: warn
       - name: Qualify real managed OMZ state and interactive editing
         id: managed_omz
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'

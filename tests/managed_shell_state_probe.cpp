@@ -10,6 +10,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +22,10 @@ using namespace stormtty;
 using namespace std::chrono_literals;
 namespace {
 unsigned phase{}, checks{};
+struct TypingEvidence {
+    unsigned characters{}, frames{}, retreats{};
+    long long echo_total_us{}, echo_max_us{};
+} typing;
 void check(bool ok) { ++checks; if (!ok) throw std::runtime_error("qualification failed"); }
 std::string utf8(const fs::path& path) {
     const auto text = path.generic_u8string();
@@ -84,7 +89,8 @@ struct ManagedSessionProbe {
             {"PATH", utf8(runtime / L"usr" / L"bin")}, {"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"},
             {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"}, {"MSYSTEM", "MSYS"},
             {"MSYS", std::nullopt}, {"ENV", std::nullopt}, {"BASH_ENV", std::nullopt},
-            {"STORMTTY_MSYS_RESIZE_TRACE_DIR", std::nullopt}};
+            {"STORMTTY_MSYS_RESIZE_TRACE_DIR", std::nullopt},
+            {"ZSH_AUTOSUGGEST_USE_ASYNC", std::nullopt}, {"ZSH_AUTOSUGGEST_STRATEGY", std::nullopt}};
         process.environment.push_back(managed_shell_console_environment());
         TerminalOptions terminal; terminal.size = {160, 40, 8, 16};
         const auto started = std::chrono::steady_clock::now();
@@ -102,6 +108,77 @@ struct ManagedSessionProbe {
     void ready(unsigned status) {
         expect("QREADY_" + std::to_string(sequence) + "_" + std::to_string(status));
         expect("QZLE_" + std::to_string(sequence) + " >");
+    }
+    void quoted_typing() {
+        command("[[ ${+ZSH_AUTOSUGGEST_USE_ASYNC} == 0 && $ZSH_AUTOSUGGEST_STRATEGY == history ]] && print -r -- QPOLICY$((61+2))");
+        expect("QPOLICY63"); ready(0);
+        command("typeset -gi _qual_async_calls=0; _zsh_autosuggest_async_request() { (( ++_qual_async_calls )); return 0; }"); ready(0);
+        const auto prompt="QZLE_"+std::to_string(sequence)+" > ";
+        auto row_text=[](const FramePtr& frame, unsigned row) {
+            std::string text;
+            if (frame && row<frame->lines.size() && frame->lines[row])
+                for (const auto& cell:frame->lines[row]->cells)
+                    if (cell.span) text+=cell.grapheme.empty()?" ":cell.grapheme;
+            return text;
+        };
+        check(until([&] {
+            const auto f=session->frame();
+            return f && f->cursor.visible && f->cursor.column==prompt.size() &&
+                row_text(f,f->cursor.row).starts_with(prompt);
+        }));
+        const auto origin=session->frame()->cursor;
+        std::string entered;
+        const auto end=std::chrono::steady_clock::now()+15s;
+        std::uint64_t generation{};
+        unsigned last_column=origin.column;
+        auto observe=[&] {
+            const auto f=session->frame();
+            if (f && f->generation!=generation) {
+                generation=f->generation; ++typing.frames;
+                if (f->cursor.row==origin.row) {
+                    if (f->cursor.column<last_column) ++typing.retreats;
+                    last_column=f->cursor.column;
+                }
+            }
+            return f;
+        };
+        auto exact=[&](const FramePtr& f) {
+            const auto expected=prompt+entered;
+            const auto row=row_text(f,origin.row);
+            return f && f->cursor.visible && f->cursor.row==origin.row &&
+                f->cursor.column==expected.size() && row.starts_with(expected) &&
+                row.find_first_not_of(' ',expected.size())==std::string::npos;
+        };
+        auto wait_echo=[&] {
+            while (std::chrono::steady_clock::now()<end) {
+                if (exact(observe())) return;
+                std::this_thread::sleep_for(2ms);
+            }
+            check(false);
+        };
+        // An authored, unique colon command cannot match earlier fixture
+        // history. Normal per-character input, not paste or injected frames.
+        for (const char character:std::string(": \"QTYPING quoted sample\"")) {
+            const auto start=std::chrono::steady_clock::now();
+            entered+=character; text(std::string(1,character)); wait_echo();
+            const auto elapsed=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count();
+            ++typing.characters; typing.echo_total_us+=elapsed;
+            typing.echo_max_us=std::max(typing.echo_max_us,static_cast<long long>(elapsed));
+            const auto observe_until=std::chrono::steady_clock::now()+150ms;
+            while (std::chrono::steady_clock::now()<observe_until) {
+                check(std::chrono::steady_clock::now()<end);
+                (void)observe(); std::this_thread::sleep_for(2ms);
+            }
+            // Retreats during unsynchronized ZLE repaint are diagnostics, not
+            // failures. Require eventual authoritative text/cursor only.
+            wait_echo();
+        }
+        entered+='x'; text("x"); wait_echo();
+        entered.pop_back(); last_column=origin.column+static_cast<unsigned>(entered.size());
+        key(Key::backspace); wait_echo(); // Deliberate erase is not a repaint retreat.
+        key(Key::enter); ++sequence; ready(0);
+        command("(( _qual_async_calls == 0 )) && print -r -- QNOFORK$((70+3))");
+        expect("QNOFORK73"); ready(0);
     }
     void finish() {
         command("exit"); check(session->wait_for_process_exit(15s));
@@ -190,6 +267,7 @@ int main() {
             shell.expect("700+31"); // History-backed live autosuggestion, before acceptance.
             shell.key(Key::right); shell.key(Key::enter); ++shell.sequence;
             shell.expect("QSUGGEST731"); shell.ready(0);
+            shell.quoted_typing();
             shell.finish();
         }
         phase = 11;
@@ -198,9 +276,11 @@ int main() {
         std::ifstream input(state.directory / L"config.zsh", std::ios::binary);
         const std::string persisted{std::istreambuf_iterator<char>(input), {}};
         check(persisted == config);
+        std::cout << "MANAGED_TYPING_RESULT code=0 characters=" << typing.characters << " frames=" << typing.frames << " retreats=" << typing.retreats << " echo_total_us=" << typing.echo_total_us << " echo_max_us=" << typing.echo_max_us << '\n';
         std::cout << "MANAGED_STATE_RESULT code=0 phase=11 cold_samples=1 warm_samples=1 checks=" << checks << " cold_ms=" << cold_ms << " warm_ms=" << warm_ms << '\n';
         return 0;
     } catch (...) {
+        std::cout << "MANAGED_TYPING_RESULT code=1 characters=" << typing.characters << " frames=" << typing.frames << " retreats=" << typing.retreats << " echo_total_us=" << typing.echo_total_us << " echo_max_us=" << typing.echo_max_us << '\n';
         std::cout << "MANAGED_STATE_RESULT code=1 phase=" << phase << " checks=" << checks << " cold_ms=" << cold_ms << " warm_ms=" << warm_ms << '\n';
         return 1;
     }

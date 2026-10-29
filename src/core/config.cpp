@@ -97,12 +97,22 @@ std::string quote(std::string_view text) {
 std::span<const Theme> builtin_themes() {
     static const std::array themes{Theme{},
         Theme{"instrument", "#17191D", "#ECEEF2", "#22252B", "#A7C4D2"},
-        Theme{"daylight", "#FAFBFC", "#232B33", "#EDF0F3", "#315E78"}};
+        Theme{"daylight", "#FAFBFC", "#232B33", "#EDF0F3", "#315E78", {"#232B33","#A82432","#326D35","#805B15","#245EB0","#7943A8","#19717A","#626B75","#687580","#B72E40","#397D43","#906419","#306DC0","#8D50B8","#237D87","#151D25"}},
+        Theme{"midnight", "#0C1425", "#DCE5F4", "#131E34", "#88B4F8", {"#101B30","#EF8597","#90CBA9","#E8C58B","#89B4FA","#C7A0E8","#83D6E8","#DCE5F4","#60718E","#FFA0AC","#ABE3BC","#F7DBA6","#ACCCFF","#DEBEF7","#A7ECF5","#F5F8FF"}},
+        Theme{"evergreen", "#121B18", "#DFE8DF", "#1B2923", "#9CC9A1", {"#17231D","#D98C85","#A8C698","#D9C28B","#8CBAC2","#BEA4C9","#8BC7B1","#DFE8DF","#668273","#EEA69A","#BEDCAD","#EDD7A5","#A6D0D4","#D3BCDE","#A6DFCB","#F2F7EF"}},
+        Theme{"aubergine", "#1C1521", "#ECE0EA", "#2A2031", "#D3A5CE", {"#251B2B","#E58EAB","#A8C4A0","#DEC394","#A8B6E3","#D3A5CE","#98CBCD","#ECE0EA","#806B87","#F6A7BF","#C0D9B5","#F1D8AF","#C1CDF5","#E6BFE3","#B3E0E0","#FFF1FB"}},
+        Theme{"ember", "#211915", "#EDE1D4", "#30241E", "#E7AE7E", {"#2B211B","#E69580","#BCC08B","#E3BA79","#97B6CB","#CDA6BB","#9CC8BD","#EDE1D4","#887366","#F3AF98","#D2D6A4","#F5D398","#B4CCDC","#E0C0D0","#B7DED2","#FFF4E6"}},
+        Theme{"ink", "#101010", "#E4E4E4", "#1D1D1D", "#BFC7D5", {"#202020","#D88B8B","#A5BF9F","#CFBD91","#A0B7D4","#BCA6CF","#9DBFC5","#D8D8D8","#777777","#ECA5A5","#BFD6B8","#E6D5AE","#BACDE5","#D3BEE3","#B6D7DD","#F5F5F5"}}};
     return themes;
 }
 const Theme* find_builtin_theme(std::string_view name) {
     for (const auto& theme:builtin_themes()) if (theme.name==name) return &theme;
     return nullptr;
+}
+bool theme_is_light(const Theme& theme) noexcept {
+    if (!color(theme.background)) return false;
+    const auto channel=[&](std::size_t i) {unsigned v{}; std::from_chars(theme.background.data()+i,theme.background.data()+i+2,v,16); return v;};
+    return channel(1)*299+channel(3)*587+channel(5)*114>128000;
 }
 Config default_config(Platform platform) {
     Config c;
@@ -112,9 +122,11 @@ Config default_config(Platform platform) {
     c.profiles.push_back(std::move(p)); c.bindings = default_bindings(platform); return c;
 }
 Status validate_config(const Config& c, Platform platform) {
+    if (!valid_ribbon(c.ribbon)) return Status::failure("Ribbon order requires each registered binding exactly once");
     if (c.version != 1) return Status::failure("Unsupported config version; expected version = 1");
-    if (!find_builtin_theme(c.theme.name) && c.theme.name != "custom") return Status::failure("Theme name must be graphite, instrument, daylight or custom");
+    if (!find_builtin_theme(c.theme.name) && c.theme.name != "custom") return Status::failure("Theme name must be a built-in name or custom");
     if (!color(c.theme.background) || !color(c.theme.foreground) || !color(c.theme.chrome) || !color(c.theme.accent)) return Status::failure("Theme colors must be #RRGGBB");
+    for (const auto& value:c.theme.ansi) if (!color(value)) return Status::failure("ANSI colors must be #RRGGBB");
     if (!std::isfinite(c.appearance.background_opacity) || c.appearance.background_opacity < 0.0 || c.appearance.background_opacity > 1.0)
         return Status::failure("background_opacity must be between 0.0 and 1.0");
     if (c.appearance.backdrop != BackdropPreference::automatic && c.appearance.backdrop != BackdropPreference::none && c.appearance.backdrop != BackdropPreference::mica && c.appearance.backdrop != BackdropPreference::acrylic)
@@ -185,7 +197,7 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
             const auto tail = trim(line.substr(close + 1));
             if (!tail.empty() && tail[0] != '#') { error(line_number, close + 2, "Unexpected text after section header"); continue; }
             section = std::string(trim(line.substr(1, close - 1)));
-            const bool known = section == "theme" || section == "appearance" || section == "font" || section == "terminal" || section == "bindings" ||
+            const bool known = section == "theme" || section == "ribbon" || section == "appearance" || section == "font" || section == "terminal" || section == "bindings" ||
                 section == "bindings.windows" || section == "bindings.macos";
             if (!known && !section.starts_with("profile.")) error(line_number, 1, "Unknown section: " + section);
             if (section.starts_with("profile.")) {
@@ -229,6 +241,7 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
         } else if (section == "theme") {
             string_field("name", config.theme.name); string_field("background", config.theme.background);
             string_field("foreground", config.theme.foreground); string_field("chrome", config.theme.chrome); string_field("accent", config.theme.accent);
+            for (std::size_t i=0;i<16;++i) string_field("ansi"+std::to_string(i), config.theme.ansi[i]);
         } else if (section == "appearance") {
             bool_field("show_clock", config.appearance.show_clock);
             number_field("background_opacity", config.appearance.background_opacity, 0.0, 1.0, false);
@@ -245,6 +258,23 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
                 else if (text_value && *text_value == "enabled") config.appearance.reduced_motion = ReducedMotionPreference::enabled;
                 else if (text_value && *text_value == "disabled") config.appearance.reduced_motion = ReducedMotionPreference::disabled;
                 else error(line_number, equal + 2, "reduced_motion must be system, enabled or disabled");
+            }
+        } else if (section == "ribbon") {
+            if (key == "order" || key == "hidden") {
+                handled=true;
+                const auto* array=std::get_if<std::vector<std::string>>(&*value);
+                if (!array || array->size()>6 || (key=="order" && array->size()!=6)) error(line_number,equal+2,"Ribbon lists must contain registered bindings; order requires all six");
+                else {
+                    std::array<bool,6> seen{};
+                    if(key=="hidden") config.ribbon.hidden.fill(false);
+                    for(std::size_t i=0;i<array->size();++i) {
+                        const auto binding=ribbon_binding((*array)[i]);
+                        if(!binding || seen[ribbon_index(*binding)]) {error(line_number,equal+2,"Unknown or duplicate ribbon binding");break;}
+                        seen[ribbon_index(*binding)]=true;
+                        if(key=="order") config.ribbon.order[i]=*binding;
+                        else config.ribbon.hidden[ribbon_index(*binding)]=true;
+                    }
+                }
             }
         } else if (section == "font") {
             string_field("family", config.font.family); number_field("size_dip", config.font.size_dip, 6, 72, false); bool_field("ligatures", config.font.ligatures);
@@ -302,6 +332,7 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
         if (!assigned.contains({"theme", "foreground"})) config.theme.foreground = base.foreground;
         if (!assigned.contains({"theme", "chrome"})) config.theme.chrome = base.chrome;
         if (!assigned.contains({"theme", "accent"})) config.theme.accent = base.accent;
+        for (std::size_t i=0;i<16;++i) if (!assigned.contains({"theme", "ansi"+std::to_string(i)})) config.theme.ansi[i]=base.ansi[i];
     }
     auto valid = validate_config(config, platform); if (!valid) error(0, 0, valid.error);
     if (result.errors.empty()) result.config = std::move(config);
@@ -325,8 +356,9 @@ std::string serialize_config(const Config& config, Platform platform) {
         << "\ndefault_profile = " << quote(config.default_profile) << "\nallow_terminal_shortcut_override = "
         << (config.allow_terminal_shortcut_override ? "true" : "false") << "\n\n[theme]\nname = " << quote(config.theme.name)
         << "\nbackground = " << quote(config.theme.background) << "\nforeground = " << quote(config.theme.foreground)
-        << "\nchrome = " << quote(config.theme.chrome) << "\naccent = " << quote(config.theme.accent)
-        << "\n\n[appearance]\nbackground_opacity = " << config.appearance.background_opacity
+        << "\nchrome = " << quote(config.theme.chrome) << "\naccent = " << quote(config.theme.accent);
+    for (std::size_t i=0;i<16;++i) out << "\nansi" << i << " = " << quote(config.theme.ansi[i]);
+    out << "\n\n[appearance]\nbackground_opacity = " << config.appearance.background_opacity
         << "\nshow_clock = " << (config.appearance.show_clock ? "true" : "false")
         << "\nbackdrop = " << quote(config.appearance.backdrop == BackdropPreference::automatic ? "auto" : config.appearance.backdrop == BackdropPreference::mica ? "mica" : config.appearance.backdrop == BackdropPreference::acrylic ? "acrylic" : "none")
         << "\nreduced_motion = " << quote(config.appearance.reduced_motion == ReducedMotionPreference::system ? "system" : config.appearance.reduced_motion == ReducedMotionPreference::enabled ? "enabled" : "disabled")
@@ -353,6 +385,11 @@ std::string serialize_config(const Config& config, Platform platform) {
         }
         out << "]\n";
     }
+    out << "\n[ribbon]\norder = [";
+    for(std::size_t i=0;i<config.ribbon.order.size();++i) {if(i) out << ", ";out << quote(ribbon_bindings[ribbon_index(config.ribbon.order[i])].id);}
+    out << "]\nhidden = [";bool first=true;
+    for(const auto& binding:ribbon_bindings) if(config.ribbon.hidden[ribbon_index(binding.binding)]) {if(!first) out << ", ";first=false;out << quote(binding.id);}
+    out << "]\n";
     return out.str();
 }
 std::string_view config_format_documentation() noexcept {
@@ -368,13 +405,21 @@ default_profile = "default"
 allow_terminal_shortcut_override = false
 [theme]
 name = "graphite" # graphite, instrument, daylight, custom
-# Optional #RRGGBB: background, foreground, chrome, accent.
+# Optional #RRGGBB: background, foreground, chrome, accent, ansi0 through ansi15.
+# Built-ins: graphite, instrument, daylight, midnight, evergreen, aubergine, ember, ink.
+# Use name = "custom" for a data-only palette; no scripts, URLs or plugins.
 [appearance]
 show_clock = true
 background_opacity = 0.94 # 0.0..1.0; default canvas only, not text or ANSI colors
 backdrop = "acrylic" # auto, none, mica or acrylic; unsupported hosts use opaque
 reduced_motion = "system" # system, enabled or disabled; default follows the OS
 # High contrast and unsupported renderers use opaque backgrounds.
+[ribbon]
+# All six allowlisted bindings, once each; left-to-right placement.
+order = ["session.directory", "session.git", "session.status", "workspace.background", "agent.status", "clock.local"]
+hidden = [] # Any subset; appearance.show_clock remains the legacy clock switch.
+# Lower-priority items yield at narrow widths. Agent attention cannot be hidden.
+# Background restore remains available from the keyboard command palette.
 [font]
 family = "Cascadia Mono"
 size_dip = 15

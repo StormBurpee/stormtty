@@ -1,4 +1,5 @@
 #pragma once
+#include "stormtty/ribbon.hpp"
 
 #include "stormtty/workspace.hpp"
 #include "stormtty/project_workspaces.hpp"
@@ -189,7 +190,7 @@ inline BackgroundFooterLayout layout_background_footer(Rect footer, std::size_t 
 // Active shell context and background sessions share one strip. Geometry is
 // presentation-only: all restore targets remain host-owned SessionIds.
 struct SessionFooterLayout {
-    Rect directory, git, status, divider, clock;
+    Rect directory, git, status, divider, clock, agent;
     BackgroundFooterLayout background;
 };
 inline SessionFooterLayout layout_session_footer(Rect footer, std::size_t parked,
@@ -220,6 +221,49 @@ inline SessionFooterLayout layout_session_footer(Rect footer, std::size_t parked
         const double x=footer.x+inset+context+gap;
         result.divider={x-gap/2,footer.y+6,1,std::max(0.0,footer.height-12)};
         result.background=layout_background_footer({x,footer.y,background_width,footer.height},parked,false);
+    }
+    return result;
+}
+
+// Configured ribbon uses one allocation for painting, hit testing and tooltips.
+// Priority controls admission; user order controls placement. Hidden/overflowed
+// items have empty geometry. Background actions remain in the command registry.
+inline SessionFooterLayout layout_session_footer(Rect footer, std::size_t parked,
+        bool active, bool git, bool status, bool clock, const RibbonConfig& config,
+        RibbonHostData host={}) {
+    SessionFooterLayout result;
+    if(footer.width<=0 || footer.height<12 || !valid_ribbon(config)) return result;
+    std::array<bool,6> shown{active,active&&git,active&&status,parked!=0,host.agent_available,clock};
+    for(std::size_t i=0;i<shown.size();++i) shown[i]=shown[i] && !config.hidden[i];
+    if(host.session_error) shown[ribbon_index(RibbonBinding::status)]=true;
+    if(host.agent_attention) shown[ribbon_index(RibbonBinding::agent)]=true;
+    std::array<double,6> widths{};
+    const double available=std::max(0.0,footer.width-16);
+    double used=0;std::size_t count=0;
+    auto priority=ribbon_bindings;
+    if(host.session_error) priority[ribbon_index(RibbonBinding::status)].priority=99;
+    std::stable_sort(priority.begin(),priority.end(),[](const auto& a,const auto& b){return a.priority>b.priority;});
+    for(const auto& item:priority) {
+        const auto i=ribbon_index(item.binding);if(!shown[i]) continue;
+        const double gap=count?12:0;
+        if(used+gap+item.minimum<=available) {widths[i]=item.minimum;used+=gap+item.minimum;++count;}
+        else if(item.binding==RibbonBinding::agent && host.agent_attention && !count) {widths[i]=available;used=available;++count;}
+    }
+    // Grow admitted items without stealing room from more important values.
+    for(const auto& item:priority) {auto& width=widths[ribbon_index(item.binding)];if(width<=0) continue;
+        const double extra=std::min(available-used,item.preferred-width);width+=extra;used+=extra;}
+    double x=footer.x+8;
+    for(auto item:config.order) {
+        const double width=widths[ribbon_index(item)];if(width<=0) continue;
+        const Rect rect{x,footer.y+3,width,footer.height-6};x+=width+12;
+        switch(item) {
+        case RibbonBinding::directory:result.directory=rect;break;
+        case RibbonBinding::git:result.git=rect;break;
+        case RibbonBinding::status:result.status=rect;break;
+        case RibbonBinding::clock:result.clock=rect;break;
+        case RibbonBinding::agent:result.agent=rect;break;
+        case RibbonBinding::background:result.background=layout_background_footer({rect.x,footer.y,rect.width,footer.height},parked,false);break;
+        }
     }
     return result;
 }

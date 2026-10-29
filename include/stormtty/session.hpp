@@ -2,6 +2,7 @@
 #include "stormtty/process.hpp"
 #include "stormtty/terminal.hpp"
 #include <chrono>
+#include <array>
 #include <functional>
 #include <memory>
 #include <string>
@@ -60,7 +61,7 @@ public:
     // queue capacity. Non-opaque colors throw invalid_argument before enqueue.
     // A retained exited document may update its display defaults; closing or
     // disposed sessions return closed. No process is launched or written to.
-    SessionSendResult set_default_colors(Color foreground, Color background);
+    SessionSendResult set_default_colors(Color foreground, Color background, std::optional<std::array<Color,16>> ansi = {});
     // Latest typing request wins; superseded pending search/navigation commands
     // are coalesced, and in-progress work is cancelled on the actor. Results are
     // an owned mailbox; reading it never scans terminal contents on the UI thread.
