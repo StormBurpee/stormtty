@@ -20,4 +20,10 @@ class ResultTests(unittest.TestCase):
     def test_baseline_and_privacy(self):
         lines,ok,_=m.sanitized(self.data(False)+b'secret/user/path\n',False)
         self.assertTrue(ok);self.assertNotIn('secret','\n'.join(lines))
+    def test_numeric_verifier_diagnostic_cannot_validate_rejection(self):
+        diagnostic=b'SHIPPING_VERIFY sample=1 stage=4 object=6 win32_error=32\n'
+        lines,ok,_=m.sanitized(self.data(True).replace(b'adoption=1',b'adoption=0',1)+diagnostic,True)
+        self.assertFalse(ok);self.assertIn(diagnostic.decode().strip(),lines)
+        lines,_,_=m.sanitized(self.data(False)+b'SHIPPING_VERIFY sample=1 stage=path object=user win32_error=secret\n',False)
+        self.assertNotIn('secret','\n'.join(lines))
 if __name__=='__main__':unittest.main()

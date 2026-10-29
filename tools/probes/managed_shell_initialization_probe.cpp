@@ -22,8 +22,11 @@ std::string value(const std::vector<ProcessEnvironmentEntry>& entries,std::strin
 struct Fixture {
     fs::path root;
     Fixture(){PWSTR raw{};check(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData,0,nullptr,&raw)));
-        root=fs::path(raw)/(L"StormTTY initialization fixture "+std::to_wstring(GetCurrentProcessId())+L" "+std::to_wstring(GetTickCount64()));
-        CoTaskMemFree(raw);check(fs::create_directory(root));}
+        const fs::path local(raw);CoTaskMemFree(raw);
+        GUID id{};check(SUCCEEDED(CoCreateGuid(&id)));
+        wchar_t text[40]{};check(StringFromGUID2(id,text,40)>0);
+        root=local/(L"StormTTY initialization fixture "+std::wstring(text));
+        check(fs::create_directory(root));}
     ~Fixture(){std::error_code ignored;fs::remove_all(root,ignored);}
 };
 int main(){unsigned stage{};try{
@@ -67,7 +70,7 @@ int main(){unsigned stage{};try{
     check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="0");after->finished();
     // A controller disappearing without ready/finished must not make a possibly
     // interrupted executable cache eligible again on the next launch.
-    Fixture abandoned_fixture;
+    stage=31;Fixture abandoned_fixture;
     auto abandoned=managed_shell_initialization_at(abandoned_fixture.root,{});
     bool held{};
     std::thread departed([&]{std::vector<ProcessEnvironmentEntry> e;abandoned->prepare(e);held=abandoned->ready_event()!=0;});
@@ -83,7 +86,7 @@ int main(){unsigned stage{};try{
     auto uncertain=managed_shell_initialization_at(abandoned_fixture.root,{});env.clear();uncertain->prepare(env);
     stage=42;check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1");uncertain->finished();abandoned.reset();
     // Same-user second process, not a same-thread recursive mutex acquisition.
-    Fixture process_fixture;stage=5;
+    stage=5;Fixture process_fixture;
     std::wstring release_name=L"Local\\StormTTY-InitProbe-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
     HANDLE release=CreateEventW(nullptr,TRUE,FALSE,release_name.c_str());check(release && GetLastError()!=ERROR_ALREADY_EXISTS);
     struct Event {HANDLE h;~Event(){CloseHandle(h);}} release_guard{release};
@@ -104,7 +107,7 @@ int main(){unsigned stage{};try{
     check(observed->held.load());auto cross=managed_shell_initialization_at(process_fixture.root,{});env.clear();cross->prepare(env);
     check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1" && !value(env,"STORMTTY_NATIVE_ZSH_STATE").empty());cross->finished();
     check(SetEvent(release));check(holder->wait_for_exit(20s));check(observed->code && *observed->code==0);
-    Fixture acl_fixture;const auto acl_state=prepare_managed_shell_state_at(acl_fixture.root,false);check(static_cast<bool>(acl_state));
+    stage=6;Fixture acl_fixture;const auto acl_state=prepare_managed_shell_state_at(acl_fixture.root,false);check(static_cast<bool>(acl_state));
     const auto public_file=acl_state.directory/L"public-runtime-fixture";std::ofstream(public_file)<<"authored fixture";
     auto checker=managed_runtime_access_check();stage=6;
     HANDLE file=CreateFileW(public_file.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr);

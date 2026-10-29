@@ -245,6 +245,9 @@ void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture
     if(shipping) {
         const auto diagnostics=owned.value->diagnostics();
         require(diagnostics.windows_control && diagnostics.windows_control->initialization_wakes==1);
+        std::cout<<"SHIPPING_VERIFY sample="<<sample<<" stage="<<shipping_plan.observation->verification_stage.load()
+            <<" object="<<shipping_plan.observation->verification_object.load()
+            <<" win32_error="<<shipping_plan.observation->verification_win32_error.load()<<'\n';
         std::cout<<"SHIPPING_SAMPLE sample="<<sample<<" adoption="<<shipping_plan.observation->adoption.load()
             <<" verification_publish_ms="<<shipping_plan.observation->verification_publish_ms.load()<<" native_ack=1\n";
     }

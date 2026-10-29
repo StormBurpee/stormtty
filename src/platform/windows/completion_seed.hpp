@@ -23,9 +23,11 @@ struct Handle {
     ~Handle(){if(h!=INVALID_HANDLE_VALUE) CloseHandle(h);}
 };
 inline std::string utf8(const fs::path& p) {const auto s=p.generic_u8string();return {reinterpret_cast<const char*>(s.data()),s.size()};}
-inline Handle open(const fs::path& p, bool directory) {
+struct VerificationDiagnostic {unsigned stage{}, object{}, win32_error{};};
+inline Handle open(const fs::path& p, bool directory, VerificationDiagnostic* diagnostic=nullptr) {
     Handle h(CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    if(h.h==INVALID_HANDLE_VALUE && diagnostic)diagnostic->win32_error=GetLastError();
     check(h.h!=INVALID_HANDLE_VALUE);
     BY_HANDLE_FILE_INFORMATION info{};
     check(GetFileInformationByHandle(h.h,&info) && GetFileType(h.h)==FILE_TYPE_DISK);
@@ -34,8 +36,8 @@ inline Handle open(const fs::path& p, bool directory) {
     check(directory || info.nNumberOfLinks==1);
     return h;
 }
-inline std::string read(const fs::path& p, std::size_t limit) {
-    auto handle=open(p,false);
+inline std::string read(const fs::path& p, std::size_t limit, VerificationDiagnostic* diagnostic=nullptr) {
+    auto handle=open(p,false,diagnostic);
     LARGE_INTEGER size{};check(GetFileSizeEx(handle.h,&size) && size.QuadPart>=0 && static_cast<unsigned long long>(size.QuadPart)<=limit);
     std::string s(static_cast<std::size_t>(size.QuadPart),'\0'); DWORD count{};
     check(ReadFile(handle.h,s.data(),static_cast<DWORD>(s.size()),&count,nullptr) && count==s.size());return s;
@@ -69,11 +71,13 @@ inline std::string posix(const fs::path& p) {
     return std::string("/")+drive+s.substr(2);
 }
 inline bool adopt(const fs::path& runtime, const fs::path& package, const fs::path& local,
-                  const fs::path& state, std::string_view expected_identity = {}) noexcept {
+                  const fs::path& state, std::string_view expected_identity = {}, VerificationDiagnostic* diagnostic=nullptr) noexcept {
+    const auto stage=[&](unsigned value){if(diagnostic)diagnostic->stage=value;};
+    const auto object=[&](unsigned value){if(diagnostic)diagnostic->object=value;};
     try {
         // Hold each runtime ancestor against replacement, then every inventoried
         // object against writes/deletion while validating and publishing.
-        std::function<bool(std::uintptr_t,bool)> access;
+        stage(1);std::function<bool(std::uintptr_t,bool)> access;
         if(!expected_identity.empty()) {
             check(hex(expected_identity));
             access=stormtty::managed_runtime_access_check();
@@ -82,14 +86,15 @@ inline bool adopt(const fs::path& runtime, const fs::path& package, const fs::pa
             if(access)check(access(reinterpret_cast<std::uintptr_t>(handle),ancestor));
         };
         std::vector<Handle> guards;
-        auto ancestor=fs::absolute(runtime).root_path();guards.push_back(open(ancestor,true));inspect(guards.back().h,true);
+        stage(2);auto ancestor=fs::absolute(runtime).root_path();guards.push_back(open(ancestor,true,diagnostic));stage(3);inspect(guards.back().h,true);
+        unsigned index{};
         for(const auto& part:fs::absolute(runtime).relative_path()){
-            ancestor/=part;guards.push_back(open(ancestor,true));inspect(guards.back().h,ancestor!=fs::absolute(runtime));
+            object(++index);stage(4);ancestor/=part;guards.push_back(open(ancestor,true,diagnostic));stage(5);inspect(guards.back().h,ancestor!=fs::absolute(runtime));
         }
-        const auto identity=read(package/L"identity.txt",8*1024*1024);
-        Algorithm algorithm;
+        object(0);stage(6);const auto identity=read(package/L"identity.txt",8*1024*1024,diagnostic);
+        stage(7);Algorithm algorithm;
         if(!expected_identity.empty())check(hex(expected_identity) && hash_bytes(identity,algorithm)==expected_identity);
-        std::vector<std::string> lines;std::size_t offset{};
+        stage(8);std::vector<std::string> lines;std::size_t offset{};
         while(offset<identity.size()){const auto end=identity.find('\n',offset);check(end!=identity.npos);lines.push_back(identity.substr(offset,end-offset));offset=end+1;}
         check(lines.size()>6 && lines[0]=="STORMTTY_SEED_V1");
         const auto version=lines[1];check(!version.empty() && version.size()<32 && version.find_first_not_of("0123456789.")==version.npos);
@@ -116,15 +121,19 @@ inline bool adopt(const fs::path& runtime, const fs::path& package, const fs::pa
         }
         check(expected.size()<=65536);
         unsigned long long total{};std::set<std::string> actual;
+        index=0;
         for(const auto& entry:fs::recursive_directory_iterator(runtime)){
+            object(++index);stage(9);
             const auto name=utf8(entry.path().lexically_relative(runtime));auto found=expected.find(name);check(found!=expected.end());
-            const bool directory=found->second=="D";auto handle=open(entry.path(),directory);
+            const bool directory=found->second=="D";auto handle=open(entry.path(),directory,diagnostic);
             // Validate each directory BEFORE iterator increment descends into it.
-            inspect(handle.h,false);
+            stage(10);inspect(handle.h,false);
+            stage(11);
             if(!directory)check(hash(handle.h,algorithm,total)==found->second);
             guards.push_back(std::move(handle));actual.insert(name);
         }
-        check(actual.size()==expected.size());
+        stage(12);check(actual.size()==expected.size());
+        object(0);stage(13);
         // Independently reconstruct the managed pre-compinit order. An identity
         // with reordered paths is not accepted merely because files match.
         std::vector<std::string> ordered{
@@ -140,25 +149,26 @@ inline bool adopt(const fs::path& runtime, const fs::path& package, const fs::pa
             std::sort(children.begin(),children.end());ordered.insert(ordered.end(),children.begin(),children.end());
         }
         check(ordered.size()==path_count && std::equal(ordered.begin(),ordered.end(),lines.begin()+5));
-        auto seed_handle=open(package/L"seed.dump",false);unsigned long long seed_size{};
-        check(hash(seed_handle.h,algorithm,seed_size)==lines[3] && seed_size<=1024*1024);
+        stage(14);auto seed_handle=open(package/L"seed.dump",false,diagnostic);unsigned long long seed_size{};
+        stage(15);check(hash(seed_handle.h,algorithm,seed_size)==lines[3] && seed_size<=1024*1024);
         // Read executable text from the SAME locked handle whose hash matched,
         // never reopen a path that a package-ancestor rename could redirect.
-        LARGE_INTEGER zero{};check(SetFilePointerEx(seed_handle.h,zero,nullptr,FILE_BEGIN));
+        stage(16);LARGE_INTEGER zero{};check(SetFilePointerEx(seed_handle.h,zero,nullptr,FILE_BEGIN));
         std::string text(static_cast<std::size_t>(seed_size),'\0');DWORD read_count{};
         check(ReadFile(seed_handle.h,text.data(),static_cast<DWORD>(text.size()),&read_count,nullptr) && read_count==text.size());
         check(text.starts_with("#files: ") && text.find("version: "+version+"\n")!=text.npos);
         text+="\n#omz revision: "+lines[2]+"\n#omz fpath: "+fpath+"\n";
         // Private-cache contents/existing executable caches are checked under
         // native directory guards by the publisher. Any rejection is fallback.
-        return stormtty::publish_managed_completion_seed_at(local,path("zcompdump-"+version).wstring(),text);
+        stage(17);const bool published=stormtty::publish_managed_completion_seed_at(local,path("zcompdump-"+version).wstring(),text);
+        if(published)stage(18);return published;
     } catch(...) {return false;}
 }
 // The anchor must come from an app-compiled build output, never environment,
 // user configuration, or a checksum sidecar adjacent to the package.
 inline bool adopt_build_trusted(const fs::path& runtime,const fs::path& package,const fs::path& local,
-    const fs::path& state,std::string_view compiled_identity) noexcept {
+    const fs::path& state,std::string_view compiled_identity,VerificationDiagnostic* diagnostic=nullptr) noexcept {
     if(!hex(compiled_identity))return false;
-    return adopt(runtime,package,local,state,compiled_identity);
+    return adopt(runtime,package,local,state,compiled_identity,diagnostic);
 }
 } // namespace completion_seed

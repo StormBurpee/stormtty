@@ -26,6 +26,7 @@ def sanitized(data,candidate):
         if m:=SAMPLE.fullmatch(line):
             lines.append(line);samples.append((int(m[1]),int(m[2])))
             metrics.append({'sample':int(m[1]),'fresh':bool(int(m[2])),'total_ms':float(m[3])+float(m[4])})
+        elif re.fullmatch(r'SHIPPING_VERIFY sample=[1-6] stage=[0-9]+ object=[0-9]+ win32_error=[0-9]+',line):lines.append(line)
         elif m:=SHIPPING.fullmatch(line):lines.append(line);adoptions.append((int(m[1]),int(m[2])))
         elif line==RESULT or re.fullmatch(r'STARTUP_RESULT code=1 sample=[0-9]+ stage=[0-9]+',line):lines.append(line)
     valid=(samples==[(i,int(i<=3)) for i in range(1,7)] and RESULT in lines and

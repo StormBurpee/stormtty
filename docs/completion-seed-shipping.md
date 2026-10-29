@@ -59,3 +59,51 @@ source push on `diagnostic/completion-seed-shipping` qualifies under the unchang
 exact branch/job guard. There is still no main, pull-request, or dispatch trigger.
 This permits owned probe and lifecycle source corrections without dummy workflow
 edits; it does not authorize retrying an unchanged failure until green.
+
+## Stage-split run 40866040477: installed path measured, build-tree rejection
+
+At remote `98ba115082d839c3aaec057236283600738c6a3d` / tree
+`bba582cee7c57327c3152d30bf0bb622d7e36820`, all lifecycle checks passed:
+`recovery_no_dump=1 recovery_event=1 state_valid=1 marker_present=1 marker_error=0`.
+Installed app smoke and exact build/install identity also passed. The earlier
+stage-4 failure was not reproduced; no behavioral fix was in this run.
+
+A concrete probe defect was found independently: fixture names used PID plus
+coarse `GetTickCount64`, allowing two fast consecutive fixtures to collide.
+The next fixture constructor ran before setting stage 5, so a collision could
+be reported as stage 4. The correction uses a fresh GUID per authored fixture
+and sets stages before construction. The old log does not prove this was its
+sole cause. The separate durable journal remains pending native qualification.
+
+All six installed fresh samples adopted; all six installed warm samples skipped
+adoption. Totals include state preparation plus launch-to-ZLE, with the entire
+native ACL/hash/publication cost already inside launch (never added twice):
+
+| Installed provider / condition | Fresh min / median / max seconds | Warm min / median / max seconds |
+|---|---|---|
+| Inbox baseline | 4.732 / 4.821 / 4.923 | .633 / .642 / .707 |
+| Inbox seed | 1.870 / 2.025 / 2.048 | .711 / .743 / .760 |
+| Packaged baseline | 4.764 / 4.834 / 5.829 | .743 / .756 / .769 |
+| Packaged seed | 1.919 / 1.966 / 1.980 | .766 / .806 / .844 |
+
+Full installed verification/publication cost was 1.181–1.243 seconds. These are
+fresh private states, not controlled cold OS caches. Warm candidates were slower
+in this run; no warm improvement is claimed. Every actual first-Tab/module check
+passed; all child runs exited/reaped without timeout/truncation/cleanup error.
+The build-tree candidate rejected seed adoption in .65–.87ms and correctly fell
+back to ordinary completion (fresh 4.873–5.050s); it is **not** a successful seed
+sample. This failed the overall qualification despite installed-path gains.
+ACL/handle/verification rejection remains to be localized without weakening it.
+Artifact 12894720800 ZIP SHA256:
+`9def3dc2422aef4cf9b4ef6fc15b7e892a6250fec0579aa5ca23ca890cdf1ce2`.
+
+The rejection-localization follow-on emits only `SHIPPING_VERIFY` sample,
+verification stage, ordinal object number and immediate failed-CreateFile Win32
+error (0 unless such an open failed). It preserves all checks, rights, sharing,
+compiled trust, hash work and fallback behavior. Stage map: 1 policy creation;
+2/3 root open/ACL; 4/5 ancestor open/ACL; 6 identity read; 7 anchor hash;
+8 metadata parse; 9/10/11 inventory open/ACL/hash; 12 inventory count;
+13 ordered fpath; 14/15/16 seed open/hash/read; 17 private publication;
+18 successfully adopted. Object is ancestor depth or inventory ordinal, never a
+path/name. This localizes build-vs-install rejection without treating an
+adoption failure as successful performance evidence.
