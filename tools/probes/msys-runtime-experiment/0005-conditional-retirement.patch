@@ -1,0 +1,52 @@
+--- a/winsup/cygwin/fhandler/console.cc
++++ b/winsup/cygwin/fhandler/console.cc
+@@ -1222,7 +1222,7 @@
+ }
+ 
+ bool
+-fhandler_console::send_winch_maybe ()
++fhandler_console::send_winch_maybe (size_t retire_before_signal)
+ {
+   SHORT y = con.dwWinSize.Y;
+   SHORT x = con.dwWinSize.X;
+@@ -1235,6 +1235,12 @@
+       if (wincap.has_con_24bit_colors () && !con_is_legacy
+ 	  && wincap.has_con_broken_tabs ())
+ 	fix_tab_position (get_output_handle (), con.owner);
++      /* Only the resize-event caller supplies a peek prefix.  Retire it
++         while input_mutex still protects that prefix, before signal
++         delivery can let the console master remove the resize record.
++         Unchanged-size events retain their existing processing path. */
++      if (retire_before_signal)
++        discard_key_events (retire_before_signal);
+       /* longjmp() may be called in the signal handler like less,
+ 	 so release input_mutex temporarily before kill_pgrp(). */
+       release_input_mutex ();
+@@ -1832,11 +1838,11 @@
+ 	  break;
+ 
+ 	case WINDOW_BUFFER_SIZE_EVENT:
+-	  if (send_winch_maybe ())
+-	    {
+-	      stat = input_winch;
+-	      goto out;
+-	    }
++	  if (send_winch_maybe (i + 1))
++	    /* The prefix was already retired before releasing input_mutex.
++               Preserve the original input_winch result, but never discard
++               that stale prefix again or resume this peek snapshot. */
++            return input_winch;
+ 	  /* fall through */
+ 	default:
+ 	  continue;
+--- a/winsup/cygwin/local_includes/fhandler.h
++++ b/winsup/cygwin/local_includes/fhandler.h
+@@ -2307,7 +2307,7 @@
+   void fixup_after_exec () {fixup_after_fork_exec (true);}
+   void fixup_after_fork (HANDLE) {fixup_after_fork_exec (false);}
+   void set_close_on_exec (bool val);
+-  bool send_winch_maybe ();
++  bool send_winch_maybe (size_t retire_before_signal = 0);
+   void setup ();
+   bool set_unit ();
+   static bool need_invisible (bool force = false);
