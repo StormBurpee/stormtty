@@ -21,6 +21,51 @@ struct ChromeLayout {
     bool compact{};
 };
 
+// One geometry contract for palette painting, keyboard paging and pointer hits.
+// The detail shelf is deliberately separate from result rows: descriptions do
+// not make every action a two-line card, while the selected operation is clear.
+struct CommandPaletteLayout {
+    Rect panel, search, detail, hints;
+    std::size_t first{}, rows{};
+    std::vector<Rect> row_bounds;
+};
+inline CommandPaletteLayout layout_command_palette(double width, double height,
+        std::span<const double> row_heights, std::size_t selected, bool rename=false) {
+    width=std::max(0.0,width); height=std::max(0.0,height);
+    const double margin=std::min(16.0,width/2), w=std::min(640.0,width-2*margin);
+    const double y_margin=std::min(8.0,height/2);
+    const double preferred_y=std::min(72.0,std::max(y_margin,height*.12));
+    const double header=58, footer=rename?28:64;
+    const double available=std::max(0.0,height-2*y_margin);
+    const double budget=std::max(0.0,available-header-footer);
+    selected=row_heights.empty()?0:std::min(selected,row_heights.size()-1);
+    auto row_height=[&](std::size_t i){return std::clamp(row_heights[i],36.0,48.0);};
+    std::size_t first=selected;
+    double body=row_heights.empty()?0:std::min(budget,row_height(selected));
+    while (!rename && first && selected-first<7 && body+row_height(first-1)<=budget) body+=row_height(--first);
+    std::vector<double> heights;
+    body=0;
+    if (!rename) for(auto i=first;i<row_heights.size() && heights.size()<8;++i) {
+        const auto rh=std::min(budget,row_height(i));
+        if (rh<=0 || body+rh>budget) break;
+        heights.push_back(rh); body+=rh;
+    }
+    const double h=std::min(available,header+footer+(rename?0:std::max(std::min(48.0,budget),body)));
+    const double y=std::min(preferred_y,std::max(y_margin,height-h-y_margin));
+    CommandPaletteLayout out;
+    out.panel={(width-w)/2,y,w,h}; out.first=first; out.rows=heights.size();
+    // A tiny host can only show a clipped search field; no negative rectangles.
+    const double inset=std::min(20.0,w/2);
+    out.search={out.panel.x+inset,y+std::min(14.0,h),std::max(0.0,w-2*inset-40),std::min(26.0,std::max(0.0,h-14))};
+    const double hint_h=std::min(28.0,std::max(0.0,h-header));
+    out.hints={out.panel.x+inset,y+h-hint_h,std::max(0.0,w-2*inset),hint_h};
+    const double detail_h=rename?0:std::min(36.0,std::max(0.0,h-header-hint_h));
+    out.detail={out.panel.x+inset,out.hints.y-detail_h,std::max(0.0,w-2*inset),detail_h};
+    double top=y+header;
+    for (const auto rh:heights) { out.row_bounds.push_back({out.panel.x+std::min(8.0,w/2),top,std::max(0.0,w-16),rh}); top+=rh; }
+    return out;
+}
+
 // Keep the title at the window center, not the asymmetric draggable remainder.
 // Hide it rather than shift it into another control in a narrow window.
 inline Rect layout_window_title(const ChromeLayout& chrome, double right_limit) {

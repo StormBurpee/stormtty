@@ -382,7 +382,7 @@ private:
         std::optional<ProjectSessionReference> session;
         int score{};
     };
-    struct PaletteLayout { Rect panel; std::size_t first{}, rows{}; std::vector<Rect> row_bounds; };
+    using PaletteLayout = CommandPaletteLayout;
     std::vector<PaletteEntry> palette_commands() const;
     PaletteLayout palette_layout(std::span<const PaletteEntry>) const;
     CommandAvailability palette_availability(const PaletteEntry&) const;
@@ -1886,8 +1886,8 @@ void NativeWindow::settings_completed() {
         }
         config_=std::move(*result.config);
         settings_snapshot_.reset(); // The next editor obtains its own exact baseline.
-        notice_="Settings reloaded. Existing terminals kept; shell, scrollback and console choices apply to new sessions (CLI overrides still apply).";
-        if(config_.experimental_ai!=ai_enabled_)notice_+=" Experimental AI feature changes apply after restarting StormTTY.";
+        notice_="Settings reloaded.";
+        if(config_.experimental_ai!=ai_enabled_)notice_+=" Restart StormTTY to apply the feature change.";
         caret_schedule(true); changed(true);
         return;
     }
@@ -1934,11 +1934,11 @@ void NativeWindow::settings_completed() {
             catch (const std::exception& error) { apply_error=error.what(); }
             config_=std::move(completion->candidate);
             notice_=apply_error.empty()?(!options_.console_runtime_directory.empty()?
-                "Settings saved. --console-runtime overrides this launch; saved backend applies without that flag.":managed_shell_profile_ && options_.shell_runtime_override?
-                "Settings saved. --shell-runtime keeps managed Zsh for this launch; the saved shell applies without that override.":
-                "Settings saved. Shell and console backend apply to new tabs and panes; existing sessions are unchanged."):
+                "Settings saved. Console launch override is still active.":managed_shell_profile_ && options_.shell_runtime_override?
+                "Settings saved. Shell launch override is still active.":
+                "Settings saved."):
                 "Settings saved, but presentation could not update. Restart to apply: "+apply_error;
-            if(config_.experimental_ai!=ai_enabled_)notice_+=" Experimental AI feature changes apply after restarting StormTTY.";
+            if(config_.experimental_ai!=ai_enabled_)notice_+=" Restart StormTTY to apply the feature change.";
         } else settings_panel_.persistence_result(false,completion->saved.error);
         caret_schedule(true); changed(true);
     }
@@ -2046,27 +2046,10 @@ std::vector<NativeWindow::PaletteEntry> NativeWindow::palette_commands() const {
     return result;
 }
 NativeWindow::PaletteLayout NativeWindow::palette_layout(std::span<const PaletteEntry> entries) const {
-    const double w=std::min(640.0,std::max(0.0,width_-32));
-    const double preferred_y=std::min(72.0,std::max(16.0,height_*0.12));
-    const double budget=std::max(48.0,height_-preferred_y-102);
-    const auto selected=entries.empty()?0:std::min(palette_index_,entries.size()-1);
-    auto height=[&](std::size_t i){return entries[i].session || !palette_availability(entries[i]).enabled?48.0:36.0;};
-    std::size_t first=selected;
-    double body=entries.empty()?0:height(selected);
-    while (first && selected-first<7 && body+height(first-1)<=budget) body+=height(--first);
     std::vector<double> heights;
-    body=0;
-    if (!rename_open_) for (auto i=first;i<entries.size() && heights.size()<8;++i) {
-        const auto row_height=height(i);
-        if (!heights.empty() && body+row_height>budget) break;
-        heights.push_back(row_height); body+=row_height;
-    }
-    const double h=rename_open_?86:86+std::max(48.0,body);
-    const double y=std::min(preferred_y,std::max(8.0,height_-h-8));
-    PaletteLayout result{{(width_-w)/2,y,w,h},first,heights.size(),{}};
-    double top=y+58;
-    for (const auto row_height:heights) { result.row_bounds.push_back({result.panel.x+8,top,w-16,row_height}); top+=row_height; }
-    return result;
+    heights.reserve(entries.size());
+    for (const auto& entry:entries) heights.push_back(entry.session || !palette_availability(entry).enabled?48.0:36.0);
+    return layout_command_palette(width_,height_,heights,palette_index_,rename_open_);
 }
 CommandAvailability NativeWindow::palette_availability(const PaletteEntry& entry) const {
     if (!entry.session) return host_availability(entry.id,command_context());
@@ -2451,10 +2434,23 @@ WindowScene NativeWindow::scene() {
         const auto commands=palette_commands();
         const auto layout=palette_layout(commands);
         const auto [x,y,w,h]=layout.panel;
+        rectangle({x,y+4,w,h},{0,0,0,48},10);
         rectangle(layout.panel,raised,10,seam,1);
+        // A quiet search mark, drawn with native vectors rather than a font glyph.
+        if (!rename_open_) {
+            rectangle({x+20,y+19,10,10},{0,0,0,0},5,secondary,1.25);
+            line(x+29,y+28,x+34,y+33,secondary,1.25);
+        }
         rectangle({x+w-49,y+18,30,19},background,4,seam,1);
         label({x+w-44,y+20,24,15},"Esc",secondary,10);
-        label({x+20,y+16,w-90,24},query_.empty()?(rename_open_?(edit_text_action_?edit_text_hint_:"Tab name"):palette_background_only_?"Search background terminals…":"Type a command…"):query_,query_.empty()?secondary:text,16);
+        const double search_left=x+(rename_open_?20:46);
+        label({search_left,y+16,std::max(0.0,x+w-66-search_left),24},query_.empty()?(rename_open_?(edit_text_action_?edit_text_hint_:"Tab name"):palette_background_only_?"Search background terminals…":"Type a command…"):query_,query_.empty()?secondary:text,16);
+        // A stationary caret remains visible with reduced motion. Measure the
+        // actual chrome font; byte counts are not glyph widths (IME/Unicode).
+        ChromeText query_measure; query_measure.text=query_; query_measure.size_dip=16;
+        query_measure.rect={0,0,static_cast<float>(std::max(1.0,w)*scale_),24*static_cast<float>(scale_)};
+        const double caret_x=std::min(x+w-66,search_left+renderer_->measure_chrome_text(query_measure).width/scale_);
+        if (caret_x>=search_left) line(caret_x,y+18,caret_x,y+36,accent,1.25);
         line(x+1,y+50,x+w-1,y+50,seam);
         for (std::size_t row=0;row<layout.rows;++row) {
             const auto index=layout.first+row; const auto& command=commands[index];
@@ -2462,15 +2458,36 @@ WindowScene NativeWindow::scene() {
             const auto bounds=layout.row_bounds[row];
             const auto detail=!available.enabled?available.reason:command.session?std::string_view(command.description):std::string_view{};
             const double top=bounds.y+(detail.empty()?7:3);
-            if (index==std::min(palette_index_,commands.size()-1)) {
-                rectangle({bounds.x,bounds.y,bounds.width,bounds.height-4},background,5);
-                rectangle({bounds.x,bounds.y+7,3,bounds.height-18},accent,1);
+            const bool selected=index==std::min(palette_index_,commands.size()-1);
+            if (selected) {
+                rectangle({bounds.x,bounds.y,bounds.width,bounds.height-4},high_contrast_?background:blend(raised,accent,.13),5,high_contrast_?accent:Color{0,0,0,0},high_contrast_?1.0:0.0);
+                rectangle({bounds.x,bounds.y+7,2,bounds.height-18},accent,1);
+            }
+            // Action families are semantic, not decorative per-command badges.
+            // The same 16-DIP native line language as workspace navigation.
+            const Color mark=selected?accent:secondary;
+            const double ix=x+20, iy=top+3;
+            if (command.id.starts_with("workspace.")) {
+                rectangle({ix,iy+4,16,10},{0,0,0,0},1,mark,1);
+                line(ix,iy+4,ix,iy+1,mark); line(ix,iy+1,ix+6,iy+1,mark); line(ix+6,iy+1,ix+9,iy+4,mark);
+            } else if (command.id.starts_with("pane.")) {
+                rectangle({ix,iy,16,14},{0,0,0,0},2,mark,1);
+                if (command.id=="pane.split_down" || command.id=="pane.focus_down" || command.id=="pane.focus_up") line(ix,iy+7,ix+16,iy+7,mark);
+                else line(ix+8,iy,ix+8,iy+14,mark);
+            } else if (command.id.starts_with("tab.") || command.id.starts_with("window.")) {
+                rectangle({ix,iy,16,14},{0,0,0,0},2,mark,1); line(ix,iy+4,ix+16,iy+4,mark);
+            } else if (command.id.starts_with("settings.")) {
+                for (int n=0;n<3;++n) { const double yy=iy+2+n*5, knob=ix+(n==1?10:5); line(ix,yy,ix+16,yy,mark); rectangle({knob,yy-2,3,4},raised,1,mark,1); }
+            } else {
+                line(ix+1,iy+2,ix+6,iy+7,mark); line(ix+6,iy+7,ix+1,iy+12,mark); line(ix+9,iy+12,ix+15,iy+12,mark);
             }
             std::string shortcut;
             for (const auto& binding:config_.bindings) if (binding.command==command.id) { shortcut=format_key_chord(binding.chord,Platform::windows); break; }
-            const double key_width=shortcut.empty()?0:std::min(w*0.45,shortcut.size()*6.3+16);
-            label({x+20,top,w-40-key_width-(key_width?12:0),21},command.label,available.enabled?text:secondary,14);
-            if (!detail.empty()) label({x+20,top+21,w-40,17},std::string(detail),secondary,11);
+            ChromeText key_measure; key_measure.text=shortcut; key_measure.size_dip=10;
+            key_measure.rect={0,0,static_cast<float>(w*scale_),21*static_cast<float>(scale_)};
+            const double key_width=shortcut.empty()?0:std::min(w*.4,renderer_->measure_chrome_text(key_measure).width/scale_+16);
+            label({x+48,top,std::max(0.0,w-68-key_width-(key_width?12:0)),21},command.label,available.enabled?text:secondary,14,selected);
+            if (!detail.empty()) label({x+48,top+21,std::max(0.0,w-68),17},std::string(detail),secondary,11);
             if (key_width) {
                 rectangle({x+w-20-key_width,top,key_width,21},raised,4,seam,1);
                 label({x+w-12-key_width,top+3,key_width-16,15},shortcut,secondary,10);
@@ -2481,8 +2498,19 @@ WindowScene NativeWindow::scene() {
             label({x+20,y+83,w-40,18},query_.empty()?"Move a terminal to background to keep it running here.":"Try fewer letters or a different action name.",secondary,11);
         }
         const auto hint=rename_open_?"Enter  Save":palette_background_only_?"↑ ↓  Navigate     Enter  Restore":"↑↓  Move     Enter  Run     Alt+Enter  Shortcut";
-        line(x+1,y+h-29,x+w-1,y+h-29,seam);
-        label({x+20,y+h-22,w-40,16},hint,secondary,10);
+        line(x+1,layout.detail.y,x+w-1,layout.detail.y,seam);
+        if (!rename_open_ && !commands.empty()) {
+            const auto& selected=commands[std::min(palette_index_,commands.size()-1)];
+            const auto available=palette_availability(selected);
+            const auto description=available.enabled?selected.description:available.reason;
+            label({layout.detail.x,layout.detail.y+9,layout.detail.width,20},std::string(description),secondary,12);
+        }
+        const double count_width=!rename_open_ && w>=420?66:0;
+        label({layout.hints.x,layout.hints.y+6,std::max(0.0,layout.hints.width-count_width),16},hint,secondary,10);
+        if (count_width && !commands.empty()) {
+            label({x+w-80,layout.hints.y+6,60,16},std::to_string(std::min(palette_index_,commands.size()-1)+1)+" / "+std::to_string(commands.size()),secondary,10);
+            result.texts.back().alignment=ChromeTextAlignment::trailing;
+        }
     }
     if (palette_open_ || rename_open_) {
         closing_palette_primitives_.assign(result.primitives.begin()+palette_primitive_start,result.primitives.end());
@@ -3424,6 +3452,23 @@ bool NativeWindow::smoke_palette_evidence(SessionId parked) {
     smoke_chrome_time_=GetTickCount64()+1000;
     toggle_palette(); palette_transition_.finish();
     smoke_motion_capture(L"palette-commands",0);
+    MSG navigation{}; navigation.hwnd=hwnd_; navigation.message=WM_KEYDOWN; navigation.wParam=VK_END;
+    const auto transmitted=actor->info().bytes_sent;
+    if (!key_message(navigation)) return fail("Palette End was not consumed.");
+    auto all=palette_commands(); auto last_layout=palette_layout(all);
+    if (all.empty() || palette_index_!=all.size()-1 || last_layout.first+last_layout.rows!=all.size())
+        return fail("Palette End did not reveal the final result.");
+    smoke_motion_capture(L"palette-end",0);
+    navigation.wParam=VK_HOME; key_message(navigation);
+    if (palette_index_!=0) return fail("Palette Home did not restore the first result.");
+    RECT original{}; GetWindowRect(hwnd_,&original);
+    SetWindowPos(hwnd_,nullptr,0,0,static_cast<int>(480*scale_),static_cast<int>(480*scale_),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    smoke_motion_capture(L"palette-narrow",0);
+    SetWindowPos(hwnd_,nullptr,0,0,original.right-original.left,original.bottom-original.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    navigation.wParam=VK_ESCAPE; key_message(navigation);
+    if (palette_open_ || actor->info().bytes_sent!=transmitted) return fail("Palette navigation leaked terminal input.");
+    toggle_palette(); palette_transition_.finish();
+    if (!query_.empty() || palette_index_!=0) return fail("Repeated palette opening retained stale navigation.");
     query_="splr";
     auto entries=palette_commands();
     if (entries.empty() || entries.front().id!="pane.split_right") return fail("Palette fuzzy ranking did not resolve split-right abbreviation.");
@@ -4366,7 +4411,11 @@ void NativeWindow::position_ime() {
     POINT position{}; RECT exclusion{};
     if (palette_open_ || rename_open_) {
         const auto panel=palette_layout({}).panel;
-        position={static_cast<LONG>((panel.x+20)*scale_),static_cast<LONG>((panel.y+16)*scale_)};
+        ChromeText measure; measure.text=query_; measure.size_dip=16;
+        measure.rect={0,0,static_cast<float>(panel.width*scale_),24*static_cast<float>(scale_)};
+        const double start=panel.x+(rename_open_?20:46);
+        const double caret=std::max(start,std::min(panel.x+panel.width-66,start+renderer_->measure_chrome_text(measure).width/scale_));
+        position={static_cast<LONG>(caret*scale_),static_cast<LONG>((panel.y+16)*scale_)};
         exclusion={position.x,position.y,position.x+1,position.y+static_cast<LONG>(20*scale_)};
     } else for (const auto& pane:layout_.panes) if (pane.pane==workspace().active_pane()) {
         const auto content=content_bounds(pane); const auto metrics=renderer_->metrics();

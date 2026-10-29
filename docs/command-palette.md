@@ -46,3 +46,31 @@ Physical review remains separate: narrow/wide windows and DPI, typography and
 clipping, IME candidate placement, repeated open/Escape, Alt+Enter shortcut
 editing, and restore of a running/exited background terminal. No browser or
 mock screenshot substitutes for this review.
+
+## Craft pass: action, then context
+
+The native palette uses the same line-drawn folder, pane and terminal language
+as workspace navigation. A restrained accent wash marks the selected action;
+its description lives in one shared detail shelf, rather than repeating a
+second line beneath every result. A position indicator makes long keyboard
+navigation visible. Shortcut and query-caret widths use native DirectWrite
+measurement, not byte-count estimates. IME placement follows that measured
+caret. No terminal output is animated and the existing reduced-motion policy
+continues to disable the palette reveal.
+
+`layout_command_palette` is the shared painting/hit-testing/page geometry.
+Portable tests cover empty results, mixed-height rows, first/last/stale indexes,
+tiny through wide windows, and compact rename mode. Native `--smoke-projects`
+also exercises End/Home, Escape/reopen without terminal input, and captures
+`-palette-end.png` and a real resized `-palette-narrow.png` alongside the
+existing states. `.github/workflows/native-craft.yml` publishes those actual
+frames early on `feature/native-craft` or manual dispatch. This is not a claim
+of physical keyboard, high-DPI or IME qualification.
+
+Design reference: [Anthropic frontend-design skill](https://github.com/anthropics/skills/blob/main/skills/frontend-design/SKILL.md),
+reviewed 29 October 2026: make the hierarchy specific to the tool, use motion
+in response to action, and remove decoration that does not help navigation.
+StormTTY keeps its own Graphite tokens (`#11151B`, `#181D24`, `#EEEDEC`,
+`#8C9EFF`), native chrome typography and quiet workspace structure. This pass
+deliberately avoids a splash screen, staged startup delays, arbitrary palette
+changes, and any expansion of the paused AI interface.

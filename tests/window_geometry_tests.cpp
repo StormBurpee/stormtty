@@ -9,6 +9,25 @@ namespace { void require(bool condition, const char* message) {
 } }
 int main() {
     using namespace stormtty;
+    for (double width:{0.,24.,180.,320.,640.,1044.,1600.}) for(double height:{0.,32.,120.,240.,720.}) {
+        std::vector<double> rows(44,36); rows[3]=48; rows[43]=48;
+        for(std::size_t selected:{0u,3u,20u,43u,999u}) {
+            const auto p=layout_command_palette(width,height,rows,selected);
+            require(p.panel.x>=0 && p.panel.y>=0 && p.panel.x+p.panel.width<=width+.001 && p.panel.y+p.panel.height<=height+.001,"palette stays inside even tiny hosts");
+            require(p.rows==p.row_bounds.size() && p.rows<=8,"palette paging uses actual painted rows");
+            if(p.rows) require(p.first<=std::min(selected,rows.size()-1) && p.first+p.rows>std::min(selected,rows.size()-1),"selected palette result is always visible");
+            double bottom=p.panel.y;
+            for(const auto& row:p.row_bounds) {
+                require(row.width>=0 && row.height>0 && row.x>=p.panel.x && row.x+row.width<=p.panel.x+p.panel.width+.001 && row.y>=bottom && row.y+row.height<=p.detail.y+.001,"palette rows do not overlap the selected-action shelf");
+                bottom=row.y+row.height;
+            }
+            require(p.search.width>=0 && p.detail.width>=0 && p.hints.width>=0,"palette text geometry never negative");
+        }
+        const auto rename=layout_command_palette(width,height,rows,0,true);
+        require(rename.rows==0 && rename.detail.height==0,"rename remains a compact field, not a command list");
+    }
+    const auto empty_palette=layout_command_palette(1044,720,{},0);
+    require(empty_palette.rows==0 && empty_palette.panel.height==170,"empty search reserves useful feedback space");
     for (double width : {0., 24., 120., 300., 640., 1100.}) for (std::size_t count : {0u,1u,4u,256u}) {
         const auto footer=layout_background_footer({0,700,width,26},count);
         double right=0;
