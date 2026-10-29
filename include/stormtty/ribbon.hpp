@@ -12,7 +12,7 @@ inline constexpr std::array<RibbonBindingInfo,6> ribbon_bindings{{
     {RibbonBinding::directory,"session.directory","Directory",80,96,320},
     {RibbonBinding::git,"session.git","Git branch",60,88,180},
     {RibbonBinding::status,"session.status","Session status",90,64,80},
-    {RibbonBinding::background,"workspace.background","Background terminals",95,64,380},
+    {RibbonBinding::background,"workspace.background","Activity & background terminals",95,64,380},
     {RibbonBinding::agent,"agent.status","Agent status",100,88,160},
     {RibbonBinding::clock,"clock.local","Clock",20,44,44}
 }};
@@ -37,6 +37,7 @@ struct RibbonHostData {
     bool agent_available{}; bool agent_attention{}; bool session_error{};
     // Opt-in compact workspace summary: one Navigator target, not per-terminal chips.
     bool compact_background{};
-    bool background_attention{}; // Unread explicit command completion, not shell liveness.
+    bool background_attention{}; // Unread completion or Watch result, not shell liveness.
+    bool activity_watches{}; // Same binding, with room for truthful Watch status.
 };
 }

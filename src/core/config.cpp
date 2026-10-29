@@ -429,7 +429,8 @@ reduced_motion = "system" # system, enabled or disabled; default follows the OS
 order = ["session.directory", "session.git", "session.status", "workspace.background", "agent.status", "clock.local"]
 hidden = [] # Any subset; appearance.show_clock remains the legacy clock switch.
 # Lower-priority items yield at narrow widths. Agent UI requires features.experimental_ai.
-# Background restore remains available from the keyboard command palette.
+# workspace.background includes Watch activity; unread results remain visible.
+# Workspace activity and background restore remain available in Commands.
 [font]
 family = "Cascadia Mono"
 size_dip = 15

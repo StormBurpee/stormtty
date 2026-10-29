@@ -1,5 +1,7 @@
 #include "stormtty/command_watch.hpp"
 #include "stormtty/parked_attention.hpp"
+#include "stormtty/workspace_ribbon.hpp"
+#include "stormtty/workspace_navigator.hpp"
 #include <iostream>
 #include <stdexcept>
 
@@ -134,9 +136,96 @@ void placement() {
     watch.acknowledge();
     check(watch.surface(false) == WatchSurface::none, "explicit open result/dismiss removes watch badge");
 }
+void activity() {
+    WorkspaceActivitySummary summary;
+    summary.add(false,std::nullopt,nullptr,SessionState::running);
+    check(summary.terminals==0 && summary.labels().empty(),"live shell alone invents no activity");
+    auto watch=armed();summary.add(false,std::nullopt,&watch,SessionState::running);
+    check(summary.terminals==1 && summary.running==1 && !summary.unread(),"unparked explicit Watch is represented");
+    check(summary.labels().front()=="Watch · running","running label comes only from Watch");
+    summary={};summary.add(true,std::nullopt,&watch,SessionState::running);
+    check(summary.terminals==1 && summary.background==1 && summary.running==1,"watched-and-parked actor is one entry");
+    watch.observe(actor,completed(1,7));summary={};summary.add(true,std::uint64_t{1},&watch,SessionState::running);
+    check(summary.terminals==1 && summary.unread()==1 && summary.nonzero==1 && !summary.background_finished,"same parked/watch attention is not counted twice");
+    check(summary.labels().front()=="Watch · exit 7","exact nonzero code is preserved");
+    const auto measure=[](const std::string& text){return double(text.size());};
+    for(int width=0;width<150;++width)check(summary.label(width,measure).size()<=std::size_t(width),"summary fits complete measured tokens");
+    check(summary.label(8,measure)=="Activity","narrow fallback does not clip an exit code");
+    check(summary.label(200,measure).find("Background 1")!=std::string::npos,"wide summary retains background access label");
+    auto success=armed();success.observe(actor,completed());summary={};summary.add(false,std::nullopt,&success,SessionState::exited);
+    check(summary.completed==1 && !summary.running && summary.labels().front()=="Watch · complete · exit 0","matching completion retained without claiming exited shell is running");
+    auto unknown=armed();unknown.observe(actor,completed(1,std::nullopt));summary={};summary.add(true,std::uint64_t{1},&unknown,SessionState::running);
+    check(summary.unknown==1 && !summary.completed && summary.labels().front().find("status unknown")!=std::string::npos,"missing exit status never becomes success");
+    for(auto info:{completed(3),running(2),running(0)}) {
+        auto unavailable=armed();unavailable.observe(actor,info);summary={};summary.add(true,std::nullopt,&unavailable,SessionState::running);
+        check(summary.unavailable==1 && summary.unread()==1 && !summary.completed && !summary.background_finished,"unknown Watch attention is not a finished command");
+        check(summary.accessible_label().find("finished")==std::string::npos,"unknown result copy never says finished");
+    }
+    ParkedAttention later(running());
+    later.observe(completed(1,7));
+    check(later.unread_generation()==1,"parked attention exposes only its unread generation");
+    later.observe(completed(2,0));summary={};summary.add(true,later.unread_generation(),&watch,SessionState::running);
+    check(summary.unread()==1 && summary.terminals==1 && summary.nonzero==1 && summary.background_finished==1,"old Watch N cannot hide later parked completion N+1");
+    check(summary.accessible_label().find("background completion")!=std::string::npos,"later parked completion remains visible beside retained Watch result");
+    auto unconfirmed=armed();unconfirmed.observe(actor,completed(3));summary={};summary.add(true,std::uint64_t{3},&unconfirmed,SessionState::running);
+    check(summary.unavailable==1 && summary.background_finished==1 && summary.unread()==1,"real later D survives unknown watched result without doubling actor count");
+    later.acknowledge_completion(2);check(!later.unread_generation(),"acknowledged parked generation is absent");
+    summary={};summary.add(true,std::uint64_t{1},nullptr,SessionState::failed);
+    check(summary.failed==1 && summary.background_finished==1 && !summary.has_watches(),"generic parked completion and lifecycle failure stay distinct");
+    check(activity_priority(&success,SessionState::failed,false)>activity_priority(&watch,SessionState::running,false),"actor failure outranks command result");
+    check(activity_priority(&watch,SessionState::running,false)>activity_priority(&unknown,SessionState::running,false),"nonzero precedes unknown");
+    NavigatorTarget target{{4},{7},false,actor};
+    const auto allowed=[&](WatchIdentity identity, bool placed=true, bool parked=false, bool capacity=true){return activity_target_availability(target,{4},{4},identity,placed,parked,capacity).enabled;};
+    check(allowed(actor),"retained actor is navigable even if result unknown or process exited");
+    for(const auto identity:{WatchIdentity{},WatchIdentity{2,7,3},WatchIdentity{1,8,3},WatchIdentity{1,7,4}})check(!allowed(identity),"all stale incarnation dimensions rejected");
+    check(!allowed(actor,false) && !allowed(actor,true,true),"missing/moved placement rejected");
+    check(!activity_target_availability(target,{4},{5},actor,true,false,true).enabled,"active workspace cannot silently change");
+    check(!activity_target_availability(target,{5},{5},actor,true,false,true).enabled,"scope cannot escape opening workspace");
+    target.parked=true;check(!allowed(actor,true,true,false) && allowed(actor,true,true,true),"restore checks tab capacity without clearing result");
+    check(watch.unread() && unknown.unread() && success.unread(),"presentation and availability never acknowledge Watches");
+}
+
+void activity_refresh_selection() {
+    const auto rows=[](WatchIdentity identity=actor,bool parked=false) {
+        return std::vector<NavigatorWorkspace>{{{4},"Work","/work",{
+            {{7},"Watched","/work","Running",parked,true,identity},
+            {{8},"Other","/work","Running",false,false,{1,8,9}}
+        }}};
+    };
+    WorkspaceNavigator nav;
+    nav.refresh(rows(),{4},{7});
+    const auto original=nav.target();
+    check(original && original->identity==actor && !nav.selection_stale(),"initial Activity refresh selects owned actor");
+    auto reordered=rows();std::reverse(reordered[0].terminals.begin(),reordered[0].terminals.end());
+    nav.refresh(reordered,{4},{8});
+    check(nav.target()==original && !nav.selection_stale(),"refresh preserves actor through sorting and changed active pane");
+    nav.refresh(rows({1,7,4}),{4},{7});
+    check(nav.selection_stale() && !nav.target(),"refresh then Enter cannot select replacement incarnation");
+    nav.refresh(rows(),{4},{7});nav.search("");
+    check(nav.selection_stale() && !nav.target(),"repeat refresh and unchanged query cannot clear stale guard");
+    nav.select_terminal(0);
+    check(nav.target()==original && !nav.selection_stale(),"explicit row choice recovers current actor");
+    nav.refresh(rows(actor,true),{4},{7});
+    check(nav.selection_stale() && !nav.target(),"refresh then Enter cannot silently restore newly parked row");
+    nav.move(false,1);
+    check(nav.target() && nav.target()->session==SessionId{8} && !nav.selection_stale(),"explicit keyboard selection recovers");
+    nav.select_terminal(0);auto removed=rows();removed[0].terminals.erase(removed[0].terminals.begin());
+    nav.refresh(removed,{4},{7});
+    check(nav.selection_stale() && !nav.target(),"removed selection does not authorize fallback row");
+    nav.search("Other");
+    check(nav.target() && nav.target()->session==SessionId{8},"changed search explicitly chooses filtered row");
+    nav.refresh({}, {4},{7});nav.refresh(rows(),{4},{7});
+    check(nav.selection_stale() && !nav.target(),"empty catalog and repopulation preserve stale guard");
+    nav.open(rows({1,7,4}),{4},{7});
+    check(nav.target() && nav.target()->identity==WatchIdentity{1,7,4} && !nav.selection_stale(),"fresh open resets guard for global navigator compatibility");
+    WorkspaceNavigator empty;empty.refresh({{{4},"Empty","/empty",{}}},{4},{});
+    empty.refresh(rows(),{4},{7});
+    check(empty.selection_stale() && !empty.target(),"arriving row in empty Activity needs explicit selection");
+}
+
 }
 int main() {
-    try { eligibility(); exact_and_coalesced(); interruption_and_identity(); parked_generation_acknowledgment(); placement(); }
+    try { eligibility(); exact_and_coalesced(); interruption_and_identity(); parked_generation_acknowledgment(); placement(); activity(); activity_refresh_selection(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "command_watch_tests passed\n";
 }

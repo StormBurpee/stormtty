@@ -611,5 +611,19 @@ int main() {
     require(compact.background.overflow.width>0,"unread completion stays reachable despite hidden background");
     compact=layout_session_footer({0,0,1000,26},0,true,true,true,true,compact_config,{false,false,false,true,true});
     require(compact.background.overflow.width==0,"stale attention cannot invent background placements");
+    // A watched foreground/hidden-tab actor has the same single binding even
+    // with no parked terminals. No schema key or extra vertical band is added.
+    RibbonConfig activity_config;activity_config.hidden[ribbon_index(RibbonBinding::background)]=true;
+    require(ribbon_binding("workspace.background")==RibbonBinding::background && !ribbon_binding("workspace.activity"),"Activity preserves existing preference binding");
+    auto activity_footer=layout_session_footer({184,694,860,26},1,true,true,false,true,activity_config,{false,false,false,true,false,true});
+    require(activity_footer.background.overflow.width==0,"quiet running Watch respects hidden preference");
+    activity_footer=layout_session_footer({184,694,860,26},1,true,true,false,true,activity_config,{false,false,false,true,true,true});
+    require(activity_footer.background.overflow.width>0 && activity_footer.background.chips.empty(),"unread unparked Watch gets one essential target");
+    for(int width=1;width<1500;++width) {
+        const auto f=layout_session_footer({44,694,double(width),26},1,true,true,true,true,activity_config,{false,false,true,true,true,true});
+        require(f.background.overflow.width>0 && f.status.width>0,"activity and session error survive narrow admission");
+        require(f.background.overflow.x>=44 && f.background.overflow.x+f.background.overflow.width<=44+width+.000001,"activity stays within workspace footer");
+        require(f.background.overflow.y==697 && f.background.overflow.height==20,"Watch states never add a second band");
+    }
     std::cout << "window geometry, input and managed shell profile tests passed\n";
 }

@@ -43,6 +43,9 @@ public:
         : completed_(baseline.command.completed_generation), process_state_(baseline.state) {}
 
     [[nodiscard]] bool unread_completion() const noexcept { return unread_; }
+    [[nodiscard]] std::optional<std::uint64_t> unread_generation() const noexcept {
+        return unread_?std::optional<std::uint64_t>{completed_}:std::nullopt;
+    }
     // A watch may dismiss only its own latest observed parked completion.
     // Keep the baseline, notification history and process state intact: an old
     // dismissal must not hide a newer result or alter exit/failure priority.

@@ -10,6 +10,7 @@ namespace stormtty {
 namespace {
 constexpr std::array commands{
     Command{"terminal.previous", "Return to previous terminal", "Go back to the last selected terminal across workspaces, tabs and splits"},
+    Command{"workspace.activity", "Workspace activity…", "Inspect this workspace’s watched commands and background terminals without acknowledging results"},
     Command{"workspace.navigator", "Switch workspace or terminal…", "Find an existing terminal across open workspaces"},
     Command{"workspace.settings", "Workspace settings…", "Name, icon, colour, shell and saved layouts"},
     Command{"workspace.new", "New workspace…", "Choose a real folder and start its configured shell"},
@@ -197,7 +198,7 @@ CommandAvailability command_availability(std::string_view id, const CommandConte
     if (id == "settings.reload") return {c.supports_settings_reload, c.supports_settings_reload ? "" : "Settings reload is not implemented by this host"};
     if (id == "agent.toggle") return {c.supports_agent_panel,c.supports_agent_panel?"":"Native agent panel is not implemented by this host"};
     if (id == "window.focus_mode") return {c.supports_focus_mode, c.supports_focus_mode ? "" : "Focus mode is not implemented by this host"};
-    if (id=="workspace.navigator") return {c.supports_workspace_navigator,c.supports_workspace_navigator?"":"Workspace navigator is not implemented by this host"};
+    if (id=="workspace.navigator" || id=="workspace.activity") return {c.supports_workspace_navigator,c.supports_workspace_navigator?"":"Workspace navigator is not implemented by this host"};
     if (id.starts_with("workspace.")) {
         if (!c.supports_project_workspaces) return {false,"Project workspaces are not implemented by this host"};
         if (id=="workspace.next" || id=="workspace.previous") return {c.project_workspaces>1,c.project_workspaces>1?"":"Only one workspace is open"};

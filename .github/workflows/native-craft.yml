@@ -66,6 +66,7 @@ jobs:
                   for state in ['cancelled','saved-custom','reloaded']:
                       if 'Native menu theme capture=appearance-menu-'+state+' normal=1 narrow=1 palette=1 frontend_input_unchanged=1' not in log: failures.append('menu-theme-'+state)
               if mode=='layout' and 'Native command watch: explicit arm' not in log: failures.append('layout-command-watch')
+              if mode=='layout' and 'Native workspace activity: active workspace union' not in log: failures.append('layout-workspace-activity')
               if mode=='layout' and 'Native pane context: three distinct owned actors' not in log: failures.append('layout-pane-context')
               if mode=='layout' and 'Native workspace frame: context band removed' not in log: failures.append('layout-workspace-frame')
               if mode=='layout' and 'Native pane focus: identity_immediate=1 synthetic_normal_motion_interpolation=1 samples_ms=0,40,120 rapid_reversal=1 reduced_motion_cancellation=1 actors_bounds_grids_unchanged=1 frontend_input_unchanged=1 focus_protocol_writes_allowed=1 pane_motion_ended=1 shared_timer_accounted=1' not in log: failures.append('layout-pane-focus')
@@ -87,6 +88,8 @@ jobs:
           missing.extend(name for name in ['craft-layout-background-navigator.png','craft-projects-background-finished-navigator.png'] if not (artifacts/name).is_file())
           missing.extend('context-'+name for name in ['headers','inspect','narrow','high-contrast-fixture'] if not (artifacts/('craft-layout-context-'+name+'.png')).is_file())
           missing.extend('watch-'+name for name in ['armed','open-commands','indicator-narrow','indicator-high-contrast-fixture']+['result-'+str(i) for i in range(6)] if not (artifacts/('craft-layout-watch-'+name+'.png')).is_file())
+          expected_activity=['running','picker-running','narrow','high-contrast-fixture','mixed','other-workspace']+['result-'+str(i) for i in range(6)]+['picker-'+str(i) for i in range(6)]
+          missing.extend('activity-'+name for name in expected_activity if not (artifacts/('craft-layout-activity-'+name+'.png')).is_file() or (artifacts/('craft-layout-activity-'+name+'.png')).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
           expected_gallery=['normal','narrow','high-contrast-fixture']
           missing.extend('gallery-'+name for name in expected_gallery if not (artifacts/('craft-settings-theme-gallery-'+name+'.png')).is_file())
           expected_previous_terminal=['craft-projects-previous-terminal-normal.png','craft-projects-previous-terminal-narrow.png']
@@ -101,7 +104,7 @@ jobs:
           missing.extend(name for name in expected_pane_focus if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
           expected_scroll=['craft-settings-settings-scroll-'+sample+'.png' for sample in ['first-000ms','intermediate-016ms','burst-032ms','reversed-048ms','settled-138ms','fractional-direct','reduced-motion-direct']]
           missing.extend(name for name in expected_scroll if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
-          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'required_menu_theme_captures':expected_menus,'required_pane_focus_captures':expected_pane_focus,'required_workspace_frame_captures':expected_workspace_frame,'required_settings_scroll_captures':expected_scroll,'settings_scroll_evidence':'synthetic controlled-time native presentation; not physical smoothness or frame-pacing verification','required_previous_terminal_captures':expected_previous_terminal,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
+          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_activity_captures':expected_activity,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'required_menu_theme_captures':expected_menus,'required_pane_focus_captures':expected_pane_focus,'required_workspace_frame_captures':expected_workspace_frame,'required_settings_scroll_captures':expected_scroll,'settings_scroll_evidence':'synthetic controlled-time native presentation; not physical smoothness or frame-pacing verification','required_previous_terminal_captures':expected_previous_terminal,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
           if failures or missing: raise SystemExit(1)
       - name: Publish native screenshots immediately
         if: always() && steps.capture.outcome != 'skipped'

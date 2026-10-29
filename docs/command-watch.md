@@ -185,3 +185,50 @@ covering controls. Portable geometry tests cover that boundary and fixed text
 separation. The native fixture retains the seven-cycle Watch gates and
 captures a deliberately long Unicode tab title plus narrow/high-contrast unread
 states; these are controlled native fixtures, not physical display evidence.
+
+## Workspace activity ribbon
+
+The Windows workspace's existing 26-DIP footer now includes explicit Watches
+from every tab/pane plus its retained background terminals. The old
+`workspace.background` preference key and order are unchanged; Settings calls
+this binding **Activity & background terminals**. No second band or automatic
+terminal-grid resize is introduced. Quiet running Watches obey its visibility
+preference; unread results remain reachable just like prior background attention.
+
+The compact target shows whole, measured status tokens. Failure/nonzero and
+unknown or unavailable results precede exact-zero completion, running Watches
+and quiet background access. Narrow windows fall back to **Activity**; the
+full breakdown remains in its tooltip and list. A terminal that is both watched
+and parked is one entry, with one unread bit. Counts describe retained terminals
+or observed Watch results, never jobs, tests, elapsed time or service readiness.
+Missing command status is explicitly unknown; interrupted/unconfirmed/unavailable
+Watches are never relabeled “finished.” A failed terminal outranks its retained
+command result. Exited terminals can still be opened to inspect retained output.
+
+Click the target, or use **Commands → Workspace activity…** (`workspace.activity`,
+no default shortcut), to open the existing Navigator in Activity mode. This
+mode freezes the opening workspace and includes only its watched-or-parked
+actors. The ordinary Ctrl+Shift+O global Navigator and background commands keep
+their existing scope and behavior. Empty Activity explains that there are no
+watched commands or background terminals; it never starts a shell.
+
+Activity previews and its **Switch** / **Restore** action do not acknowledge
+Watch results. Every commit revalidates the opening workspace, current project
+membership, actor incarnation, placement and restore capacity. A missing/replaced
+actor or changed placement fails harmlessly with a reason. Refreshing an open
+list cannot silently select a replacement or fallback actor: Switch/Restore is
+blocked until an explicit selection or changed search. An unknown *result*
+does not prevent inspecting its still-retained actor. Returning to an exited
+actor does not restart it. Existing explicit **Open result** and **Dismiss**
+commands retain their acknowledgment semantics. No new inspector, command/output
+capture, persistence, timer or terminal input path is added.
+
+Portable tests cover summary state/priority, scope/incarnation/placement checks,
+width admission, existing preference round-trip and no shortcut conflict. The
+native Watch child fixture additionally requires Activity running, six result
+variants, mixed background, scoped picker, narrow, high-contrast and other-
+workspace captures. It checks non-acknowledging keyboard/pointer return/restore,
+Escape/reopen, stale incarnation and changed scope rejection, and invariant
+pane/grid geometry across Watch state transitions. These controlled fixtures are
+not physical display, shell authenticity or performance qualification; report
+native workflow execution separately from portable/cross-compilation checks.

@@ -378,6 +378,7 @@ private:
     struct PreviousTarget { PreviousTerminalState state{PreviousTerminalState::none}; ProjectWorkspaceId project{}; PaneId pane{}; std::string description; };
     PreviousTarget previous_terminal_target() const;
     void return_to_previous_terminal();
+    const CommandWatch* current_watch(SessionId) const;
     bool watch_unread(SessionId) const;
     std::string watch_label(SessionId) const;
     bool observe_watch(SessionId,const SessionInfo&);
@@ -405,6 +406,7 @@ private:
     FooterPresentation footer_presentation() const;
     SessionFooterLayout footer_layout() const;
     WorkspaceBackgroundSummary background_summary() const;
+    WorkspaceActivitySummary activity_summary() const;
     BackgroundFooterLayout background_layout() const { return footer_layout().background; }
     Rect empty_terminal_button() const { const auto r=workspace_viewport(); return {r.x+std::max(0.0,(r.width-156)/2),r.y+std::max(0.0,(r.height-36)/2),std::min(156.0,r.width),std::min(36.0,r.height)}; }
     void close_tab(TabId, bool approved = false);
@@ -418,13 +420,14 @@ private:
     void copy();
     void paste();
     void set_clipboard(std::string_view);
-    void open_navigator(bool background_only=false);
+    void open_navigator(bool background_only=false, bool activity_only=false);
     void close_navigator();
     void refresh_navigator();
     void navigator_input_changed();
     void commit_navigator();
     std::pair<std::string,double> navigator_query_view() const;
     bool navigator_open_{},navigator_switch_pressed_{},navigator_background_only_{};
+    std::optional<ProjectWorkspaceId> navigator_activity_project_;
     unsigned navigator_focus_{};
     std::optional<NavigatorTarget> navigator_pressed_target_;
     WorkspaceNavigator navigator_;
@@ -447,6 +450,10 @@ private:
     bool smoke_palette_input_progress();
     bool smoke_context_progress();
     bool smoke_watch_progress();
+    bool smoke_activity_evidence();
+    bool smoke_activity_running_{};
+    std::vector<PanePlacement> smoke_watch_waiting_layout_;
+    std::map<SessionId,TerminalSize> smoke_watch_waiting_sizes_;
     unsigned smoke_watch_stage_{},smoke_watch_cycle_{};
     PaneId smoke_watch_pane_{},smoke_watch_original_{};
     SessionId smoke_watch_session_{};
@@ -1373,6 +1380,10 @@ void NativeWindow::return_to_previous_terminal() {
     project->focus(target.pane);
     workspace_model_changed();reset_project_view(true);
 }
+const CommandWatch* NativeWindow::current_watch(SessionId id) const {
+    const auto found=watches_.find(id);
+    return found!=watches_.end() && found->second.identity()==watch_identity(id)?&found->second:nullptr;
+}
 bool NativeWindow::watch_unread(SessionId id) const {
     const auto found=watches_.find(id);return found!=watches_.end()&&found->second.identity()==watch_identity(id)&&found->second.unread();
 }
@@ -1670,10 +1681,25 @@ WorkspaceBackgroundSummary NativeWindow::background_summary() const {
     if(const auto* project=projects_.active())for(const auto& parked:project->parked_sessions){const auto found=parked_attention_.find(parked.session);result.add(watch_unread(parked.session)||(found!=parked_attention_.end()&&found->second.unread_completion()));}
     return result;
 }
+WorkspaceActivitySummary NativeWindow::activity_summary() const {
+    WorkspaceActivitySummary result;
+    const auto* project=projects_.active();if(!project)return result;
+    std::set<SessionId> seen;
+    const auto append=[&](SessionId id,bool parked) {
+        const auto* watch=current_watch(id);if(!parked && !watch)return;
+        const auto actor=sessions_.find(id);if(actor==sessions_.end() || !seen.insert(id).second)return;
+        const auto attention=parked_attention_.find(id);
+        result.add(parked,parked && attention!=parked_attention_.end()?attention->second.unread_generation():std::nullopt,
+            watch,actor->second->info().state);
+    };
+    for(const auto& [pane,item]:project->workspace.state().panes){(void)pane;append(item.session,false);}
+    for(const auto& parked:project->parked_sessions)append(parked.session,true);
+    return result;
+}
 SessionFooterLayout NativeWindow::footer_layout() const {
-    const auto context=footer_presentation();
-    return layout_session_footer(navigation_.footer,projects_.active()->parked_sessions.size(),
-        active_session()!=nullptr,!context.head.empty(),!context.status.empty(),config_.appearance.show_clock,config_.ribbon,{ai_enabled_,agent_controller_&&agent_controller_->attention(),context.failed,true,background_summary().unread()!=0});
+    const auto context=footer_presentation();const auto activity=activity_summary();
+    return layout_session_footer(navigation_.footer,activity.terminals,
+        active_session()!=nullptr,!context.head.empty(),!context.status.empty(),config_.appearance.show_clock,config_.ribbon,{ai_enabled_,agent_controller_&&agent_controller_->attention(),context.failed,true,activity.unread()!=0 || activity.failed!=0,activity.has_watches()});
 }
 std::string NativeWindow::directory_context() const {
     std::string path;
@@ -2070,7 +2096,7 @@ void NativeWindow::refresh_tooltips() {
     add(placement.directory,pane_context(workspace().active_pane()).detail+"\nSwitch workspace or terminal · Ctrl+Shift+O\nCommands → Inspect pane context"); add(placement.git,context.head); add(placement.status,context.status);
     const auto footer=placement.background;
     for (std::size_t i=0;i<footer.chips.size();++i) add(footer.chips[i],background_title(projects_.active()->parked_sessions[i])+"\nClick to restore · Right-click for actions");
-    add(footer.overflow,background_summary().accessible_label()+"\nOpen background terminals · Ctrl+Shift+O opens all terminals");
+    add(footer.overflow,activity_summary().accessible_label()+"\nOpen this workspace’s activity · Commands → Workspace activity\nSwitch/Restore preserves watched results · Ctrl+Shift+O opens all terminals");
     if(find_session_){const auto f=find_layout();add(f.previous,"Previous match · Shift+Enter");add(f.next,"Next match · Enter");add(f.close,"Close Find · Escape");add(f.query,"Literal search in this terminal; ASCII case-insensitive");}
     add(chrome_.new_tab,"New tab · Ctrl+Shift+T"); add(chrome_.palette,"Commands · Ctrl+Shift+P"); add(chrome_.menu,"StormTTY menu");
 }
@@ -2386,9 +2412,12 @@ void NativeWindow::refresh_navigator() {
     std::vector<NavigatorWorkspace> entries;
     const auto text=[](std::string_view value){return agent_display_text(value,512);};
     for(const auto& project:projects_.entries()) {
+        if(navigator_activity_project_ && project.id!=*navigator_activity_project_)continue;
         NavigatorWorkspace item{project.id,text(project.metadata.name),text(project.metadata.working_directory),{}};
+        std::map<SessionId,unsigned> activity_ranks;
         auto append=[&](SessionId id,std::string_view user_title,std::string_view profile,bool parked) {
             if(navigator_background_only_&&!parked)return;
+            if(navigator_activity_project_ && !parked && !current_watch(id))return;
             const auto actor=sessions_.find(id);if(actor==sessions_.end())return;
             const auto info=actor->second->info();
             std::string profile_label(profile);for(const auto& p:config_.profiles)if(p.id==profile)profile_label=p.label;
@@ -2397,19 +2426,29 @@ void NativeWindow::refresh_navigator() {
             std::string state=terminal_status_label(info);
             if(!watch_label(id).empty())state+=" · "+watch_label(id);
             if(parked)state="Background · "+state;
+            if(navigator_activity_project_ && parked) {
+                const auto attention=parked_attention_.find(id);const auto* watch=current_watch(id);
+                const auto generation=attention!=parked_attention_.end()?attention->second.unread_generation():std::nullopt;
+                if(generation && !(watch && watch->status()==WatchStatus::completed && watch->generation()==*generation))state+=" · Unread background completion";
+            }
             const bool managed=managed_shell_profile_&&managed_shell_profile_->id==profile;
             const auto directory=info.shell_context?info.shell_context->display_directory:managed?std::string{}:info.working_directory;
-            item.terminals.push_back({id,text(title),text(directory),state,parked,active_session()==actor->second.get()});
+            if(navigator_activity_project_) {const auto attention=parked_attention_.find(id);activity_ranks[id]=activity_priority(current_watch(id),info.state,attention!=parked_attention_.end()&&attention->second.unread_completion());}
+            item.terminals.push_back({id,text(title),text(directory),state,parked,active_session()==actor->second.get(),watch_identity(id)});
         };
         for(const auto& tab:project.workspace.state().tabs)for(const auto pane_id:project.workspace.pane_order(tab.id))if(const auto* pane=project.workspace.pane(pane_id))append(pane->session,tab.title,pane->profile,false);
         for(const auto& parked:project.parked_sessions)append(parked.session,parked.user_title,parked.profile,true);
+        if(navigator_activity_project_)std::stable_sort(item.terminals.begin(),item.terminals.end(),[&](const auto& a,const auto& b){
+            return activity_ranks.at(a.session)>activity_ranks.at(b.session);
+        });
         entries.push_back(std::move(item));
     }
     SessionId active{};if(const auto* pane=workspace().pane(workspace().active_pane()))active=pane->session;
-    navigator_.open(std::move(entries),selected?selected->project:projects_.active_id(),selected?selected->session:active);
+    if(navigator_activity_project_)navigator_.refresh(std::move(entries),projects_.active_id(),active);
+    else navigator_.open(std::move(entries),selected?selected->project:projects_.active_id(),selected?selected->session:active);
     navigator_.search(navigator_query_.text());
 }
-void NativeWindow::open_navigator(bool background_only) {
+void NativeWindow::open_navigator(bool background_only, bool activity_only) {
     if(modal_||overlay_open())return;
     if(width_<320||height_<260){show_error("Enlarge the window to use the workspace navigator.");return;}
     if(navigator_open_){close_navigator();return;}
@@ -2417,13 +2456,15 @@ void NativeWindow::open_navigator(bool background_only) {
     cancel_drag();palette_open_=rename_open_=false;query_.clear();
     navigator_=WorkspaceNavigator{};navigator_query_=TerminalFindQuery{};navigator_focus_=0;navigator_switch_pressed_=false;
     closing_palette_primitives_.clear();closing_palette_texts_.clear();palette_transition_=ChromeTransition{};
-    navigator_background_only_=background_only;navigator_open_=true;refresh_navigator();preedit_.clear();composing_=false;text_input_.reset();
+    navigator_background_only_=background_only;
+    navigator_activity_project_=activity_only?std::optional<ProjectWorkspaceId>{projects_.active_id()}:std::nullopt;
+    navigator_open_=true;refresh_navigator();preedit_.clear();composing_=false;text_input_.reset();
     if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
     changed();caret_schedule();position_ime();
 }
 void NativeWindow::close_navigator() {
     if(!navigator_open_)return;
-    navigator_open_=false;navigator_switch_pressed_=false;
+    navigator_open_=false;navigator_switch_pressed_=false;navigator_activity_project_.reset();
     if(GetCapture()==hwnd_)ReleaseCapture();
     preedit_.clear();composing_=false;text_input_.reset();
     if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
@@ -2431,13 +2472,19 @@ void NativeWindow::close_navigator() {
 }
 void NativeWindow::navigator_input_changed() {navigator_.search(navigator_query_.text());changed();position_ime();}
 void NativeWindow::commit_navigator() {
+    if(navigator_activity_project_ && navigator_.selection_stale()){show_error("Activity changed; choose a terminal again.");changed();return;}
     const auto target=navigator_.target();
     if(!target||!target->session)return;
     auto* project=projects_.workspace(target->project);
-    if(!project||!sessions_.contains(target->session)){refresh_navigator();changed();return;}
+    if(!project||!sessions_.contains(target->session)){if(navigator_activity_project_)show_error("The retained actor is no longer available.");refresh_navigator();changed();return;}
     PaneId pane{};for(const auto& [id,item]:project->state().panes)if(item.session==target->session){pane=id;break;}
     const auto* entry=projects_.find(target->project);
     const bool parked=std::any_of(entry->parked_sessions.begin(),entry->parked_sessions.end(),[&](const auto& item){return item.session==target->session;});
+    if(navigator_activity_project_) {
+        const auto available=activity_target_availability(*target,*navigator_activity_project_,projects_.active_id(),
+            watch_identity(target->session),bool(pane)||parked,parked,project->state().tabs.size()<Workspace::maximum_tabs);
+        if(!available.enabled){show_error(available.reason);refresh_navigator();changed();return;}
+    }
     if((target->parked&&!parked)||(!target->parked&&!pane)){refresh_navigator();changed();return;}
     if(parked && project->state().tabs.size()>=Workspace::maximum_tabs){show_error("Tab limit reached; close a tab before restoring this terminal.");return;}
     close_navigator();
@@ -2630,6 +2677,7 @@ void NativeWindow::dispatch(std::string_view command) {
     const Rect viewport=workspace_viewport();
     auto report = [this](Status status) { if (!status) show_error(status.error); else workspace_model_changed(); };
     if (command == "workspace.navigator") {open_navigator();return;}
+    if (command == "workspace.activity") {open_navigator(false,true);return;}
     if(navigator_open_)close_navigator();
     if (command == "terminal.find") { open_find(); return; }
     if (find_session_) close_find();
@@ -2989,17 +3037,17 @@ WindowScene NativeWindow::scene() {
         }
         label(placement.status,context.status,context.failed?accent:secondary,12,false,ChromeTextAlignment::trailing);
         if(placement.divider.height>0) rectangle(placement.divider,seam);
-        if (!projects_.active()->parked_sessions.empty()) {
-            const auto bounds=placement.background.overflow;
-            if(bounds.width>0) {
-                const auto summary=background_summary();
-                rectangle(bounds,high_contrast_?raised:blend(raised,ui.hover,hover_amount(12)),4);
-                if(summary.unread())rectangle({bounds.x+6,bounds.y+bounds.height/2-2,4,4},accent,2);
-                auto title=summary.label();
-                if(summary.unread()&&bounds.width>=180)title+=" · "+summary.completion_label();
-                const double inset=summary.unread()?16:10;
-                label({bounds.x+inset,bounds.y,std::max(0.0,bounds.width-inset-8),bounds.height},title,summary.unread()?accent:text,12);
-            }
+        const auto activity=activity_summary();
+        const auto bounds=placement.background.overflow;
+        if(activity.terminals && bounds.width>0) {
+            rectangle(bounds,high_contrast_?raised:blend(raised,ui.hover,hover_amount(12)),4);
+            const bool attention=activity.unread()!=0 || activity.failed!=0;
+            const double mark=std::min(4.0,std::max(0.0,bounds.width-8));
+            if(mark>0 && (attention || activity.running))rectangle({bounds.x+4,bounds.y+bounds.height/2-2,mark,4},attention?accent:Color{0,0,0,0},2,accent,attention?0:1);
+            const double inset=attention||activity.running?14:8;
+            const double width=std::max(0.0,bounds.width-inset-6);
+            const auto title=activity.label(width,[this](const std::string& text){ChromeText item;item.text=text;item.size_dip=12;item.rect={0,0,100000,26*static_cast<float>(scale_)};return renderer_->measure_chrome_text(item).width/scale_;});
+            label({bounds.x+inset,bounds.y,width,bounds.height},title,attention?accent:text,12);
         }
     }
     if (workspace().state().tabs.empty()) {
@@ -3066,7 +3114,7 @@ WindowScene NativeWindow::scene() {
         rectangle(nav.query,background,5,navigator_focus_==0?accent:seam,navigator_focus_==0?1.5:1);
         const auto visible=navigator_query_view();
         if(navigator_query_.selected())rectangle({nav.query.x+4,nav.query.y+4,nav.query.width-8,nav.query.height-8},blend(background,accent,.22),3);
-        label({nav.query.x+9,nav.query.y+6,nav.query.width-18,22},navigator_query_.text().empty()?(navigator_background_only_?"Find a background terminal…":"Switch workspace or terminal…"):visible.first,navigator_query_.text().empty()?secondary:text,16);
+        label({nav.query.x+9,nav.query.y+6,nav.query.width-18,22},navigator_query_.text().empty()?(navigator_activity_project_?"Find workspace activity…":navigator_background_only_?"Find a background terminal…":"Switch workspace or terminal…"):visible.first,navigator_query_.text().empty()?secondary:text,16);
         if(navigator_focus_==0&&!navigator_query_.selected()){const auto x=nav.query.x+9+visible.second;line(x,nav.query.y+7,x,nav.query.y+25,accent,1.2);}
         if(composing_&&!preedit_.empty()){const auto x=nav.query.x+9+visible.second;label({x,nav.query.y+6,std::max(0.0,nav.query.x+nav.query.width-8-x),22},preedit_,text,16);}
         if(nav.close.contains(hover_))rectangle(nav.close,blend(raised,accent,.1),4);
@@ -3092,12 +3140,13 @@ WindowScene NativeWindow::scene() {
             label({r.x+36,r.y+28,std::max(0.0,r.width-48),18},entry.state+(entry.directory.empty()?"":"  ·  "+entry.directory),secondary,11);
         }
         if(navigator_.workspaces().empty()){label({p.x+24,nav.heading.y+58,p.width-48,28},"No matching workspaces or terminals",text,16,true);label({p.x+24,nav.heading.y+92,p.width-48,22},"Try a workspace name, terminal title or directory.",secondary,12);}
-        else if(navigator_.terminals().empty()&&(!nav.compact||navigator_focus_!=1))label({nav.terminal_body.x+8,nav.terminal_body.y+18,nav.terminal_body.width-16,36},"No existing terminals in this workspace",secondary,12);
+        else if(navigator_.terminals().empty()&&(!nav.compact||navigator_focus_!=1))label({nav.terminal_body.x+8,nav.terminal_body.y+18,nav.terminal_body.width-16,36},navigator_activity_project_?"No watched commands or background terminals":"No existing terminals in this workspace",secondary,12);
         line(nav.footer.x,nav.footer.y,nav.footer.x+nav.footer.width,nav.footer.y,seam);
+        const bool stale_activity=navigator_activity_project_ && navigator_.selection_stale();
         const auto* terminal=navigator_.terminal();const Rect action{nav.footer.x+nav.footer.width-104,nav.footer.y+12,88,30};
-        if(terminal){rectangle(action,navigator_switch_pressed_?blend(raised,accent,.3):blend(raised,accent,.17),5,seam,1);label(action,terminal->parked?"Restore":"Switch",text,12,true,ChromeTextAlignment::center);}
+        if(terminal && !stale_activity){rectangle(action,navigator_switch_pressed_?blend(raised,accent,.3):blend(raised,accent,.17),5,seam,1);label(action,terminal->parked?"Restore":"Switch",text,12,true,ChromeTextAlignment::center);}
         const double detail_width=std::max(0.0,nav.footer.width-136);
-        label({nav.footer.x+16,nav.footer.y+9,detail_width,18},terminal&&!terminal->directory.empty()?terminal->directory:selected_workspace?"Workspace · "+selected_workspace->directory:"",secondary,11);
+        label({nav.footer.x+16,nav.footer.y+9,detail_width,18},stale_activity?"Activity changed; choose a terminal again":terminal&&!terminal->directory.empty()?terminal->directory:selected_workspace?"Workspace · "+selected_workspace->directory:"",secondary,11);
         label({nav.footer.x+16,nav.footer.y+30,detail_width,17},nav.compact?"Tab: lists  ·  Enter: switch  ·  Esc: cancel":"Tab: query / workspaces / terminals   ·   Enter: switch   ·   Esc: cancel",secondary,10);
     }
     reveal_surface(navigator_open_,navigator_transition_,navigator_primitive_start,navigator_text_start,closing_navigator_primitives_,closing_navigator_texts_);
@@ -3850,7 +3899,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
         for (std::size_t i=0;i<footer.chips.size();++i) if (footer.chips[i].contains(point)) {
             restore_parked({projects_.active_id(),projects_.active()->parked_sessions[i].session}); return;
         }
-        if (footer.overflow.contains(point)) open_navigator(true);
+        if (footer.overflow.contains(point)) open_navigator(false,true);
         return;
     }
     if (workspace().state().tabs.empty() && empty_terminal_button().contains(point)) { new_tab(); return; }
@@ -4232,6 +4281,125 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
             narrow(std::wstring(suffix)).c_str(),settings_panel_.scroll_offset(),settings_panel_.scroll_target(),settings_panel_.scroll_active(),
             smoke_settings_scroll_reduced_motion_.value_or(reduced_motion_));
 }
+bool NativeWindow::smoke_activity_evidence() {
+    if(smoke_activity_running_)return false;
+    if(!options_.smoke_test || !options_.smoke_layout || projects_.active_id()!=smoke_watch_project_ || navigator_open_ || palette_open_)
+        throw std::runtime_error("Activity evidence requires its owned Watch workspace and closed overlays.");
+    const auto saved_clock=smoke_chrome_time_;const auto saved_contrast=high_contrast_;
+    const auto saved_ribbon=config_.ribbon;const auto saved_project=projects_.active_id();
+    const auto saved_model=workspace();const auto saved_parked=projects_.active()->parked_sessions;
+    auto saved_tokens=watch_actors_;auto saved_attention=parked_attention_;
+    auto saved_labels=background_labels_;const auto saved_history=previous_terminal_;
+    const auto saved_watch_pane=smoke_watch_pane_;auto saved_notice=notice_;
+    RECT saved_bounds{};
+    if(!GetWindowRect(hwnd_,&saved_bounds))throw std::runtime_error("Activity fixture could not read original bounds.");
+    const auto rollback=[&] {
+        // Each independent cleanup is best effort on failure, preserving the
+        // original diagnostic. Success is checked explicitly below instead.
+        smoke_chrome_time_=saved_clock;high_contrast_=saved_contrast;config_.ribbon=saved_ribbon;
+        watch_actors_.swap(saved_tokens);smoke_watch_pane_=saved_watch_pane;notice_.swap(saved_notice);
+        try {cancel_drag();}catch(...){}
+        navigator_open_=navigator_switch_pressed_=palette_open_=rename_open_=false;
+        navigator_activity_project_.reset();navigator_=WorkspaceNavigator{};navigator_query_=TerminalFindQuery{};
+        query_.clear();preedit_.clear();composing_=false;text_input_.reset();
+        closing_palette_primitives_.clear();closing_palette_texts_.clear();palette_transition_=ChromeTransition{};
+        closing_navigator_primitives_.clear();closing_navigator_texts_.clear();navigator_transition_=ChromeTransition{};
+        try {
+            projects_.activate(saved_project);
+            const auto parked_now=projects_.active()->parked_sessions;
+            for(const auto& item:parked_now)
+                if(std::none_of(saved_parked.begin(),saved_parked.end(),[&](const auto& before){return before.session==item.session;}))
+                    projects_.reattach_to_new_tab({saved_project,item.session});
+            for(const auto& item:saved_parked) {
+                const auto panes=workspace().state().panes;
+                for(const auto& [id,pane]:panes)if(pane.session==item.session){projects_.park({saved_project,id});break;}
+            }
+            const auto& restored=projects_.active()->parked_sessions;
+            if(restored.size()==saved_parked.size() && std::all_of(restored.begin(),restored.end(),[&](const auto& item){return std::any_of(saved_parked.begin(),saved_parked.end(),[&](const auto& before){return before.session==item.session;});}))
+                workspace()=saved_model;
+            else std::fputs("Activity rollback could not restore original placement; original fixture failure retained.\n",stderr);
+        }catch(...){}
+        parked_attention_.swap(saved_attention);background_labels_.swap(saved_labels);previous_terminal_=saved_history;
+        if(!SetWindowPos(hwnd_,nullptr,0,0,saved_bounds.right-saved_bounds.left,saved_bounds.bottom-saved_bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE))
+            std::fputs("Activity rollback could not restore native bounds; original fixture failure retained.\n",stderr);
+        try {reset_project_view();refresh_tooltips();}catch(...){}
+    };
+    struct Restore {bool& running;const std::function<void()> rollback;bool restored{};~Restore(){if(!restored)try{rollback();}catch(...){}running=false;}}
+        restore{smoke_activity_running_,rollback};
+    smoke_activity_running_=true;
+    const auto fail=[&](std::string_view message){smoke_finish(message);return false;};
+    const auto key=[&](WPARAM vk){MSG message{};message.hwnd=hwnd_;message.message=WM_KEYDOWN;message.wParam=vk;key_message(message);message.message=WM_KEYUP;key_message(message);};
+    const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_=saved_clock;};
+    const auto* watch=current_watch(smoke_watch_session_);if(!watch)return fail("Activity fixture lost its Watch.");
+    const bool unread=watch->unread();const auto original=workspace().active_pane();
+    const auto before=sizes_;const auto actor=sessions_.at(smoke_watch_session_);const auto count=sessions_.size();
+    const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
+    const auto summary=activity_summary();
+    if(summary.terminals!=1 || summary.unread()!=std::size_t(unread) || footer_layout().background.overflow.width<=0)return fail("Activity omitted an unparked Watch or doubled a parked Watch.");
+    if((watch->status()==WatchStatus::completion_unconfirmed || watch->status()==WatchStatus::interrupted || watch->status()==WatchStatus::unavailable) && summary.accessible_label().find("finished")!=std::string::npos)return fail("Activity mislabeled an unconfirmed Watch as finished.");
+    capture(unread?L"activity-result-"+std::to_wstring(smoke_watch_cycle_):L"activity-running");
+    if(smoke_watch_cycle_==0) {
+        const auto hidden=config_.ribbon.hidden[ribbon_index(RibbonBinding::background)];
+        config_.ribbon.hidden[ribbon_index(RibbonBinding::background)]=true;
+        const bool shown=footer_layout().background.overflow.width>0;
+        config_.ribbon.hidden[ribbon_index(RibbonBinding::background)]=hidden;
+        if(shown!=unread)return fail("Activity hidden preference did not distinguish quiet Watch from unread attention.");
+        if(unread) {
+            RECT bounds{};if(!GetWindowRect(hwnd_,&bounds))return fail("Activity narrow fixture could not read bounds.");
+            if(!SetWindowPos(hwnd_,nullptr,0,0,static_cast<int>(480*scale_),static_cast<int>(480*scale_),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE))return fail("Activity narrow fixture resize failed.");
+            capture(L"activity-narrow");const auto contrast=high_contrast_;high_contrast_=true;capture(L"activity-high-contrast-fixture");high_contrast_=contrast;
+            if(!SetWindowPos(hwnd_,nullptr,0,0,bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE))return fail("Activity fixture could not restore bounds.");
+        }
+    }
+    SessionId quiet{};
+    if(unread && smoke_watch_cycle_==2) {
+        // A genuinely separate retained background actor, not a decorative label.
+        for(const auto& tab:workspace().state().tabs)if(tab.active_pane!=original){quiet=workspace().pane(tab.active_pane)->session;park_pane(tab.active_pane);break;}
+        if(!quiet || activity_summary().terminals!=2 || activity_summary().background!=2)return fail("Mixed Activity did not retain two distinct background actors.");
+        capture(L"activity-mixed");
+    }
+    if(!unread) {
+        toggle_palette();query_="Workspace activity";const auto entries=palette_commands();
+        if(entries.empty()||entries.front().id!="workspace.activity")return fail("Workspace activity is not discoverable in Commands.");
+        key(VK_RETURN);
+    } else {
+        const auto r=footer_layout().background.overflow;pointer_down({r.x+r.width/2,r.y+r.height/2},false);pointer_up({r.x+r.width/2,r.y+r.height/2});
+    }
+    const auto select_watch=[&]{for(std::size_t i=0;i<navigator_.terminals().size();++i)if(navigator_.workspace()->terminals[navigator_.terminals()[i]].session==smoke_watch_session_){navigator_.select_terminal(i);return true;}return false;};
+    if(!navigator_open_ || navigator_activity_project_!=smoke_watch_project_ || navigator_.entries().size()!=1 || !select_watch() || navigator_.target()->identity!=smoke_watch_identity_)return fail("Activity escaped its frozen workspace or lost actor identity.");
+    capture(unread?L"activity-picker-"+std::to_wstring(smoke_watch_cycle_):L"activity-picker-running");
+    if(unread && smoke_watch_cycle_==0) {
+        const auto token=watch_actors_.at(smoke_watch_session_);++watch_actors_.at(smoke_watch_session_);refresh_navigator();commit_navigator();watch_actors_.at(smoke_watch_session_)=token;refresh_navigator();
+        if(!navigator_open_ || !watch_unread(smoke_watch_session_) || !select_watch())return fail("Stale Activity actor action navigated or acknowledged a result.");
+        projects_.activate(smoke_watch_other_);commit_navigator();projects_.activate(smoke_watch_project_);refresh_navigator();
+        if(!navigator_open_ || !watch_unread(smoke_watch_session_) || !select_watch())return fail("Activity silently switched its frozen workspace.");
+        notice_.clear();
+    }
+    key(VK_ESCAPE);
+    if(navigator_open_ || watch_unread(smoke_watch_session_)!=unread || (!quiet && sizes_!=before))return fail("Activity preview/Escape acknowledged a result or resized a grid.");
+    // Reopen and explicitly return/restore using the normal Navigator action,
+    // never Open result. Both result and output remain on the same actor.
+    dispatch("workspace.activity");if(!select_watch())return fail("Activity reopen lost its watched actor.");
+    const bool parked=navigator_.target()->parked;
+    if(unread && smoke_watch_cycle_==1) {
+        const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);
+        const Point button{nav.footer.x+nav.footer.width-60,nav.footer.y+25};pointer_down(button,false);pointer_up(button);
+    } else key(VK_RETURN);
+    if(navigator_open_ || active_session()!=actor.get() || sessions_.size()!=count || watch_unread(smoke_watch_session_)!=unread)return fail("Activity return replaced its actor or acknowledged its Watch.");
+    smoke_watch_pane_=workspace().active_pane();
+    if(parked)park_pane(smoke_watch_pane_);
+    if(quiet)restore_parked({smoke_watch_project_,quiet});
+    activate(original);
+    if(smoke_terminal_input_submissions_!=input || smoke_terminal_mouse_submissions_!=mouse)return fail("Activity UI injected terminal input.");
+    RECT restored_bounds{};
+    if(!GetWindowRect(hwnd_,&restored_bounds) || restored_bounds.right-restored_bounds.left!=saved_bounds.right-saved_bounds.left ||
+       restored_bounds.bottom-restored_bounds.top!=saved_bounds.bottom-saved_bounds.top || high_contrast_!=saved_contrast ||
+       smoke_chrome_time_!=saved_clock || config_.ribbon!=saved_ribbon || watch_actors_!=saved_tokens ||
+       projects_.active_id()!=saved_project || navigator_open_ || palette_open_ || GetCapture()==hwnd_)
+        return fail("Activity fixture did not restore temporary policy, actor token, scope, bounds or input capture.");
+    restore.restored=true;
+    return true;
+}
 bool NativeWindow::smoke_watch_progress() {
     if(smoke_watch_stage_==4)return true;
     const auto fail=[&](std::string_view message){smoke_finish(message);return false;};
@@ -4271,11 +4439,13 @@ bool NativeWindow::smoke_watch_progress() {
         if(smoke_watch_cycle_==0) {
             if(tab_watch_indicator(workspace().active_tab())!=TabWatchIndicator::watching)return fail("Watching tab indicator absent.");
             capture(L"watch-armed");
+            if(!smoke_activity_evidence())return false;
         }
         if(smoke_watch_cycle_==2){park_pane(smoke_watch_pane_);if(projects_.active()->parked_sessions.size()!=1)return fail("Watch parking lost its single parked representation.");}
         if(smoke_watch_cycle_==6){dispatch("watch.cancel");if(watches_.contains(smoke_watch_session_)||actor->process_finished())return fail("Cancel watch stopped the actor or retained the watch.");}
         if(smoke_watch_cycle_==1){projects_.activate(smoke_watch_other_);reset_project_view();}
         else activate(smoke_watch_original_);
+        smoke_watch_waiting_layout_=layout_.panes;smoke_watch_waiting_sizes_=sizes_;
         const std::array<char,7> controls{'0','7','u','c','l','r','0'};
         if(actor->text(std::string(1,controls[smoke_watch_cycle_]))!=SessionSendResult::accepted)return fail("Watch fixture result control rejected.");
         smoke_watch_stage_=2;return false;
@@ -4283,6 +4453,8 @@ bool NativeWindow::smoke_watch_progress() {
     if(smoke_watch_stage_==2) {
         const std::array<std::string_view,7> markers{"WATCH_RESULT_0","WATCH_RESULT_7","WATCH_RESULT_UNKNOWN","WATCH_COALESCED_EXACT","WATCH_COALESCED_LATER","WATCH_RESET_RESULT","WATCH_RESULT_0"};
         if(!has_marker(markers[smoke_watch_cycle_]))return false;
+        if(sizes_!=smoke_watch_waiting_sizes_ || layout_.panes.size()!=smoke_watch_waiting_layout_.size())return fail("Watch state transition changed terminal grids or pane count.");
+        for(std::size_t i=0;i<layout_.panes.size();++i)if(layout_.panes[i].pane!=smoke_watch_waiting_layout_[i].pane || layout_.panes[i].bounds!=smoke_watch_waiting_layout_[i].bounds)return fail("Watch state transition changed pane geometry.");
         if(smoke_watch_cycle_==6) {
             if(watches_.contains(smoke_watch_session_))return fail("Canceled watch automatically armed or replayed a result.");
         } else {
@@ -4309,7 +4481,14 @@ bool NativeWindow::smoke_watch_progress() {
                 dispatch("terminal.previous");
                 if(workspace().active_pane()!=smoke_watch_original_||!watch_unread(smoke_watch_session_))return fail("Return from watched result failed to preserve work and unread state.");
             }
-            if(smoke_watch_cycle_==1){projects_.activate(smoke_watch_project_);reset_project_view();}
+            if(smoke_watch_cycle_==1){
+                if(activity_summary().terminals!=0)return fail("Activity leaked another workspace's Watch.");
+                dispatch("workspace.activity");
+                if(!navigator_open_ || navigator_activity_project_!=smoke_watch_other_ || navigator_.entries().size()!=1 || !navigator_.terminals().empty())return fail("Empty workspace Activity was not isolated.");
+                capture(L"activity-other-workspace");key(VK_ESCAPE);
+                projects_.activate(smoke_watch_project_);reset_project_view();
+            }
+            if(!smoke_activity_evidence())return false;
             if(smoke_watch_cycle_==2) {
                 if(background_summary().unread()!=1)return fail("Watch and parked attention double-counted one completion.");
                 close_parked({smoke_watch_project_,smoke_watch_session_});if(!modal_)return fail("Watch parked close lacked confirmation.");answer_modal(ModalDecision::cancel);
@@ -4339,6 +4518,7 @@ bool NativeWindow::smoke_watch_progress() {
     activate(smoke_watch_original_);const auto removed=projects_.remove(smoke_watch_other_);if(!removed)return fail("Watch empty fixture workspace could not be removed.");
     if(layout_.panes.size()!=3||sessions_.size()!=smoke_watch_actor_count_||!watches_.empty())return fail("Watch fixture changed original layout ownership or left an unread result.");
     smoke_watch_stage_=4;changed(true);
+    std::fputs("Native workspace activity: active workspace union, explicit running/zero/nonzero/unknown results, no fabricated finished state, frozen scope and stale incarnation rejection, same-actor keyboard/pointer return and restore, preview/Escape preserve unread, mixed background dedup, unchanged state-transition grids, zero frontend UI input.\n",stderr);
     std::fputs("Native command watch: explicit arm, hidden-tab/workspace completion, zero/nonzero/unknown status, coalesced generations/reset without borrowed success, cancel without stopping, same-actor keyboard/pointer Open, ordinary visibility/restore retains unread, park/restore/repark dedup, canceled close and stale identity rejection; zero frontend UI input. Native fixture OSC observations, not external-process or physical performance proof.\n",stderr);
     return true;
 }
@@ -5248,7 +5428,7 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
     std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
 }
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
-    if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_ || smoke_settings_scroll_running_ || smoke_workspace_frame_running_) return;
+    if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_ || smoke_settings_scroll_running_ || smoke_workspace_frame_running_ || smoke_activity_running_) return;
     if(!options_.smoke_agent&&projects_.active()) {
         if(ai_enabled_||agent_controller_||agent_setup_||agent_panel_.is_open()||footer_layout().agent.width>0||command_context().supports_agent_panel) {smoke_finish("Disabled AI feature exposed UI or provider ownership.");return;}
         for(const auto& entry:palette_commands())if(entry.id=="agent.toggle"){smoke_finish("Disabled AI feature leaked into Commands.");return;}
@@ -5880,11 +6060,11 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if(!footer.background.chips.empty()||background_summary().terminals!=2){smoke_finish("Background summary did not collapse its owned terminal list.");return;}
         const Point button{footer.background.overflow.x+footer.background.overflow.width/2,footer.background.overflow.y+footer.background.overflow.height/2};
         pointer_down(button,false);pointer_up(button);
-        if(!navigator_open_||!navigator_background_only_||navigator_.terminals().size()!=2||!navigator_.target()||!navigator_.target()->parked){smoke_finish("Background footer did not open its scoped Navigator list.");return;}
+        if(!navigator_open_||navigator_activity_project_!=original_project||navigator_.entries().size()!=1||navigator_.terminals().size()!=2||!navigator_.target()||!navigator_.target()->parked){smoke_finish("Background footer did not open its scoped Activity list.");return;}
         smoke_motion_capture(L"background-navigator",0);
         MSG escape{};escape.hwnd=hwnd_;escape.message=WM_KEYDOWN;escape.wParam=VK_ESCAPE;key_message(escape);escape.message=WM_KEYUP;key_message(escape);
         if(navigator_open_||projects_.active_id()!=original_project||active_session()!=original_actor||smoke_terminal_input_submissions_!=input_before){smoke_finish("Background preview changed workspace, actor or terminal input.");return;}
-        std::fputs("Native background summary: workspace-owned compact target, parked-only Navigator, Escape preserves context and frontend input.\n",stderr);
+        std::fputs("Native background summary: workspace-owned compact target, scoped Activity list, Escape preserves context and frontend input.\n",stderr);
         smoke_chrome_time_.reset();
     }
     if (options_.smoke_projects && smoke_projects_live_verified_ && !smoke_background_command_verified_) {

@@ -87,7 +87,11 @@ int main() { return run_core_tests("commands", [] {
     for (const auto platform : {Platform::windows,Platform::macos}) for (const auto& binding:default_bindings(platform))
         CHECK((!binding.command.starts_with("workspace.") || (platform==Platform::windows&&binding.command=="workspace.navigator")) && binding.command!="window.focus_mode");
     CHECK(!command_availability("workspace.navigator",projects).enabled);
+    CHECK(!command_availability("workspace.activity",projects).enabled);
+    CHECK(search_commands("workspace activity").front()->id=="workspace.activity");
     projects.supports_workspace_navigator=true;CHECK(command_availability("workspace.navigator",projects).enabled);
+    CHECK(command_availability("workspace.activity",projects).enabled); // No active pane is required.
+    for(const auto platform:{Platform::windows,Platform::macos})for(const auto& binding:default_bindings(platform))CHECK(binding.command!="workspace.activity");
     CHECK(!find_command("unknown")); CHECK(!command_availability("unknown", {}).enabled);
     for (const auto platform : {Platform::windows, Platform::macos}) {
         auto bindings = default_bindings(platform); CHECK(validate_bindings(bindings, platform));
