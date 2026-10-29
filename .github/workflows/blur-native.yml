@@ -77,7 +77,7 @@ jobs:
           if-no-files-found: error
       - name: Run native settings persistence, policy and renderer fallback tests
         if: always() && steps.capture.outcome != 'skipped'
-        run: ctest --test-dir build-ui -R "^(host_backdrop_backend_tests|core_config_tests|settings_panel_tests|settings_services_tests|window_geometry_tests|renderer_smoke)$" --no-tests=error --output-on-failure --output-junit blur-tests.xml
+        run: ctest --test-dir build-ui -R "^(host_backdrop_backend_tests|core_config_tests|settings_panel_tests|settings_services_tests|window_geometry_tests|renderer_smoke|renderer_final_teardown)$" --no-tests=error --output-on-failure --output-junit blur-tests.xml
       - name: Preserve native test diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

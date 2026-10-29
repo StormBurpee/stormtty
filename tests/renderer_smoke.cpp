@@ -632,9 +632,46 @@ void rejected_image_test() {
     require(renderer.stats().image_uploads==0,"oversized malformed image was uploaded");
     require(renderer.stats().image_cache_bytes==0,"rejected image consumed cache budget");
 }
+void final_teardown_test() {
+    unsigned cases=0;
+    for(bool composition : {false,true}) for(bool hwnd_first : {false,true}) for(unsigned frames : {1u,16u,64u}) {
+        HostWindow host(true);
+        RendererOptions options;options.force_warp=true;options.composition=composition;
+        options.smoke_teardown_diagnostics=true;
+        auto renderer=std::make_unique<Renderer>(host.hwnd,options);
+        renderer->resize(640,400);ShowWindow(host.hwnd,SW_SHOWNOACTIVATE);
+        WindowScene scene;scene.panes.push_back({101,{0,64,600,300},frame()});
+        ChromeText text;text.rect={16,8,600,40};text.text="Settings lifecycle: Unicode café 文件";scene.texts.push_back(text);
+        std::cerr<<"Final teardown case begin: composition="<<composition<<" hwnd_first="<<hwnd_first<<" frames="<<frames<<std::endl;
+        for(unsigned i=0;i<frames;++i) {
+            ++scene.chrome_generation;scene.background={static_cast<std::uint8_t>(23+i%16),25,29,255};
+            renderer->set_background_opacity(i%2?0.f:.25f);
+            renderer->render(scene);
+            if(i%8==0) {
+                require(renderer->read_pixels().size()==640*400*4,"Final teardown fixture readback failed");
+                renderer->resize(800,500);renderer->render(scene);renderer->resize(640,400);
+                FontOptions font;font.size_dip=14+float(i%3);renderer->set_font(font);
+            }
+            MSG message{};
+            while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)) {
+                if(message.message!=WM_QUIT) {TranslateMessage(&message);DispatchMessageW(&message);}
+            }
+        }
+        if(hwnd_first) {require(DestroyWindow(host.hwnd)!=FALSE,"Destroy app-order HWND failed");host.hwnd=nullptr;}
+        renderer.reset();
+        if(host.hwnd) {require(GetWindow(host.hwnd,GW_CHILD)==nullptr,"Final teardown leaked opaque child");}
+        std::cerr<<"Final teardown case complete: composition="<<composition<<" hwnd_first="<<hwnd_first<<" frames="<<frames<<std::endl;
+        ++cases;
+    }
+    require(cases==12,"Final teardown fixture matrix incomplete");
+    std::cout<<"PASS renderer final teardown: 12/12 cases, opaque/composition, HWND-first/renderer-first, 1/16/64 frames"<<std::endl;
+}
+
 } // namespace
-int main() {
+int main(int argc,char** argv) {
     try {
+        if(argc==2 && std::string_view(argv[1])=="--final-teardown") {final_teardown_test();return 0;}
+        if(argc!=1) throw std::runtime_error("Unknown renderer test arguments");
         // Asset resolution must follow the executable, not the process/shell CWD.
         const auto previous_directory=std::filesystem::current_path();
         struct RestoreDirectory {std::filesystem::path path;~RestoreDirectory(){std::error_code ignored;std::filesystem::current_path(path,ignored);}} restore{previous_directory};

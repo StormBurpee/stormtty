@@ -62,3 +62,26 @@ diagnostic workflows are manual-only. Existing source-branch guards remain for
 experiments that require those branches: select the matching branch explicitly.
 They do not change production defaults. No account notification settings are
 changed; genuine automatic baseline failures still notify normally.
+
+
+### Renderer final teardown
+
+The clear-blur qualification at `d957bed` passed all six focused native suites
+and completed the real settings scenario, but the process hit its 90-second owned
+launch deadline after entering `ID3D11DeviceContext::ClearState` during final
+renderer destruction. This is not a clean process-exit pass.
+
+Final destruction after the HWND is already gone now releases all D2D,
+composition, swapchain, context and device owners without an unnecessary
+synchronous replacement drain. A still-live HWND, swapchain replacement and device
+recovery retain ClearState/Flush; they can need the documented deferred flip-chain
+destruction barrier. See [Microsoft's Flush contract](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-flush).
+No resource owners are leaked or detached to bypass cleanup.
+
+`renderer_final_teardown` runs a fixed 12-case native matrix: opaque/composition,
+HWND-first/renderer-first destruction, and 1/16/64 frames with readback, resize and
+font changes. The whole matrix has a 30-second external timeout; no retry or
+extended deadline converts a hang into success. This covers the app's actual
+HWND-first ordering, absent from the earlier renderer lifetime fixture. Passing
+it and the real settings-owned process gate qualifies the changed cleanup path;
+it does not establish the underlying driver's lock mechanism or hardware blur.
