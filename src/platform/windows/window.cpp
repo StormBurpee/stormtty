@@ -23,6 +23,7 @@
 #include "stormtty/windows_console_runtime.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/cursor_motion.hpp"
+#include "stormtty/smoke_deadline.hpp"
 #include "stormtty/session.hpp"
 #include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
@@ -57,6 +58,7 @@ constexpr UINT_PTR chrome_motion_timer = 3;
 constexpr UINT_PTR material_probe_timer = 4;
 constexpr UINT_PTR typing_motion_timer = 5;
 constexpr UINT_PTR typing_smoke_timer = 6;
+constexpr UINT_PTR local_clock_timer = 7;
 constexpr std::string_view smoke_marker="__STORMTTY_NATIVE_SMOKE_OK__";
 constexpr std::size_t clipboard_limit = 1024 * 1024;
 
@@ -278,6 +280,8 @@ private:
     bool key_message(MSG&);
     void create();
     void settings_changed();
+    void refresh_clock();
+    std::string local_clock_;
     void observe_material_renderer();
     void queue_material_probe(bool invalidate = false);
     void begin_material_probe(const WindowScene&);
@@ -414,6 +418,8 @@ private:
     std::uint16_t smoke_typing_column_{}, smoke_typing_row_{};
     bool smoke_typing_reveal_seen_{}, smoke_typing_reduced_{};
     ULONGLONG smoke_started_at_{};
+    SmokeDeadline smoke_deadline_;
+    void smoke_phase(SmokeDeadline::Phase phase);
     bool smoke_settings_file_owned_{};
     Config smoke_settings_original_;
     std::shared_ptr<Session> smoke_settings_actor_;
@@ -530,6 +536,7 @@ private:
 void NativeWindow::create() {
     if (options_.smoke_test) {
         smoke_started_at_=GetTickCount64();
+        smoke_deadline_=SmokeDeadline(smoke_started_at_);
         std::fprintf(stderr,"Native CI smoke startup: settings=%d managed_zsh=%d packaged_console=%d\n",
             options_.smoke_settings,using_managed_shell(),!options_.console_runtime_directory.empty());
     }
@@ -598,7 +605,7 @@ void NativeWindow::create() {
     ShowWindow(hwnd_, SW_SHOWNORMAL);
     UpdateWindow(hwnd_);
     if (options_.smoke_test && !options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && !SetTimer(hwnd_,typing_smoke_timer,25,nullptr)) throw std::runtime_error("Could not start bounded typing smoke progress timer.");
-    if (options_.smoke_test && !SetTimer(hwnd_,smoke_timeout_timer,20000,nullptr)) throw std::runtime_error("Could not start the native smoke deadline.");
+    if (options_.smoke_test && !SetTimer(hwnd_,smoke_timeout_timer,250,nullptr)) throw std::runtime_error("Could not start the native smoke deadline.");
 }
 int NativeWindow::run() {
     WindowClass klass; klass.smoke=options_.smoke_test;
@@ -658,7 +665,18 @@ LRESULT CALLBACK NativeWindow::procedure(HWND window, UINT message, WPARAM wpara
     } catch (...) { PostMessageW(window, WM_CLOSE, 0, 0); }
     return 0;
 }
+void NativeWindow::refresh_clock() {
+    if (!hwnd_) return;
+    KillTimer(hwnd_,local_clock_timer);
+    SYSTEMTIME time{}; GetLocalTime(&time);
+    char formatted[6]{};
+    std::snprintf(formatted,sizeof formatted,"%02u:%02u",static_cast<unsigned>(time.wHour),static_cast<unsigned>(time.wMinute));
+    if (local_clock_!=formatted) { local_clock_=formatted; ++chrome_generation_; dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); }
+    if (config_.appearance.show_clock && !minimized_ && !fullscreen_ && !focus_mode_ && width_>=640)
+        SetTimer(hwnd_,local_clock_timer,60000-time.wSecond*1000-time.wMilliseconds,nullptr);
+}
 void NativeWindow::settings_changed() {
+    refresh_clock();
     if (renderer_call_) { settings_pending_=true; defer_layout(); return; }
     HIGHCONTRASTW contrast{}; contrast.cbSize=sizeof(contrast);
     high_contrast_ = SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0) && (contrast.dwFlags & HCF_HIGHCONTRASTON);
@@ -1234,7 +1252,7 @@ NativeWindow::FooterPresentation NativeWindow::footer_presentation() const {
 SessionFooterLayout NativeWindow::footer_layout() const {
     const auto context=footer_presentation();
     return layout_session_footer(navigation_.footer,projects_.active()->parked_sessions.size(),
-        active_session()!=nullptr,!context.head.empty(),!context.status.empty());
+        active_session()!=nullptr,!context.head.empty(),!context.status.empty(),config_.appearance.show_clock);
 }
 std::string NativeWindow::directory_context() const {
     std::string path;
@@ -1670,9 +1688,9 @@ void NativeWindow::dispatch(std::string_view command) {
     if (command == "workspace.close") { close_project(projects_.active_id()); return; }
     if (command == "workspace.toggle_navigation") {
         if (width_<640 && !focus_mode_) { show_error("Widen the window to expand workspaces. The compact rail remains available."); return; }
-        navigation_expanded_=!navigation_expanded_; focus_mode_=false; changed(true); return;
+        navigation_expanded_=!navigation_expanded_; focus_mode_=false; refresh_clock(); changed(true); return;
     }
-    if (command == "window.focus_mode") { focus_mode_=!focus_mode_; changed(true); return; }
+    if (command == "window.focus_mode") { focus_mode_=!focus_mode_; refresh_clock(); changed(true); return; }
     if (command == "workspace.next" || command == "workspace.previous") {
         const auto& entries=projects_.entries();
         const auto found=std::find_if(entries.begin(),entries.end(),[&](const auto& item){return item.id==projects_.active_id();});
@@ -1856,8 +1874,8 @@ WindowScene NativeWindow::scene() {
         rectangle(chrome_.tabs_band,chrome,0,{},0,true);
         rectangle({0,chrome_.band.height-1/scale_,width_,1/scale_},seam);
         rectangle({chrome_.tabs_band.x,chrome_.tabs_band.y+chrome_.tabs_band.height-1/scale_,chrome_.tabs_band.width,1/scale_},seam);
-        Rect app_title=chrome_.drag;
-        if (zoom_return_.width>0) app_title.width=std::max(0.0,zoom_return_.x-app_title.x-8);
+        const double title_right=zoom_return_.width>0?zoom_return_.x-8:chrome_.drag.x+chrome_.drag.width;
+        const Rect app_title=layout_window_title(chrome_,title_right);
         label(app_title,"StormTTY",secondary,12,false,ChromeTextAlignment::center);
         auto button = [&](Rect bounds, std::uint64_t id, bool close = false) {
             const auto amount=hover_amount(id);
@@ -1904,6 +1922,7 @@ WindowScene NativeWindow::scene() {
         rectangle({0,navigation_.footer.y,width_,1/scale_},seam);
         const auto placement=footer_layout();
         const auto context=footer_presentation();
+        if (placement.clock.width>0) label(placement.clock,local_clock_,secondary,11,false,ChromeTextAlignment::trailing);
         label(placement.directory,context.directory,context.subdued?secondary:text,11);
         if(placement.git.width>0 && !context.head.empty()) {
             const auto r=placement.git;
@@ -2638,6 +2657,14 @@ void NativeWindow::cancel_drag() {
     changed();
 }
 
+void NativeWindow::smoke_phase(SmokeDeadline::Phase phase) {
+    const auto now=GetTickCount64();
+    const auto previous=smoke_deadline_.phase(); const auto elapsed=smoke_deadline_.phase_elapsed(now);
+    if (smoke_deadline_.advance(phase,now))
+        std::fprintf(stderr,"Native smoke phase=%u previous=%u previous_elapsed_ms=%llu total_elapsed_ms=%llu budget_ms=%llu hard_budget_ms=50000\n",
+            unsigned(phase),unsigned(previous),static_cast<unsigned long long>(elapsed),now-smoke_started_at_,static_cast<unsigned long long>(smoke_deadline_.phase_budget()));
+}
+
 void NativeWindow::smoke_typing_diagnostic(const char* event) {
     if (!options_.smoke_test) return;
     auto* actor=active_session(); const auto frame=actor?actor->frame():FramePtr{};
@@ -2685,7 +2712,10 @@ bool NativeWindow::smoke_typing_progress() {
             const std::string command=using_managed_shell()?
                 "precmd_functions=(); PROMPT='__STORMTTY_TYPING_PROMPT__>'; print -r -- __STORMTTY_TYPING_READY__":
                 "prompt __STORMTTY_TYPING_PROMPT__$G&echo __STORMTTY_TYPING_READY__";
-            submit([actor,command]{return actor->text(command);},command.size());
+            // This is authored fixture setup, not a simulated typing workload.
+            // Use the same negotiated bracketed-paste path as a real bulk paste;
+            // click/WM_CHAR/backspace assertions below remain real key input.
+            submit([actor,command]{return actor->paste(command);},command.size());
             KeyInput enter; enter.key=Key::enter;
             submit([actor,enter]{return actor->key(enter);});
             smoke_typing_handshake_sent_=true; smoke_typing_diagnostic("handshake-sent"); return false;
@@ -2910,8 +2940,20 @@ void NativeWindow::smoke_settings_stage(unsigned stage) {
 }
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if (!options_.smoke_test || smoke_finished_) return;
+    if (smoke_deadline_.expired(GetTickCount64())) { smoke_finish("Native smoke phase deadline expired."); return; }
     if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
     for (const auto& [id,session]:sessions_) { (void)id; const auto info=session->info(); if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; } }
+    if (smoke_deadline_.phase()==SmokeDeadline::Phase::startup) {
+        // Managed context proves the preset reached precmd; negotiated paste
+        // mode proves ZLE is accepting bulk input. First output bytes alone do
+        // not prove either, and can arrive during completion/module startup.
+        for (const auto& [id,session]:sessions_) {
+            const auto info=session->info(); const auto frame=session->frame();
+            if (info.state!=SessionState::running || !info.bytes_received) return;
+            if (smoke_managed_sessions_.contains(id) && (!info.shell_context || !frame || !frame->bracketed_paste)) return;
+        }
+        smoke_phase(SmokeDeadline::Phase::interaction);
+    }
     if (!smoke_chrome_verified_) {
         const auto native_hit=[&](Rect bounds) {
             POINT p{static_cast<LONG>(std::lround((bounds.x+bounds.width/2)*scale_)),static_cast<LONG>(std::lround((bounds.y+bounds.height/2)*scale_))};
@@ -3274,12 +3316,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if (options_.smoke_projects && smoke_projects_live_verified_ && !smoke_background_command_verified_) {
         const auto actor=sessions_.at(smoke_parked_session_);
         if (!smoke_background_command_sent_) {
+            const auto ready_frame=actor->frame();
+            if (smoke_managed_sessions_.contains(smoke_parked_session_) && (!ready_frame || !ready_frame->bracketed_paste)) return;
             // Generate OSC inside the child, never by echoing raw control bytes
             // through terminal input. Keep the shell alive after prompt return.
             const std::string command=smoke_managed_sessions_.contains(smoke_parked_session_)?
                 "printf '\\033]133;C\\007\\033]133;D;0\\007'":
                 "powershell.exe -NoProfile -Command \"$e=[char]27; [Console]::Write($e+']133;C'+[char]7+$e+']133;D;0'+[char]7)\"";
-            submit([actor,command]{return actor->text(command);},command.size());
+            submit([actor,command]{return actor->paste(command);},command.size());
             KeyInput enter; enter.key=Key::enter;
             submit([actor,enter]{return actor->key(enter);});
             smoke_background_command_sent_=true;
@@ -3330,11 +3374,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         const auto info=session->info();
         if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; }
         if (!smoke_commands_sent_.contains(id) && info.state==SessionState::running && info.bytes_received) {
+            const auto ready_frame=session->frame();
+            if (smoke_managed_sessions_.contains(id) && (!ready_frame || !ready_frame->bracketed_paste)) { all_closed=false; continue; }
+            smoke_phase(SmokeDeadline::Phase::exit);
             smoke_commands_sent_.insert(id);
             const std::string command=smoke_managed_sessions_.contains(id)?
                 "[[ $ZSH_VERSION == 5.9.2 && ${STORMTTY_MANAGED_ZSH-} == 1 ]] && print -r -- " + std::string(smoke_marker) + "; exit $?":
                 "echo " + std::string(smoke_marker) + " & exit /b 0";
-            submit([session,command] { return session->text(command); },command.size());
+            submit([session,command] { return session->paste(command); },command.size());
             KeyInput enter; enter.key=Key::enter;
             submit([session,enter] { return session->key(enter); });
         }
@@ -3398,7 +3445,12 @@ void NativeWindow::smoke_finish(std::string_view error) {
             }
         }
     }
-    if (!error.empty()) smoke_typing_diagnostic("failure");
+    if (!error.empty()) {
+        smoke_typing_diagnostic("failure");
+        std::fprintf(stderr,"Native smoke deadline phase=%u phase_elapsed_ms=%llu budget_ms=%llu total_elapsed_ms=%llu\n",
+            unsigned(smoke_deadline_.phase()),static_cast<unsigned long long>(smoke_deadline_.phase_elapsed(GetTickCount64())),
+            static_cast<unsigned long long>(smoke_deadline_.phase_budget()),GetTickCount64()-smoke_started_at_);
+    }
     smoke_finished_=true; exit_code_=error.empty()?0:2;
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
@@ -3543,7 +3595,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         typing_motion_.reset();
         minimized_=wparam==SIZE_MINIMIZED; maximized_=wparam==SIZE_MAXIMIZED;
         if (renderer_ && !minimized_) changed(true);
-        caret_schedule(); motion_schedule(); return 0;
+        refresh_clock(); caret_schedule(); motion_schedule(); return 0;
     case WM_ENTERSIZEMOVE: in_size_move_=true; return 0;
     case WM_EXITSIZEMOVE: in_size_move_=false; queue_material_probe(); changed(true); return 0;
     case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_DWMCOMPOSITIONCHANGED:
@@ -3557,7 +3609,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         typing_motion_.reset();
         active_=focused; text_input_.reset(); consumed_keys_.fill(false);
         if (!focused) { settings_panel_.pointer_cancel(); context_menu_.cancel(); menu_input_changed(); cancel_drag(); preedit_.clear(); composing_=false; }
-        caret_schedule(focused); changed(); return 0;
+        refresh_clock(); caret_schedule(focused); changed(); return 0;
     }
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
@@ -3571,14 +3623,16 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         changed(true); return 0;
     case wake_message:
         wake_->posted.store(false,std::memory_order_release); update_sessions(); InvalidateRect(hwnd_,nullptr,FALSE); return 0;
+    case WM_TIMECHANGE: refresh_clock(); return 0;
     case WM_TIMER:
+        if (wparam==local_clock_timer) { refresh_clock(); return 0; }
         if (wparam==typing_smoke_timer) { dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0; }
         if (wparam==typing_motion_timer) {
             if (!typing_motion_.active(GetTickCount64())) { KillTimer(hwnd_,typing_motion_timer); typing_timer_active_=false; }
             dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0;
         }
         if (wparam==material_probe_timer) {poll_material_probe();return 0;}
-        if (wparam==smoke_timeout_timer) { smoke_finish("Native smoke timed out before real shell output, presentation and clean exit."); return 0; }
+        if (wparam==smoke_timeout_timer) { if (smoke_deadline_.expired(GetTickCount64())) smoke_finish("Native smoke phase deadline expired before real output, presentation and clean exit."); return 0; }
         if (wparam==chrome_motion_timer) { motion_schedule(); ++chrome_generation_; dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0; }
         if (wparam==cursor_timer && cursor_blink_.tick(GetTickCount64())) { dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); } return 0;
     case WM_CHAR: case WM_SYSCHAR: {
@@ -3726,6 +3780,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_DESTROY:
         wake_->window.store(nullptr,std::memory_order_release);
+        KillTimer(hwnd_,local_clock_timer);
         KillTimer(hwnd_,typing_smoke_timer); KillTimer(hwnd_,typing_motion_timer); KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer); KillTimer(hwnd_,chrome_motion_timer); KillTimer(hwnd_,material_probe_timer);
         if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);
         tooltip_=nullptr; tooltip_texts_.clear();

@@ -77,7 +77,7 @@ struct RenderFrame {
     std::uint16_t columns{}, rows{}, cell_width{}, cell_height{};
     Color foreground{}, background{};
     FrameCursor cursor{};
-    bool alternate_screen{}, mouse_reporting{};
+    bool alternate_screen{}, mouse_reporting{}, bracketed_paste{};
     std::vector<std::shared_ptr<const FrameRow>> lines;
     std::vector<ImagePlacement> images; // Sorted by layer, then ascending z.
 };

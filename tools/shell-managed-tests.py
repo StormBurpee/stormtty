@@ -207,6 +207,26 @@ class ManagedTests(unittest.TestCase):
         child.expect_exact('\x1b]133;B\x07')
         child.sendline('exit')
         child.expect(pexpect.EOF)
+    @unittest.skipIf(os.name == 'nt', 'POSIX PTY test; Windows host smoke qualifies its native paste path')
+    def test_bulk_fixture_paste_preserves_real_modules_and_exit(self):
+        if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
+        try: import pexpect
+        except ImportError: self.skipTest('optional pexpect unavailable')
+        child=pexpect.spawn(self.shell,['-di'],env=self.env,cwd=str(self.root),encoding='utf-8',timeout=10)
+        self.addCleanup(child.close,force=True)
+        child.expect_exact('\x1b[?2004h')
+        # First bytes/prompt metadata can precede ZLE. Start only after its
+        # negotiated paste mode, with real highlighting/autosuggestions loaded.
+        command='[[ $STORMTTY_OMZ_LOADED == 1 && ${+functions[_zsh_highlight]} == 1 && ${+functions[_zsh_autosuggest_start]} == 1 ]] && print -r -- BULK_FIXTURE_OK'
+        child.send('\x1b[200~'+command+'\x1b[201~')
+        child.sendline('')
+        child.expect_exact('BULK_FIXTURE_OK\r\n')
+        child.expect_exact('\x1b[?2004h')
+        child.send('\x1b[200~exit 0\x1b[201~')
+        child.sendline('')
+        child.expect(pexpect.EOF)
+        child.close()
+        self.assertEqual(child.exitstatus,0)
     def test_prompt_data_not_code_or_terminal_control(self):
         git=self.root/'.git'; git.mkdir()
         (git/'HEAD').write_text('ref: refs/heads/$(touch PWNED)%F{red}\x1b]2;bad\x07\n')

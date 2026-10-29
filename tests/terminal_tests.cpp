@@ -296,8 +296,10 @@ void focus_paste_encoding() {
     CHECK(TerminalCore::paste_is_safe("abc")); CHECK(!TerminalCore::paste_is_safe("a\nb"));
     bool rejected{}; try { (void)t.encode_paste("a\nb"); } catch (const std::invalid_argument&) { rejected = true; }
     CHECK(rejected); CHECK(t.encode_paste("a\nb", true) == "a\rb");
-    t.feed("\x1b[?2004h"); CHECK(t.encode_paste("abc") == "\x1b[200~abc\x1b[201~");
+    const auto before_paste=t.snapshot(); CHECK(!before_paste->bracketed_paste);
+    t.feed("\x1b[?2004h"); const auto during_paste=t.snapshot(); CHECK(during_paste->bracketed_paste); CHECK(!before_paste->bracketed_paste); CHECK(during_paste!=before_paste); CHECK(t.encode_paste("abc") == "\x1b[200~abc\x1b[201~");
     std::string large(2048, 'x'); CHECK(t.encode_paste(large) == "\x1b[200~" + large + "\x1b[201~");
+    t.feed("\x1b[?2004l"); CHECK(!t.snapshot()->bracketed_paste); CHECK(during_paste->bracketed_paste); CHECK(t.encode_paste("abc")=="abc");
 }
 void mouse_encoding() {
     TerminalCore t(small()); MouseInput input; input.action = MouseAction::press; input.button = MouseButton::left;

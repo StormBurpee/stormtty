@@ -20,6 +20,15 @@ struct ChromeLayout {
     bool compact{};
 };
 
+// Keep the title at the window center, not the asymmetric draggable remainder.
+// Hide it rather than shift it into another control in a narrow window.
+inline Rect layout_window_title(const ChromeLayout& chrome, double right_limit) {
+    const double center=chrome.band.x+chrome.band.width/2;
+    const double half=std::min(center-chrome.drag.x,right_limit-center);
+    if (half<40) return {};
+    return {center-half,chrome.band.y,2*half,chrome.band.height};
+}
+
 // Owned notices stay in the active workspace, above (never over) its footer.
 // Text dimensions are measured by the native chrome font; geometry stays portable.
 struct NoticeLayout { Rect panel, text; };
@@ -180,13 +189,18 @@ inline BackgroundFooterLayout layout_background_footer(Rect footer, std::size_t 
 // Active shell context and background sessions share one strip. Geometry is
 // presentation-only: all restore targets remain host-owned SessionIds.
 struct SessionFooterLayout {
-    Rect directory, git, status, divider;
+    Rect directory, git, status, divider, clock;
     BackgroundFooterLayout background;
 };
 inline SessionFooterLayout layout_session_footer(Rect footer, std::size_t parked,
-        bool active, bool git, bool status) {
+        bool active, bool git, bool status, bool clock=false) {
     SessionFooterLayout result;
     if (footer.width<=0 || footer.height<=0) return result;
+    // Secondary decoration yields entirely before active context or background controls.
+    if (clock && footer.width>=640 && footer.height>=20) {
+        result.clock={footer.x+footer.width-52,footer.y+3,44,footer.height-6};
+        footer.width-=60;
+    }
     if (!active) { result.background=layout_background_footer(footer,parked,false); return result; }
     const double inset=std::min(8.0,footer.width/2);
     const double usable=std::max(0.0,footer.width-inset*2);
