@@ -46,6 +46,13 @@ int main() { return run_core_tests("commands", [] {
     CHECK(*command_search_score("tab","tab")>*command_search_score("tab","t a b"));
     for (int i=0;i<20;++i) CHECK(search_commands("pane")==search_commands("pane"));
     for (std::size_t i=0;i<command_registry().size();++i) CHECK(search_commands("")[i]==&command_registry()[i]);
+    CommandContext watch{1,1};
+    CHECK(!command_availability("watch.arm",watch).enabled);
+    watch.supports_command_watch=true;CHECK(!command_availability("watch.arm",watch).enabled);
+    watch.watch_can_arm=true;CHECK(command_availability("watch.arm",watch).enabled);
+    watch.watch_waiting=true;CHECK(command_availability("watch.cancel",watch).enabled);
+    watch.watch_unread=true;CHECK(command_availability("watch.dismiss",watch).enabled);
+    watch.panes=0;CHECK(!command_availability("watch.arm",watch).enabled);
     CommandContext inspect{1,1};
     CHECK(!command_availability("pane.inspect",inspect).enabled);
     inspect.supports_pane_context=true; CHECK(command_availability("pane.inspect",inspect).enabled);

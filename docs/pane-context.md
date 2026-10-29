@@ -101,7 +101,7 @@ cache hits, width/DPI changes and intact Unicode/combining text. Existing native
 renderer coverage validates lossless Unicode wrapping and measured widths.
 This bounds layout creation count; it is not a measured latency claim.
 
-Transport-isolation evidence distinguishes actual sent frontend key/text/paste/
+Transport-isolation evidence distinguishes transport-accepted frontend key/text/paste/
 mouse bytes from focus reports and automatic VT replies. Every queued write
 retains its origin through partial sends; counters are updated alongside
 `bytes_sent` under the existing mutex only after transport acceptance. Their
