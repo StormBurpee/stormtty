@@ -96,3 +96,15 @@ renderer success. No real user terminal or desktop process is inspected.
 The previous final-drain candidate moved the app stall to `ID3D11Device::Release`;
 the fixed matrix also stalled there with composition disabled, after
 `ClearState` and `Flush` returned. This disproves a ClearState-only explanation.
+
+The numbered sanitized stack sample from run 40861831891 records the main
+thread waiting inside D3D10Warp from final `ID3D11Device::Release`, with another
+WARP worker waiting and the remaining workers idle. It does not show an HWND
+SendMessage cycle. The next candidate places a D3D11_QUERY_EVENT before any
+final GPU-owner destruction, explicitly submits and polls completion for at
+most two seconds, and then performs normal RAII release even on timeout/error.
+This distinguishes asynchronous pending-work cleanup from a driver shutdown
+failure; the stack alone does not establish the precise internal WARP cause.
+No graphics resources are abandoned, no window messages dispatched during
+member teardown, and external test deadlines are unchanged. Native results
+remain pending; do not call this a verified fix until the full gate passes.

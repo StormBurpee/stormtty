@@ -506,7 +506,32 @@ struct Renderer::Impl {
         windows::smoke_teardown_trace(tracing_teardown,"renderer opaque HWND destruction end");
         counters.composition = false;
     }
+    void finish_submitted_work() noexcept {
+        if (!device || !immediate) return;
+        // Flush alone only submits work. Keep all D2D/canvas/presentation
+        // owners alive until the final submitted work completes, rather than
+        // entering WARP deferred destruction with commands still outstanding.
+        windows::smoke_teardown_trace(tracing_teardown,"renderer completion query begin");
+        Com<ID3D11Query> completion;
+        const D3D11_QUERY_DESC description{D3D11_QUERY_EVENT,0};
+        auto result=device->CreateQuery(&description,completion.put());
+        if (SUCCEEDED(result)) {
+            immediate->End(completion.get());
+            immediate->Flush();
+            const auto deadline=GetTickCount64()+2000;
+            do {
+                result=immediate->GetData(completion.get(),nullptr,0,D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                if(result!=S_FALSE) break;
+                Sleep(1);
+            } while(GetTickCount64()<deadline);
+        }
+        windows::smoke_teardown_trace(tracing_teardown,result==S_OK ?
+            "renderer completion query completed" : "renderer completion query incomplete; normal ownership release follows");
+        // No detached/leaked device on timeout or removal. The native outer
+        // deadline still fails qualification if normal driver release stalls.
+    }
     void release_gpu(bool final_shutdown = false) noexcept {
+        if(final_shutdown) finish_submitted_work();
         windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null begin");
         if (dc) dc->SetTarget(nullptr);
         windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null end");
