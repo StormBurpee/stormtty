@@ -1,4 +1,5 @@
 #include "stormtty/native_window.hpp"
+#include "stormtty/chrome_paint.hpp"
 #include "stormtty/workspace_ribbon.hpp"
 #include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
@@ -14,6 +15,37 @@ namespace { void require(bool condition, const char* message) {
 } }
 int main() {
     using namespace stormtty;
+    // One owned cog shape replaces font/emoji fallback. The panel's existing
+    // path is byte-for-byte identical; the sidebar only scales that same path.
+    constexpr double tau=6.283185307179586;
+    for(const float dpi:{1.f,1.25f,1.5f,2.f,3.f}) {
+        const Point center{73,109};const Color ink{12,34,56,255};
+        WindowScene actual;append_settings_icon(actual,center,11,ink,dpi,1.5);
+        WindowScene previous;
+        const auto point=[&](double angle,double radius){return Point{center.x+std::cos(angle)*radius,center.y+std::sin(angle)*radius};};
+        const auto line=[&](Point a,Point b){previous.primitives.push_back({{float(a.x*dpi),float(a.y*dpi),float((b.x-a.x)*dpi),float((b.y-a.y)*dpi)},
+            {0,0,0,0},ink,0,float(1.5*dpi),ChromePrimitiveKind::line});};
+        const auto radius=[](int vertex){return vertex%4==1 || vertex%4==2?11.0:8.0;};
+        for(int i=0;i<32;++i)line(point(tau*i/32,radius(i)),point(tau*(i+1)/32,radius((i+1)%32)));
+        for(int i=0;i<24;++i)line(point(tau*i/24,3.5),point(tau*(i+1)/24,3.5));
+        require(actual.primitives==previous.primitives && actual.texts.empty(),"Shared Settings cog preserves original panel path and DPI strokes exactly");
+        for(double width:{320.,480.,1044.})for(bool expanded:{false,true}) {
+            const auto nav=layout_project_navigation(width,720,32,{{1}},0,expanded,false,true);
+            const auto bounds=nav.settings;
+            require(bounds==Rect{4,654,nav.expanded?176.:36.,36},"Settings hit bounds remain unchanged in compact and expanded rails");
+            WindowScene icon;append_settings_icon(icon,{bounds.x+18,bounds.y+18},8,ink,dpi,1.2,{ChromeLayer::base});
+            require(icon.primitives.size()==56 && icon.texts.empty(),"Settings icon contains only the owned cog path, no color-font text");
+            for(const auto& p:icon.primitives) {
+                require(p.stroke==ink && p.fill.a==0 && p.stroke_width==float(1.2*dpi) && p.z==ChromeZOrder{ChromeLayer::base},"Sidebar cog uses caller ink/stroke/layer exactly");
+                for(const Point endpoint:std::array<Point,2>{{{p.rect.x/dpi,p.rect.y/dpi},{(p.rect.x+p.rect.width)/dpi,(p.rect.y+p.rect.height)/dpi}}})
+                    require(endpoint.x-.61>=bounds.x && endpoint.x+.61<=bounds.x+bounds.width && endpoint.y-.61>=bounds.y && endpoint.y+.61<=bounds.y+bounds.height,"Sidebar cog and stroke remain within unchanged Settings hit target");
+            }
+        }
+    }
+    WindowScene invalid_icon;
+    append_settings_icon(invalid_icon,{0,0},0,{255,255,255,255});
+    append_settings_icon(invalid_icon,{0,0},8,{255,255,255,255},0);
+    require(invalid_icon.primitives.empty() && invalid_icon.texts.empty(),"Invalid icon sizes do not emit paint");
     for(double width:{0.0,30.0,45.0,46.0,52.0,96.0,188.0}) {
         const Rect bounds{10,32,width,32};
         const auto idle=layout_tab_label(bounds,TabWatchIndicator::none);

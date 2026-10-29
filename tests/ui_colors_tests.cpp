@@ -1,5 +1,6 @@
 #include "core_test.hpp"
 #include "stormtty/ui_colors.hpp"
+#include "stormtty/chrome_paint.hpp"
 #include "stormtty/settings_panel.hpp"
 #include "stormtty/context_menu.hpp"
 #include "stormtty/settings_reload.hpp"
@@ -21,6 +22,12 @@ void check_palette(const Theme& theme) {
     CHECK(c.hover==ui_mix(c.surface,c.ink,.06));
     CHECK(c.raised==c.hover);
     CHECK(c.divider==ui_mix(c.surface,c.ink,.18));
+    const auto tab=tab_selection_colors(c);
+    auto tab_border=c.selected_border;tab_border.a=180;
+    CHECK(tab.surface==c.selected);CHECK(tab.border==tab_border);
+    const Color os_background{251,241,231,255},os_foreground{11,21,31,255};
+    const auto contrast_tab=tab_selection_colors(c,true,os_background,os_foreground);
+    CHECK(contrast_tab.surface==os_background && contrast_tab.border==os_foreground);
     for(auto color:{c.canvas,c.surface,c.navigation,c.raised,c.ink,c.secondary,c.subdued,c.divider,c.accent,c.control,c.hover,c.pressed,c.selected,c.selected_hover,c.selected_border,c.on_accent,c.positive,c.danger}) CHECK(color.a==255);
     CHECK(contrast(c.on_accent,c.accent)>=4.5);
     const auto floor=std::min(4.5,std::max(
@@ -94,6 +101,11 @@ int main() {return run_core_tests("semantic UI colors",[]{
         CHECK(contrast(c.ink,c.selected)>=4.5);
         CHECK(contrast(c.danger,c.surface)>=4.5);CHECK(contrast(c.danger,c.selected)>=4.5);
         CHECK(contrast(c.subdued,c.surface)>=3);CHECK(contrast(c.secondary,c.selected)>=3);
+        for(const Color ink:{c.secondary,Color{12,34,56,255}}) {
+            WindowScene icon;append_settings_icon(icon,{22,672},8,ink,1.25f,1.2);
+            CHECK(icon.primitives.size()==56 && icon.texts.empty());
+            for(const auto& p:icon.primitives)CHECK(p.stroke==ink && p.fill.a==0 && p.kind==ChromePrimitiveKind::line);
+        }
         Config config;config.theme=theme;SettingsPanel panel;panel.open(config);panel.resize({1040,720});
         WindowScene scene;panel.append_scene(scene,1);
         CHECK(std::any_of(scene.primitives.begin(),scene.primitives.end(),[&](const auto& p){return p.fill==c.surface && p.background_replace;}));
