@@ -40,7 +40,7 @@ jobs:
       - name: Configure isolated native UI build
         run: cmake -S . -B build-ui -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF -DSTORMTTY_TEST_INK=OFF
       - name: Build native app and layout/renderer checks
-        run: cmake --build build-ui --parallel 2 --target stormtty terminal_tests terminal_search_tests pane_context_tests command_watch_tests previous_terminal_tests session_write_accounting_tests window_geometry_tests core_commands_tests renderer_smoke ui_colors_tests settings_panel_tests
+        run: cmake --build build-ui --parallel 2 --target stormtty terminal_tests terminal_search_tests pane_context_tests command_watch_tests previous_terminal_tests session_write_accounting_tests window_geometry_tests core_commands_tests renderer_smoke ui_colors_tests context_menu_tests settings_panel_tests
       - name: Exercise native keyboard flow and capture craft states
         id: capture
         shell: python
@@ -61,6 +61,9 @@ jobs:
               scenario=log.find('Native motion sample=')
               if prepared<0 or exposed<=prepared or (scenario>=0 and scenario<exposed): failures.append(mode+'-startup-order')
               if mode=='settings' and 'Semantic UI capture: saved custom theme, settings closed, presented=1 motion_settled=1' not in log: failures.append('settings-semantic-capture')
+              if mode=='settings':
+                  for state in ['cancelled','saved-custom','reloaded']:
+                      if 'Native menu theme capture=appearance-menu-'+state+' normal=1 narrow=1 palette=1 frontend_input_unchanged=1' not in log: failures.append('menu-theme-'+state)
               if mode=='layout' and 'Native command watch: explicit arm' not in log: failures.append('layout-command-watch')
               if mode=='layout' and 'Native pane context: three distinct owned actors' not in log: failures.append('layout-pane-context')
               if mode=='layout' and 'Native palette ownership smoke:' not in log: failures.append('layout-input-ownership')
@@ -87,7 +90,9 @@ jobs:
           missing.extend(name for name in expected_previous_terminal if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
           expected_semantic=['craft-settings-appearance-blur-saved-reopened.png','craft-settings-appearance-shell-same-theme.png']
           missing.extend(name for name in expected_semantic if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
-          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'required_previous_terminal_captures':expected_previous_terminal,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
+          expected_menus=['craft-settings-appearance-menu-'+state+'-'+size+'.png' for state in ['cancelled','saved-custom','reloaded'] for size in ['normal','narrow']]
+          missing.extend(name for name in expected_menus if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
+          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'required_menu_theme_captures':expected_menus,'required_previous_terminal_captures':expected_previous_terminal,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
           if failures or missing: raise SystemExit(1)
       - name: Publish native screenshots immediately
         if: always() && steps.capture.outcome != 'skipped'
@@ -98,7 +103,7 @@ jobs:
           if-no-files-found: error
       - name: Run layout and renderer checks
         if: always() && steps.capture.outcome != 'skipped'
-        run: ctest --test-dir build-ui -R "^(terminal_tests|terminal_search_tests|pane_context_tests|command_watch_tests|previous_terminal_tests|session_write_accounting_tests|window_geometry_tests|core_commands_tests|renderer_smoke|ui_colors_tests|settings_panel_tests)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
+        run: ctest --test-dir build-ui -R "^(terminal_tests|terminal_search_tests|pane_context_tests|command_watch_tests|previous_terminal_tests|session_write_accounting_tests|window_geometry_tests|core_commands_tests|renderer_smoke|ui_colors_tests|context_menu_tests|settings_panel_tests)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
       - name: Preserve focused test diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
