@@ -62,6 +62,7 @@ jobs:
               if prepared<0 or exposed<=prepared or (scenario>=0 and scenario<exposed): failures.append(mode+'-startup-order')
               if mode=='settings' and 'Semantic UI capture: saved custom theme, settings closed, presented=1 motion_settled=1' not in log: failures.append('settings-semantic-capture')
               if mode=='layout' and 'Native palette ownership smoke:' not in log: failures.append('layout-input-ownership')
+              if mode=='settings' and 'Native Settings loading intent: held completion, Escape, immediate reopen and latest binding reuse same owned worker.' not in log: failures.append('settings-loading-intent')
           expected=['commands','end','narrow','fuzzy','no-results','background']
           missing=[name for name in expected if not (artifacts/('craft-projects-palette-'+name+'.png')).is_file()]
           expected_startup=['craft-projects-startup-prepared.png','craft-projects-startup-exposed.png','craft-settings-startup-prepared.png','craft-settings-startup-exposed.png','craft-projects-workspace-focus-000ms.png']

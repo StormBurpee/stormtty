@@ -74,7 +74,14 @@ struct NavigatorLayout {
 };
 inline NavigatorLayout layout_workspace_navigator(double width,double height,const WorkspaceNavigator& model,unsigned focus) {
     NavigatorLayout out;if(width<240||height<260)return out;out.compact=width<680;
-    const double w=std::max(0.0,std::min(780.0,width-24)),h=std::max(0.0,std::min(448.0,height-64));
+    // Fit the owned catalog, not filtered results: typing or previewing a
+    // different workspace must not move the query, footer or click targets.
+    std::size_t terminal_count{};
+    for(const auto& entry:model.entries())terminal_count=std::max(terminal_count,entry.terminals.size());
+    const double catalog_height=std::max(double(std::min<std::size_t>(model.entries().size(),8))*42,
+                               double(std::min<std::size_t>(terminal_count,6))*54);
+    const double desired=std::clamp(150.0+catalog_height,232.0,448.0);
+    const double w=std::max(0.0,std::min(780.0,width-24)),h=std::min(desired,height-64);
     out.panel={(width-w)/2,std::min(72.0,std::max(12.0,(height-h)/3)),w,h};
     const auto p=out.panel;
     out.query={p.x+16,p.y+12,std::max(0.0,w-66),32};out.close={p.x+w-42,p.y+14,28,28};
