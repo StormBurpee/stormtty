@@ -33,6 +33,21 @@ class WorkflowTests(unittest.TestCase):
             module.assert_default_off(root)
             (root/'runtimes/zsh-seed').mkdir(parents=True)
             with self.assertRaises(ValueError):module.assert_default_off(root)
+    def test_off_failure_diagnostics_and_bounded_smoke_output(self):
+        spec=importlib.util.spec_from_file_location('off_diagnostics',ROOT/'tools/probes/run-default-off-completion.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        failure='MANAGED_STATE_RESULT code=1 phase=2 checks=7 cold_ms=0 warm_ms=0'
+        success='MANAGED_STATE_RESULT code=0 phase=11 cold_samples=1 warm_samples=1 checks=508 cold_ms=5307 warm_ms=741'
+        lines,ok=module.managed_evidence(('private contents\n'+failure+'\n').encode())
+        self.assertEqual(lines,[failure]);self.assertFalse(ok)
+        contract='MANAGED_STATE_CONTRACT index=2 passed=0'
+        self.assertEqual(module.managed_evidence(contract.encode())[0],[contract])
+        self.assertTrue(module.managed_evidence(success.encode())[1])
+        self.assertFalse(module.managed_evidence((success+'\n'+failure).encode())[1])
+        self.assertEqual(module.SMOKE_TAIL_BYTES,65536)
+        from types import SimpleNamespace
+        result=SimpleNamespace(exit_code=0,reaped=True,timed_out=False,output_truncated=True,cleanup_error='')
+        self.assertFalse(module.good(result))
     def test_actual_factory_only_under_option(self):
         source=(ROOT/'src/platform/windows/window.cpp').read_text()
         self.assertIn('#ifdef STORMTTY_EXPERIMENTAL_COMPLETION_SEED\n        if (state)',source)

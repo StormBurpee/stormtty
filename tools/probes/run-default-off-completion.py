@@ -20,6 +20,18 @@ def assert_default_off(build):
 def good(result):
     return result.exit_code==0 and result.reaped and not result.timed_out and not result.output_truncated and not result.cleanup_error
 
+NUMBER=r'[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?'
+STATE=re.compile(r'MANAGED_STATE_RESULT code=0 phase=11 cold_samples=1 warm_samples=1 checks=[0-9]+ cold_ms='+NUMBER+r' warm_ms='+NUMBER)
+FAILURE=re.compile(r'MANAGED_STATE_RESULT code=1 phase=[0-9]+ checks=[0-9]+ cold_ms='+NUMBER+r' warm_ms='+NUMBER)
+TYPING=re.compile(r'MANAGED_TYPING_RESULT code=[01] characters=[0-9]+ frames=[0-9]+ retreats=[0-9]+ echo_total_us=[0-9]+ echo_max_us=[0-9]+')
+CONTRACT=re.compile(r'MANAGED_STATE_CONTRACT index=[0-9]+ passed=[01]')
+SMOKE_TAIL_BYTES=65536
+
+def managed_evidence(data):
+    lines=[line for line in data.decode('utf-8',errors='replace').splitlines()
+           if STATE.fullmatch(line) or FAILURE.fullmatch(line) or TYPING.fullmatch(line) or CONTRACT.fullmatch(line)]
+    return lines,any(STATE.fullmatch(line) for line in lines) and not any(FAILURE.fullmatch(line) for line in lines)
+
 def main():
     p=argparse.ArgumentParser()
     for name in ('build','provider','output'):p.add_argument('--'+name,type=Path,required=True)
@@ -30,18 +42,15 @@ def main():
     for mode in ('layout','modal','projects','settings'):
         result=runner.run_owned([str((a.build/'stormtty.exe').resolve()),'--smoke-'+mode,
             '--capture',str((a.output/('default-off-'+mode+'.png')).resolve())],
-            timeout=120,reap_timeout=10,tail_bytes=8192,output_dir=a.output)
+            timeout=120,reap_timeout=10,tail_bytes=SMOKE_TAIL_BYTES,output_dir=a.output)
         ok=good(result);valid &= ok
         (a.output/('default-off-'+mode+'.log')).write_text('DEFAULT_OFF_SMOKE mode=%s code=%d exit_code=%d timed_out=%d reaped=%d truncated=%d cleanup_error=%d\n'%
             (mode,0 if ok else 1,result.exit_code,result.timed_out,result.reaped,result.output_truncated,bool(result.cleanup_error)))
-    number=r'[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?'
-    state=re.compile(r'MANAGED_STATE_RESULT code=0 phase=11 cold_samples=1 warm_samples=1 checks=[0-9]+ cold_ms='+number+r' warm_ms='+number)
-    typing=re.compile(r'MANAGED_TYPING_RESULT code=[01] characters=[0-9]+ frames=[0-9]+ retreats=[0-9]+ echo_total_us=[0-9]+ echo_max_us=[0-9]+')
     for provider,extra in [('inbox',[]),('packaged',[str(a.provider.resolve())])]:
         result=runner.run_owned([str((a.build/'managed_shell_state_probe.exe').resolve()),str((a.build/'runtimes/zsh').resolve()),*extra],
             timeout=180,reap_timeout=10,tail_bytes=16384,output_dir=a.output)
-        lines=[line for line in result.output_tail.decode('utf-8',errors='replace').splitlines() if state.fullmatch(line) or typing.fullmatch(line)]
-        ok=good(result) and any(state.fullmatch(line) for line in lines);valid &= ok
+        lines,evidence_ok=managed_evidence(result.output_tail)
+        ok=good(result) and evidence_ok;valid &= ok
         lines.append('DEFAULT_OFF_MANAGED provider=%s code=%d exit_code=%d timed_out=%d reaped=%d truncated=%d cleanup_error=%d'%
             (provider,0 if ok else 1,result.exit_code,result.timed_out,result.reaped,result.output_truncated,bool(result.cleanup_error)))
         (a.output/('default-off-'+provider+'.log')).write_text('\n'.join(lines)+'\n')

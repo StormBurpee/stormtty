@@ -111,3 +111,28 @@ they are not relabeled as full runs of the refreshed tree. The forthcoming exact
 native OFF/ON workflow is the comprehensive integrated gate.
 
 Refresh checks passed: Settings panel **37,693 assertions**, window geometry/input/managed-profile tests, and all **13** seed parser/workflow checks. Both refreshed-window Windows OFF/ON translation units compiled with strict warnings.
+
+## Current-app OFF qualification failure (2026-10-29)
+
+Run `40890835384` on published `923ca8abb8c3fa6d682f6b7b32449bb517c2bbd3`
+(tree `1c88b08fc7758c015999be1e72631a4a39d58911`, local `1941729`)
+completed **failure**, not a qualification pass. Native default-OFF all-target
+build and all 43 CTests passed. Four subsequent UI smoke processes exited zero
+and were reaped; layout/projects/settings exceeded the new driver's 8 KiB
+capture limit and were correctly rejected as truncated. The driver now uses
+its existing ON counterpart's bounded 64 KiB limit, still rejecting truncation.
+
+Inbox managed state passed phase 11, 508 checks, cold 5307 ms/warm 741 ms.
+Packaged managed state exited 1; its emitted typing counters were zero. The
+initial driver incorrectly filtered out the numeric failure phase/check count;
+the owned runner's temporary raw capture was closed, so that information is
+not recoverable from this artifact. No provider failure cause is asserted.
+The sanitizer now preserves exact numeric failure and contract records, without
+retaining shell/config/history contents. This is a diagnostic correction, not
+a claimed packaged-provider fix. ON build/lifecycle/timings were skipped and
+remain unqualified on the current integration. Do not retry the unchanged head.
+
+Artifact `12904644835` SHA256
+`e57946800d75e82cdb125c5ea9f819a2edf8776a46a1365afc4875e933d7b63c`
+is preserved locally under `/workspace/shared/seed-evidence-40890835384`.
+Default remains OFF; root controls any corrected-head publication.
