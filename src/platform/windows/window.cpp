@@ -460,6 +460,7 @@ private:
     bool workspace_smoke_ready_{};
     bool workspace_smoke_menu_{};
     ULONGLONG workspace_smoke_capture_at_{};
+    ULONGLONG workspace_smoke_diagnostic_at_{};
     void load_workspaces();
     WorkspaceSaveSignal workspace_save_signal_;
     void workspace_model_changed();
@@ -4107,7 +4108,29 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
             dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0;
         }
         if (wparam==material_probe_timer) {poll_material_probe();return 0;}
-        if (wparam==smoke_timeout_timer) { if (smoke_deadline_.expired(GetTickCount64())) smoke_finish("Native smoke phase deadline expired before real output, presentation and clean exit."); return 0; }
+        if (wparam==smoke_timeout_timer) {
+            const auto now=GetTickCount64();
+            if (smoke_deadline_.expired(now)) smoke_finish("Native smoke phase deadline expired before real output, presentation and clean exit.");
+            else if(!options_.smoke_workspaces.empty() && !smoke_finished_) {
+                // Hidden actor readiness can change without changing the visible
+                // scene. A normal unchanged render must not strand this explicit
+                // test's presented-frame state machine. Repaint on the existing
+                // bounded 250ms smoke timer; never poll/render recursively.
+                force_redraw_=true; changed();
+                if(now-workspace_smoke_diagnostic_at_>=1000) {
+                    workspace_smoke_diagnostic_at_=now;
+                    std::fprintf(stderr,"Workspace smoke progress: stage=%s seeded=%d menu=%d actors=%zu elapsed_ms=%llu\n",
+                        options_.smoke_workspaces.c_str(),workspace_smoke_seeded_,workspace_smoke_menu_,sessions_.size(),now-smoke_started_at_);
+                    for(const auto& [id,actor]:sessions_) {
+                        const auto info=actor->info();
+                        std::fprintf(stderr,"Workspace smoke actor: id=%llu state=%d rx=%llu frame=%d\n",
+                            static_cast<unsigned long long>(id.value),static_cast<int>(info.state),
+                            static_cast<unsigned long long>(info.bytes_received),static_cast<bool>(actor->frame()));
+                    }
+                }
+            }
+            return 0;
+        }
         if (wparam==chrome_motion_timer) { motion_schedule(); ++chrome_generation_; dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0; }
         if (wparam==cursor_timer && cursor_blink_.tick(GetTickCount64())) { dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); } return 0;
     case WM_CHAR: case WM_SYSCHAR: {
