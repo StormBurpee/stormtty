@@ -15,10 +15,14 @@ def header_bytes(identity):
 
 def prepare(runtime,destination,header):
     runtime=runtime.resolve(strict=True);destination=destination.absolute();header=header.absolute()
-    if destination==runtime or runtime in destination.parents or runtime in header.parents:
-        raise ValueError('outputs must be outside runtime')
     for p in (destination,header,*destination.parents,*header.parents):
         if p.exists() and (p.is_symlink() or getattr(p.lstat(),'st_file_attributes',0)&0x400):raise ValueError('linked output')
+    # Windows resolve expands existing 8.3 aliases (including TEMP); absolute
+    # alone does not. Compare like-for-like after rejecting linked output paths.
+    destination=destination.resolve(strict=False);header=header.resolve(strict=False)
+    if (destination==runtime or runtime in destination.parents or destination in runtime.parents
+            or header==runtime or runtime in header.parents):
+        raise ValueError('outputs must be outside runtime')
     if destination.exists():
         receipt=json.loads((destination/RECEIPT).read_text())
         if receipt.get('owned_completion_seed') is not True:raise ValueError('unowned output')

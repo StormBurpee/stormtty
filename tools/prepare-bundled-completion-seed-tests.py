@@ -30,7 +30,21 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaises(Exception):self.prepare()
         self.assertEqual((self.package/'keep').read_text(),'user data')
     def test_output_cannot_enter_runtime(self):
-        with self.assertRaises(ValueError):m.prepare(self.runtime,self.runtime/'seed',self.header)
+        with mock.patch.object(m.seed,'prepare') as generate:
+            for destination,header in ((self.runtime/'seed',self.header),
+                                       (self.runtime,self.header),
+                                       (self.root,self.header),
+                                       (self.package,self.runtime/'trust.hpp'),
+                                       (self.package,self.runtime)):
+                with self.subTest(destination=destination,header=header):
+                    with self.assertRaises(ValueError):m.prepare(self.runtime,destination,header)
+            generate.assert_not_called()
+    def test_dotdot_output_cannot_enter_runtime(self):
+        other=self.root/'other';other.mkdir()
+        with mock.patch.object(m.seed,'prepare') as generate:
+            with self.assertRaises(ValueError):
+                m.prepare(self.runtime,other/'..'/'runtime'/'seed',self.header)
+            generate.assert_not_called()
     def test_install_uses_same_final_tree_and_option_off(self):
         cmake=(Path(__file__).parents[1]/'cmake/StormTTYDeveloperShell.cmake').read_text()
         self.assertIn('option(STORMTTY_EXPERIMENTAL_COMPLETION_SEED ',cmake)

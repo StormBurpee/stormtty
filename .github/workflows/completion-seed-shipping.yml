@@ -3,7 +3,11 @@ name: Opt-in shipping completion seed qualification
 on:
   push:
     branches: [diagnostic/completion-seed-shipping]
-    paths: [.github/workflows/completion-seed-shipping.yml]
+    # Source corrections to the build-only generator must qualify on this branch.
+    paths:
+      - .github/workflows/completion-seed-shipping.yml
+      - tools/prepare-bundled-completion-seed.py
+      - tools/prepare-bundled-completion-seed-tests.py
 permissions:
   contents: read
 concurrency:

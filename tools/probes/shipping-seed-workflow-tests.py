@@ -4,8 +4,13 @@ ROOT=Path(__file__).resolve().parents[2]
 class WorkflowTests(unittest.TestCase):
     def test_exact_route_and_bounds(self):
         s=(ROOT/'.github/workflows/completion-seed-shipping.yml').read_text()
-        for token in ('branches: [diagnostic/completion-seed-shipping]','paths: [.github/workflows/completion-seed-shipping.yml]',"github.event_name == 'push' && github.ref == 'refs/heads/diagnostic/completion-seed-shipping'",'ref: ${{ github.sha }}','timeout=1800','timeout-minutes: 31','if: always()'):
+        for token in ('branches: [diagnostic/completion-seed-shipping]',"github.event_name == 'push' && github.ref == 'refs/heads/diagnostic/completion-seed-shipping'",'ref: ${{ github.sha }}','timeout=1800','timeout-minutes: 31','if: always()'):
             self.assertIn(token,s)
+        paths=s.split('    paths:\n',1)[1].split('permissions:',1)[0]
+        self.assertEqual([line.strip()[2:] for line in paths.splitlines() if line.strip().startswith('- ')],
+                         ['.github/workflows/completion-seed-shipping.yml',
+                          'tools/prepare-bundled-completion-seed.py',
+                          'tools/prepare-bundled-completion-seed-tests.py'])
         self.assertNotIn('workflow_dispatch:',s);self.assertNotIn('continue-on-error',s)
         self.assertIn('-DSTORMTTY_EXPERIMENTAL_COMPLETION_SEED=ON',s)
         self.assertIn('0057852bfaa89a56745cba8c7296529d2fc39830',s)
