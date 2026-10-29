@@ -271,6 +271,14 @@ public:
             std::filesystem::remove(options_.config_path,ignored);
             std::filesystem::remove(options_.config_path.parent_path(),ignored);
         }
+        if (!smoke_shell_state_root_.empty()) {
+            bool closed=true;
+            for (const auto& [id,session]:smoke_sessions_) { (void)id; session->request_close(); }
+            for (const auto& [id,session]:smoke_sessions_) { (void)id; if (!session->wait_closed(std::chrono::seconds(5))) closed=false; }
+            std::error_code error;
+            if (closed) std::filesystem::remove_all(smoke_shell_state_root_,error);
+            std::fprintf(stderr,"Native smoke shell state cleanup: actors_closed=%d removed=%d\n",closed,closed&&!error);
+        }
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor body end; member destruction begin");
     }
     int run();
@@ -411,6 +419,8 @@ private:
     bool smoke_marker_presented_{}, smoke_finished_{}, smoke_console_capture_pending_{};
     int exit_code_{};
     unsigned smoke_modal_stage_{}, smoke_settings_stage_{};
+    bool smoke_modal_presented_{};
+    std::filesystem::path smoke_shell_state_root_;
     unsigned smoke_typing_stage_{};
     bool smoke_typing_handshake_sent_{}, smoke_typing_handshake_seen_{};
     int smoke_typing_input_result_{-1};
@@ -570,6 +580,18 @@ void NativeWindow::create() {
         if (!length || length>=temporary.size() || FAILED(CoCreateGuid(&guid)) || !StringFromGUID2(guid,token.data(),static_cast<int>(token.size())))
             throw std::runtime_error("Could not create a unique settings smoke path.");
         options_.config_path=std::filesystem::path(temporary.data())/(std::wstring(L"StormTTY.SettingsSmoke.")+token.data())/L"config.stormtty";
+    }
+    if (options_.smoke_test && managed_shell_profile_) {
+        std::array<wchar_t,32768> temporary{};
+        const auto length=GetTempPathW(static_cast<DWORD>(temporary.size()),temporary.data());
+        GUID guid{}; std::array<wchar_t,40> token{};
+        if (!length || length>=temporary.size() || FAILED(CoCreateGuid(&guid)) || !StringFromGUID2(guid,token.data(),static_cast<int>(token.size())))
+            throw std::runtime_error("Could not create unique smoke shell state.");
+        const auto root=std::filesystem::path(temporary.data())/(std::wstring(L"StormTTY.ShellSmoke.")+token.data());
+        if (!std::filesystem::create_directory(root)) throw std::runtime_error("Smoke shell state directory already exists.");
+        smoke_shell_state_root_=root; // Only a directory this process created is owned.
+        if (!prepare_managed_shell_state_at(root,false)) throw std::runtime_error("Private smoke shell state validation failed.");
+        std::fputs("Native smoke shell state: unique owned root; user history/config excluded.\n",stderr);
     }
     new_tab();
     if (options_.smoke_projects) {
@@ -960,7 +982,8 @@ SessionId NativeWindow::new_session() {
         // Launch-scoped native DACL validation, never an ambient trust switch.
         // Override inherited state even on failure; no startup subprocess, HOME
         // replacement, or changes to an existing user's files/permissions.
-        const auto state = prepare_managed_shell_state(empty_home);
+        const auto state = options_.smoke_test ? prepare_managed_shell_state_at(smoke_shell_state_root_,empty_home) : prepare_managed_shell_state(empty_home);
+        if (options_.smoke_test && !empty_home && !state) throw std::runtime_error("Private smoke shell state failed revalidation.");
         process.environment.push_back({"STORMTTY_NATIVE_ZSH_STATE", state ?
             std::optional<std::string>(narrow(state.directory.generic_wstring())) : std::nullopt});
         // Child environment only: user startup hooks must not override this preset.
@@ -3227,7 +3250,10 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!modal_) { smoke_finish("Disposable background terminal did not show styled close confirmation."); return; }
             smoke_modal_stage_=1; return;
         }
-        if (smoke_modal_stage_==1 && presented) {
+        if (smoke_modal_stage_==1 && presented) smoke_modal_presented_=true;
+        if (smoke_modal_stage_==1 && smoke_modal_presented_) {
+            // Presentation and background launch readiness are independent events.
+            // Parked output may leave the visible modal scene unchanged.
             // Do not cancel the disposable actor before its runtime has actually
             // started; its provider identity is asserted even after retirement.
             if (!smoke_disposable_ || !smoke_disposable_->info().bytes_received) return;
@@ -3447,6 +3473,20 @@ void NativeWindow::smoke_finish(std::string_view error) {
     }
     if (!error.empty()) {
         smoke_typing_diagnostic("failure");
+        // Only isolated smoke-owned shells are eligible for fixture text evidence.
+        // Never dump a normal user session or inherited history/configuration.
+        if (!smoke_shell_state_root_.empty()) for (const auto& [id,session]:sessions_) {
+            const auto info=session->info(); const auto frame=session->frame();
+            std::fprintf(stderr,"Native smoke failed actor=%llu modal_stage=%u modal_presented=%d command_sent=%d rx=%llu tx=%llu bracketed=%d\n",
+                static_cast<unsigned long long>(id.value),smoke_modal_stage_,smoke_modal_presented_,smoke_commands_sent_.contains(id),
+                static_cast<unsigned long long>(info.bytes_received),static_cast<unsigned long long>(info.bytes_sent),frame&&frame->bracketed_paste);
+            if (frame) for (std::size_t row=0;row<frame->lines.size() && row<24;++row) {
+                std::string text;
+                for (const auto& cell:frame->lines[row]->cells) { text+=cell.grapheme.empty()?" ":cell.grapheme; if(text.size()>512)break; }
+                while (!text.empty() && text.back()==' ') text.pop_back();
+                if (!text.empty()) std::fprintf(stderr,"Native smoke isolated row=%zu text=%s\n",row,text.c_str());
+            }
+        }
         std::fprintf(stderr,"Native smoke deadline phase=%u phase_elapsed_ms=%llu budget_ms=%llu total_elapsed_ms=%llu\n",
             unsigned(smoke_deadline_.phase()),static_cast<unsigned long long>(smoke_deadline_.phase_elapsed(GetTickCount64())),
             static_cast<unsigned long long>(smoke_deadline_.phase_budget()),GetTickCount64()-smoke_started_at_);
