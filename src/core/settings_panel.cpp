@@ -95,7 +95,7 @@ void SettingsPanel::open(const Config& running, const Config& config, std::span<
 void SettingsPanel::open_for_binding(const Config& config, std::string_view command_id, std::span<const Profile> discovered) {
     if (saving_) return;
     if (!open_) open(config,discovered);
-    if (!find_command(command_id)) { error_="That command is not available."; ++generation_; return; }
+    if ((!agent_available_&&command_id=="agent.toggle")||!find_command(command_id)) { error_="That command is not available."; ++generation_; return; }
     section_=SettingsSection::shortcuts; scroll_=0; terminal_override_.reset(); capture_command_=std::string(command_id);
     focus_="binding:"+capture_command_; error_.clear(); ++generation_; rebuild_layout(); ensure_focus_visible();
 }
@@ -188,12 +188,16 @@ void SettingsPanel::rebuild_layout() {
         add("appearance.motion",{right-cw,top+586,cw,34},true);
         if (platform_==Platform::windows) add("appearance.clock",{right-42,top+642,42,24},true);
     } else if (section_==SettingsSection::ribbon) {
+        std::size_t visible_row=0;
         for(std::size_t i=0;i<draft_.ribbon.order.size();++i) {
+            if(!agent_available_&&draft_.ribbon.order[i]==RibbonBinding::agent)continue;
             const auto id=std::string(ribbon_bindings[ribbon_index(draft_.ribbon.order[i])].id);
-            const double y=top+i*66;
+            const double y=top+visible_row++*66;
             add("ribbon.toggle:"+id,{right-152,y,70,30},true);
-            add("ribbon.up:"+id,{right-76,y,34,30},true,i>0);
-            add("ribbon.down:"+id,{right-36,y,34,30},true,i+1<draft_.ribbon.order.size());
+            auto shown=[&](RibbonBinding b){return agent_available_||b!=RibbonBinding::agent;};
+            const auto at=draft_.ribbon.order.begin()+i;
+            add("ribbon.up:"+id,{right-76,y,34,30},true,std::any_of(draft_.ribbon.order.begin(),at,shown));
+            add("ribbon.down:"+id,{right-36,y,34,30},true,std::any_of(at+1,draft_.ribbon.order.end(),shown));
         }
     } else if (section_==SettingsSection::shell) {
         const double offset=platform_==Platform::windows?142.0:0.0;
@@ -208,7 +212,7 @@ void SettingsPanel::rebuild_layout() {
         layout_.preview={content_x,top,content_w,54};
         std::size_t i=0;
         for (const auto& command:command_registry())
-            add("binding:"+std::string(command.id),{content_x,top+70+i++*60,content_w,52},true);
+            if(agent_available_||command.id!="agent.toggle") add("binding:"+std::string(command.id),{content_x,top+70+i++*60,content_w,52},true);
     }
     const double button_w=std::min(120.0,std::max(0.0,(w-2*pad-10)/2));
     add("cancel",{x+w-pad-button_w*2-10,layout_.footer.y+23,button_w,34});
@@ -238,6 +242,7 @@ void SettingsPanel::changed() {
     pending_=SettingsAction{SettingsActionKind::preview,draft_};
 }
 void SettingsPanel::activate(std::string_view id,int direction) {
+    if(!agent_available_&&(id=="binding:agent.toggle"||id.ends_with(":agent.status")))return;
     if (!open_ || saving_) return;
     if (id=="cancel" || id=="close") {cancel();return;}
     if (id=="save") {request_save();return;}
@@ -259,8 +264,11 @@ void SettingsPanel::activate(std::string_view id,int direction) {
             if(id.starts_with("ribbon.toggle:")) {
                 if(*binding==RibbonBinding::clock) {draft_.appearance.show_clock=!(draft_.appearance.show_clock && !draft_.ribbon.hidden[index]);draft_.ribbon.hidden[index]=false;}
                 else draft_.ribbon.hidden[index]=!draft_.ribbon.hidden[index];
-            } else if(id.starts_with("ribbon.up:") && found!=draft_.ribbon.order.begin()) std::iter_swap(found,found-1);
-            else if(id.starts_with("ribbon.down:") && found+1!=draft_.ribbon.order.end()) std::iter_swap(found,found+1);
+            } else if(id.starts_with("ribbon.up:")) {
+                auto other=found;while(other!=draft_.ribbon.order.begin()){--other;if(agent_available_||*other!=RibbonBinding::agent){std::iter_swap(found,other);break;}}
+            } else if(id.starts_with("ribbon.down:")) {
+                auto other=found;while(++other!=draft_.ribbon.order.end())if(agent_available_||*other!=RibbonBinding::agent){std::iter_swap(found,other);break;}
+            }
         }
     } else if (id.starts_with("appearance.theme.")) {
         const auto name=id.substr(std::string_view("appearance.theme.").size());
@@ -667,11 +675,13 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             }
         }
     } else if (section_==SettingsSection::ribbon) {
+        std::size_t visible_row=0;
         for(std::size_t i=0;i<draft_.ribbon.order.size();++i) {
+            if(!agent_available_&&draft_.ribbon.order[i]==RibbonBinding::agent)continue;
             const auto binding=draft_.ribbon.order[i];const auto index=ribbon_index(binding);
             const auto& info=ribbon_bindings[index];const auto id=std::string(info.id);
             const bool visible=!draft_.ribbon.hidden[index] && (binding!=RibbonBinding::clock || draft_.appearance.show_clock);
-            row_labels(i*66,std::string(info.label),std::string(info.id),std::max(0.0,content.width-166));
+            row_labels(visible_row++*66,std::string(info.label),std::string(info.id),std::max(0.0,content.width-166));
             button("ribbon.toggle:"+id,visible?"Shown":"Hidden",visible);
             button("ribbon.up:"+id,"↑");button("ribbon.down:"+id,"↓");
         }

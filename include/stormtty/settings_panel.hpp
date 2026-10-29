@@ -45,6 +45,7 @@ public:
               std::span<const Profile> discovered = {});
     void open_for_binding(const Config&, std::string_view command_id,
                           std::span<const Profile> discovered = {});
+    void set_agent_available(bool available) { agent_available_=available; }
     bool capturing_shortcut() const noexcept { return !capture_command_.empty(); }
     bool is_open() const noexcept { return open_; }
     bool saving() const noexcept { return saving_; }
@@ -83,6 +84,7 @@ public:
     void persistence_result(bool success, std::string error = {});
     void cancel();
 private:
+    bool agent_available_{}; // Effective host capability, not the saved/reloaded flag.
     void rebuild_layout();
     void changed();
     void activate(std::string_view id, int direction = 1);

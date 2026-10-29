@@ -5,6 +5,13 @@
 
 using namespace stormtty;
 int main() { return run_core_tests("config", [] {
+    CHECK(!default_config(Platform::windows).experimental_ai);
+    auto opted=default_config(Platform::windows);opted.experimental_ai=true;
+    auto flag_roundtrip=parse_config(serialize_config(opted,Platform::windows),Platform::windows);
+    CHECK(flag_roundtrip&&flag_roundtrip.config->experimental_ai);
+    auto legacy=serialize_config(opted,Platform::windows);const auto fs=legacy.find("[features]");const auto fe=legacy.find("[appearance]",fs);legacy.erase(fs,fe-fs);
+    auto old_file=parse_config(legacy,Platform::windows);CHECK(old_file&&!old_file.config->experimental_ai);
+    CHECK(!parse_config("version = 1\n[features]\nexperimental_ai = \"true\"\n",Platform::windows));
     SettingsReload reload;
     auto current=default_config(Platform::windows);
     SettingsSnapshotResult loaded{ConfigFileSnapshot{},current,{}};

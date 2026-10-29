@@ -419,6 +419,7 @@ private:
         return {p.bounds.x + 20, p.bounds.y + header + 16, std::max(0.0, p.bounds.width - 40), std::max(0.0, p.bounds.height - header - 32)};
     }
     Config config_;
+    bool ai_enabled_{}; // Launch-time feature capability; never changed by reload/preview.
     NativeRunOptions options_;
     std::optional<Profile> managed_shell_profile_; // Resolved launch profile; only a stable marker is ever saved.
     SettingsPanel settings_panel_{Platform::windows};
@@ -599,9 +600,13 @@ private:
 };
 
 void NativeWindow::create() {
+    ai_enabled_=config_.experimental_ai||options_.smoke_agent; // Explicit authored UI fixture, never provider calls.
+    settings_panel_.set_agent_available(ai_enabled_);
+    if(ai_enabled_) {
     AgentStdioOptions agent_options;agent_options.executable=narrow(options_.codex_executable.wstring());
     agent_options.account_reference=options_.codex_account_reference;agent_options.runtime_version=options_.codex_runtime_version;
     agent_controller_=std::make_unique<AgentPanelController>(std::move(agent_options),[wake=wake_]{wake->wake();});
+    }
     if (options_.smoke_test) {
         smoke_started_at_=GetTickCount64();
         smoke_deadline_=SmokeDeadline(smoke_started_at_);
@@ -614,7 +619,7 @@ void NativeWindow::create() {
     enforce_custom_frame_style(hwnd_,options_.smoke_test);
     windows::set_app_icons(hwnd_);
     wake_->window.store(hwnd_, std::memory_order_release);
-    if(!options_.smoke_test&&!options_.agent_settings_path.empty()) {
+    if(ai_enabled_&&!options_.smoke_test&&!options_.agent_settings_path.empty()) {
         agent_setup_=std::make_unique<AgentSetupService>(options_.agent_settings_path,[wake=wake_]{wake->wake();});agent_setup_->load();
     }
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES};
@@ -1358,7 +1363,7 @@ NativeWindow::FooterPresentation NativeWindow::footer_presentation() const {
 SessionFooterLayout NativeWindow::footer_layout() const {
     const auto context=footer_presentation();
     return layout_session_footer(navigation_.footer,projects_.active()->parked_sessions.size(),
-        active_session()!=nullptr,!context.head.empty(),!context.status.empty(),config_.appearance.show_clock,config_.ribbon,{true,agent_controller_&&agent_controller_->attention(),context.failed});
+        active_session()!=nullptr,!context.head.empty(),!context.status.empty(),config_.appearance.show_clock,config_.ribbon,{ai_enabled_,agent_controller_&&agent_controller_->attention(),context.failed});
 }
 std::string NativeWindow::directory_context() const {
     std::string path;
@@ -1720,7 +1725,7 @@ void NativeWindow::refresh_tooltips() {
     if (layout_.panes.size()>1) for (const auto& pane:layout_.panes) add({pane.bounds.x,pane.bounds.y,pane.bounds.width,28},pane_title(pane.pane,true));
     for (const auto& row:navigation_.projects) if (const auto* project=projects_.find(row.project)) add(row.bounds,project->metadata.name+"\n"+project->metadata.working_directory);
     add(navigation_.toggle,navigation_.expanded?"Collapse workspaces":width_<640?"Navigation stays compact in narrow windows":"Expand workspaces");
-    add(footer_layout().agent,agent_status_label()+"\nOpen agent · Ctrl+Shift+J");
+    if(ai_enabled_)add(footer_layout().agent,agent_status_label()+"\nOpen agent · Ctrl+Shift+J");
     add(navigation_.settings,"Settings · Ctrl+,"); add(navigation_.new_project,"New workspace… Choose a folder"); add(navigation_.context,context_label_); add(navigation_.focus,"Focus mode: hide navigation, directory context and footer");
     const auto context=footer_presentation(); const auto placement=footer_layout();
     add(placement.directory,context.directory); add(placement.git,context.head); add(placement.status,context.status);
@@ -1861,6 +1866,7 @@ void NativeWindow::settings_completed() {
         config_=std::move(*result.config);
         settings_snapshot_.reset(); // The next editor obtains its own exact baseline.
         notice_="Settings reloaded. Existing terminals kept; shell, scrollback and console choices apply to new sessions (CLI overrides still apply).";
+        if(config_.experimental_ai!=ai_enabled_)notice_+=" Experimental AI feature changes apply after restarting StormTTY.";
         caret_schedule(true); changed(true);
         return;
     }
@@ -1911,6 +1917,7 @@ void NativeWindow::settings_completed() {
                 "Settings saved. --shell-runtime keeps managed Zsh for this launch; the saved shell applies without that override.":
                 "Settings saved. Shell and console backend apply to new tabs and panes; existing sessions are unchanged."):
                 "Settings saved, but presentation could not update. Restart to apply: "+apply_error;
+            if(config_.experimental_ai!=ai_enabled_)notice_+=" Experimental AI feature changes apply after restarting StormTTY.";
         } else settings_panel_.persistence_result(false,completion->saved.error);
         caret_schedule(true); changed(true);
     }
@@ -1966,7 +1973,7 @@ void NativeWindow::settings_input_changed() {
 CommandContext NativeWindow::command_context() const {
     CommandContext context;
     context.supports_settings_reload=true;
-    context.supports_agent_panel=true;
+    context.supports_agent_panel=ai_enabled_;
     context.supports_background_sessions=true; context.parked_sessions=projects_.active()->parked_sessions.size();
     context.supports_project_workspaces=true; context.project_workspaces=projects_.entries().size(); context.supports_focus_mode=true;
     context.tabs = workspace().state().tabs.size();
@@ -1994,7 +2001,7 @@ void NativeWindow::toggle_palette() {
 std::vector<NativeWindow::PaletteEntry> NativeWindow::palette_commands() const {
     std::vector<PaletteEntry> result;
     if (!palette_background_only_) for (const auto& command:command_registry())
-        if (const auto score=command_search_score(query_,command.label,command.description))
+        if ((ai_enabled_||command.id!="agent.toggle")) if (const auto score=command_search_score(query_,command.label,command.description))
             result.push_back({std::string(command.id),std::string(command.label),std::string(command.description),{},*score});
     // Only the current workspace: restoration must never silently switch projects.
     // Titles are presentation/search data, never interpreted as commands or IDs.
@@ -2549,6 +2556,7 @@ void NativeWindow::render() {
 }
 
 void NativeWindow::toggle_agent_panel() {
+    if(!ai_enabled_||!agent_controller_)return;
     if (agent_panel_.is_open()) agent_panel_.close();
     else if (!modal_ && !overlay_open() && !palette_open_ && !rename_open_) {
         const auto attention=agent_controller_->attention_workspace();
@@ -2571,6 +2579,7 @@ std::string NativeWindow::agent_status_label() const {
     return "Codex · "+status.status_label()+(agent_controller_->attention()?" · !":"");
 }
 AgentPanelView NativeWindow::current_agent_view() const {
+    if(!ai_enabled_||!agent_controller_)return {};
     const auto* project=projects_.active();if(!project)return {};
     auto view=agent_controller_->view(project->metadata.persistent_id,project->metadata.name,project->metadata.working_directory);
     const bool overridden=!options_.codex_executable.empty()||!options_.codex_account_reference.empty();
@@ -2603,6 +2612,7 @@ void NativeWindow::refresh_agent_panel() {
     changed();
 }
 void NativeWindow::agent_input_changed() {
+    if(!ai_enabled_||!agent_controller_){agent_panel_.close();(void)agent_panel_.take_action();return;}
     if(auto action=agent_panel_.take_action()) {
         if(action->kind==AgentPanelActionKind::open_sign_in||action->kind==AgentPanelActionKind::install_codex) {
             const auto current=current_agent_view();
@@ -3591,6 +3601,10 @@ void NativeWindow::smoke_settings_stage(unsigned stage) {
 }
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if (!options_.smoke_test || smoke_finished_) return;
+    if(!options_.smoke_agent&&projects_.active()) {
+        if(ai_enabled_||agent_controller_||agent_setup_||agent_panel_.is_open()||footer_layout().agent.width>0||command_context().supports_agent_panel) {smoke_finish("Disabled AI feature exposed UI or provider ownership.");return;}
+        for(const auto& entry:palette_commands())if(entry.id=="agent.toggle"){smoke_finish("Disabled AI feature leaked into Commands.");return;}
+    }
     if (smoke_deadline_.expired(GetTickCount64())) { smoke_finish("Native smoke phase deadline expired."); return; }
     if (!options_.smoke_workspaces.empty()) { smoke_workspace_progress(presented); return; }
     if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
@@ -3950,6 +3964,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if (!smoke_reload_stage_) {
             smoke_reload_actors_=sessions_;
             smoke_reload_expected_=config_;
+            smoke_reload_expected_.experimental_ai=true; // Reload must not enable the launch-time capability.
             smoke_reload_expected_.theme=*find_builtin_theme("ember");
             smoke_reload_expected_.font.size_dip=17;
             smoke_reload_expected_.ribbon.hidden[ribbon_index(RibbonBinding::git)]=!config_.ribbon.hidden[ribbon_index(RibbonBinding::git)];

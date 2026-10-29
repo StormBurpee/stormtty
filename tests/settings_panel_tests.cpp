@@ -417,4 +417,16 @@ int main() {return run_core_tests("settings panel",[] {
     auto save_ribbon=ribbon_save.take_action();CHECK(save_ribbon && save_ribbon->kind==SettingsActionKind::save);
     CHECK(save_ribbon->config.ribbon.hidden[ribbon_index(RibbonBinding::background)]);
     ribbon_save.persistence_result(true);CHECK(!ribbon_save.is_open());
+    SettingsPanel disabled_ai;auto future=defaults;future.experimental_ai=true;
+    disabled_ai.open(defaults,future);activate(disabled_ai,"nav.shortcuts");
+    for(const auto& c:disabled_ai.layout().controls)CHECK(c.id!="binding:agent.toggle");
+    disabled_ai.open_for_binding(future,"agent.toggle");CHECK(!disabled_ai.capturing_shortcut());
+    activate(disabled_ai,"nav.ribbon");for(const auto& c:disabled_ai.layout().controls)CHECK(c.id.find("agent.status")==std::string::npos);
+    WindowScene no_ai_scene;disabled_ai.append_scene(no_ai_scene);for(const auto& t:no_ai_scene.texts)CHECK(t.text.find("Agent status")==std::string::npos);
+    SettingsPanel enabled_ai;enabled_ai.set_agent_available(true);enabled_ai.open(defaults);activate(enabled_ai,"nav.shortcuts");
+    CHECK(std::any_of(enabled_ai.layout().controls.begin(),enabled_ai.layout().controls.end(),[](const auto& c){return c.id=="binding:agent.toggle";}));
+    activate(enabled_ai,"nav.ribbon");CHECK(std::any_of(enabled_ai.layout().controls.begin(),enabled_ai.layout().controls.end(),[](const auto& c){return c.id=="ribbon.toggle:agent.status";}));
+    auto boundary=defaults;std::swap(boundary.ribbon.order.front(),boundary.ribbon.order[ribbon_index(RibbonBinding::agent)]);
+    SettingsPanel boundary_panel;boundary_panel.open(boundary);activate(boundary_panel,"nav.ribbon");
+    for(const auto& c:boundary_panel.layout().controls)if(c.id=="ribbon.up:session.git")CHECK(!c.enabled);
 });}

@@ -10,7 +10,6 @@
 <p align="center">
   <a href="#why-stormtty">About</a> &nbsp; / &nbsp;
   <a href="#workspaces-that-outlast-a-window">Workspaces</a> &nbsp; / &nbsp;
-  <a href="#codex-with-a-native-place-to-work">Codex</a> &nbsp; / &nbsp;
   <a href="#build-from-source">Build</a> &nbsp; / &nbsp;
   <a href="#using-the-windows-host">Controls</a> &nbsp; / &nbsp;
   <a href="#configuration">Configuration</a> &nbsp; / &nbsp;
@@ -60,7 +59,7 @@ shell or directory. [Persistence and recovery details →](docs/workspace-preset
 
 Tabs, dividers, menus, Settings and the command palette share the native renderer.
 The footer ribbon can show directory, Git, session status, background terminals,
-agent status and a clock. Reorder or hide its six built-in items in Settings;
+and a clock. Reorder or hide the built-in items in Settings;
 preview is immediate, Cancel restores the old arrangement, and Save persists it.
 Errors and agent attention cannot be hidden by customization. This is a small
 closed set of data bindings, not an executable plugin system.
@@ -93,7 +92,24 @@ These are native Windows development-build captures from the automated fixture,
 not concept art. They show layout and controls; desktop blur and physical input
 latency need separate hardware verification.
 
-### Codex with a native place to work
+### Experimental AI (disabled by default)
+
+The AI integration is paused and hidden by default. Normal launches create no
+AI controller or provider-settings worker and show no AI entry in the footer,
+Commands, shortcut editor, or ribbon customization. Existing Codex paths, account metadata,
+and key bindings do **not** opt in.
+
+For explicit experimental use, add this to `config.stormtty` and restart:
+
+```toml
+[features]
+experimental_ai = true
+```
+
+This flag is **launch-time only**. Reloading or saving configuration never enables,
+disables, disconnects, or interrupts an AI provider in the running window. Set it
+back to `false` and restart to hide the integration again. The isolated CI
+`--smoke-agent` fixture explicitly enables authored UI only, not a real provider.
 
 The first Codex integration is implemented as a Windows-native panel, not an
 embedded TUI or a webview. `Ctrl+Shift+J` opens it; Escape returns focus to the
@@ -240,7 +256,7 @@ StormTTY hosts the shell; its terminal engine does not interpret shell commands.
 | Action | Default shortcut |
 | --- | --- |
 | Show commands | `Ctrl+Shift+P` |
-| Open Codex panel | `Ctrl+Shift+J` |
+| Open Codex panel (experimental opt-in only) | `Ctrl+Shift+J` |
 | New tab | `Ctrl+Shift+T` |
 | Close active pane | `Ctrl+Shift+W` |
 | Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |

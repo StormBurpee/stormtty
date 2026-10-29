@@ -171,7 +171,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 if (written && written < count) { directory.resize(written); config_path = std::filesystem::path(directory) / L"StormTTY" / L"config.stormtty"; }
             }
         }
-        if(!smoke) options.agent_settings_path=stormtty::local_agent_settings_path();
         if (!config_path.empty()) { config_path=std::filesystem::absolute(config_path).lexically_normal(); options.config_path=config_path; }
         if (!options.smoke_workspaces.empty()) {
             if (!workspace_fixture.is_absolute() || !workspace_fixture.filename().wstring().starts_with(L"StormTTY.WorkspaceSmoke.") ||
@@ -207,6 +206,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
         if (stormtty::has_managed_zsh_selection(config) && options.shell_runtime_directory.empty())
             throw std::runtime_error("Your saved default is managed Zsh, but this build has no bundled shell runtime. Build with STORMTTY_BUNDLE_ZSH=ON or launch with --shell-runtime <absolute staged root>; no fallback shell was launched.");
+        if(!smoke&&config.experimental_ai)options.agent_settings_path=stormtty::local_agent_settings_path();
         const int result=stormtty::run_native_application(std::move(config),std::move(options));
         stormtty::windows::smoke_teardown_trace(smoke,"native application returned to wWinMain");
         return result;

@@ -52,6 +52,7 @@ struct Profile {
 };
 struct Config {
     unsigned version{1};
+    bool experimental_ai{}; // Explicit opt-in; native hosts latch this at launch.
     Theme theme;
     AppearanceConfig appearance;
     FontConfig font;

@@ -197,7 +197,7 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
             const auto tail = trim(line.substr(close + 1));
             if (!tail.empty() && tail[0] != '#') { error(line_number, close + 2, "Unexpected text after section header"); continue; }
             section = std::string(trim(line.substr(1, close - 1)));
-            const bool known = section == "theme" || section == "ribbon" || section == "appearance" || section == "font" || section == "terminal" || section == "bindings" ||
+            const bool known = section == "features" || section == "theme" || section == "ribbon" || section == "appearance" || section == "font" || section == "terminal" || section == "bindings" ||
                 section == "bindings.windows" || section == "bindings.macos";
             if (!known && !section.starts_with("profile.")) error(line_number, 1, "Unknown section: " + section);
             if (section.starts_with("profile.")) {
@@ -242,6 +242,8 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
             string_field("name", config.theme.name); string_field("background", config.theme.background);
             string_field("foreground", config.theme.foreground); string_field("chrome", config.theme.chrome); string_field("accent", config.theme.accent);
             for (std::size_t i=0;i<16;++i) string_field("ansi"+std::to_string(i), config.theme.ansi[i]);
+        } else if (section == "features") {
+            bool_field("experimental_ai", config.experimental_ai);
         } else if (section == "appearance") {
             bool_field("show_clock", config.appearance.show_clock);
             number_field("background_opacity", config.appearance.background_opacity, 0.0, 1.0, false);
@@ -358,6 +360,7 @@ std::string serialize_config(const Config& config, Platform platform) {
         << "\nbackground = " << quote(config.theme.background) << "\nforeground = " << quote(config.theme.foreground)
         << "\nchrome = " << quote(config.theme.chrome) << "\naccent = " << quote(config.theme.accent);
     for (std::size_t i=0;i<16;++i) out << "\nansi" << i << " = " << quote(config.theme.ansi[i]);
+    out << "\n\n[features]\nexperimental_ai = " << (config.experimental_ai?"true":"false");
     out << "\n\n[appearance]\nbackground_opacity = " << config.appearance.background_opacity
         << "\nshow_clock = " << (config.appearance.show_clock ? "true" : "false")
         << "\nbackdrop = " << quote(config.appearance.backdrop == BackdropPreference::automatic ? "auto" : config.appearance.backdrop == BackdropPreference::mica ? "mica" : config.appearance.backdrop == BackdropPreference::acrylic ? "acrylic" : "none")
@@ -408,6 +411,8 @@ name = "graphite" # graphite, instrument, daylight, custom
 # Optional #RRGGBB: background, foreground, chrome, accent, ansi0 through ansi15.
 # Built-ins: graphite, instrument, daylight, midnight, evergreen, aubergine, ember, ink.
 # Use name = "custom" for a data-only palette; no scripts, URLs or plugins.
+[features]
+experimental_ai = false # Restart required; missing in old files means disabled.
 [appearance]
 show_clock = true
 background_opacity = 0.94 # 0.0..1.0; default canvas only, not text or ANSI colors
@@ -418,7 +423,7 @@ reduced_motion = "system" # system, enabled or disabled; default follows the OS
 # All six allowlisted bindings, once each; left-to-right placement.
 order = ["session.directory", "session.git", "session.status", "workspace.background", "agent.status", "clock.local"]
 hidden = [] # Any subset; appearance.show_clock remains the legacy clock switch.
-# Lower-priority items yield at narrow widths. Agent attention cannot be hidden.
+# Lower-priority items yield at narrow widths. Agent UI requires features.experimental_ai.
 # Background restore remains available from the keyboard command palette.
 [font]
 family = "Cascadia Mono"
