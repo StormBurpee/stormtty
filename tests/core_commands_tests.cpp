@@ -74,7 +74,9 @@ int main() { return run_core_tests("commands", [] {
     CHECK(command_availability("workspace.next",projects).enabled); CHECK(command_availability("workspace.previous",projects).enabled);
     projects.project_workspaces=256; CHECK(!command_availability("workspace.new",projects).enabled);
     for (const auto platform : {Platform::windows,Platform::macos}) for (const auto& binding:default_bindings(platform))
-        CHECK(!binding.command.starts_with("workspace.") && binding.command!="window.focus_mode");
+        CHECK((!binding.command.starts_with("workspace.") || (platform==Platform::windows&&binding.command=="workspace.navigator")) && binding.command!="window.focus_mode");
+    CHECK(!command_availability("workspace.navigator",projects).enabled);
+    projects.supports_workspace_navigator=true;CHECK(command_availability("workspace.navigator",projects).enabled);
     CHECK(!find_command("unknown")); CHECK(!command_availability("unknown", {}).enabled);
     for (const auto platform : {Platform::windows, Platform::macos}) {
         auto bindings = default_bindings(platform); CHECK(validate_bindings(bindings, platform));

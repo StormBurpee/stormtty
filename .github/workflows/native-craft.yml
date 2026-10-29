@@ -40,7 +40,7 @@ jobs:
       - name: Configure isolated native UI build
         run: cmake -S . -B build-ui -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF -DSTORMTTY_TEST_INK=OFF
       - name: Build native app and layout/renderer checks
-        run: cmake --build build-ui --parallel 2 --target stormtty window_geometry_tests core_commands_tests renderer_smoke
+        run: cmake --build build-ui --parallel 2 --target stormtty terminal_search_tests window_geometry_tests core_commands_tests renderer_smoke ui_colors_tests settings_panel_tests
       - name: Exercise native keyboard flow and capture craft states
         id: capture
         shell: python
@@ -50,23 +50,29 @@ jobs:
           runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
           artifacts=pathlib.Path('build-ui/artifacts').resolve();artifacts.mkdir(parents=True,exist_ok=True)
           failures=[]
-          for mode in ['projects','settings']:
+          for mode in ['projects','settings','layout']:
               result=runner.run_owned([str(pathlib.Path('build-ui/stormtty.exe').resolve()),'--smoke-'+mode,'--capture',str(artifacts/('craft-'+mode+'.png'))],timeout=90,output_dir=artifacts)
               log=result.output_tail.decode('utf-8',errors='replace')
               (artifacts/('craft-'+mode+'.log')).write_text(json.dumps(result.metadata(),sort_keys=True)+'\n'+log,encoding='utf-8')
               print(log,flush=True)
-              if result.exit_code or not result.reaped or result.cleanup_error or result.timed_out: failures.append(mode)
+              if result.exit_code or not result.reaped or result.cleanup_error or result.timed_out or result.output_truncated: failures.append(mode)
               prepared=log.find('prepared_before_show=1 visible=0')
               exposed=log.find('first_exposed=1 prepared_before_show=1')
               scenario=log.find('Native motion sample=')
               if prepared<0 or exposed<=prepared or (scenario>=0 and scenario<exposed): failures.append(mode+'-startup-order')
+              if mode=='settings' and 'Semantic UI capture: saved custom theme, settings closed, presented=1 motion_settled=1' not in log: failures.append('settings-semantic-capture')
+              if mode=='layout' and 'Native palette ownership smoke:' not in log: failures.append('layout-input-ownership')
           expected=['commands','end','narrow','fuzzy','no-results','background']
           missing=[name for name in expected if not (artifacts/('craft-projects-palette-'+name+'.png')).is_file()]
           expected_startup=['craft-projects-startup-prepared.png','craft-projects-startup-exposed.png','craft-settings-startup-prepared.png','craft-settings-startup-exposed.png','craft-projects-workspace-focus-000ms.png']
           missing.extend(name for name in expected_startup if not (artifacts/name).is_file())
           expected_find=['results','next','narrow','empty']
           missing.extend('find-'+name for name in expected_find if not (artifacts/('craft-projects-find-'+name+'.png')).is_file())
-          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
+          expected_navigator=['normal','preview','narrow-workspaces','narrow-terminals','empty']
+          missing.extend('navigator-'+name for name in expected_navigator if not (artifacts/('craft-projects-navigator-'+name+'.png')).is_file())
+          expected_semantic=['craft-settings-appearance-blur-saved-reopened.png','craft-settings-appearance-shell-same-theme.png']
+          missing.extend(name for name in expected_semantic if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
+          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
           if failures or missing: raise SystemExit(1)
       - name: Publish native screenshots immediately
         if: always() && steps.capture.outcome != 'skipped'
@@ -77,7 +83,7 @@ jobs:
           if-no-files-found: error
       - name: Run layout and renderer checks
         if: always() && steps.capture.outcome != 'skipped'
-        run: ctest --test-dir build-ui -R "^(window_geometry_tests|core_commands_tests|renderer_smoke)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
+        run: ctest --test-dir build-ui -R "^(terminal_search_tests|window_geometry_tests|core_commands_tests|renderer_smoke|ui_colors_tests|settings_panel_tests)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
       - name: Preserve focused test diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
