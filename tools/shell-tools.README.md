@@ -105,7 +105,7 @@ packet. It does not replace existing base-runtime notices or claim source is pub
 
 ## Tests and honest performance scope
 
-14 Linux tests cover opt-outs, no zoxide invocation during startup, ephemeral
+15 Linux tests cover opt-outs, no zoxide invocation during startup, ephemeral
 behavior, retained overrides, z/zi and previous-directory behavior, conversion
 arguments, spaces/Unicode and literal command-substitution/backtick filename data,
 nonduplicating hooks, corrupt cache, traversal, Windows aliases, foreign-prefix
@@ -216,3 +216,29 @@ function works. StormTTY does not evaluate it: its maintained adapter converts
 `$PWD` explicitly, and the adapter's native navigation/private-state phases passed.
 The full upstream template, other options and release checklist still require
 review. Probe startup samples are not a controlled tools-on/tools-off benchmark.
+
+### Owned-console UTF-8 setup
+
+The native comparison in run `40794132587` observed CP437 and bytes `3f3f` for
+`路径` through both direct ConPTY and MSYS-spawned native ReadFile clients. CP65001
+preserved `e8b7afe5be84` on both providers. The inbox comparison also proved that
+one-shot setup survives helper exit, fixes exact fzf Unicode directory selection,
+leaves another live PTY unchanged, and can restore the original codepages. The
+packaged run stopped earlier at a cancellation synchronization check; its complete
+one-shot comparison was not qualified by that run.
+
+The app now builds `stormtty-console-setup.exe` as an owned sibling executable.
+Managed launches resolve only that fixed sibling (never PATH or a profile-supplied
+helper), overwrite the reserved bridge, and consume/unset it before user config.
+The helper uses its inherited console association, sets and verifies UTF-8 input
+and output codepages, and rolls back partial failure. It never attaches to another
+console or changes system settings. Missing/invalid app sidecars block managed
+launch; runtime setup failure is explicitly reported and does not set the success
+flag. Non-managed profiles are unchanged. This adds one startup process; its cost
+has not yet been measured in a controlled native benchmark.
+
+Production sidecar integration has local structural/managed tests and Windows
+cross-build evidence only until its exact native CI run passes. Both providers
+must still pass the actual built sidecar bridge, private-state tests, Unicode
+widgets and independent-session isolation. Upstream runtime/tool pins and their
+source/notice inventories are unchanged.

@@ -43,6 +43,29 @@ class ManagedTests(unittest.TestCase):
         if args.zsh: self.env['PATH'] = str(args.zsh.resolve().parent) + os.pathsep + self.env.get('PATH', '')
     def run_shell(self, command, **kwargs):
         return subprocess.run([self.shell, '-dic', command], env=self.env, cwd=self.root, capture_output=True, text=True, timeout=15, **kwargs)
+    @unittest.skipIf(os.name == 'nt', 'POSIX helper stub; actual sidecar tested in native ConPTY')
+    def test_console_bridge_consumed_and_failure_is_not_success(self):
+        helper = self.root / "helper O'Connor 路径"
+        helper.write_text('#!/bin/sh\nexit 0\n'); helper.chmod(0o700)
+        self.env['STORMTTY_NATIVE_CONSOLE_SETUP'] = str(helper)
+        code = 'OSTYPE=msys; source "$ZDOTDIR/.zshrc"; [[ $STORMTTY_CONSOLE_UTF8 == 1 && ${+STORMTTY_NATIVE_CONSOLE_SETUP} == 0 && ${+_stormtty_console_setup} == 0 ]]'
+        result = subprocess.run([self.shell, '-dfic', code], env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        helper.write_text('#!/bin/sh\nexit 3\n')
+        result = subprocess.run([self.shell, '-dfic', code.replace('== 1', '== 0')], env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('native Unicode input setup failed', result.stderr)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX helper stub; native launch policy tested separately')
+    def test_non_windows_console_bridge_is_not_executed(self):
+        helper = self.root / 'helper'
+        marker = self.root / 'executed'
+        helper.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\n'); helper.chmod(0o700)
+        self.env['STORMTTY_NATIVE_CONSOLE_SETUP'] = str(helper)
+        result = self.run_shell('[[ $STORMTTY_CONSOLE_UTF8 == 0 && ${+STORMTTY_NATIVE_CONSOLE_SETUP} == 0 ]]')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
+
     def test_drive_source_normalized_before_canonicalization(self):
         # Exercise the exact loader expansion before :A. Native MSYS execution
         # remains a separate gate; this proves the path-expression semantics.
@@ -207,6 +230,26 @@ class ManagedTests(unittest.TestCase):
         child.expect_exact('\x1b]133;B\x07')
         child.sendline('exit')
         child.expect(pexpect.EOF)
+    @unittest.skipIf(os.name == 'nt', 'POSIX PTY test; Windows host smoke qualifies its native paste path')
+    def test_bulk_fixture_paste_preserves_real_modules_and_exit(self):
+        if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
+        try: import pexpect
+        except ImportError: self.skipTest('optional pexpect unavailable')
+        child=pexpect.spawn(self.shell,['-di'],env=self.env,cwd=str(self.root),encoding='utf-8',timeout=10)
+        self.addCleanup(child.close,force=True)
+        child.expect_exact('\x1b[?2004h')
+        # First bytes/prompt metadata can precede ZLE. Start only after its
+        # negotiated paste mode, with real highlighting/autosuggestions loaded.
+        command='[[ $STORMTTY_OMZ_LOADED == 1 && ${+functions[_zsh_highlight]} == 1 && ${+functions[_zsh_autosuggest_start]} == 1 ]] && print -r -- BULK_FIXTURE_OK'
+        child.send('\x1b[200~'+command+'\x1b[201~')
+        child.sendline('')
+        child.expect_exact('BULK_FIXTURE_OK\r\n')
+        child.expect_exact('\x1b[?2004h')
+        child.send('\x1b[200~exit 0\x1b[201~')
+        child.sendline('')
+        child.expect(pexpect.EOF)
+        child.close()
+        self.assertEqual(child.exitstatus,0)
     def test_prompt_data_not_code_or_terminal_control(self):
         git=self.root/'.git'; git.mkdir()
         (git/'HEAD').write_text('ref: refs/heads/$(touch PWNED)%F{red}\x1b]2;bad\x07\n')

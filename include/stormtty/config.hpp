@@ -27,6 +27,7 @@ struct AppearanceConfig {
     double background_opacity{0.94};
     BackdropPreference backdrop{BackdropPreference::acrylic};
     ReducedMotionPreference reduced_motion{ReducedMotionPreference::system};
+    bool show_clock{true};
     auto operator<=>(const AppearanceConfig&) const = default;
 };
 struct FontConfig {

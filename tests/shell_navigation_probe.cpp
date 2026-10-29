@@ -2,6 +2,7 @@
 // data is synthetic. Emit fixed result codes/counts/timings only, never frames.
 #include "stormtty/session.hpp"
 #include "stormtty/windows_shell_state.hpp"
+#include "stormtty/windows_managed_shell.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -142,6 +143,8 @@ struct ManagedSessionProbe {
             {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"}, {"MSYSTEM", "MSYS"},
             {"MSYS", std::nullopt}, {"ENV", std::nullopt}, {"BASH_ENV", std::nullopt},
             {"STORMTTY_MSYS_RESIZE_TRACE_DIR", std::nullopt}};
+        process.environment.push_back({"STORMTTY_NATIVE_CONSOLE_SETUP", "ambient-untrusted-helper.exe"});
+        process.environment.push_back(managed_shell_console_environment());
         TerminalOptions terminal; terminal.size = {160, 40, 8, 16};
         const auto started = std::chrono::steady_clock::now();
         session = Session::start(std::move(process), terminal);
@@ -267,9 +270,19 @@ int main() {
         Fixture fixture;
         const auto state = prepare_managed_shell_state_at(fixture.root, false); check(static_cast<bool>(state));
         write(state.directory / L"config.zsh", config);
+        // A separate live owned PTY must retain its codepages while the managed
+        // session runs the one-shot setup. No AttachConsole or host global state.
+        ProcessOptions guard_options; guard_options.executable = utf8(self);
+        guard_options.arguments = {"--console-hold"}; guard_options.working_directory = utf8(fixture.cwd);
+        guard_options.grid = {160, 40}; guard_options.provider = provider.empty() ? ProcessProvider::windows_inbox_basic : ProcessProvider::windows_packaged_experimental;
+        guard_options.provider_directory = utf8(provider);
+        TerminalOptions guard_terminal; guard_terminal.size = {160, 40, 8, 16};
+        auto other = Session::start(std::move(guard_options), guard_terminal);
+        check(until([&] { return screen(other).find("QHOLD_READY") != std::string::npos; }));
         ManagedSessionProbe shell(runtime, provider, fixture); cold_ms = shell.startup_ms;
-        auto command = [&](std::string code, std::string_view marker) { shell.command(std::move(code)); shell.expect(marker); };
+        auto command = [&](std::string code, std::string_view marker) { shell.zle_idle(); shell.command(std::move(code)); shell.expect(marker); shell.zle_idle(); };
         phase = 2;
+        command("[[ $STORMTTY_CONSOLE_UTF8 == 1 && ${+STORMTTY_NATIVE_CONSOLE_SETUP} == 0 && ${+_stormtty_console_setup} == 0 ]] && print -r -- QUTF$((90+1))", "QUTF91");
         command("[[ $STORMTTY_EPHEMERAL == 0 && ${+functions[fzf-file-widget]} == 1 && ${+functions[z]} == 1 && ${+functions[zi]} == 1 ]] && print -r -- QTOOLS$((20+2))", "QTOOLS22");
         command("[[ $(fzf --version) == 0.74.4* && $(zoxide --version) == 'zoxide 0.10.0' ]] && print -r -- QVERS$((20+3))", "QVERS23");
         command("(( ! ${+commands[perl]} )) && [[ -x $_stormtty_tools_root/usr/bin/awk.exe ]] && [[ $(awk 'BEGIN {print 712+1}') == 713 ]] && print -r -- QAWK$((20+4))", "QAWK24");
@@ -314,11 +327,11 @@ int main() {
         // Actual upstream Ctrl-T widget selection, then ordinary ZLE input.
         shell.text("[[ -f "); shell.key(Key::t, control); shell.expect("QFZF_SELECT:");
         shell.key(Key::enter); shell.absent("QFZF_SELECT:"); shell.expect("qualification_unique_completion.txt");
-        shell.text(" ]] && print -r -- QFILE$((30+4))"); shell.key(Key::enter); shell.expect("QFILE34");
+        shell.text(" ]] && print -r -- QFILE$((30+4))"); shell.key(Key::enter); shell.expect("QFILE34"); shell.zle_idle();
         phase = 4;
         // Cancel must return to the original editable buffer without executing it.
         shell.text("print -r -- QCANCEL$((30+5))"); shell.key(Key::t, control);
-        shell.expect("QFZF_SELECT:"); shell.key(Key::escape); shell.absent("QFZF_SELECT:"); shell.key(Key::enter); shell.expect("QCANCEL35");
+        shell.expect("QFZF_SELECT:"); shell.key(Key::escape); shell.absent("QFZF_SELECT:"); shell.key(Key::enter); shell.expect("QCANCEL35"); shell.zle_idle();
         phase = 5;
         command("typeset -gi _qhistory=0; print -r -- QHISTSET$((60+1))", "QHISTSET61");
         command("(( ++_qhistory )); print -r -- QHISTORY$((600+17))", "QHISTORY617");
@@ -352,11 +365,11 @@ int main() {
         command("[[ $PWD == */'navigation space é' ]] && print -r -- QZI$((60+5))", "QZI65");
         command("z -; print -r -- QZIBACK$((60+6))", "QZIBACK66");
         phase = 11;
-        shell.key(Key::r, control); shell.expect("QFZF_SELECT:"); shell.key(Key::escape); shell.absent("QFZF_SELECT:");
-        shell.key(Key::c, alt); shell.expect("QFZF_SELECT:"); shell.key(Key::escape); shell.absent("QFZF_SELECT:");
-        shell.key(Key::t, control); shell.expect("QFZF_SELECT:"); shell.text("QNO_MATCH_837192"); shell.key(Key::escape); shell.absent("QFZF_SELECT:");
+        shell.key(Key::r, control); shell.expect("QFZF_SELECT:"); shell.key(Key::escape); shell.absent("QFZF_SELECT:"); shell.zle_idle();
+        shell.key(Key::c, alt); shell.expect("QFZF_SELECT:"); shell.key(Key::escape); shell.absent("QFZF_SELECT:"); shell.zle_idle();
+        shell.key(Key::t, control); shell.expect("QFZF_SELECT:"); shell.text("QNO_MATCH_837192"); shell.key(Key::escape); shell.absent("QFZF_SELECT:"); shell.zle_idle();
         command("[[ $PWD == $QUAL_EXPECT_CWD ]] && print -r -- QCANCELS$((60+7))", "QCANCELS67");
-        shell.command("zi navigation"); shell.expect("QFZF_SELECT:"); shell.key(Key::escape); shell.absent("QFZF_SELECT:");
+        shell.command("zi navigation"); shell.expect("QFZF_SELECT:"); shell.key(Key::escape); shell.absent("QFZF_SELECT:"); shell.zle_idle();
         command("[[ $PWD == $QUAL_EXPECT_CWD ]] && print -r -- QZICANCEL$((60+8))", "QZICANCEL68");
         phase = 12;
         command("unset FZF_CTRL_T_COMMAND FZF_ALT_C_COMMAND FZF_DEFAULT_COMMAND; print -r -- QDEFAULTS$((70+1))", "QDEFAULTS71");
@@ -369,18 +382,10 @@ int main() {
         shell.text("nested 路径");
         const bool raw_selection = shell.selected("walker space é/nested 路径", false);
         std::cout << "SHELL_RAW_UNICODE_SELECTION value=" << raw_selection << std::endl;
-        shell.key(raw_selection ? Key::enter : Key::escape); shell.absent("QFZF_SELECT:");
+        shell.key(raw_selection ? Key::enter : Key::escape); shell.absent("QFZF_SELECT:"); shell.zle_idle();
         if (raw_selection) command("[[ $PWD == $QUAL_EXPECT_CWD/'walker space é/nested 路径' ]] && builtin cd -- \"$QUAL_EXPECT_CWD\" && print -r -- QRAW$((80+1))", "QRAW81");
-        // A separate live owned PTY must retain its codepages while the managed
-        // session runs the one-shot setup. No AttachConsole or host global state.
-        ProcessOptions guard_options; guard_options.executable = utf8(self);
-        guard_options.arguments = {"--console-hold"}; guard_options.working_directory = utf8(fixture.cwd);
-        guard_options.grid = {160, 40}; guard_options.provider = provider.empty() ? ProcessProvider::windows_inbox_basic : ProcessProvider::windows_packaged_experimental;
-        guard_options.provider_directory = utf8(provider);
-        TerminalOptions guard_terminal; guard_terminal.size = {160, 40, 8, 16};
-        auto other = Session::start(std::move(guard_options), guard_terminal);
-        check(until([&] { return screen(other).find("QHOLD_READY") != std::string::npos; }));
-        shell.command(shell_quote(posix(self)) + " --console-pages"); shell.expect("QSET_PAGES_65001_65001"); shell.zle_idle();
+        const auto setup = managed_shell_console_environment(); check(setup.value.has_value());
+        command(shell_quote(posix(fs::path(std::u8string(reinterpret_cast<const char8_t*>(setup.value->data()), setup.value->size())))) + " && print -r -- QAPPSET$((90+2))", "QAPPSET92");
         shell.command(shell_quote(posix(self)) + " --native-read after");
         report_read(shell.session, "A", "msys-after-setup"); shell.expect("QREAD_HEX_A_e8b7afe5be84"); shell.zle_idle();
         std::cout << "SHELL_UTF8_SETUP input=65001 output=65001 read_hex=e8b7afe5be84" << std::endl;

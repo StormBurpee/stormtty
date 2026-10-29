@@ -2,6 +2,7 @@
 // data is synthetic. Emit fixed result codes/counts/timings only, never frames.
 #include "stormtty/session.hpp"
 #include "stormtty/windows_shell_state.hpp"
+#include "stormtty/windows_managed_shell.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -84,6 +85,7 @@ struct ManagedSessionProbe {
             {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"}, {"MSYSTEM", "MSYS"},
             {"MSYS", std::nullopt}, {"ENV", std::nullopt}, {"BASH_ENV", std::nullopt},
             {"STORMTTY_MSYS_RESIZE_TRACE_DIR", std::nullopt}};
+        process.environment.push_back(managed_shell_console_environment());
         TerminalOptions terminal; terminal.size = {160, 40, 8, 16};
         const auto started = std::chrono::steady_clock::now();
         session = Session::start(std::move(process), terminal);

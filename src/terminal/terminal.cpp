@@ -533,16 +533,17 @@ FramePtr TerminalCore::Impl::capture() {
     case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW: next_cursor.shape = CursorShape::hollow_block; break;
     default: next_cursor.shape = CursorShape::block; break;
     }
+    const bool bracketed_paste = mode(GHOSTTY_MODE_BRACKETED_PASTE);
     if (frame && dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE && next_cursor == frame->cursor &&
         image_generation == frame->image_placements_generation && alternate == frame->alternate_screen &&
-        mouse == frame->mouse_reporting && frame->columns == geometry.columns && frame->rows == geometry.rows &&
+        mouse == frame->mouse_reporting && bracketed_paste == frame->bracketed_paste && frame->columns == geometry.columns && frame->rows == geometry.rows &&
         frame->cell_width == geometry.cell_width && frame->cell_height == geometry.cell_height) return frame;
 
     auto next = std::make_shared<RenderFrame>();
     next->generation = ++frame_generation;
     next->columns = geometry.columns; next->rows = geometry.rows;
     next->cell_width = geometry.cell_width; next->cell_height = geometry.cell_height;
-    next->alternate_screen = alternate; next->mouse_reporting = mouse;
+    next->alternate_screen = alternate; next->mouse_reporting = mouse; next->bracketed_paste = bracketed_paste;
     next->image_placements_generation = image_generation;
     next->foreground = foreground; next->background = background;
     next->cursor = next_cursor;

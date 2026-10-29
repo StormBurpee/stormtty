@@ -6,6 +6,24 @@
 # MSYS2 Windows-path import. Do not substitute a home or rewrite explicit paths.
 [[ ${STORMTTY_EMPTY_HOME-} == 1 ]] && export HOME=''
 unset STORMTTY_EMPTY_HOME
+# Consume the native host's fixed app-owned sidecar before user configuration.
+# Only this console changes; other sessions and system codepages are untouched.
+typeset +x _stormtty_console_setup STORMTTY_CONSOLE_UTF8
+typeset _stormtty_console_setup=${STORMTTY_NATIVE_CONSOLE_SETUP-}
+unset STORMTTY_NATIVE_CONSOLE_SETUP
+typeset -gi STORMTTY_CONSOLE_UTF8=0
+if [[ $OSTYPE == (msys*|cygwin*) ]]; then
+  if [[ $_stormtty_console_setup == [A-Za-z]:/* ]]; then
+    _stormtty_console_setup="/${(L)_stormtty_console_setup[1]}${_stormtty_console_setup[3,-1]}"
+  fi
+  if [[ $_stormtty_console_setup == /* && -f $_stormtty_console_setup && ! -L $_stormtty_console_setup ]] &&
+      "$_stormtty_console_setup"; then
+    STORMTTY_CONSOLE_UTF8=1
+  else
+    print -ru2 -- 'StormTTY: native Unicode input setup failed; console input may lose characters.'
+  fi
+fi
+unset _stormtty_console_setup
 # Only the native managed launch planner may supply this reserved path, after
 # overwriting any ambient value and validating its Windows owner/DACL/tree.
 typeset +x _stormtty_native_state

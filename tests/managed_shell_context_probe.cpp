@@ -2,6 +2,7 @@
 // Every path/branch is synthetic. Logs contain numeric phases/checks only.
 #include "stormtty/session.hpp"
 #include "stormtty/windows_shell_state.hpp"
+#include "stormtty/windows_managed_shell.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -101,6 +102,7 @@ struct Probe {
             {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"}, {"MSYSTEM", "MSYS"},
             {"MSYS", std::nullopt}, {"ENV", std::nullopt}, {"BASH_ENV", std::nullopt},
             {"STORMTTY_MSYS_RESIZE_TRACE_DIR", std::nullopt}};
+        process.environment.push_back(managed_shell_console_environment());
         TerminalOptions terminal; terminal.size = {160, 40, 8, 16};
         session = Session::start(std::move(process), terminal);
         expect("QCONTEXT_ZLE_0 >"); command("add-zsh-hook precmd _qual_next");

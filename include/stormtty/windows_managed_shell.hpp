@@ -4,10 +4,25 @@
 #include <windows.h>
 #include "stormtty/process.hpp"
 #include <cwchar>
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
 
 namespace stormtty {
+inline ProcessEnvironmentEntry managed_shell_console_environment() {
+    // Fixed sibling of the running app/probe, never PATH, cwd or an ambient
+    // caller-selected executable. The host appends this after profile overrides.
+    std::wstring module(32768, L'\0');
+    const DWORD count = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    if (!count || count >= module.size()) throw std::runtime_error("Cannot resolve managed console setup.");
+    module.resize(count);
+    const auto helper = std::filesystem::path(module).parent_path() / L"stormtty-console-setup.exe";
+    const DWORD attributes = GetFileAttributesW(helper.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+        throw std::runtime_error("Managed console setup is missing or invalid. Rebuild or reinstall StormTTY.");
+    const auto bytes = helper.generic_u8string();
+    return {"STORMTTY_NATIVE_CONSOLE_SETUP", std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())};
+}
 inline std::vector<ProcessEnvironmentEntry> managed_shell_home_environment() {
     // One wide snapshot: GetEnvironmentVariableA in the runtime's early passwd
     // lookup can irreversibly lose Unicode before its UTF-8 environment exists.

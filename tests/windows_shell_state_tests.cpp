@@ -104,6 +104,13 @@ int main() { return run_core_tests("windows_shell_state (Windows native)", [] {
     CHECK(control & SE_DACL_PROTECTED);
     const auto config = result.directory / L"config.zsh";
     write(config);
+    const auto isolated_root=fixture.root/L"independent-smoke";
+    CHECK(std::filesystem::create_directory(isolated_root));
+    const auto isolated=prepare_managed_shell_state_at(isolated_root,false);
+    CHECK(isolated && isolated.directory!=result.directory);
+    CHECK(!std::filesystem::exists(isolated.directory/L"config.zsh"));
+    CHECK(!std::filesystem::exists(isolated.directory/L"history"));
+    CHECK(std::filesystem::exists(config)); // Never migrated or removed user/other-run state.
     CHECK(prepare_managed_shell_state_at(fixture.root, false));
     // Ordinary shell-created descendants inherit the private native DACL.
     const auto cache = result.directory / L"cache";

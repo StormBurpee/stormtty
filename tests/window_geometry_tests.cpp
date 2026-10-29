@@ -283,5 +283,23 @@ int main() {
         auto externally_changed=*on_disk.config;externally_changed.theme.accent="#123456";
         require(!settings_baseline_matches(externally_changed,running,Platform::windows),"external theme edit is still rejected");
     }
+    const auto title_chrome=layout_chrome(1044,720,{},{});
+    const auto title=layout_window_title(title_chrome,title_chrome.drag.x+title_chrome.drag.width);
+    require(title.x+title.width/2==522,"title is centered on entire window");
+    require(title.x>=title_chrome.drag.x && title.x+title.width<=title_chrome.palette.x,"title avoids controls");
+    require(layout_window_title(title_chrome,500).width==0,"title hides instead of crossing zoom control");
+    const auto clock_footer=layout_session_footer({0,700,1044,26},3,true,true,true,true);
+    require(clock_footer.clock.width==44 && clock_footer.clock.x+clock_footer.clock.width==1036,"clock has bounded right edge");
+    for(const auto& chip:clock_footer.background.chips) require(chip.x+chip.width<clock_footer.clock.x,"clock does not cover parked sessions");
+    require(layout_session_footer({0,700,639,26},3,true,true,true,true).clock.width==0,"narrow footer yields clock");
+    settings.open(default_config(Platform::windows));
+    activate("appearance.clock");
+    require(!settings.draft().appearance.show_clock,"clock toggle updates draft");
+    settings.cancel(); settings.take_action();
+    auto clock_config=default_config(Platform::windows);
+    require(clock_config.appearance.show_clock,"clock defaults enabled");
+    clock_config.appearance.show_clock=false;
+    const auto clock_roundtrip=parse_config(serialize_config(clock_config,Platform::windows),Platform::windows);
+    require(clock_roundtrip && !clock_roundtrip.config->appearance.show_clock,"clock preference persists");
     std::cout << "window geometry, input and managed shell profile tests passed\n";
 }
