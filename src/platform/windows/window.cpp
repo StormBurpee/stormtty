@@ -1473,6 +1473,12 @@ void NativeWindow::workspace_menu(Point point, ProjectWorkspaceId target) {
     actions["workspace.name"]=[this,id,metadata] {
         edit_workspace_text("Workspace name",metadata.name,[this,id](std::string value) {return projects_.rename(id,std::move(value));});
     };
+    items.push_back({"workspace.close","Close workspace…",{},{},true,true,{}});
+    actions["workspace.close"]=[this,id] {
+        if (!projects_.find(id)) { show_error("Workspace no longer exists"); return; }
+        close_project(id);
+    };
+    items.push_back(ContextMenuItem::separator());
     items.push_back({"workspace.folder","Launch folder…",{},{},true,false,{}});
     actions["workspace.folder"]=[this,id,metadata] {
         edit_workspace_text("Absolute launch folder",metadata.working_directory,[this,id](std::string value) {
@@ -3868,7 +3874,18 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 }
                 try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
                 const auto retained=projects_.session_ids(smoke_primary_project_);
-                close_project(smoke_secondary_project_,true);
+                // Exercise the actual owned menu against a non-active workspace,
+                // not the command-palette path that targets the active project.
+                workspace_menu({navigation_.rail.x+16,chrome_.band.height+44},smoke_secondary_project_);
+                const auto& panels=context_menu_.layout().panels;
+                if (panels.empty()) { smoke_finish("Workspace context menu did not open."); return; }
+                const auto& rows=panels.front().rows;
+                const auto close=std::find_if(rows.begin(),rows.end(),[](const auto& row){return row.id=="workspace.close";});
+                if (close==rows.end() || !close->visible || !close->enabled) {
+                    smoke_finish("Close workspace is not directly available in the workspace menu."); return;
+                }
+                const Point close_point{close->bounds.x+close->bounds.width/2,close->bounds.y+close->bounds.height/2};
+                context_menu_.pointer_down(close_point); context_menu_.pointer_up(close_point); menu_input_changed();
                 if (projects_.entries().size()!=1 || projects_.active_id()!=smoke_primary_project_ || retained.size()!=1 || sessions_.size()!=1 ||
                     !sessions_.contains(retained.front()) || sessions_.at(retained.front())!=smoke_project_actors_.at(retained.front())) {
                     smoke_finish("Scoped project close affected the surviving workspace."); return;
