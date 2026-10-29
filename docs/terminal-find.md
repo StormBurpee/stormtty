@@ -9,7 +9,8 @@ minimum dismisses the strip and restores terminal input, retaining the query.
 - Type a literal query. ASCII matching is case-insensitive; other Unicode
   scalars are exact. There is no regex, normalization or case toggle.
 - The first completed result selects the newest match and scrolls to it.
-  **Enter** moves toward newer matches; **Shift+Enter** moves toward older
+  Initial selection recovers across output/resize until you navigate manually;
+  each fresh result token is attempted at most once. **Enter** moves toward newer matches; **Shift+Enter** moves toward older
   matches, wrapping at either end. The count is ordered oldest to newest.
 - **Tab / Shift+Tab** traverses the query, previous, next and close controls.
   **Escape** cancels the search and returns focus to the same terminal. The

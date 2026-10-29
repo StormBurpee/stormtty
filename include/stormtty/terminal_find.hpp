@@ -78,6 +78,23 @@ inline bool initial_find_selection_needed(const SearchSnapshot& result, std::uin
     return result.token.request_id==request && result.status==SearchStatus::complete && !result.matches.empty() &&
         !result.selected_index && (!attempted || *attempted!=result.token);
 }
+// Initial query intent survives transient empty/repaint and accepted-then-
+// invalidated results. Only user navigation, replacement or dismissal ends it.
+// Every result token is submitted at most once; no timer or polling retry.
+class TerminalFindInitialSelection {
+public:
+    void begin(std::uint64_t request) { request_=request;attempted_.reset(); }
+    void cancel() { begin(0); }
+    std::uint64_t request() const { return request_; }
+    const std::optional<SearchToken>& attempted() const { return attempted_; }
+    std::optional<SearchToken> take(const SearchSnapshot& result) {
+        if(!request_ || !initial_find_selection_needed(result,request_,attempted_))return {};
+        attempted_=result.token;return attempted_;
+    }
+private:
+    std::uint64_t request_{};
+    std::optional<SearchToken> attempted_;
+};
 inline std::string terminal_find_status(const SearchSnapshot* result, std::uint64_t request, std::string_view query) {
     if(query.empty())return "";
     if(!result || !current_find_result(*result,request,query))return "Searching…";

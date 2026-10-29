@@ -35,6 +35,24 @@ int main() {
     require(initial_find_selection_needed(find_snapshot,42,attempted),"initial Find retries after output or resize publishes a fresh token");
     find_snapshot.selected_index=0;
     require(!initial_find_selection_needed(find_snapshot,42,attempted),"initial Find does not duplicate an accepted selection");
+    // Deterministic lifecycle: transient ConPTY repaint, queued/applied result,
+    // then invalidation before any stable frame. No wall-clock sleeps needed.
+    TerminalFindInitialSelection initial;
+    initial.begin(70);SearchSnapshot sequence;sequence.token={70,1,1};sequence.status=SearchStatus::complete;
+    require(!initial.take(sequence),"empty repaint preserves intent without submitting");
+    sequence.token={70,2,2};sequence.matches.resize(4);
+    require(initial.take(sequence)==sequence.token&&!initial.take(sequence),"fresh nonempty submits once, queued token never spins");
+    sequence.last_apply_result=SearchApplyResult::applied;sequence.selected_index=0;
+    require(!initial.take(sequence),"accepted selection is not duplicated");
+    sequence.token={70,3,3};sequence.selected_index.reset();sequence.last_apply_result.reset();sequence.status=SearchStatus::running;sequence.matches.clear();
+    require(!initial.take(sequence),"invalidated running search never selects old coordinates");
+    sequence.status=SearchStatus::complete;sequence.matches.resize(4);
+    require(initial.take(sequence)==sequence.token&&!initial.take(sequence),"fresh result after accepted repaint recovers once");
+    initial.cancel();sequence.token={70,4,4};
+    require(!initial.take(sequence),"explicit navigation ends automatic selection ownership");
+    initial.begin(71);require(!initial.take(sequence),"query replacement rejects previous request");
+    sequence.token={71,4,5};require(initial.take(sequence)==sequence.token,"replacement has independent first selection intent");
+    initial.cancel();sequence.token={71,5,6};require(!initial.take(sequence),"workspace close cancels pending selection ownership");
     find_snapshot.status=SearchStatus::limited;require(terminal_find_status(&find_snapshot,42,"needle")=="Limit reached","bounded search cannot advertise an exhaustive count");
     for(double width:{80.,180.,330.,439.,440.,1044.}) {
         const auto find=layout_terminal_find({13,27,width,300},28);

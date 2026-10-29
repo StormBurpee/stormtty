@@ -388,7 +388,7 @@ private:
     void toggle_palette();
     bool smoke_palette_evidence(SessionId);
     bool smoke_find_progress();
-    unsigned smoke_find_stage_{};
+    unsigned smoke_find_stage_{}, smoke_find_trace_count_{};
     std::uint64_t smoke_find_bytes_{}, smoke_find_revision_{}, smoke_find_input_baseline_{}, smoke_terminal_input_submissions_{};
     std::size_t smoke_find_selection_{};
     RECT smoke_find_window_{};
@@ -438,8 +438,8 @@ private:
     SessionId find_session_{};
     TerminalFindQuery find_query_;
     SearchSnapshotPtr find_result_;
-    std::optional<SearchToken> find_auto_attempt_;
-    std::uint64_t find_request_{}, find_auto_select_{};
+    TerminalFindInitialSelection find_initial_selection_;
+    std::uint64_t find_request_{};
     unsigned find_focus_{}; // query, previous, next, close
     std::optional<unsigned> find_pressed_;
     std::string find_error_;
@@ -1327,7 +1327,7 @@ void NativeWindow::sync_focus() {
     if(find_session_ && (!active_pane || active_pane->session!=find_session_)) {
         if(auto actor=sessions_.find(find_session_);actor!=sessions_.end())(void)actor->second->cancel_search();
         if(find_pressed_ && GetCapture()==hwnd_)ReleaseCapture();
-        find_session_={};find_result_.reset();find_request_=find_auto_select_=0;find_pressed_.reset();
+        find_session_={};find_result_.reset();find_request_=0;find_initial_selection_.cancel();find_pressed_.reset();
         preedit_.clear();composing_=false;text_input_.reset();
         if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
     }
@@ -2093,18 +2093,18 @@ void NativeWindow::close_find(bool geometry) {
     if(!find_session_)return;
     if(find_pressed_ && GetCapture()==hwnd_)ReleaseCapture();
     if(auto actor=sessions_.find(find_session_);actor!=sessions_.end())(void)actor->second->cancel_search();
-    find_session_={};find_request_=find_auto_select_=0;find_result_.reset();find_pressed_.reset();find_error_.clear();
+    find_session_={};find_request_=0;find_initial_selection_.cancel();find_result_.reset();find_pressed_.reset();find_error_.clear();
     preedit_.clear();composing_=false;text_input_.reset();
     if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
     changed(geometry);caret_schedule(true);
 }
 void NativeWindow::submit_find() {
     if(!find_session_||!sessions_.contains(find_session_))return;
-    find_error_.clear();find_result_.reset();find_auto_attempt_.reset();
+    find_error_.clear();find_result_.reset();
     auto actor=sessions_.at(find_session_);
     (void)actor->clear_selection(); // A replaced/no-match query must not leave an old match highlighted.
     const auto request=find_query_.text().empty()?actor->cancel_search():actor->search({find_query_.text()});
-    find_request_=request.request_id;find_auto_select_=find_query_.text().empty()?0:request.request_id;
+    find_request_=request.request_id;find_initial_selection_.begin(find_query_.text().empty()?0:request.request_id);
     if(request.result!=SessionSendResult::accepted)find_error_="Search unavailable";
     changed();position_ime();
 }
@@ -2114,20 +2114,18 @@ void NativeWindow::refresh_find() {
     if(!pane||pane->session!=find_session_||!sessions_.contains(find_session_)){close_find();return;}
     auto actor=sessions_.at(find_session_);auto result=actor->search_snapshot();
     if(!result||!current_find_result(*result,find_request_,find_query_.text()))return;
-    if(find_result_!=result){find_result_=std::move(result);++chrome_generation_;}
-    if(find_auto_select_==find_request_ && find_result_->status==SearchStatus::complete) {
-        bool selected=false;
-        if(const auto frame=actor->frame())for(const auto& row:frame->lines)for(const auto& cell:row->cells)selected=selected||cell.selected;
-        if(find_result_->matches.empty() || (find_result_->selected_index && selected))find_auto_select_=0;
-        else if(initial_find_selection_needed(*find_result_,find_request_,find_auto_attempt_)) {
-            // Resize/output may reject the old token. Retry only a fresh token,
-            // and retain the one-shot intent until its selected frame is visible.
-            find_auto_attempt_=find_result_->token;
-            (void)actor->select_search_match(find_result_->token,0);
-        }
+    if(find_result_!=result){
+        find_result_=std::move(result);++chrome_generation_;
+        if(options_.smoke_projects && smoke_find_trace_count_++<64)
+            std::fprintf(stderr,"Native Find trace: stage=%u request=%llu revision=%llu generation=%llu status=%d matches=%zu selected=%lld apply=%d auto=%llu attempted_revision=%llu attempted_generation=%llu\n",smoke_find_stage_,static_cast<unsigned long long>(find_result_->token.request_id),static_cast<unsigned long long>(find_result_->token.revision),static_cast<unsigned long long>(find_result_->token.generation),int(find_result_->status),find_result_->matches.size(),find_result_->selected_index?static_cast<long long>(*find_result_->selected_index):-1,find_result_->last_apply_result?int(*find_result_->last_apply_result):-1,static_cast<unsigned long long>(find_initial_selection_.request()),static_cast<unsigned long long>(find_initial_selection_.attempted()?find_initial_selection_.attempted()->revision:0),static_cast<unsigned long long>(find_initial_selection_.attempted()?find_initial_selection_.attempted()->generation:0));
+    }
+    if(const auto token=find_initial_selection_.take(*find_result_)) {
+        const auto accepted=actor->select_search_match(*token,0);
+        if(options_.smoke_projects && smoke_find_trace_count_<64)std::fprintf(stderr,"Native Find auto-select: revision=%llu generation=%llu accepted=%d\n",static_cast<unsigned long long>(token->revision),static_cast<unsigned long long>(token->generation),int(accepted));
     }
 }
 void NativeWindow::navigate_find(bool previous) {
+    find_initial_selection_.cancel(); // Explicit navigation owns selection from here.
     if(!find_session_||!sessions_.contains(find_session_))return;
     // Read a fresh owned snapshot at dispatch; the core still verifies all three
     // token generations after queued output/resize, so stale cells never apply.
