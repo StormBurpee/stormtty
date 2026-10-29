@@ -1,11 +1,15 @@
 #include "core_test.hpp"
 #include "../src/platform/macos/menu_shortcuts.hpp"
-@interface STMenuFixture : NSObject
+@interface STMenuFixture : NSObject <NSMenuItemValidation>
 @property NSUInteger calls;
+@property BOOL composing;
+@property BOOL closing;
+@property BOOL modal;
 - (void)invoke:(id)sender;
 @end
 @implementation STMenuFixture
 - (void)invoke:(id)sender {(void)sender;++_calls;}
+- (BOOL)validateMenuItem:(NSMenuItem*)item {(void)item;return stormtty::macos::menu_commands_available(_composing,_closing,_modal);}
 @end
 using namespace stormtty;
 using namespace stormtty::macos;
@@ -20,7 +24,18 @@ int main(){@autoreleasepool{return run_core_tests("native AppKit menu shortcuts"
     auto event=[](NSString* text,NSEventModifierFlags modifiers){return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:modifiers timestamp:0 windowNumber:0 context:nil characters:text charactersIgnoringModifiers:text isARepeat:NO keyCode:17];};
     CHECK([menu performKeyEquivalent:event(@"t",NSEventModifierFlagCommand)]);CHECK(target.calls==1);
     CHECK(![menu performKeyEquivalent:event(@"t",NSEventModifierFlagControl)]);CHECK(target.calls==1);
-    item.enabled=NO;CHECK(![menu performKeyEquivalent:event(@"t",NSEventModifierFlagCommand)]);CHECK(target.calls==1);item.enabled=YES;
+    // AppKit can consume a disabled equivalent (YES) without sending its action.
+    // Verify the actual safety property, not an undocumented return convention.
+    item.enabled=NO;(void)[menu performKeyEquivalent:event(@"t",NSEventModifierFlagCommand)];CHECK(target.calls==1);item.enabled=YES;
+    menu.autoenablesItems=YES;
+    target.composing=YES;[menu update];CHECK(!item.enabled);
+    (void)[menu performKeyEquivalent:event(@"t",NSEventModifierFlagCommand)];CHECK(target.calls==1);
+    target.composing=NO;target.closing=YES;[menu update];CHECK(!item.enabled);
+    (void)[menu performKeyEquivalent:event(@"t",NSEventModifierFlagCommand)];CHECK(target.calls==1);
+    target.closing=NO;target.modal=YES;[menu update];CHECK(!item.enabled);
+    (void)[menu performKeyEquivalent:event(@"t",NSEventModifierFlagCommand)];CHECK(target.calls==1);
+    target.modal=NO;[menu update];CHECK(item.enabled);
+    menu.autoenablesItems=NO;
     apply_menu_shortcut(item,"app.command_palette",bindings);
     CHECK([item.keyEquivalent isEqualToString:@"p"]);CHECK(item.keyEquivalentModifierMask==(NSEventModifierFlagCommand|NSEventModifierFlagShift));
     const std::vector<Binding> custom{{"tab.new",{"Y",CommandModifier::command}}};apply_menu_shortcut(item,"tab.new",custom);
