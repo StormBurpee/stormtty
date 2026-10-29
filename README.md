@@ -89,6 +89,20 @@ It cannot certify a service is ready or a background job has finished. Watches
 are explicit, in-memory and Windows-only: no automatic rearming, injected input,
 focus stealing or OS notifications. [Controls and result semantics →](docs/command-watch.md)
 
+### Back to the terminal you were using
+
+On Windows, **Commands → Return to previous terminal** switches between your two
+most recently selected terminals—even across workspaces, tabs and splits. The
+Commands detail shows the destination; search **back**, **previous**, or **return**.
+No shortcut is assigned by default; use **Alt+Enter** in Commands to choose one.
+
+Previewing Navigator, opening an overlay or switching windows does not change
+this pair. Moving or renaming a pane preserves its identity. Closed, background
+or missing actors are unavailable: Return never restores or starts a shell, and
+never acknowledges a watched result. Retained exited terminals remain eligible.
+The pair is memory-only per window, with no command text or persisted history.
+This action is explicitly unavailable on macOS until its host is wired.
+
 ### Know which pane you are looking at
 
 Windows split headers keep the terminal title first, then show the observed

@@ -9,6 +9,7 @@
 namespace stormtty {
 namespace {
 constexpr std::array commands{
+    Command{"terminal.previous", "Return to previous terminal", "Go back to the last selected terminal across workspaces, tabs and splits"},
     Command{"workspace.navigator", "Switch workspace or terminal…", "Find an existing terminal across open workspaces"},
     Command{"workspace.settings", "Workspace settings…", "Name, icon, colour, shell and saved layouts"},
     Command{"workspace.new", "New workspace…", "Choose a real folder and start its configured shell"},
@@ -189,6 +190,10 @@ const Command* find_command(std::string_view id) noexcept {
 }
 CommandAvailability command_availability(std::string_view id, const CommandContext& c) noexcept {
     if (!find_command(id)) return {false, "Unknown command"};
+    if (id == "terminal.previous") {
+        if (!c.supports_previous_terminal) return {false,"Return to previous terminal is not implemented by this host"};
+        return {c.previous_terminal_available,c.previous_terminal_available?std::string_view{}:c.previous_terminal_reason};
+    }
     if (id == "settings.reload") return {c.supports_settings_reload, c.supports_settings_reload ? "" : "Settings reload is not implemented by this host"};
     if (id == "agent.toggle") return {c.supports_agent_panel,c.supports_agent_panel?"":"Native agent panel is not implemented by this host"};
     if (id == "window.focus_mode") return {c.supports_focus_mode, c.supports_focus_mode ? "" : "Focus mode is not implemented by this host"};
