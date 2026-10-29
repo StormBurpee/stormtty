@@ -32,7 +32,8 @@ class StagingTests(unittest.TestCase):
         self.manifest = {"schema":1,"bundle_id":"fixture","platform":"windows-x86_64",
                          "qualification_only":True,"default_activation_allowed":False,
                          "lock_sha256":stager.digest(self.lock),"shell":stager.REQUIRED[0],
-                         "managed_zdotdir":"stormtty/zsh","files":records}
+                         "managed_zdotdir":"stormtty/zsh",
+                         "managed_tools_lock_sha256":stager.digest(Path(stager.__file__).with_name("shell-tools.lock.json")),"files":records}
         self.write_manifest()
         for name in ("THIRD-PARTY-NOTICES.txt", "source-manifest.json", "shell-bootstrap.lock.json"):
             path = self.root / "notices" / name
@@ -44,6 +45,12 @@ class StagingTests(unittest.TestCase):
 
     def validate(self):
         return stager.validate(self.root, self.lock, self.preset)
+
+    def test_tools_lock_manifest_is_required(self):
+        self.manifest.pop("managed_tools_lock_sha256")
+        self.write_manifest()
+        with self.assertRaisesRegex(RuntimeError, "tools lock"):
+            self.validate()
 
     def test_copy_and_owned_replacement(self):
         files, receipt = self.validate()
@@ -200,7 +207,8 @@ class BuildPreparationTests(unittest.TestCase):
             self.assertNotIn("--source-packet",self.calls[1])
             self.assertEqual((self.root/"notices/upstream.txt").read_text(),"preserve")
             self.assertTrue((self.root/"notices/stormtty-review/THIRD-PARTY-NOTICES.txt").is_file())
-            self.assertTrue(json.loads((self.root/stager.MANIFEST).read_text())["release_notices_complete"])
+            self.assertFalse(json.loads((self.root/stager.MANIFEST).read_text())["release_notices_complete"])
+            self.assertTrue(json.loads((self.root/stager.MANIFEST).read_text())["base_runtime_notices_complete"])
             self.prepare.prepare(self.root,self.cache,True);self.assertEqual(len(self.calls),2)
             (self.root/stager.REQUIRED[0]).unlink()
             self.prepare.prepare(self.root,self.cache,True);self.assertEqual(len(self.calls),4)

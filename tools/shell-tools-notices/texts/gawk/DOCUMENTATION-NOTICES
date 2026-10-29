@@ -1,0 +1,291 @@
+gawk-5.4.1/doc/gawk.texi
+@copying
+@docbook
+<para>
+&ldquo;To boldly go where no man has gone before&rdquo; is a
+Registered Trademark of Paramount Pictures Corporation.</para>
+
+<para>Published by:</para>
+
+<literallayout class="normal">Free Software Foundation
+31 Milk Street, # 960789
+Boston, MA 02196 USA
+Phone: +1-617-542-5942
+Fax: +1-617-542-2652
+Email: <email>gnu@@gnu.org</email>
+URL: <ulink url="https://www.gnu.org">https://www.gnu.org/</ulink></literallayout>
+
+<literallayout class="normal">Copyright &copy; 1989, 1991, 1992, 1993, 1996&ndash;2005, 2007, 2009&ndash;2026
+Free Software Foundation, Inc.
+All Rights Reserved.</literallayout>
+@end docbook
+
+@ifnotdocbook
+Copyright @copyright{} 1989, 1991, 1992, 1993, 1996--2005, 2007, 2009--2026 @*
+Free Software Foundation, Inc.
+@end ifnotdocbook
+@sp 2
+
+This is Edition @value{EDITION} of @cite{@value{TITLE}: @value{SUBTITLE}},
+for the @value{VERSION}.@value{PATCHLEVEL} (or later) version of the GNU
+implementation of AWK.
+
+Permission is granted to copy, distribute and/or modify this document
+under the terms of the GNU Free Documentation License, Version 1.3 or
+any later version published by the Free Software Foundation; with the
+Invariant Sections being ``GNU General Public License'', with the
+Front-Cover Texts being ``A GNU Manual'', and with the Back-Cover Texts
+as in (a) below.
+@ifclear FOR_PRINT
+A copy of the license is included in the section entitled
+``GNU Free Documentation License''.
+@end ifclear
+@ifset FOR_PRINT
+A copy of the license
+may be found on the Internet at
+@uref{https://www.gnu.org/software/gawk/manual/html_node/GNU-Free-Documentation-License.html,
+the GNU Project's website}.
+@end ifset
+
+@enumerate a
+@item
+The FSF's Back-Cover Text is: ``You have the freedom to
+copy and modify this GNU manual.''
+@end enumerate
+@end copying
+
+gawk-5.4.1/doc/gawkinet.texi
+@copying
+This is Edition @value{EDITION} of @cite{@value{TITLE}},
+for the @value{VERSION}.@value{PATCHLEVEL} (or later) version of the GNU
+implementation of AWK.
+@sp 2
+Copyright (C) 2000, 2001, 2002, 2004, 2009, 2010, 2016, 2019, 2020, 2021, 2023,
+2026,
+Free Software Foundation, Inc.
+@sp 2
+Permission is granted to copy, distribute and/or modify this document
+under the terms of the GNU Free Documentation License, Version 1.3 or
+any later version published by the Free Software Foundation; with the
+Invariant Sections being ``GNU General Public License'', the Front-Cover
+texts being (a) (see below), and with the Back-Cover Texts being (b)
+(see below).  A copy of the license is included in the section entitled
+``GNU Free Documentation License''.
+
+@enumerate a
+@item
+``A GNU Manual''
+
+@item
+``You have the freedom to
+copy and modify this GNU manual.  Buying copies from the FSF
+supports it in developing GNU and promoting software freedom.''
+@end enumerate
+@end copying
+
+gawk-5.4.1/doc/gawknotes.texi
+@copying
+@c For HTML, spell out email addresses, to avoid problems with
+@c address harvesters for spammers.
+@ifhtml
+@macro EMAIL{real,spelled}
+``\spelled\''
+@end macro
+@end ifhtml
+@ifnothtml
+@macro EMAIL{real,spelled}
+@email{\real\}
+@end macro
+@end ifnothtml
+
+This manual is for maintainers of GNU @command{awk}.
+
+Copyright @copyright{} 2024 Arnold Robbins.
+
+This is Edition @value{EDITION} of @cite{@value{TITLE}}.
+
+@quotation
+Permission is granted to copy, distribute and/or modify this document
+under the terms of the GNU Free Documentation License, Version 1.3 or
+any later version published by the Free Software Foundation.
+@end quotation
+@end copying
+
+gawk-5.4.1/doc/gawkworkflow.texi
+@copying
+@docbook
+<para>Published by:</para>
+
+<literallayout class="normal">Free Software Foundation
+31 Milk Street, # 960789
+Boston, MA 02196 USA
+Phone: +1-617-542-5942
+Fax: +1-617-542-2652
+Email: <email>gnu@@gnu.org</email>
+URL: <ulink url="http://www.gnu.org">http://www.gnu.org/</ulink></literallayout>
+
+<literallayout class="normal">Copyright &copy; 2017, 2018, 2019, 2020, 2022, 2023, 2026
+Free Software Foundation, Inc.
+All Rights Reserved.</literallayout>
+@end docbook
+
+@ifnotdocbook
+Copyright @copyright{} 2017, 2018, 2019, 2020, 2022, 2023, 2026
+Free Software Foundation, Inc.
+@end ifnotdocbook
+@sp 2
+
+This is Edition @value{EDITION} of @cite{@value{TITLE}}.
+
+Permission is granted to copy, distribute and/or modify this document
+under the terms of the GNU Free Documentation License, Version 1.3 or
+any later version published by the Free Software Foundation; with the
+Invariant Sections being ``GNU General Public License'', with the
+Front-Cover Texts being ``A GNU Manual'', and with the Back-Cover Texts
+as in (a) below.
+A copy of the license is included in the section entitled
+``GNU Free Documentation License''.
+
+@enumerate a
+@item
+The FSF's Back-Cover Text is: ``You have the freedom to
+copy and modify this GNU manual.''
+@end enumerate
+@end copying
+
+gawk-5.4.1/doc/it/gawk.texi
+@copying
+@docbook
+&ldquo;To boldly go where no man has gone before&rdquo;@*
+(&ldquo;Per arrivare l@`a dove nessun uomo @`e mai giunto prima&rdquo;)@*
+@`e un Marchio Registrato della Paramount Pictures Corporation.@*
+
+Titolo originale:
+@b{Gawk: Effective AWK Programming}@* @i{A User's Guide for GNU Awk}
+<para>Published by:</para>
+<literallayout class="normal">Free Software Foundation
+31 Milk Street, # 960789
+Boston, MA 02196 USA
+Tel.: +1-617-542-5942
+Fax: +1-617-542-2652
+Email: <email>gnu@@gnu.org</email>
+URL: <ulink url="https://www.gnu.org">https://www.gnu.org/</ulink>
+</literallayout>
+
+<literallayout class="normal">Copyright &copy; 1989, 1991, 1992, 1993, 1996&ndash;2005, 2007, 2009&ndash;2026
+Free Software Foundation, Inc.
+All Rights Reserved.
+</literallayout>
+@end docbook
+
+@docbook
+</para>Traduzione e revisione:<para>
+<literallayout class="normal">
+Antonio Giovanni Colombo -- <email>azc100(chiocciola)gmail(punto)com</email>
+Marco Curreli -- <email>marcocurreli(chiocciola)tiscali(punto)it</email>
+(Italian Linux Documentation Project (<ulink url="http://www.pluto.it/ildp">http://www.pluto.it/ildp/</ulink>)
+</literallayout>
+
+<para>Pubblicato da:</para>
+<literallayout class="normal">Free Software Foundation
+Email: <email>gnu@@gnu.org</email>
+URL: <ulink url="https://www.gnu.org">https://www.gnu.org/</ulink>
+e da:
+Italian Linux Documentation Project (ILDP)
+Email: <emailildp@@pluto.it
+URL: <ulink url="http://www.pluto.it/ildp">http://www.pluto.it/ildp/</ulink></literallayout>
+
+<literallayout class="normal">Copyright &copy; 2016&ndash;2026
+Free Software Foundation, Inc.
+All Rights Reserved.
+</literallayout>
+@end docbook
+
+@ifnotdocbook
+@iftex
+Copyright @copyright{} 1989, 1991, 1992, 1993, 1996--2005, 2007, 2009--2026 @*
+Free Software Foundation, Inc.
+@end iftex
+@end ifnotdocbook
+@sp 2
+Questa @`e l'Edizione @value{EDITION} di @cite{@value{TITLE}: @value{SUBTITLE}},
+per la versione @value{VERSION}.@value{PATCHLEVEL} (o successiva)
+dell'implementazione GNU di AWK.
+@ifnottex
+@ifnotxml
+@ifnotdocbook
+(Titolo originale: @i{Gawk: Effective AWK Programming: A User's Guide for GNU Awk.)}
+@end ifnotdocbook
+@end ifnotxml
+@end ifnottex
+
+@`E garantito il permesso di copiare, distribuire e/o modificare questo
+documento seguendo i termini della Licenza per Documentazione Libera
+GNU, Versione 1.3 o ogni versione successiva pubblicata dalla Free
+Software Foundation; con le Sezioni Non Modificabili ``GNU General
+Public License'', con i testi di copertina ``Un Manuale GNU'', e con i
+testi di quarta di copertina come in (a) pi@`u avanti.
+@ifclear FOR_PRINT
+Una copia della licenza @`e acclusa nella sezione intitolata
+"Licenza per Documentazione Libera GNU".
+@end ifclear
+@ifset FOR_PRINT
+Una copia della licenza
+si pu@`o trovare in internet all'indirizzo
+@uref{https://www.gnu.org/software/gawk/manual/html_node/GNU-Free-Documentation-License.html,
+il sito web del Progetto GNU}.
+@end ifset
+
+@enumerate a
+@item
+Il testo di quarta di copertina della FSF @`e: ``@`E garantito il permesso di
+copiare e modificare questo manuale GNU.''
+@end enumerate
+@end copying
+
+gawk-5.4.1/doc/it/pm-gawk.texi
+@copying
+@noindent
+@c UPDATE copyright info below
+Copyright @copyright{} 2022, 2025 Terence Kelly @*
+@ifnottex
+@email{tpkelly@@eecs.umich.edu} @*
+@email{tpkelly@@cs.princeton.edu} @*
+@email{tpkelly@@acm.org} @*
+@url{https://web.eecs.umich.edu/~tpkelly/pma/} @*
+@url{https://dl.acm.org/profile/81100523747}
+@end ifnottex
+
+@noindent
+A chiunque @`e permesso copiare, distribuire e/o modificare questo
+documento, nei termini della Licenza ``GNU Free Documentation'',
+Versione 1.3, o qualsiasi versione successiva, pubblicata dalla
+Free Software Foundation, lasciando invariate le sezioni
+``Introduzione'' e ``Storia'',
+nessun testo in copertina o nell'ultima pagina di copertina.
+Una copia della licenza è disponibile nel sito @*
+@url{https://www.gnu.org/licenses/fdl-1.3.html}
+@end copying
+
+gawk-5.4.1/doc/pm-gawk.texi
+@copying
+@noindent
+@c UPDATE copyright info below
+Copyright @copyright{} 2022, 2025 Terence Kelly @*
+@ifnottex
+@email{tpkelly@@eecs.umich.edu} @*
+@email{tpkelly@@cs.princeton.edu} @*
+@email{tpkelly@@acm.org} @*
+@url{https://web.eecs.umich.edu/~tpkelly/pma/} @*
+@url{https://dl.acm.org/profile/81100523747}
+@end ifnottex
+
+@noindent
+Permission is granted to copy, distribute and/or modify this document
+under the terms of the GNU Free Documentation License, Version 1.3
+or any later version published by the Free Software Foundation;
+with the Invariant Sections being ``Introduction'' and ``History'',
+no Front-Cover Texts, and no Back-Cover Texts.
+A copy of the license is available at @*
+@url{https://www.gnu.org/licenses/fdl-1.3.html}
+@end copying

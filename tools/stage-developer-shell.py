@@ -20,6 +20,9 @@ REQUIRED = ("usr/bin/zsh.exe", "usr/bin/msys-2.0.dll", "stormtty/zsh/.zshrc", "e
 
 CONFIG = {"etc/fstab": "shell-runtime.fstab", "etc/nsswitch.conf": "shell-runtime.nsswitch.conf", "stormtty/vendor/addons.lock.json": "shell-addons.lock.json"}
 
+CONFIG.update({'stormtty/vendor/shell-tools/tools.lock.json': 'shell-tools.lock.json', 'stormtty/vendor/shell-tools/sources.lock.json': 'shell-tools-sources.lock.json', 'stormtty/vendor/shell-tools/init.zsh': 'shell-tools.zsh', 'stormtty/vendor/shell-tools/zoxide.zsh': 'shell-tools-zoxide.zsh'})
+REQUIRED += tuple(name for name in CONFIG if name not in REQUIRED) + ("usr/bin/awk.exe", "usr/bin/gawk.exe", "usr/bin/msys-readline8.dll", "usr/bin/msys-mpfr-6.dll", "ucrt64/bin/fzf.exe", "ucrt64/bin/zoxide.exe", "ucrt64/share/fzf/completion.zsh", "ucrt64/share/fzf/key-bindings.zsh", "ucrt64/share/zsh/site-functions/_zoxide")
+
 def validation_inputs(lock, preset):
     return [digest(lock), digest(preset), digest(Path(__file__))] + [digest(Path(__file__).with_name(name)) for name in CONFIG.values()]
 
@@ -84,6 +87,8 @@ def validate(source, lock_path, preset):
         manifest.get("default_activation_allowed") != lock.get("default_activation_allowed") or
         manifest.get("shell") != REQUIRED[0] or manifest.get("managed_zdotdir") != "stormtty/zsh"):
         raise RuntimeError("Runtime manifest does not match the exact developer qualification lock")
+    if manifest.get("managed_tools_lock_sha256") != digest(Path(__file__).with_name("shell-tools.lock.json")):
+        raise RuntimeError("Runtime managed tools lock is stale")
     records = manifest.get("files", [])
     if not isinstance(records, list) or not 1 <= len(records) <= MAX_FILES: raise RuntimeError("Invalid runtime file inventory")
     names = {}

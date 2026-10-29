@@ -11,3 +11,8 @@ tools/shell-notices/*.json text eol=lf
 
 # Hash-pinned native replay fixture: preserve LF and all VT bytes.
 tests/ink/conpty-width-probe/*.bin -text
+
+# Managed addon/tool manifests are hashed verbatim across Windows and POSIX.
+tools/shell-*.json text eol=lf
+
+tools/shell-tools-notices/texts/** -text

@@ -1,0 +1,7 @@
+{
+  "host": "Linux /usr/bin/zsh with PTY, NOT Windows native; warm cache; compinit -i -D included",
+  "n": 50,
+  "baseline_median_ms": 196.55586750013754,
+  "tools_median_ms": 199.7868635080522,
+  "paired_overhead_median_ms": 1.4819255156908184
+}

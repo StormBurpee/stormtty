@@ -42,6 +42,12 @@ if(STORMTTY_BUNDLE_ZSH OR STORMTTY_DEVELOPER_SHELL_RUNTIME)
         COMMAND "${Python3_EXECUTABLE}" "${_shell_stager}"
             --source "${_shell_source}" --lock "${_shell_lock}" --preset "${_shell_preset}"
             --destination "$<TARGET_FILE_DIR:stormtty>/runtimes/zsh" --stamp "${_shell_stamp}" --repair-if-needed
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/shell-tools.lock.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/shell-tools-sources.lock.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/shell-tools.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/shell-tools.zsh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/shell-tools-zoxide.zsh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/shell-tools-notices.py"
         COMMENT "Preparing the pinned bundled Zsh runtime and notices" VERBATIM)
     add_dependencies(stormtty stormtty_developer_shell_runtime)
     target_compile_definitions(stormtty PRIVATE STORMTTY_HAS_BUNDLED_SHELL_RUNTIME=1)

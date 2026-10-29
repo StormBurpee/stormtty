@@ -1011,6 +1011,7 @@ SessionId NativeWindow::new_session(std::string profile_id) {
     }
     if (managed) {
         // Resolve only an absent HOME through wide APIs; explicit/empty HOME wins.
+        process.environment.push_back(managed_shell_console_environment());
         const auto home_environment = managed_shell_home_environment();
         bool empty_home = false;
         for (const auto& entry : home_environment) {
@@ -1018,7 +1019,7 @@ SessionId NativeWindow::new_session(std::string profile_id) {
             process.environment.push_back(entry);
         }
         // Launch-scoped native DACL validation, never an ambient trust switch.
-        // Override inherited state even on failure; no startup subprocess, HOME
+        // State validation overrides inherited data without a subprocess, HOME
         // replacement, or changes to an existing user's files/permissions.
         const auto state = options_.smoke_test ? prepare_managed_shell_state_at(smoke_shell_state_root_,empty_home) : prepare_managed_shell_state(empty_home);
         if (options_.smoke_test && !empty_home && !state) throw std::runtime_error("Private smoke shell state failed revalidation.");
@@ -1057,7 +1058,9 @@ SessionId NativeWindow::new_session(std::string profile_id) {
 }
 void NativeWindow::new_tab() {
     const auto profile=projects_.active()->metadata.preferred_profile=="@default"?session_profile_id():projects_.active()->metadata.preferred_profile;
-    const auto id = new_session(profile);
+    SessionId id;
+    try { id = new_session(profile); }
+    catch (const std::exception& error) { show_error(error.what()); return; }
     auto result = workspace().create_tab(id, profile);
     if (!result) { sessions_.at(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
     workspace_model_changed(); changed(true);
@@ -1066,7 +1069,9 @@ void NativeWindow::split(Direction direction) {
     const auto active = workspace().active_pane();
     if (!active) return;
     const auto profile=projects_.active()->metadata.preferred_profile=="@default"?session_profile_id():projects_.active()->metadata.preferred_profile;
-    const auto id = new_session(profile);
+    SessionId id;
+    try { id = new_session(profile); }
+    catch (const std::exception& error) { show_error(error.what()); return; }
     auto result = workspace().split(active, direction, id, profile);
     if (!result) { sessions_.at(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
     workspace_model_changed(); activate(*result.value); changed(true);
