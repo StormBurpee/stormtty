@@ -473,7 +473,7 @@ struct Renderer::Impl {
 #undef TRACE_RELEASE
         }
         windows::smoke_teardown_trace(tracing_teardown,"renderer release_gpu begin");
-        release_gpu();
+        release_gpu(true);
         windows::smoke_teardown_trace(tracing_teardown,"renderer release_gpu end; implicit cache/font members begin");
     }
     void clear_and_flush() noexcept {
@@ -489,20 +489,49 @@ struct Renderer::Impl {
             !std::isfinite(font.size_dip) || font.size_dip < 4 || font.size_dip > 128)
             throw std::invalid_argument("Invalid terminal font");
     }
-    void release_swapchain() noexcept {
+    void release_swapchain(bool replacing = true) noexcept {
         host_backdrop.detach();counters.host_backdrop=false;
         composition_visual.reset(); composition_target.reset(); composition.reset();
         windows::smoke_teardown_trace(tracing_teardown,"renderer latency handle close begin");
         latency.reset();
         windows::smoke_teardown_trace(tracing_teardown,"renderer latency handle close end");
         swapchain2.reset(); swapchain.reset();
-        clear_and_flush();
+        // Only replacement needs synchronous deferred-resource destruction.
+        // Final shutdown releases the immediate context and device next; forcing
+        // ClearState after a destroyed HWND can stall the WARP presentation path.
+        if(replacing) clear_and_flush();
+        else windows::smoke_teardown_trace(tracing_teardown,"renderer final device release; no swapchain replacement drain");
         windows::smoke_teardown_trace(tracing_teardown,"renderer opaque HWND destruction begin");
         opaque_window.reset();
         windows::smoke_teardown_trace(tracing_teardown,"renderer opaque HWND destruction end");
         counters.composition = false;
     }
-    void release_gpu() noexcept {
+    void finish_submitted_work() noexcept {
+        if (!device || !immediate) return;
+        // Flush alone only submits work. Keep all D2D/canvas/presentation
+        // owners alive until the final submitted work completes, rather than
+        // entering WARP deferred destruction with commands still outstanding.
+        windows::smoke_teardown_trace(tracing_teardown,"renderer completion query begin");
+        Com<ID3D11Query> completion;
+        const D3D11_QUERY_DESC description{D3D11_QUERY_EVENT,0};
+        auto result=device->CreateQuery(&description,completion.put());
+        if (SUCCEEDED(result)) {
+            immediate->End(completion.get());
+            immediate->Flush();
+            const auto deadline=GetTickCount64()+2000;
+            do {
+                result=immediate->GetData(completion.get(),nullptr,0,D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                if(result!=S_FALSE) break;
+                Sleep(1);
+            } while(GetTickCount64()<deadline);
+        }
+        windows::smoke_teardown_trace(tracing_teardown,result==S_OK ?
+            "renderer completion query completed" : "renderer completion query incomplete; normal ownership release follows");
+        // No detached/leaked device on timeout or removal. The native outer
+        // deadline still fails qualification if normal driver release stalls.
+    }
+    void release_gpu(bool final_shutdown = false) noexcept {
+        if(final_shutdown) finish_submitted_work();
         windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null begin");
         if (dc) dc->SetTarget(nullptr);
         windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null end");
@@ -511,13 +540,14 @@ struct Renderer::Impl {
         images.clear();
         windows::smoke_teardown_trace(tracing_teardown,"renderer image cache clear end");
         counters.image_cache_bytes = 0;
-        // Drop D2D's device-dependent owners before the single deferred-release
-        // drain in release_swapchain(). Keep that helper's ClearState/Flush for
-        // standalone swapchain replacement too; do not drain twice around D2D
-        // destruction. This ordering is a teardown candidate, not proof that a
-        // previously observed WARP ClearState stall has been resolved.
+        // Release every D2D owner before the swapchain/context/device. Device
+        // recovery still needs the documented flip-chain replacement drain;
+        // A live caller-owned HWND may be reused even after this Renderer dies,
+        // so retain the replacement drain there. Only a destroyed HWND (or no
+        // HWND) makes final release unambiguously non-replacing.
         dc4.reset(); dc.reset(); d2d_device.reset();
-        release_swapchain();
+        const bool replacing=!final_shutdown || (window && IsWindow(window));
+        release_swapchain(replacing);
         immediate.reset(); device.reset();
     }
     void create_device() {
@@ -1266,6 +1296,13 @@ Renderer::~Renderer() {
     windows::smoke_teardown_trace(smoke,"renderer destructor begin");
     impl_.reset();
     windows::smoke_teardown_trace(smoke,"renderer destructor end");
+}
+void Renderer::prepare_window_destruction() noexcept {
+    if (!impl_) return;
+    impl_->tracing_teardown=impl_->options.smoke_teardown_diagnostics;
+    windows::smoke_teardown_trace(impl_->tracing_teardown,"renderer prepare HWND destruction begin");
+    impl_->release_gpu(true);
+    windows::smoke_teardown_trace(impl_->tracing_teardown,"renderer prepare HWND destruction end");
 }
 Renderer::Renderer(Renderer&&) noexcept = default;
 Renderer& Renderer::operator=(Renderer&&) noexcept = default;

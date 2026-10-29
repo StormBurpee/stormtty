@@ -61,6 +61,7 @@ namespace {
 constexpr UINT wake_message = WM_APP + 41;
 constexpr UINT deferred_layout_message = WM_APP + 42;
 constexpr UINT smoke_settings_input_message = WM_APP + 43;
+constexpr UINT deferred_destroy_message = WM_APP + 44;
 constexpr UINT_PTR cursor_timer = 1;
 constexpr UINT_PTR smoke_timeout_timer = 2;
 constexpr UINT_PTR chrome_motion_timer = 3;
@@ -270,7 +271,7 @@ public:
         wake_->window.store(nullptr, std::memory_order_release);
         for (auto& [id, session] : sessions_) { (void)id; session->request_close(); }
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor close requests complete");
-        if (hwnd_) DestroyWindow(hwnd_);
+        if (hwnd_) destroy_window();
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor HWND destruction complete");
         // The window is gone: never wait for local file I/O in a WndProc.
         if (settings_worker_.joinable()) {
@@ -331,6 +332,7 @@ private:
     void sync_focus();
     void changed(bool geometry = false);
     void render();
+    void destroy_window() noexcept;
     bool smoke_frame_ready() const;
     void smoke_progress(bool presented = false, bool frame_observed = false);
     void smoke_finish(std::string_view error = {});
@@ -540,7 +542,7 @@ private:
     std::vector<ChromePrimitive> closing_palette_primitives_;
     std::vector<ChromeText> closing_palette_texts_;
     std::unique_ptr<Renderer> renderer_;
-    bool renderer_call_{}, layout_pending_{}, settings_pending_{};
+    bool renderer_call_{}, layout_pending_{}, settings_pending_{}, closing_window_{}, destroy_pending_{};
     double scale_{1}, width_{1100}, height_{720};
     UINT dpi_{96};
     ChromeLayout chrome_;
@@ -792,7 +794,20 @@ void NativeWindow::refresh_clock() {
     if (config_.appearance.show_clock && !config_.ribbon.hidden[ribbon_index(RibbonBinding::clock)] && !minimized_ && !fullscreen_ && !focus_mode_)
         SetTimer(hwnd_,local_clock_timer,60000-time.wSecond*1000-time.wMilliseconds,nullptr);
 }
-
+void NativeWindow::destroy_window() noexcept {
+    if (!hwnd_ || closing_window_) return;
+    if (renderer_call_) {
+        if(!destroy_pending_) destroy_pending_=PostMessageW(hwnd_,deferred_destroy_message,0,0)!=FALSE;
+        return; // Preserve the already-approved close, not a new WM_CLOSE prompt.
+    }
+    closing_window_=true;
+    // A WARP presentation queue can stop progressing once its HWND disappears.
+    // Drain and release GPU/presentation ownership while it is still valid.
+    // The host dispatcher itself remains owned until after HWND/userdata teardown.
+    RendererCallGuard guard(renderer_call_);
+    if (renderer_) renderer_->prepare_window_destruction();
+    DestroyWindow(hwnd_);
+}
 void NativeWindow::settings_changed() {
     refresh_clock();
     if (renderer_call_) { settings_pending_=true; defer_layout(); return; }
@@ -1702,7 +1717,7 @@ void NativeWindow::close_project(ProjectWorkspaceId id, bool approved) {
             close_project(id,true);
         }); return;
     }
-    if (projects_.entries().size()==1) { DestroyWindow(hwnd_); return; } // Deliberate final close, never a replacement shell.
+    if (projects_.entries().size()==1) { destroy_window(); return; } // Deliberate final close, never a replacement shell.
     // Consent is complete. Transfer the inactive provider to the bounded
     // controller reaper before dropping the workspace; never join on this UI thread.
     if(agent_controller_&&!agent_controller_->retire(projects_.find(id)->metadata.persistent_id)) {
@@ -2624,7 +2639,7 @@ WindowScene NativeWindow::scene() {
     return result;
 }
 void NativeWindow::render() {
-    if (!renderer_ || minimized_) return;
+    if (!hwnd_ || closing_window_ || !renderer_ || minimized_) return;
     if (renderer_call_) { defer_layout(); return; }
     RenderResult result;const auto rendered=scene();
     { RendererCallGuard guard(renderer_call_); result=renderer_->render(rendered); }
@@ -3614,7 +3629,7 @@ void NativeWindow::smoke_workspace_progress(bool presented) {
         smoke_finished_=true; exit_code_=error.empty()?0:2;
         std::fprintf(stderr,"Workspace persistence smoke %s: %s%s%s\n",
             error.empty()?"passed":"failed",options_.smoke_workspaces.c_str(),error.empty()?"":": ",error.c_str());
-        if(hwnd_) DestroyWindow(hwnd_);
+        if(hwnd_) destroy_window();
     };
     if(workspace_smoke_menu_) {
         for(const auto& [id,actor]:sessions_) {
@@ -4475,7 +4490,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
         if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());
     } else std::fprintf(stderr,"Native CI smoke failed: %.*s Settings stage=%u elapsed_ms=%llu job_pending=%d saving=%d\n",
         static_cast<int>(error.size()),error.data(),smoke_settings_stage_,GetTickCount64()-smoke_started_at_,settings_job_,settings_panel_.saving());
-    if (hwnd_) DestroyWindow(hwnd_);
+    if (hwnd_) destroy_window();
 }
 
 void NativeWindow::position_ime() {
@@ -4634,6 +4649,9 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (in_size_move_ && renderer_ && !minimized_) render();
         return 0;
     }
+    case deferred_destroy_message:
+        if(destroy_pending_) { destroy_pending_=false; destroy_window(); }
+        return 0;
     case deferred_layout_message:
         layout_pending_=false;
         if (settings_pending_) { settings_pending_=false; settings_changed(); }
@@ -4830,8 +4848,8 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (settings_input_blocked()) { settings_panel_.cancel(); settings_input_changed(); return 0; }
         const bool live=std::any_of(sessions_.begin(),sessions_.end(),[](const auto& pair) { return !pair.second->process_finished(); });
         if (modal_) { answer_modal(ModalDecision::cancel); return 0; }
-        if (!live && !(agent_controller_&&agent_controller_->any_active())) DestroyWindow(hwnd_);
-        else show_modal("Close StormTTY?",{"Its terminals or agents may have running work.","Closing disconnects agents and can discard unsaved work."},"Close window",[this]{if (hwnd_) DestroyWindow(hwnd_);});
+        if (!live && !(agent_controller_&&agent_controller_->any_active())) destroy_window();
+        else show_modal("Close StormTTY?",{"Its terminals or agents may have running work.","Closing disconnects agents and can discard unsaved work."},"Close window",[this]{if (hwnd_) destroy_window();});
         return 0;
     }
     case WM_DESTROY:

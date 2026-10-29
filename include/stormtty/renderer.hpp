@@ -150,6 +150,9 @@ public:
     void set_background_opacity(float opacity);
     CellMetrics metrics() const noexcept;
 #ifdef _WIN32
+    // Irreversible: release presentation/GPU owners before the caller destroys
+    // its HWND. No render/resize calls are valid afterward; destructor remains safe.
+    void prepare_window_destruction() noexcept;
     // Background-only extra Gaussian sigma; 0 removes the host effect; the window selects clear/system policy.
     void set_additional_blur(float sigma);
     // Actual DirectWrite chrome-font bounds in pixels, using the label's wrapping.
