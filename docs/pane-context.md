@@ -5,7 +5,7 @@ reads a single already-owned session/workspace snapshot; it performs no Git,
 filesystem, subprocess, host/SSH inference, or terminal input operations. It adds
 no persisted schema, shell defaults, subscriptions, animation, or polling.
 
-## Minimal native host integration
+## Shared presentation contract
 
 1. Copy `SessionInfo` once for the pane being painted, not just the active pane.
 2. Build `PaneContextInput` with the existing resolved title (preserve user and
@@ -27,8 +27,8 @@ no persisted schema, shell defaults, subscriptions, animation, or polling.
    rather than collapsing different roots to identical basenames. Truncate only
    visually with native metrics, never slice UTF-8 bytes. Optional path-tail
    elision must retain distinguishing ancestors, not claim basenames are unique.
-6. Use `detail` for the existing full read-only tooltip or a future context
-   command. Recompute on session metadata/workspace changes; compare complete
+6. Use `detail` for the existing full read-only tooltip or native context
+   inspector. Recompute on session metadata/workspace changes; compare complete
    presentation values when deciding chrome invalidation. Nonfocused metadata
    changes must refresh their pane header and tooltip. Text changes snap to the
    latest snapshot: no crossfade, path interpolation, or animation timer.
@@ -111,3 +111,22 @@ raw delta as focus/protocol traffic; unexplained bytes remain a failure. No raw
 input bytes are recorded. Portable accounting tests cover every origin/mixed
 partial counts; the real session search fixture forces 3-byte transport chunks
 while mixing text, paste and Enter, with unchanged echo/ordering assertions.
+
+## macOS host
+
+**Terminal → Inspect pane context** and the native command pop-up open an attached
+AppKit sheet for the active session. The command uses configured shortcuts but
+has no default binding. The sheet contains selectable, wrapping, scrollable text;
+**Close** or **Escape** dismisses it and returns focus to the terminal. It captures
+one owned snapshot: close and reopen to refresh, rather than expecting live updates.
+
+The same display sanitizer and observed/configured/retained distinctions apply.
+Text is not editable, automatically linked, or interpreted as a path or command.
+Inspection does not probe Git, send terminal input or change session ownership.
+Windows-style pane-header and footer context presentation remain unimplemented.
+
+`macos_pane_inspector_tests` covers native controls, snapshot ownership, selection,
+untrusted text and repeated attached-sheet presentation/dismissal. Light/dark
+owned-view captures are retained by native CI. These fixtures do not establish
+physical keyboard behavior, VoiceOver, IME, or full host-interaction parity.
+See the [macOS host notes](../src/platform/macos/README.md#read-only-pane-context-inspector).

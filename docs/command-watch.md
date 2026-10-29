@@ -1,9 +1,10 @@
-# Watch this command — portable policy and host integration contract
+# Watch this command
 
 ## Delivered scope
 
-`command_watch.hpp` is a tested, header-only policy, **not a shipped native UI**.
-It lets a host explicitly arm one observed foreground command per live session,
+The Windows host integrates the tested, header-only `command_watch.hpp` policy
+in native Commands, tabs, workspace rows and the Navigator. It lets you explicitly
+arm one observed foreground command per live session,
 leave it in its tab, switch workspace, and retain one quiet result. No command
 text, output, history, OS notification, polling, persistence, input injection,
 process termination, automatic navigation, or focus change is involved.
@@ -12,6 +13,23 @@ The source is the existing untrusted OSC 133 `CommandSnapshot`, not OS process
 inspection. “Foreground” means the host's currently selected terminal and an
 observed shell C marker. It cannot prove process identity, authenticity, service
 readiness, or background-job completion. Unsupported shells cannot be armed.
+
+## Windows controls
+
+Open **Commands** with **Ctrl+Shift+P** and choose **Watch this command** while
+shell integration reports a running command in the active terminal. The action
+is unavailable otherwise; it never launches a command or enables integration.
+Watch actions have no default shortcut.
+
+- **Cancel command watch** removes a pending watch, not the running process.
+- **Open result · workspace · terminal** entries in Commands return to the
+  existing actor, including a parked terminal, and acknowledge only on success.
+- **Dismiss watched result** acknowledges the active terminal's result without
+  navigating. Parked-result actions also offer dismissal.
+
+Ordinary tab/workspace selection and restore do not clear a watched result.
+Nothing automatically focuses a terminal, sends input, or posts an OS notification.
+Watches are not saved across application restarts. macOS has no command-watch UI.
 
 ## Policy
 
@@ -46,7 +64,7 @@ readiness, or background-job completion. Unsupported shells cannot be armed.
   result. Tab/workspace visibility, ordinary restore, hover, and failed navigation
   are not acknowledgment. Nothing automatically arms the next command.
 
-## NativeWindow wiring plan (not implemented here)
+## Windows integration invariants
 
 1. Allocate one host token plus stable actor incarnation at session insertion;
    retain a bounded `map<SessionId, CommandWatch>` only for armed/unread entries.
@@ -84,9 +102,9 @@ readiness, or background-job completion. Unsupported shells cannot be armed.
    the obsolete result rather than targeting a reused local ID. An unloaded
    workspace must not be started to recreate an old watch.
 
-## Native fixture acceptance criteria
+## Native fixture coverage and remaining gates
 
-Portable tests are not Windows/macOS UI evidence. Before advertising this flow:
+Portable tests are not Windows/macOS UI evidence. The acceptance matrix is:
 
 - Start a fixture shell with observed C, arm through the actual action, switch
   workspace/tab without parking, emit D (0, nonzero, and absent code variants),
@@ -122,7 +140,7 @@ c++ -std=c++20 -Wall -Wextra -Werror -pedantic -Iinclude \
 ./command_watch_tests
 ```
 
-## Windows host candidate
+## Windows host implementation
 
 The host integrates the policy in existing Commands, tab captions, workspace
 rows, Navigator state and parked rows—no new permanent bar. “Watch this command”
@@ -149,11 +167,13 @@ than one actor publication: exact earlier completion or conservative unconfirmed
 result is allowed, but borrowing the newer code is never allowed. It requires
 actual PNGs for armed/result/Commands states and unchanged frontend UI input.
 EOF/failure/two-host identity/saturation remain portable policy coverage; this
-candidate does not claim corresponding native physical/process qualification.
-Native runtime and screenshot qualification are pending until the exact workflow
-run passes; cross-compilation alone is not that evidence.
+fixture does not claim corresponding native physical/process qualification.
+The Windows integration and indicator fixtures are implemented and integrated;
+report their native workflow results separately from the full compatibility suite.
+A controlled native capture is not physical UI, accessibility, or desktop-blur
+qualification, and cross-compilation alone is not native runtime evidence.
 
-## Long-title tab indicator candidate
+## Persistent tab indicator
 
 The existing tab has a reserved 6-DIP status mark before its label: hollow for
 an armed watch, filled for an unread result. Shape—not success color—distinguishes
@@ -162,6 +182,6 @@ tab contain both states. Text/tooltip and Commands retain explicit wording.
 No tab bounds, close/dropdown hit targets, terminal grids, timers or input paths
 change. At unsupported widths below 46 DIP the mark is omitted rather than
 covering controls. Portable geometry tests cover that boundary and fixed text
-separation. Native qualification must retain the seven-cycle Watch gates and
-capture a deliberately long Unicode tab title plus narrow/high-contrast unread
+separation. The native fixture retains the seven-cycle Watch gates and
+captures a deliberately long Unicode tab title plus narrow/high-contrast unread
 states; these are controlled native fixtures, not physical display evidence.

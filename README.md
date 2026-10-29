@@ -68,6 +68,44 @@ Background terminals return as the same retained actors, rather than new shells.
 
 </details>
 
+### A command result that waits for you
+
+On Windows, **Commands → Watch this command** remembers one observed running
+command in the active terminal. Leave its tab where it is, switch projects, or
+park it. A hollow tab mark means watching; a filled mark means an unread result.
+The mark has its own space beside the title, rather than competing with a long
+name; at widths too small to keep controls clear, it is omitted.
+Workspace, Navigator and background rows carry the state where the terminal lives.
+
+Nothing jumps to the foreground when a result arrives. **Open result** in Commands
+returns to that same terminal and clears the result only after navigation succeeds.
+**Dismiss watched result** clears it without opening it; **Cancel command watch**
+removes a pending watch without stopping the process. Simply visiting a tab or
+restoring a parked terminal does not acknowledge its watch.
+
+This is a record of shell integration's OSC 133 markers, not process inspection.
+Missing status stays unknown; a later command's exit code is never borrowed.
+It cannot certify a service is ready or a background job has finished. Watches
+are explicit, in-memory and Windows-only: no automatic rearming, injected input,
+focus stealing or OS notifications. [Controls and result semantics →](docs/command-watch.md)
+
+### Know which pane you are looking at
+
+Windows split headers keep the terminal title first, then show the observed
+directory and branch or detached HEAD when space permits. Narrow panes drop the
+branch before the directory; context never takes another row from the terminal.
+Hover for the full labeled record, or choose **Commands → Inspect pane context**
+for a frozen, filterable snapshot with keyboard paging. Escape returns to the
+terminal; opening it again takes a new snapshot.
+
+The macOS host offers **Terminal → Inspect pane context** and the command pop-up.
+Its attached sheet has selectable, wrapping text, scrolling and a Close button;
+it does not yet have Windows' pane-header or footer context presentation.
+Neither host runs Git, follows paths or sends terminal input to inspect context.
+Observed directory, configured start folder and retained exited output are
+labeled separately. Shell-supplied text is display data, not trusted repository
+proof. [Context fields and platform boundaries →](docs/pane-context.md)
+
 ### A quieter frame, with controls that belong to it
 
 Tabs, dividers, menus, Settings and the command palette share the native renderer.
@@ -310,15 +348,16 @@ StormTTY hosts the shell; its terminal engine does not interpret shell commands.
 
 `Ctrl+C` remains the shell's interrupt. Split and pane-movement commands have
 no default bindings that would displace a TUI's keys. Use **Show commands** for splits, pane focus and movement, pane zoom, tab
-renaming, split equalization and fullscreen. The command palette also shows
-unavailable actions with a reason. Select an action and press **Alt+Enter** to
+renaming, split equalization and fullscreen. Watch and pane inspection also use
+Commands and have no default shortcut. The command palette shows unavailable
+actions with a reason. Select an action and press **Alt+Enter** to
 assign and save its shortcut. Conflicts and OS-reserved shortcuts are rejected. Terminal keys such as `Alt+]`
 require **Use shortcut** confirmation before they can override shell input.
 
 Choose **Move to background** in the pane menu or command palette to park a
-terminal in its workspace's footer without restarting its process. Click its
-footer chip to restore it; right-click for actions, including confirmed close.
-The overflow menu holds additional background terminals. Parking the last pane
+terminal in its workspace's footer without restarting its process. Use the
+footer’s **Background N** entry to open the Navigator and restore a terminal;
+background actions also include confirmed close. Parking the last pane
 leaves **New terminal** available. Exit indicators report the terminal process's
 exit code—not command readiness or service health. Background sessions are not
 restored after restarting StormTTY.
@@ -525,6 +564,7 @@ terminal compatibility are both dependable.
 | Text input and accessibility | Incomplete | Full TSF/IME and UI Automation behavior, screen-reader and physical-input testing |
 | Themes, ribbon, shortcuts and owned menus | Windows controls and portable validation implemented; native fixture coverage | Desktop material checks, physical interaction, accessibility and platform parity |
 | Saved workspaces | Windows persistence, named sets and additive restore implemented | Continued restart/recovery regression coverage; macOS host wiring |
+| Command Watch and pane context | Windows watch indicators and inspector; macOS attached read-only inspector | Physical interaction/accessibility checks; macOS watch and header/footer parity |
 | Experimental AI | Paused and disabled by default; implementation retained behind explicit opt-in | Product direction, separately authorized live-provider qualification and platform UI |
 | Managed Zsh and modules | Bundled runtime, OMZ/editing modules, private state and fzf/zoxide integration | Module/tool-specific native gates, linked-source review, public packaging and physical interaction |
 | Find and cross-window tear-off | Native Windows Find strip; tear-off pending | Find native smoke plus physical IME/accessibility review; tear-off implementation |
