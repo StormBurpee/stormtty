@@ -296,3 +296,31 @@ The Linux native-UTF8 flag remains false (correctly rejected by the full contrac
 **Native Windows stage 3 has not run locally**; the isolated workflow is the next
 evidence gate. Full production routing and physical UI qualification remain
 outside this candidate and no default is switched.
+
+### First stage-3 run and startup budget correction
+
+Run `40854489005`, commit `9ad4dd876962e084b49e3b0fd6c46056bdc0387a`,
+passed stages 1/2 but failed fresh stage 3 at phase0, waiting for initial ZLE
+readiness. The owned host exited1 after4.038s, reaped cleanly with no truncation
+or outer timeout. Artifact12888228911 matched SHA-256
+`2aeae9b06f15a203e2d4b3f21c71a89cfa4edb65869eed3e8aa16595c0c808e1`.
+No managed typing/native-child timings were obtained; this is not an addon
+incompatibility finding.
+
+Code review found that stage3 accidentally reused stage2's generic **4-second**
+marker wait for full managed startup. Independently inspected native unseeded
+managed baselines from run40838444672 already take 4004.61–4728.09ms cold
+(`seed-inbox-baseline.log`, `seed-packaged-baseline.log`); the existing managed
+startup probe permits30s. A 4-second functional cutoff was therefore an
+unsupported assumption below known normal cold completion.
+
+Only initial managed readiness now has an explicit **20-second** functional
+budget. Later marker checks remain4s, host total25s, broker30s and outer80s;
+latency remains a reported observation, not a performance pass threshold.
+First-failure observations now record bounded numeric elapsed/output/CPR counts,
+observed readiness sequence/status, known console/compinit warning flags and
+child exit status before cleanup. No terminal screen, HOME/history or arbitrary
+stderr contents are serialized. No assertion about addons, actual feedback,
+cache reuse, timing, process ownership or exit codes is weakened. The next run
+must establish whether the corrected startup budget is sufficient; failure
+preservation and no-retry policy remain unchanged.

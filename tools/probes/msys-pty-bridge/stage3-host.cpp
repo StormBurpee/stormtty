@@ -7,6 +7,7 @@
 #include <shlobj.h>
 #include <filesystem>
 #include <fstream>
+#include <charconv>
 namespace fs=std::filesystem;
 namespace {
 using Clock=std::chrono::steady_clock;
@@ -42,7 +43,32 @@ fs::path completion_dump(const fs::path& state) {
     }
     need(!found.empty(),"completion dump missing");return found;
 }
-void ready(Bridge& bridge,unsigned seq,int status=0) {bridge.expect("__MANAGED_READY:"+std::to_string(seq)+":"+std::to_string(status)+"__");}
+void ready(Bridge& bridge,unsigned seq,int status=0,std::chrono::milliseconds budget=4s) {
+    bridge.expect("__MANAGED_READY:"+std::to_string(seq)+":"+std::to_string(status)+"__",budget);
+}
+void observe_failure(Bridge& bridge,unsigned sample,unsigned phase) noexcept {
+    try {
+        unsigned known=0,sequence=0,status=0,console_warning=0,compinit_prompt=0;
+        const auto screen=bridge.screen();const std::string prefix="__MANAGED_READY:";
+        const auto pos=screen.rfind(prefix);
+        if(pos!=std::string::npos) {
+            const char* first=screen.data()+pos+prefix.size();const char* last=screen.data()+screen.size();
+            const auto a=std::from_chars(first,last,sequence);
+            if(a.ec==std::errc{}&&a.ptr!=last&&*a.ptr==':') {
+                const auto b=std::from_chars(a.ptr+1,last,status);
+                if(b.ec==std::errc{}&&last-b.ptr>=2&&b.ptr[0]=='_'&&b.ptr[1]=='_'&&status<=255)known=1;
+            }
+        }
+        console_warning=screen.find("native Unicode input setup failed")!=std::string::npos;
+        compinit_prompt=screen.find("insecure directories")!=std::string::npos;
+        DWORD code=0;const bool exit_known=bridge.process.h&&GetExitCodeProcess(bridge.process.h,&code)&&code!=STILL_ACTIVE;
+        std::cout<<"BRIDGE_MANAGED_OBSERVATION sample="<<sample<<" phase="<<phase
+            <<" elapsed_ms="<<elapsed(bridge.started)<<" output_bytes="<<bridge.output_bytes<<" stderr_bytes="<<bridge.errors.size()
+            <<" cursor_reports="<<bridge.cursor_reports<<" ready_known="<<known<<" ready_sequence="<<(known?sequence:0)
+            <<" ready_status="<<(known?status:0)<<" console_warning="<<console_warning<<" compinit_prompt="<<compinit_prompt
+            <<" child_exit_known="<<exit_known<<" child_exit_code="<<(exit_known?code:0)<<"\n";
+    } catch(...) {} // Observation cannot replace the original failure.
+}
 void measure(const fs::path& runtime,const fs::path& config,Scratch& scratch,unsigned sample) {
     unsigned phase=0;Bridge b;
     try {
@@ -69,7 +95,11 @@ void measure(const fs::path& runtime,const fs::path& config,Scratch& scratch,uns
         auto setup=stormtty::managed_shell_console_environment();
         need(setup.value.has_value(),"console helper contract");environment(L"STORMTTY_NATIVE_CONSOLE_SETUP",wide(*setup.value));
         need(SetCurrentDirectoryW(scratch.cwd.c_str())!=0,"scratch cwd");
-        before=Clock::now();b.launch((runtime/L"usr/bin/stormtty-bridge-broker.exe").wstring());ready(b,1);
+        before=Clock::now();b.launch((runtime/L"usr/bin/stormtty-bridge-broker.exe").wstring());
+        // Native unseeded managed cold baselines already take 4.0–4.73 s;
+        // stage2's 4-s marker default is not a valid startup performance gate.
+        // This is a finite functional deadline; actual readiness time is reported.
+        ready(b,1,0,20s);
         const auto launch_ms=elapsed(before);const auto startup_responses=b.cursor_reports;phase=1;
         b.command("bridge_contract");b.expect("__MANAGED_CONTRACT_OK__");ready(b,2);phase=2;
         need(startup_responses>0,"no real startup cursor feedback");
@@ -116,9 +146,11 @@ void measure(const fs::path& runtime,const fs::path& config,Scratch& scratch,uns
             <<" startup_cursor_reports="<<startup_responses<<" native_cursor_reports="<<native_responses
             <<" warm_dump_unchanged="<<(sample==2)<<" result=PASS\n";
     } catch(const fs::filesystem_error& e) {
+        observe_failure(b,sample,phase);
         std::cerr<<"BRIDGE_MANAGED_SAMPLE sample="<<sample<<" phase="<<phase<<" result=FAIL filesystem_code="<<e.code().value()<<"\n";
         b.cleanup();throw;
     } catch(const std::exception& e) {
+        observe_failure(b,sample,phase);
         std::cerr<<"BRIDGE_MANAGED_SAMPLE sample="<<sample<<" phase="<<phase<<" result=FAIL reason="<<e.what()<<"\n";
         // Numeric phase + fixed synthetic output only; never dump full managed
         // screen/history/environment (the prompt contains a temporary path).

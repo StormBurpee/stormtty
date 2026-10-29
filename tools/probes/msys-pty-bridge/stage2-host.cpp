@@ -112,8 +112,8 @@ struct Bridge {
         for(const auto& row:frame->lines) {for(const auto& cell:row->cells) if(cell.span) value+=cell.grapheme.empty()?" ":cell.grapheme;value+='\n';}
         return value;
     }
-    void expect(const std::string& marker) {
-        auto until=std::chrono::steady_clock::now()+4s;
+    void expect(const std::string& marker,std::chrono::milliseconds budget=4s) {
+        auto until=std::chrono::steady_clock::now()+budget;
         do {pump();if(screen().find(marker)!=std::string::npos)return;}while(std::chrono::steady_clock::now()<until);
         throw std::runtime_error("missing fixed marker: "+marker);
     }

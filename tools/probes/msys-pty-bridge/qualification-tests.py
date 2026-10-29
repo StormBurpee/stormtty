@@ -79,6 +79,17 @@ class Stage3Outcome(unittest.TestCase):
         line=b'BRIDGE_MANAGED_SAMPLE sample=1 fresh=1 phases=10 state_prepare_ms=1 launch_to_zle_observation_ms=2 typed_echo_samples=38 typed_echo_median_ms=3 typed_echo_p95_ms=4 typed_echo_max_ms=5 startup_cursor_reports=2 native_cursor_reports=1 warm_dump_unchanged=0 result=PASS'
         self.assertEqual(self.module.samples(line)[0]['typed_echo_max_ms'],5)
         with self.assertRaises(ValueError): self.module.samples(line.replace(b'state_prepare_ms=1',b'state_prepare_ms=nan'))
+    def test_startup_budget_separate_from_marker_and_global_bounds(self):
+        source=(HERE/'stage3-host.cpp').read_text()
+        shared=(HERE/'stage2-host.cpp').read_text()
+        self.assertIn('ready(b,1,0,20s)',source)
+        self.assertIn('std::chrono::milliseconds budget=4s',source)
+        self.assertIn('std::chrono::milliseconds budget=4s',shared)
+        self.assertIn('now()-started<25s',shared)
+        self.assertIn('BRIDGE_MANAGED_OBSERVATION',source)
+        self.assertIn('ready_status=',source)
+        self.assertIn('observe_failure(b,sample,phase)',source)
+        self.assertNotIn('FIXTURE_SCREEN=',source)
     def test_shipped_prompt_and_helpers_preserved(self):
         config=(HERE/'stage3-config.zsh').read_text()
         self.assertIn('add-zle-hook-widget line-init',config)
