@@ -136,6 +136,9 @@ private:
 struct NativeRunOptions {
     bool smoke_test{}; // Explicit CI mode; never enabled on a normal launch.
     std::string smoke_workspaces; // Dedicated isolated restart qualification: seed/restore/corrupt.
+    std::filesystem::path codex_executable; // Inert until explicit native Connect.
+    std::string codex_account_reference, codex_runtime_version;
+    bool smoke_agent{}; // Authored native UI fixtures only; never starts a provider.
     bool smoke_settings{}; // Styled Settings/menu routing, reversible preview and isolated explicit Save.
     bool smoke_modal{}; // Styled modal + routing/close smoke, not desktop activation QA.
     bool smoke_projects{}; // Two actual folder contexts, actor retention and scoped close.

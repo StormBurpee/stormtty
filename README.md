@@ -5,10 +5,12 @@
   </picture>
 </h1>
 
-<p align="center">A native terminal for Windows and macOS. Windows first.</p>
+<p align="center">A native terminal built around your workspaces. Windows first; macOS in progress.</p>
 
 <p align="center">
   <a href="#why-stormtty">About</a> &nbsp; / &nbsp;
+  <a href="#workspaces-that-outlast-a-window">Workspaces</a> &nbsp; / &nbsp;
+  <a href="#codex-with-a-native-place-to-work">Codex</a> &nbsp; / &nbsp;
   <a href="#build-from-source">Build</a> &nbsp; / &nbsp;
   <a href="#using-the-windows-host">Controls</a> &nbsp; / &nbsp;
   <a href="#configuration">Configuration</a> &nbsp; / &nbsp;
@@ -19,37 +21,113 @@
 > **StormTTY is in active development, not ready for daily use.** The Windows
 > application builds with MSVC and its native UI checks run successfully;
 > the full suite still has known compatibility failures. Physical interaction
-> and visual qualification are also underway. There is no production release or supported binary download.
+> and visual qualification are also underway. There is no production release
+> or supported binary download.
 > See [platform status](#platform-status) before building.
 
 ## Why StormTTY?
 
-StormTTY is being built for people who spend their day in a terminal: editing,
-compiling, reviewing changes and running full-screen command-line applications.
-The aim is a considered desktop application around that work, not another layer
-between you and your shell.
+A terminal window rarely contains just one task. There is an editor in one
+pane, a build running somewhere else, a shell you want to keep, and another
+project waiting its turn. StormTTY gives that work a place without turning the
+terminal into a browser application.
 
-- **A native application, not a browser surface.** Win32 windowing, ConPTY
-  sessions, DirectWrite text and a Direct3D-backed renderer on Windows. The macOS
-  target uses AppKit, CoreText, Metal and POSIX PTYs. No Electron or webview.
-- **A workspace that keeps sessions intact.** Tabs and split panes share a
-  portable workspace model. Reorder, resize, zoom and move panes without
-  restarting their processes. The Windows host exposes these through commands
-  and direct manipulation; cross-window tear-off is still planned.
-- **An interface that leaves room for the terminal.** Integrated tabs, quiet
-  dividers and a collapsible workspace rail. The Graphite direction adds slight
-  background-only translucency: glyphs, the cursor and explicit terminal cell
-  backgrounds stay opaque. Native visual qualification remains a separate gate.
-- **Keyboard commands without stealing the shell's keys.** A searchable command
-  palette and configurable bindings; `Ctrl+C` stays interrupt. Split and movement
-  commands have no default shortcuts that would displace a TUI's bindings.
-- **Compatibility has to survive the whole stack.** Terminal-state parsing is
-  only part of the job. Input, PTY transport, resize, Unicode, synchronized output
-  and graphics must work together, including demanding Ink applications.
+The Windows host is Win32, ConPTY, DirectWrite and Direct3D. Terminal state comes
+from Ghostty's pinned `libghostty-vt` C API; the workspace model, native controls,
+process ownership and rendering integration belong to StormTTY. No Electron,
+webview or embedded Node runtime is needed for the application.
 
-The last point is a release requirement, not a claim that qualification is done.
-The same applies to performance: there are [measurement plans and acceptance
-criteria](docs/acceptance-gates.md), not published benchmark wins.
+### Workspaces that outlast a window
+
+Each project has its own tabs, split layout and background terminals. Switching
+projects does not restart hidden sessions. Parking a pane moves its **existing
+process** to the footer; restoring it brings back the same terminal document,
+including retained output after that process exits.
+
+Windows also saves the arrangement: project order, active selection, names,
+icons, accents, launch folders, preferred shells, tab titles, split ratios,
+focus and zoom. Save a named set and open another copy alongside your current
+work—opening a preset does not close what is already running.
+
+There is an important distinction between **keeping work alive** and **restoring
+its layout**. Across an application restart, shells are fresh processes. Commands,
+output, credentials and background jobs are not replayed. The selected workspace
+starts its restored panes first; hidden workspaces wait until selected. Missing
+profiles or folders leave a visible problem rather than silently substituting a
+shell or directory. [Persistence and recovery details →](docs/workspace-presets.md)
+
+### A quieter frame, with controls that belong to it
+
+Tabs, dividers, menus, Settings and the command palette share the native renderer.
+The footer ribbon can show directory, Git, session status, background terminals,
+agent status and a clock. Reorder or hide its six built-in items in Settings;
+preview is immediate, Cancel restores the old arrangement, and Save persists it.
+Errors and agent attention cannot be hidden by customization. This is a small
+closed set of data bindings, not an executable plugin system.
+
+Appearance has eight complete palettes: **Graphite, Instrument, Daylight,
+Midnight, Evergreen, Aubergine, Ember and Ink**. A Custom palette edits the canvas,
+text, chrome, accent and all sixteen ANSI colors, with a native preview and hex
+editor. Explicit truecolor output and application OSC palette overrides retain
+their meaning; the theme does not recolor everything a TUI draws.
+
+Windows materials are equally explicit: solid, Mica or Acrylic where available,
+with opacity applied only to the default terminal background. Text and explicit
+cell backgrounds stay opaque. **Windows controls the blur kernel; there is no
+adjustable blur-radius feature.** The UI reports fallback instead of pretending
+a requested material is active. [Themes](docs/theme-library.md) ·
+[Ribbon](docs/footer-ribbon.md)
+
+<p align="center">
+  <img src="docs/readme-assets/native-appearance.png" alt="Native Windows Appearance settings with eight palettes, a saved custom ANSI palette and font controls" width="960">
+</p>
+
+<details>
+<summary>Arrange the footer ribbon</summary>
+
+<img src="docs/readme-assets/native-ribbon.png" alt="Native Ribbon settings with visibility and order controls, shown after saving and reopening" width="960">
+
+</details>
+
+These are native Windows development-build captures from the automated fixture,
+not concept art. They show layout and controls; desktop blur and physical input
+latency need separate hardware verification.
+
+### Codex with a native place to work
+
+The first Codex integration is implemented as a Windows-native panel, not an
+embedded TUI or a webview. `Ctrl+Shift+J` opens it; Escape returns focus to the
+terminal. Drafts and views belong to durable workspace identities. Transcript,
+scoped approval requests, diff evidence and failures use native controls, while a
+separate app-server adapter owns structured JSONL communication.
+
+The boundary is deliberate:
+
+- **Unavailable until configured.** StormTTY neither installs Codex nor starts it
+  when the panel opens. Configuration points to an already installed executable
+  and an already signed-in ChatGPT account.
+- **Connect is not Start.** Review connect → Connect authorizes the provider
+  process. Review start → Start task separately confirms the workspace and
+  execution scope before submitting a prompt.
+- **A restricted first slice.** The service checks account identity and the
+  returned policy before starting: read-only sandbox, network disabled, untrusted
+  command approval policy and user review. Unsupported account identities or
+  permission scopes fail visibly; there is no blanket accept-for-session action.
+- **No silent replay.** Reopening a view or restoring a workspace sends no prompt.
+  Disconnects do not retry a turn, and stale approvals cannot authorize new work.
+
+The native panel and real stdio transport have authored offline fixtures.
+**Live Codex authentication, inference and sandbox behavior are not qualified.**
+Agent conversation associations are not yet wired into the native workspace save
+file; do not expect cross-restart conversation restoration. macOS agent UI and a
+Claude provider are not implemented. Setup and exact verification boundaries are
+in the [native panel guide](docs/verification/native-agent-panel.md) and
+[protocol contract](docs/decisions/codex-app-server-contract.md).
+
+Compatibility still has to survive the entire terminal stack: input, PTY
+transport, resize, Unicode, synchronized output and graphics. New workspace or
+agent features do not waive those requirements. The [acceptance gates](docs/acceptance-gates.md)
+contain measurement plans and targets, not published benchmark wins.
 
 ## Platform status
 
@@ -79,7 +157,8 @@ graphics compatibility claim. See [bundling, recovery and verification](docs/bun
 ## Build from source
 
 Run these commands from the repository root. You need **Python 3.10+**, **Git**,
-**CMake 3.24+** and a **C++20 compiler**. The Windows commands below also use Ninja.
+**CMake 3.24+** and a **C++20 compiler**. The Windows commands below also use Ninja;
+use **Python 3.12+** there for the bundled-shell staging tools.
 
 The bootstrap builds the pinned terminal library, not Ghostty's application.
 `--install-zig` explicitly opts into downloading the checksum-pinned Zig toolchain
@@ -125,7 +204,7 @@ ctest --test-dir build-macos --output-on-failure
 open build-macos/stormtty.app
 ```
 
-The native host and this toolchain path are awaiting native CI qualification.
+Native build and offscreen checks are narrower than a qualified desktop app.
 The application is not a self-contained distribution: its Ghostty and LLVM
 runtime dependencies still need audited packaging. macOS 11 is the source API
 baseline, not a verified minimum OS for the Homebrew-built runtime. See the
@@ -156,6 +235,7 @@ StormTTY hosts the shell; its terminal engine does not interpret shell commands.
 | Action | Default shortcut |
 | --- | --- |
 | Show commands | `Ctrl+Shift+P` |
+| Open Codex panel | `Ctrl+Shift+J` |
 | New tab | `Ctrl+Shift+T` |
 | Close active pane | `Ctrl+Shift+W` |
 | Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
@@ -163,7 +243,8 @@ StormTTY hosts the shell; its terminal engine does not interpret shell commands.
 | Paste | `Ctrl+Shift+V` |
 | Window menu | `Alt+Space` |
 
-Use **Show commands** for splits, pane focus and movement, pane zoom, tab
+`Ctrl+C` remains the shell's interrupt. Split and pane-movement commands have
+no default bindings that would displace a TUI's keys. Use **Show commands** for splits, pane focus and movement, pane zoom, tab
 renaming, split equalization and fullscreen. The command palette also shows
 unavailable actions with a reason. Select an action and press **Alt+Enter** to
 assign and save its shortcut. Conflicts and OS-reserved shortcuts are rejected. Terminal keys such as `Alt+]`
@@ -177,8 +258,8 @@ leaves **New terminal** available. Exit indicators report the terminal process's
 exit code—not command readiness or service health. Background sessions are not
 restored after restarting StormTTY.
 
-**Settings** includes Graphite, Instrument and Daylight themes, live appearance
-previews, font controls, shell selection and shortcut editing. Cancel restores
+**Settings** brings together the eight built-in themes, Custom palette editing,
+font and material controls, ribbon arrangement, shell selection and shortcuts. Cancel restores
 the original palette; Save persists it. Existing terminal applications keep
 their own OSC color overrides and explicit ANSI/RGB colors. The Windows host
 retains bounded terminal output after process exit for scrolling, selection,
@@ -192,10 +273,28 @@ interaction testing; do not use the development build for irreplaceable work.
 
 ### Bundled Zsh on Windows
 
-The Windows app build bundles upstream Zsh 5.9.2 with StormTTY's own startup
-preset: directory, exit-status and duration prompt; ZLE editing; and completion.
-It is not a Zsh fork. It leaves your existing shell dotfiles and HOME alone and
-does not write history yet. The full extension/module system is not implemented.
+The Windows build bundles upstream **Zsh 5.9.2**, a managed startup preset and
+pinned source modules—not a fork of Zsh or an installation into your existing
+shell environment. The preset includes:
+
+- Real **Oh My Zsh** completion, key-binding, history and supporting libraries,
+  plus **zsh-autosuggestions** and **zsh-syntax-highlighting**.
+- A two-line prompt with directory, branch/detached HEAD, exit status and elapsed
+  time. Its bounded Git metadata reader does not run Git or scan the worktree on
+  every prompt.
+- Bundled **fzf** completion/key bindings and **zoxide** navigation. Their managed
+  integration can be disabled; `z` and `zi` do not replace `cd` or existing user
+  commands. The runtime also includes `awk` for the shipped shell tools.
+- Bounded history and completion caches in native-validated, account-local state.
+  If that state is unavailable or untrusted, the modules remain usable in an
+  explicitly nonpersistent mode.
+
+Your existing HOME, launch directory, global PATH and shell dotfiles remain
+separate. On Windows, managed state lives under
+`%LOCALAPPDATA%\StormTTY\managed-zsh-v1`; an optional user-created `config.zsh`
+there is the managed customization point. The loader does not create a config
+for you or read your global `.zshrc`. History can contain secrets—keep it out of
+bug reports. This bundle is not a plugin manager, marketplace or automatic updater.
 
 **Build the `stormtty` target, then Run.** The first Windows app build fetches
 checksum-pinned dependencies into its private cache and stages `runtimes/zsh`
@@ -230,14 +329,21 @@ Compact alternate-screen Ink layouts retain a separate resize-redraw failure.
 The full Windows suite is not green; passing CI smoke checks are not physical
 keyboard/UI qualification.
 
-The optional pinned Microsoft console backend remains a separate experiment,
-selected with `--console-runtime <absolute-directory>`; bundling Zsh does not
-replace Windows system files or silently enable that backend.
+The bundled Microsoft console backend is a separate Settings → Shell preview;
+System remains the default. `--console-runtime <absolute-directory>` is an
+advanced explicit override, not the normal way to enable the preview. Bundling
+Zsh does not replace Windows system files or silently select another backend.
 
-The build includes upstream notices. Public redistribution also requires an
-accessible matching source download; the exact inventory and source generator
-are in the [distribution packet guide](tools/shell-notices/REVIEW.md). See the
-[runtime staging guide](tools/shell-bootstrap.README.md) for low-level tools and
+Module persistence and editing have dedicated
+[native qualification probes](docs/managed-zsh-qualification.md); fzf/zoxide have
+separate [integration and source-closure limits](tools/shell-tools.README.md).
+Those gates are not interchangeable with a successful base-shell launch, and
+startup measurements are not general latency claims.
+
+The build retains upstream notices. Public redistribution additionally needs an
+accessible matching source download and completion of the tools' linked-source
+review. See the [distribution packet guide](tools/shell-notices/REVIEW.md),
+[runtime staging guide](tools/shell-bootstrap.README.md) and
 [console compatibility evidence](tests/ink/conpty-el-regression/README.md).
 
 ## Configuration
@@ -314,6 +420,10 @@ Commands, configuration and workspace
 DirectWrite + Direct3D / CoreText + Metal
 ```
 
+Agent work takes a separate path: native panel → workspace-qualified controller
+→ `AgentService` → app-server stdio. It never enters the PTY parser, and terminal
+escape sequences cannot start a task or grant an approval.
+
 The C++20 core does not own window-system handles. Platform adapters own native
 windowing, process transport, input, clipboard integration and presentation.
 The terminal adapter publishes owned frames rather than retaining borrowed
@@ -323,6 +433,7 @@ compositor surface per window, not a separate swapchain for every pane.
 | Area | Start here |
 | --- | --- |
 | Workspace, commands and configuration | [`src/core/`](src/core/) |
+| Structured Codex service and native stdio transport | [`src/agent/`](src/agent/) |
 | PTY/session coordination | [`src/session/`](src/session/) |
 | Terminal adapter and upstream boundary | [`src/terminal/`](src/terminal/) |
 | Native hosts and renderers | [`src/platform/`](src/platform/) |
@@ -346,15 +457,16 @@ feature list.
 | macOS application | Native build, core/PTY and offscreen renderer checks pass | Verified onscreen presentation, physical input and platform UI parity |
 | Modern terminal and Ink workloads | Packaged Windows console fixes the verified right-margin defect | Compact alternate-screen resize race; broader graphics/protocol coverage |
 | Text input and accessibility | Incomplete | Full TSF/IME and UI Automation behavior, screen-reader and physical-input testing |
-| Settings, shortcuts and owned menus | Implemented; native Windows app checks pass | Physical interaction, accessibility and platform parity |
-| Managed Zsh | Windows app build bundles the runtime; native shell/job-control and explicit app checks pass | History, modules, public release packaging and physical interaction |
+| Themes, ribbon, shortcuts and owned menus | Windows controls and portable validation implemented; native fixture coverage | Desktop material checks, physical interaction, accessibility and platform parity |
+| Saved workspaces | Windows persistence, named sets and additive restore implemented | Continued restart/recovery regression coverage; macOS host wiring |
+| Native Codex first slice | Windows panel, consent flow and native stdio adapter implemented; offline fixtures | Separately authorized live-provider qualification; conversation-store wiring; macOS UI |
+| Managed Zsh and modules | Bundled runtime, OMZ/editing modules, private state and fzf/zoxide integration | Module/tool-specific native gates, linked-source review, public packaging and physical interaction |
 | Find and cross-window tear-off | Core search implemented; UI/tear-off pending | User-facing implementation and native tests |
 | Performance and distribution | Pending | Recorded-hardware measurements, ConPTY provider qualification, packaging and complete notices |
 
-First-class Codex and Claude workflows are a longer-term product direction:
-agent sessions and their harness should feel native to the workspace, rather
-than bolted onto a shell. That layer is not implemented yet. It does not relax
-the terminal compatibility, performance, input or accessibility requirements.
+The first Codex slice establishes the transport, consent and native-view seams;
+it is not a claim of a finished agent workspace. A Claude adapter, richer history
+and broader execution modes require their own protocol and permission design.
 
 See the [acceptance gates](docs/acceptance-gates.md) for the detailed test matrix.
 Proposed latency and memory budgets there are targets, not results.
