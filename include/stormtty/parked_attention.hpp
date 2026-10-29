@@ -43,6 +43,14 @@ public:
         : completed_(baseline.command.completed_generation), process_state_(baseline.state) {}
 
     [[nodiscard]] bool unread_completion() const noexcept { return unread_; }
+    // A watch may dismiss only its own latest observed parked completion.
+    // Keep the baseline, notification history and process state intact: an old
+    // dismissal must not hide a newer result or alter exit/failure priority.
+    bool acknowledge_completion(std::uint64_t generation) noexcept {
+        if (!unread_ || generation == 0 || generation != completed_) return false;
+        unread_ = false;
+        return true;
+    }
     ParkedNotice observe(const SessionInfo& info) noexcept {
         const bool completed = info.command.completed_generation > completed_;
         if (completed) {

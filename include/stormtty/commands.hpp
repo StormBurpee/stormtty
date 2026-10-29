@@ -28,6 +28,7 @@ struct CommandContext {
     std::size_t total_panes{}; // optional exact workspace count; 0 falls back to panes
     bool supports_workspace_navigator{};
     bool supports_pane_context{};
+    bool supports_command_watch{},watch_can_arm{},watch_waiting{},watch_unread{};
     bool supports_project_workspaces{}; // Hosts must opt in, not silently no-op.
     std::size_t project_workspaces{};
     bool supports_focus_mode{};

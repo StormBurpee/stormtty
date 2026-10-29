@@ -49,6 +49,9 @@ constexpr std::array commands{
     Command{"pane.equalize", "Equalize split", "Reset the selected divider to equal fractions"},
     Command{"edit.copy", "Copy selection", "Copy selected terminal text; never replace Ctrl+C interrupt"},
     Command{"edit.paste", "Paste", "Send clipboard text through terminal paste policy and bracketed-paste encoding"},
+    Command{"watch.arm", "Watch this command", "Remember this observed command result without moving its terminal"},
+    Command{"watch.cancel", "Cancel command watch", "Remove the watch; do not stop the process"},
+    Command{"watch.dismiss", "Dismiss watched result", "Acknowledge this terminal’s watched result"},
     Command{"pane.inspect", "Inspect pane context", "Read observed directory, repository and configured start folder"},
     Command{"terminal.find", "Find in terminal", "Search retained terminal text"},
     Command{"settings.reload", "Reload settings", "Read config.toml from disk without restarting terminals; shell choices apply to new sessions"},
@@ -202,6 +205,12 @@ CommandAvailability command_availability(std::string_view id, const CommandConte
     if (id == "background.restore") return {c.supports_background_sessions && c.parked_sessions>0,
         !c.supports_background_sessions ? "Background sessions are not implemented by this host" : c.parked_sessions==0 ? "No background terminals in this workspace" : ""};
     if (!c.tabs || !c.panes) return {false, "No active terminal pane"};
+    if(id.starts_with("watch.")) {
+        if(!c.supports_command_watch)return {false,"Command watches are not implemented by this host"};
+        if(id=="watch.arm")return {c.watch_can_arm,c.watch_can_arm?"":"Available while shell integration reports a running command; dismiss any previous watch first"};
+        if(id=="watch.cancel")return {c.watch_waiting,c.watch_waiting?"":"No command is being watched in this terminal"};
+        return {c.watch_unread,c.watch_unread?"":"No unread watched result in this terminal"};
+    }
     if (id == "pane.inspect") return {c.supports_pane_context,c.supports_pane_context?"":"Pane context inspection is not implemented by this host"};
     if (id == "pane.background") return {c.supports_background_sessions && c.parked_sessions<ProjectWorkspaceCatalog::maximum_parked_sessions, !c.supports_background_sessions ? "Background sessions are not implemented by this host" : c.parked_sessions>=ProjectWorkspaceCatalog::maximum_parked_sessions ? "Background session limit reached" : ""};
     if (id == "edit.copy") return {c.has_selection, c.has_selection ? "" : "Select terminal text first"};

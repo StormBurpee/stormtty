@@ -44,6 +44,73 @@ std::string frame_text(const FramePtr& frame) {
     return text;
 }
 #ifdef _WIN32
+// Explicit OSC test records, not shell execution or real process readiness.
+int native_watch_child() {
+    const auto old_cp=GetConsoleOutputCP();
+    struct RestoreCodePage {UINT value;~RestoreCodePage(){SetConsoleOutputCP(value);}} restore_cp{old_cp};
+    if(!SetConsoleOutputCP(CP_UTF8))return 39;
+    const HANDLE input=GetStdHandle(STD_INPUT_HANDLE),output=GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD old_input{},old_output{};
+    if(!GetConsoleMode(input,&old_input)||!GetConsoleMode(output,&old_output))return 40;
+    struct Restore {HANDLE handle;DWORD mode;~Restore(){SetConsoleMode(handle,mode);}} ri{input,old_input},ro{output,old_output};
+    if(!SetConsoleMode(input,ENABLE_VIRTUAL_TERMINAL_INPUT|ENABLE_EXTENDED_FLAGS)||
+       !SetConsoleMode(output,old_output|ENABLE_VIRTUAL_TERMINAL_PROCESSING))return 41;
+    const auto emit=[&](std::string_view value){DWORD written{};return WriteFile(output,value.data(),static_cast<DWORD>(value.size()),&written,nullptr)&&written==value.size();};
+    if(!emit("\x1b]133;C\x07\r\nWATCH_READY\r\n"))return 42;
+    // Consume focus/VT replies as complete sequences: their digits or final
+    // letters must never be mistaken for a fixture control. This child never
+    // executes input. Blocking reads/lifetime are owned by the host deadline;
+    // the byte budget also bounds malformed or continuously arriving responses.
+    enum class Input {ground,escape,csi,ss3,string,string_escape};
+    Input state=Input::ground;
+    unsigned bytes{};char value{};DWORD read{};
+    while(bytes++<4096&&ReadFile(input,&value,1,&read,nullptr)&&read==1) {
+        const auto byte=static_cast<unsigned char>(value);
+        if(state!=Input::ground) {
+            if(byte==0x18||byte==0x1a){state=Input::ground;continue;} // CAN/SUB
+            switch(state) {
+            case Input::escape:
+                state=value=='['?Input::csi:value=='O'?Input::ss3:
+                    (value==']'||value=='P'||value=='_'||value=='^')?Input::string:
+                    byte==0x1b?Input::escape:Input::ground;
+                break;
+            case Input::csi:
+            case Input::ss3:
+                if(byte==0x1b)state=Input::escape;
+                else if(byte>=0x40&&byte<=0x7e)state=Input::ground;
+                break;
+            case Input::string:
+                if(byte==0x07||byte==0x9c)state=Input::ground;
+                else if(byte==0x1b)state=Input::string_escape;
+                break;
+            case Input::string_escape:
+                state=(value=='\\'||byte==0x07||byte==0x9c)?Input::ground:
+                    byte==0x1b?Input::string_escape:Input::string;
+                break;
+            case Input::ground:break;
+            }
+            continue;
+        }
+        if(byte==0x1b){state=Input::escape;continue;}
+        if(byte==0x9b){state=Input::csi;continue;}
+        if(byte==0x8f){state=Input::ss3;continue;}
+        if(byte==0x9d||byte==0x90||byte==0x9f||byte==0x9e){state=Input::string;continue;}
+        std::string_view packet;
+        switch(value) {
+        case 'a':packet="\x1b]133;C\x07\r\nWATCH_READY\r\n";break;
+        case '0':packet="\x1b]133;D;0\x07\r\nWATCH_RESULT_0\r\n";break;
+        case '7':packet="\x1b]133;D;7\x07\r\nWATCH_RESULT_7\r\n";break;
+        case 'u':packet="\x1b]133;D\x07\r\nWATCH_RESULT_UNKNOWN\r\n";break;
+        case 'c':packet="\x1b]133;D;0\x07\x1b]133;C\x07\r\nWATCH_COALESCED_EXACT\r\n";break;
+        case 'l':packet="\x1b]133;D;0\x07\x1b]133;C\x07\x1b]133;D;7\x07\r\nWATCH_COALESCED_LATER\r\n";break;
+        case 'r':packet="\x1b" "c\x1b]133;C\x07\x1b]133;D;7\x07\r\nWATCH_RESET_RESULT\r\n";break;
+        case 'q':return emit("\r\nWATCH_DONE\r\n")?0:43;
+        default:continue;
+        }
+        if(!emit(packet))return 43;
+    }
+    return 44;
+}
 int native_context_child(unsigned index) {
     const auto old_cp=GetConsoleOutputCP();
     struct RestoreCodePage {UINT value;~RestoreCodePage(){SetConsoleOutputCP(value);}} restore_cp{old_cp};
@@ -312,6 +379,7 @@ void session_coalescing_and_fairness(const std::string& executable) {
 }
 int main(int argc,char** argv) {
 #ifdef _WIN32
+    if(argc==2&&std::string_view(argv[1])=="--native-watch-child")return native_watch_child();
     if(argc==3&&std::string_view(argv[1])=="--native-context-child")return native_context_child(static_cast<unsigned>(std::atoi(argv[2])));
     if(argc==2&&std::string_view(argv[1])=="--native-mouse-child")return native_mouse_child();
 #endif
