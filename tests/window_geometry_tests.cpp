@@ -21,6 +21,13 @@ int main() {
     navigator.search("server");require(navigator.workspaces().size()==1&&navigator.target()->project==ProjectWorkspaceId{2}&&navigator.target()->session==SessionId{21},"Navigator searches terminals across workspace identities");
     navigator.search("absent");require(!navigator.target(),"Navigator empty results have no stale actionable target");
     navigator.search("");navigator.select_workspace(0);
+    const auto fitted=layout_workspace_navigator(1044,720,navigator,0);
+    require(fitted.panel.height==258,"Navigator fits two terminal rows without a giant empty surface");
+    navigator.search("absent");
+    require(layout_workspace_navigator(1044,720,navigator,0).panel.height==fitted.panel.height,"Filtering does not jump Navigator geometry");
+    navigator.search("");navigator.select_workspace(1);
+    require(layout_workspace_navigator(1044,720,navigator,2).panel.height==fitted.panel.height,"Workspace preview does not move Navigator targets");
+    navigator.select_workspace(0);
     require(layout_workspace_navigator(320,259,navigator,0).panel.height==0&&layout_workspace_navigator(239,720,navigator,0).panel.width==0,"Navigator refuses unsupported tiny geometry instead of drawing beyond the host");
     for(double width:{320.0,480.0,800.0,1200.0})for(unsigned focus:{0u,1u,2u}) {
         const auto layout=layout_workspace_navigator(width,720,navigator,focus);

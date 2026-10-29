@@ -480,7 +480,8 @@ private:
     bool agent_setup_reload_requested_{};
     unsigned smoke_agent_stage_{};
     std::thread settings_worker_;
-    bool settings_job_{}, settings_open_requested_{};
+    bool settings_job_{}, settings_open_requested_{}, settings_load_job_{}, smoke_hold_settings_completion_{};
+    std::string settings_draft_notice_;
     std::string settings_binding_;
     std::optional<ConfigFileSnapshot> settings_snapshot_;
     bool overlay_pointer_sequence_{};
@@ -1919,7 +1920,7 @@ void NativeWindow::reload_settings() {
     if (modal_) { show_error("Finish the current confirmation before reloading settings."); return; }
     if (options_.config_path.empty()) { show_error("No settings file path is available."); return; }
     const auto allowed=settings_reload_.begin(settings_panel_.is_open(),settings_job_);
-    if (!allowed) { show_error(allowed.error); return; }
+    if (!allowed) { show_error(allowed.error); if(settings_panel_.is_open())settings_draft_notice_=notice_; return; }
     if (settings_worker_.joinable()) settings_worker_.join(); // Completed jobs only.
     settings_job_=true;
     try {
@@ -1937,15 +1938,16 @@ void NativeWindow::reload_settings() {
 void NativeWindow::open_settings(std::string binding) {
     if(navigator_open_)close_navigator();
     if(find_session_)close_find();
-    if (modal_ || settings_input_blocked() || settings_job_) return;
+    if (modal_ || settings_input_blocked() || (settings_job_&&!settings_load_job_)) return;
     if (options_.config_path.empty()) { show_error("No settings file path is available. Start with --config and an absolute local path."); return; }
-    if (settings_worker_.joinable()) settings_worker_.join(); // Prior completed worker only.
+    if (!settings_job_&&settings_worker_.joinable()) settings_worker_.join(); // Prior completed worker only.
     if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
     cancel_drag();
     const auto path=options_.config_path;
     auto shared=wake_;
     settings_binding_=std::move(binding); settings_open_requested_=true;
-    settings_job_=true;
+    if(!settings_job_) {
+    settings_job_=settings_load_job_=true;
     try {
         settings_worker_=std::thread([shared,path,configured=config_.profiles] {
             SettingsCompletion result; result.kind=SettingsCompletion::Kind::load;
@@ -1959,7 +1961,8 @@ void NativeWindow::open_settings(std::string binding) {
             { std::lock_guard lock(shared->mutex); shared->settings=std::move(result); }
             shared->wake();
         });
-    } catch (...) { settings_job_=false; settings_open_requested_=false; throw; }
+    } catch (...) { settings_job_=settings_load_job_=false; settings_open_requested_=false; throw; }
+    }
     context_menu_.cancel(); menu_actions_.clear();
     palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false; text_input_.reset();
     palette_transition_=ChromeTransition{}; closing_palette_primitives_.clear(); closing_palette_texts_.clear();
@@ -1967,11 +1970,12 @@ void NativeWindow::open_settings(std::string binding) {
     notice_.clear(); caret_schedule(); changed();
 }
 void NativeWindow::settings_completed() {
+    if(options_.smoke_settings&&smoke_hold_settings_completion_)return;
     std::optional<SettingsCompletion> completion;
     { std::lock_guard lock(wake_->mutex); completion.swap(wake_->settings); }
     if (!completion) return;
     if (settings_worker_.joinable()) settings_worker_.join(); // I/O ended before result publication.
-    settings_job_=false;
+    settings_job_=settings_load_job_=false;
     if (completion->kind==SettingsCompletion::Kind::reload) {
         auto result=settings_reload_.complete(completion->generation,std::move(completion->loaded));
         if (result.ignored) return;
@@ -2030,6 +2034,7 @@ void NativeWindow::settings_completed() {
             if (options_.smoke_settings) smoke_settings_file_owned_=true;
             settings_snapshot_=std::move(completion->saved.snapshot);
             settings_panel_.persistence_result(true);
+            settings_draft_notice_.clear();
             // Persistence succeeded. A later GPU/font failure must not strand
             // the editor in Saving or imply that the file write was rolled back.
             std::string apply_error;
@@ -2080,7 +2085,10 @@ void NativeWindow::settings_actions() {
             }
         } else if (action->kind==SettingsActionKind::preview || action->kind==SettingsActionKind::cancel) {
             preview_settings(action->config);
-            if (action->kind==SettingsActionKind::cancel) { text_input_.reset(); caret_schedule(true); }
+            if (action->kind==SettingsActionKind::cancel) {
+                if(notice_==settings_draft_notice_)notice_.clear();
+                settings_draft_notice_.clear();text_input_.reset(); caret_schedule(true);
+            }
         } else {
             if (settings_job_ || !settings_snapshot_) { settings_panel_.persistence_result(false,"A settings snapshot is not ready. Close and reopen Settings."); continue; }
             if (settings_worker_.joinable()) settings_worker_.join();
@@ -4166,7 +4174,6 @@ bool NativeWindow::smoke_frame_ready() const {
 void NativeWindow::smoke_workspace_progress(bool presented) {
     if (!workspace_smoke_ready_ || !presented || smoke_finished_) return;
     const auto finish=[this](std::string error) {
-            if(options_.smoke_layout&&!error.empty()){const auto* active=active_session();const auto frame=active?active->frame():FramePtr{};std::fprintf(stderr,"Native palette fixture: stage=%u stop_sent=%d mouse_mode=%d mouse_submissions=%llu capture=%d\n",smoke_palette_input_stage_,smoke_palette_disable_sent_,frame&&frame->mouse_reporting,static_cast<unsigned long long>(smoke_terminal_mouse_submissions_),GetCapture()==hwnd_);}
     if(options_.smoke_projects && !error.empty()) {
         const auto found=find_result_;std::fprintf(stderr,"Native Find failure: stage=%u open=%u focused=%llu request=%llu status=%d matches=%zu selected=%lld apply=%d frontend_delta=%llu transport_delta=%llu\n",smoke_find_stage_,unsigned(bool(find_session_)),static_cast<unsigned long long>(focused_session_.value),static_cast<unsigned long long>(find_request_),found?int(found->status):-1,found?found->matches.size():0,found&&found->selected_index?static_cast<long long>(*found->selected_index):-1,found&&found->last_apply_result?int(*found->last_apply_result):-1,static_cast<unsigned long long>(smoke_terminal_input_submissions_-smoke_find_input_baseline_),static_cast<unsigned long long>(active_session()?active_session()->info().bytes_sent-smoke_find_bytes_:0));
     }
@@ -4410,7 +4417,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if (smoke_settings_stage_==0) {
             if (info.state!=SessionState::running || !info.bytes_received) return;
             smoke_settings_original_=config_; smoke_settings_actor_=sessions_.at(workspace().pane(workspace().active_pane())->session);
-            open_settings(); smoke_settings_stage(1); return;
+            smoke_hold_settings_completion_=true;
+            open_settings();const auto worker=settings_worker_.get_id();
+            MSG escape{};escape.hwnd=hwnd_;escape.message=WM_KEYDOWN;escape.wParam=VK_ESCAPE;key_message(escape);escape.message=WM_KEYUP;key_message(escape);
+            if(settings_open_requested_||!settings_job_||!settings_load_job_){smoke_finish("Settings loading cancel lost its owned worker.");return;}
+            open_settings("terminal.find");open_settings();
+            if(!settings_open_requested_||!settings_binding_.empty()||settings_worker_.get_id()!=worker){smoke_finish("Settings reopen did not reattach latest intent to same load.");return;}
+            smoke_settings_stage(1);smoke_hold_settings_completion_=false;settings_completed();
+            std::fputs("Native Settings loading intent: held completion, Escape, immediate reopen and latest binding reuse same owned worker.\n",stderr);return;
         }
         if (smoke_settings_stage_==1) {
             if (settings_job_) return;
@@ -4658,6 +4672,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             }
             settings_panel_.cancel(); settings_input_changed();
             if (config_!=saved_baseline) {smoke_finish("Second-cycle Cancel did not restore saved ANSI/Ribbon configuration.");return;}
+            if(!notice_.empty()||!settings_draft_notice_.empty()){smoke_finish("Closed Settings retained its draft-only reload notice.");return;}
             if (settings_panel_.is_open() || !focused_session_) { smoke_finish("Reopened Settings did not restore terminal focus on Cancel."); return; }
             smoke_settings_stage(8);
             force_redraw_=true; dirty_=true; // Capture the closed scene even if open/cancel coalesced.
@@ -5031,6 +5046,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
     if(options_.smoke_projects && !error.empty()) {
         const auto found=find_result_;std::fprintf(stderr,"Native Find failure: stage=%u open=%u focused=%llu request=%llu status=%d matches=%zu selected=%lld apply=%d frontend_delta=%llu transport_delta=%llu\n",smoke_find_stage_,unsigned(bool(find_session_)),static_cast<unsigned long long>(focused_session_.value),static_cast<unsigned long long>(find_request_),found?int(found->status):-1,found?found->matches.size():0,found&&found->selected_index?static_cast<long long>(*found->selected_index):-1,found&&found->last_apply_result?int(*found->last_apply_result):-1,static_cast<unsigned long long>(smoke_terminal_input_submissions_-smoke_find_input_baseline_),static_cast<unsigned long long>(active_session()?active_session()->info().bytes_sent-smoke_find_bytes_:0));
     }
+            if(options_.smoke_layout&&!error.empty()){const auto* active=active_session();const auto frame=active?active->frame():FramePtr{};std::fprintf(stderr,"Native palette fixture: stage=%u stop_sent=%d mouse_mode=%d mouse_submissions=%llu capture=%d\n",smoke_palette_input_stage_,smoke_palette_disable_sent_,frame&&frame->mouse_reporting,static_cast<unsigned long long>(smoke_terminal_mouse_submissions_),GetCapture()==hwnd_);}
     smoke_finished_=true; exit_code_=error.empty()?0:2;
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
