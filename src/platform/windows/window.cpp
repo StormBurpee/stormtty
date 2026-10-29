@@ -1,4 +1,5 @@
 #include "stormtty/smoke_commands.hpp"
+#include "stormtty/ui_colors.hpp"
 #include "stormtty/settings_reload.hpp"
 #include "stormtty/workspace_save_signal.hpp"
 #ifndef UNICODE
@@ -2332,14 +2333,15 @@ void NativeWindow::dispatch(std::string_view command) {
 }
 WindowScene NativeWindow::scene() {
     WindowScene result;
-    const Color background = high_contrast_ ? system_color(COLOR_WINDOW) : color_hex(config_.theme.background, {23,25,29,255});
-    Color chrome = high_contrast_ ? system_color(COLOR_BTNFACE) : color_hex(config_.theme.chrome, {34,37,43,255});
+    const auto ui=resolve_ui_colors(config_.theme);
+    const Color background = high_contrast_ ? system_color(COLOR_WINDOW) : ui.canvas;
+    Color chrome = high_contrast_ ? system_color(COLOR_BTNFACE) : ui.surface;
     const bool daylight=theme_is_light(config_.theme);
-    Color raised = high_contrast_ ? system_color(COLOR_WINDOW) : daylight?Color{225,230,235,255}:Color{37,45,58,255};
-    const Color text = high_contrast_ ? system_color(COLOR_BTNTEXT) : color_hex(config_.theme.foreground, {236,238,242,255});
-    const Color secondary = high_contrast_ ? text : daylight?Color{88,101,114,255}:Color{162,173,190,255};
-    const Color accent = high_contrast_ ? system_color(COLOR_WINDOWTEXT) : color_hex(config_.theme.accent, {167,196,210,255});
-    const Color seam = high_contrast_ ? text : Color{162,173,190,56};
+    Color raised = high_contrast_ ? system_color(COLOR_WINDOW) : ui.raised;
+    const Color text = high_contrast_ ? system_color(COLOR_BTNTEXT) : ui.ink;
+    const Color secondary = high_contrast_ ? text : ui.secondary;
+    const Color accent = high_contrast_ ? system_color(COLOR_WINDOWTEXT) : ui.accent;
+    const Color seam = high_contrast_ ? text : ui.divider;
     result.background = background; result.chrome_generation = chrome_generation_; result.force_redraw=force_redraw_;
     ChromeZOrder z;
     auto rectangle = [&](Rect bounds, Color fill, double radius = 0, Color stroke = {}, double stroke_width = 0, bool replace = false) {
@@ -2358,7 +2360,7 @@ WindowScene NativeWindow::scene() {
         return Color{channel(a.r,b.r),channel(a.g,b.g),channel(a.b,b.b),channel(a.a,b.a)};
     };
     if (navigation_.rail.width>0) {
-        Color rail=high_contrast_?background:daylight?Color{244,246,248,255}:Color{19,24,31,255};
+        Color rail=high_contrast_?background:ui.navigation;
         if (backdrop_) rail.a=240;
         rectangle(navigation_.rail,rail,0,{},0,true);
         rectangle({navigation_.rail.width-1/scale_,chrome_.band.height,1/scale_,navigation_.rail.height},seam);
