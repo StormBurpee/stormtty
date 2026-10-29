@@ -56,8 +56,14 @@ jobs:
               (artifacts/('craft-'+mode+'.log')).write_text(json.dumps(result.metadata(),sort_keys=True)+'\n'+log,encoding='utf-8')
               print(log,flush=True)
               if result.exit_code or not result.reaped or result.cleanup_error or result.timed_out: failures.append(mode)
+              prepared=log.find('prepared_before_show=1 visible=0')
+              exposed=log.find('first_exposed=1 prepared_before_show=1')
+              scenario=log.find('Native motion sample=')
+              if prepared<0 or exposed<=prepared or (scenario>=0 and scenario<exposed): failures.append(mode+'-startup-order')
           expected=['commands','end','narrow','fuzzy','no-results','background']
           missing=[name for name in expected if not (artifacts/('craft-projects-palette-'+name+'.png')).is_file()]
+          expected_startup=['craft-projects-startup-prepared.png','craft-projects-startup-exposed.png','craft-settings-startup-prepared.png','craft-settings-startup-exposed.png','craft-projects-workspace-focus-000ms.png']
+          missing.extend(name for name in expected_startup if not (artifacts/name).is_file())
           (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
           if failures or missing: raise SystemExit(1)
       - name: Publish native screenshots immediately
