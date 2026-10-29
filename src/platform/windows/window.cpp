@@ -1,5 +1,6 @@
 #include "stormtty/workspace_ribbon.hpp"
 #include "stormtty/ui_colors.hpp"
+#include "stormtty/chrome_paint.hpp"
 #include "stormtty/pane_context.hpp"
 #include "stormtty/command_watch.hpp"
 #include "stormtty/previous_terminal.hpp"
@@ -2799,7 +2800,7 @@ WindowScene NativeWindow::scene() {
         }
         if (navigation_.settings.height>0) {
             if (const auto amount=hover_amount(11); amount>0) rectangle(navigation_.settings,opacity(raised,amount),5);
-            label({navigation_.settings.x+4,navigation_.settings.y+4,28,28},"⚙",secondary,17,false,ChromeTextAlignment::center);
+            append_settings_icon(result,{navigation_.settings.x+18,navigation_.settings.y+18},8,secondary,static_cast<float>(scale_),1.2,z);
             if (navigation_.expanded) label({navigation_.settings.x+38,navigation_.settings.y+8,navigation_.settings.width-44,20},"Settings",secondary,12);
         }
     }
@@ -2893,11 +2894,12 @@ WindowScene NativeWindow::scene() {
             button(zoom_return_,7);
             label({zoom_return_.x+8,zoom_return_.y+5,zoom_return_.width-16,20},"Return to split",accent,12,false,ChromeTextAlignment::center);
         }
+        const auto tab_colors=tab_selection_colors(ui,high_contrast_,background,accent);
         for (const auto& tab : chrome_.tabs) {
             const bool selected = tab.tab == workspace().active_tab();
             const double settle=tab_transitions_[tab.tab].value(now), hovered=hover_amount(16+tab.tab.value*2);
-            if (settle>0 || hovered>0) rectangle(tab.bounds, opacity(blend(raised,(daylight||high_contrast_)?background:Color{32,38,51,255},settle),std::max(settle,hovered*.65)),6,
-                opacity(high_contrast_?accent:Color{76,86,106,180},settle),1/scale_);
+            if (settle>0 || hovered>0) rectangle(tab.bounds, opacity(blend(raised,tab_colors.surface,settle),std::max(settle,hovered*.65)),6,
+                opacity(tab_colors.border,settle),1/scale_);
             if (selected) rectangle({tab.bounds.x+3,tab.bounds.y, std::max(0.0,tab.bounds.width-6),2/scale_},accent,1/scale_);
             const auto watch=tab_watch_indicator(tab.tab);
             const auto caption=layout_tab_label(tab.bounds,watch);
@@ -4154,6 +4156,22 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
     const auto original=options_.capture_path;
     ++chrome_generation_; force_redraw_=true;
     const auto actual=scene();
+    if(options_.smoke_settings && suffix.starts_with(L"appearance-menu-")) {
+        // Reuse these existing normal/narrow captures: no extra Settings
+        // stages, input, scene evaluations or resize cycles for chrome evidence.
+        const auto ui=resolve_ui_colors(config_.theme);
+        const auto colors=tab_selection_colors(ui,high_contrast_,system_color(COLOR_WINDOW),system_color(COLOR_WINDOWTEXT));
+        const auto selected=std::find_if(chrome_.tabs.begin(),chrome_.tabs.end(),[&](const auto& tab){return tab.tab==workspace().active_tab();});
+        if(selected==chrome_.tabs.end() || std::none_of(actual.primitives.begin(),actual.primitives.end(),[&](const auto& p){return p.rect==pixels(selected->bounds)&&p.fill==colors.surface&&p.stroke==colors.border;}))
+            throw std::runtime_error("Native selected tab lost semantic surface/border colors.");
+        WindowScene icon;append_settings_icon(icon,{navigation_.settings.x+18,navigation_.settings.y+18},8,
+            high_contrast_?system_color(COLOR_BTNTEXT):ui.secondary,static_cast<float>(scale_),1.2);
+        for(const auto& stroke:icon.primitives)if(std::find(actual.primitives.begin(),actual.primitives.end(),stroke)==actual.primitives.end())
+            throw std::runtime_error("Native sidebar Settings lost its owned monochrome cog.");
+        if(icon.primitives.size()!=56 || std::any_of(actual.texts.begin(),actual.texts.end(),[](const auto& text){return text.text=="⚙";}))
+            throw std::runtime_error("Native sidebar Settings fell back to a font/emoji icon.");
+        std::fprintf(stderr,"Native chrome consistency sample=%s selected_tab=semantic settings_icon=owned_monochrome geometry_unchanged=1\n",narrow(std::wstring(suffix)).c_str());
+    }
     RenderResult result=RenderResult::busy;
     const auto deadline=GetTickCount64()+2000;
     do {

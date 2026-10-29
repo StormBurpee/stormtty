@@ -52,3 +52,19 @@ the fixture does not claim zero actor traffic.
 These WARP captures are native scene evidence, not physical desktop/OS
 accessibility qualification. Other legacy component-local palettes remain
 outside this migration.
+
+
+Selected Windows tabs now use the shared selected surface/border rather than a
+fixed blue-gray palette, including custom and light themes. Their existing
+border alpha, focus/hover interpolation, top accent stripe, title weight,
+geometry and hit targets are unchanged. OS high contrast retains Window and
+WindowText; project identity accents remain separately owned by workspace rows.
+
+The sidebar Settings entry reuses the Settings panel's owned cog path in semantic
+secondary ink instead of a color-font emoji. Its label, tooltip, hit target and
+hover behavior stay unchanged in expanded and narrow rails; the panel's original
+path/strokes are preserved exactly. Portable tests compare the original path at
+five DPI scales, verify sidebar bounds/ink, and check tab roles for built-in and
+custom palettes plus exact OS overrides. The existing six native menu captures
+also assert selected-tab paint and owned sidebar strokes; no extra Settings
+resize cycles or capture stages are introduced by this pass.

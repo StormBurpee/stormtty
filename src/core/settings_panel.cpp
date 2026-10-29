@@ -1,4 +1,5 @@
 #include "stormtty/settings_panel.hpp"
+#include "stormtty/chrome_paint.hpp"
 #include "stormtty/ui_colors.hpp"
 
 #include <algorithm>
@@ -602,16 +603,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
     // A geometric icon, not a text badge: independent of font bearings/fallback.
     const Point cog_center{p.x+pad+15,p.y+39};
     if (contains(p,{cog_center.x-13,cog_center.y-13,26,26})) {
-        const auto stroke=[&](Point a,Point b) {
-            scene.primitives.push_back({pixels({a.x,a.y,b.x-a.x,b.y-a.y}),transparent,muted,0,float(1.5*scale),ChromePrimitiveKind::line});
-        };
-        constexpr double tau=6.283185307179586;
-        const auto point=[&](double angle,double radius) {return Point{cog_center.x+std::cos(angle)*radius,cog_center.y+std::sin(angle)*radius};};
-        for (int i=0;i<32;++i) {
-            const auto radius=[](int vertex){return vertex%4==1 || vertex%4==2?11.0:8.0;};
-            stroke(point(tau*i/32,radius(i)),point(tau*(i+1)/32,radius((i+1)%32)));
-        }
-        for (int i=0;i<24;++i) stroke(point(tau*i/24,3.5),point(tau*(i+1)/24,3.5));
+        append_settings_icon(scene,cog_center,11,muted,float(scale),1.5);
     }
     label({p.x+pad+43,p.y+17,std::max(0.0,p.width-pad-106),29},"Settings",ink,23,true);
     label({p.x+pad+44,p.y+45,std::max(0.0,p.width-pad-110),19},"Appearance, shells and keyboard shortcuts",muted,12);
