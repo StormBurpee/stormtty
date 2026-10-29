@@ -2,6 +2,7 @@
 
 #include "stormtty/commands.hpp"
 #include "stormtty/renderer.hpp"
+#include "stormtty/ui_colors.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -41,7 +42,7 @@ struct ContextMenuPanelLayout {
 };
 struct ContextMenuLayout { std::vector<ContextMenuPanelLayout> panels; };
 
-// Renderer-backed Graphite menus: no native handles, nested event loops, timers,
+// Renderer-backed themed menus: no native handles, nested event loops, timers,
 // process launch or platform I/O. All geometry/input is DIP. All transitions are
 // immediate (including reduced motion). Hosts intercept ALL input while open,
 // dismiss on focus loss, and restore prior focus after consuming take_action().
@@ -57,6 +58,8 @@ public:
     // keyboard=true selects the first enabled item (e.g. Alt+Space).
     bool open(std::span<const ContextMenuItem>, Point anchor, bool keyboard = false);
     void resize(Size viewport);
+    // Palette-only refresh: preserve open menus, selection, scroll and input.
+    void set_theme(const Theme&);
     // Hosts may supply the current OS accessibility colors; never read a
     // platform setting here. All supplied colors are rendered opaque.
     void set_high_contrast(bool enabled, Color background = {0,0,0,255},
@@ -110,6 +113,7 @@ private:
     std::uint64_t typeahead_time_{}, generation_{};
     std::optional<ContextMenuAction> pending_;
     bool open_{};
+    UiColors colors_{resolve_ui_colors(Theme{})};
     bool high_contrast_{};
     Color contrast_background_{0,0,0,255}, contrast_foreground_{255,255,255,255};
     Color contrast_highlight_{0,120,215,255}, contrast_highlight_text_{255,255,255,255};

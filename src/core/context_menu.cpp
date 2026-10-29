@@ -6,10 +6,7 @@
 
 namespace stormtty {
 namespace {
-constexpr Color panel{24,29,36,255}, border{46,54,68,255}, ink{238,237,236,255};
-constexpr Color muted{158,170,193,255}, disabled{114,127,149,255};
-constexpr Color accent{140,158,255,255}, selection{40,49,74,255};
-constexpr Color destructive{244,155,158,255}, transparent{0,0,0,0};
+constexpr Color transparent{0,0,0,0};
 constexpr double padding=6, normal_height=32, reason_height=48, separator_height=9;
 bool finite(Point p) { return std::isfinite(p.x) && std::isfinite(p.y); }
 bool contains(Rect r,Point p) {
@@ -106,6 +103,11 @@ void ContextMenu::cancel() {
     pending_=ContextMenuAction{ContextMenuActionKind::cancel,{}};close();++generation_;
 }
 std::optional<ContextMenuAction> ContextMenu::take_action() {return std::exchange(pending_,std::nullopt);}
+void ContextMenu::set_theme(const Theme& theme) {
+    const auto colors=resolve_ui_colors(theme);
+    if (colors_==colors) return;
+    colors_=colors;++generation_;
+}
 void ContextMenu::set_high_contrast(bool enabled,Color background,Color foreground,Color highlight,Color highlight_text,Color disabled_text) {
     background.a=foreground.a=highlight.a=highlight_text.a=disabled_text.a=255;
     if (high_contrast_==enabled && contrast_background_==background && contrast_foreground_==foreground &&
@@ -318,11 +320,11 @@ bool ContextMenu::wheel(Point point,double lines) {
 void ContextMenu::append_scene(WindowScene& scene,float scale) const {
     if (!open_ || !std::isfinite(scale) || scale<=0 || scale>8) return;
     const Rect window{0,0,viewport_.width,viewport_.height};
-    const auto panel_fill=high_contrast_?contrast_background_:panel;
-    const auto stroke=high_contrast_?contrast_foreground_:border;
-    const auto normal_ink=high_contrast_?contrast_foreground_:ink;
-    const auto secondary_ink=high_contrast_?contrast_foreground_:muted;
-    const auto disabled_ink=high_contrast_?contrast_disabled_:disabled;
+    const auto panel_fill=high_contrast_?contrast_background_:colors_.surface;
+    const auto stroke=high_contrast_?contrast_foreground_:colors_.divider;
+    const auto normal_ink=high_contrast_?contrast_foreground_:colors_.ink;
+    const auto secondary_ink=high_contrast_?contrast_foreground_:colors_.secondary;
+    const auto disabled_ink=high_contrast_?contrast_disabled_:colors_.subdued;
     const auto pixels=[&](Rect r){return PixelRect{float(r.x*scale),float(r.y*scale),float(r.width*scale),float(r.height*scale)};};
     ChromeZOrder z{ChromeLayer::context_menu};
     auto box=[&](Rect bounds,Color fill,Color stroke=transparent,double radius=0,double weight=0,bool replace=false) {
@@ -346,11 +348,14 @@ void ContextMenu::append_scene(WindowScene& scene,float scale) const {
             if (!item.visible) continue;
             const auto r=item.bounds;
             if (node.separator) {box({r.x+8,r.y+4,std::max(0.0,r.width-16),1},stroke);continue;}
-            if (item.selected) box(r,high_contrast_?contrast_highlight_:selection,
-                node.enabled?(high_contrast_?contrast_foreground_:Color{66,80,120,255}):transparent,6,node.enabled?0.75:0);
-            const auto color=!node.enabled?disabled_ink:high_contrast_ && item.selected?contrast_highlight_text_:
-                !high_contrast_ && node.destructive?destructive:normal_ink;
-            const auto hint_ink=!node.enabled?disabled_ink:high_contrast_ && item.selected?contrast_highlight_text_:secondary_ink;
+            if (item.selected) box(r,high_contrast_?contrast_highlight_:colors_.selected,
+                node.enabled?(high_contrast_?contrast_foreground_:colors_.selected_border):transparent,6,node.enabled?0.75:0);
+            // Inactive rows retain a quieter ink, but their hover background
+            // needs the stronger secondary role (especially in light themes).
+            const auto inactive_ink=!high_contrast_ && item.selected?colors_.secondary:disabled_ink;
+            const auto color=!node.enabled?inactive_ink:high_contrast_ && item.selected?contrast_highlight_text_:
+                !high_contrast_ && node.destructive?colors_.danger:normal_ink;
+            const auto hint_ink=!node.enabled?inactive_ink:high_contrast_ && item.selected?contrast_highlight_text_:secondary_ink;
             const double left=r.x+10,arrow=node.children.empty()?0:14;
             const double hint=node.shortcut.empty() || r.width<220 || arrow?0:std::min(116.0,codepoints(node.shortcut)*6.4+4);
             const double label_width=std::max(0.0,r.width-20-arrow-hint-(hint>0?12:0));
@@ -358,12 +363,12 @@ void ContextMenu::append_scene(WindowScene& scene,float scale) const {
             label({left,r.y,label_width,label_height},node.label,color,13,item.selected && node.enabled);
             if (hint>0) label({r.x+r.width-10-hint,r.y,hint,r.height},node.shortcut,hint_ink,11.5f);
             if (arrow>0 && r.width>32) label({r.x+r.width-22,r.y,14,normal_height},"›",hint_ink,17);
-            if (!node.enabled && !node.disabled_reason.empty()) label({left,r.y+23,std::max(0.0,r.width-20),20},node.disabled_reason,disabled_ink,11);
+            if (!node.enabled && !node.disabled_reason.empty()) label({left,r.y+23,std::max(0.0,r.width-20),20},node.disabled_reason,inactive_ink,11);
         }
         if (layout.scrolls_up || layout.scrolls_down) {
             const auto strip_width=std::min(18.0,p.width);
-            if (layout.scrolls_up) label({p.x+(p.width-strip_width)/2,p.y+padding,strip_width,std::max(0.0,layout.content.y-p.y-padding)},"⌃",high_contrast_?contrast_foreground_:accent,12);
-            if (layout.scrolls_down) label({p.x+(p.width-strip_width)/2,layout.content.y+layout.content.height,strip_width,std::max(0.0,p.y+p.height-padding-layout.content.y-layout.content.height)},"⌄",high_contrast_?contrast_foreground_:accent,12);
+            if (layout.scrolls_up) label({p.x+(p.width-strip_width)/2,p.y+padding,strip_width,std::max(0.0,layout.content.y-p.y-padding)},"⌃",high_contrast_?contrast_foreground_:colors_.accent,12);
+            if (layout.scrolls_down) label({p.x+(p.width-strip_width)/2,layout.content.y+layout.content.height,strip_width,std::max(0.0,p.y+p.height-padding-layout.content.y-layout.content.height)},"⌄",high_contrast_?contrast_foreground_:colors_.accent,12);
         }
     }
 }

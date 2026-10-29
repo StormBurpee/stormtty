@@ -356,6 +356,9 @@ private:
     bool smoke_typing_progress();
     void smoke_typing_diagnostic(const char* event);
     void smoke_settings_stage(unsigned stage);
+    bool smoke_menu_has_theme(const Theme&) const;
+    void smoke_menu_theme_capture(std::wstring_view);
+    bool smoke_menu_theme_running_{};
     void capture_frame();
     void capture_named_frame(std::wstring_view);
     NoticeLayout notice_layout();
@@ -909,6 +912,9 @@ void NativeWindow::destroy_window() noexcept {
 }
 void NativeWindow::settings_changed() {
     refresh_clock();
+    // Startup, live preview, Cancel, Save and Reload share this palette refresh.
+    // Do it even when renderer-owned material work must wait for a later turn.
+    context_menu_.set_theme(config_.theme);
     if (renderer_call_) { settings_pending_=true; defer_layout(); return; }
     HIGHCONTRASTW contrast{}; contrast.cbSize=sizeof(contrast);
     const bool contrast_known=SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0)!=FALSE;
@@ -4833,8 +4839,67 @@ void NativeWindow::smoke_settings_stage(unsigned stage) {
     if (options_.smoke_settings) std::fprintf(stderr,"Native CI settings stage=%u elapsed_ms=%llu job_pending=%d panel_open=%d saving=%d\n",
         stage,GetTickCount64()-smoke_started_at_,settings_job_,settings_panel_.is_open(),settings_panel_.saving());
 }
+bool NativeWindow::smoke_menu_has_theme(const Theme& theme) const {
+    // Probe the palette already supplied by the host without opening an overlay
+    // over Settings or weakening its exclusive input gate. OS contrast itself
+    // is covered separately; only this owned copy disables its paint override.
+    auto probe=context_menu_;
+    probe.set_high_contrast(false);probe.resize({1024,768});
+    const std::vector<ContextMenuItem> items{
+        {"normal","Normal",{},{},true,false,{}},
+        {"disabled","Disabled",{},"Reason",false,false,{}},
+        {"danger","Danger",{},{},true,true,{}}};
+    if(!probe.open(items,{20,20},true))return false;
+    WindowScene scene;probe.append_scene(scene);
+    const auto ui=resolve_ui_colors(theme);
+    const auto text=[&](std::string_view label,Color color){return std::any_of(scene.texts.begin(),scene.texts.end(),[&](const auto& t){return t.text==label&&t.color==color;});};
+    return text("Normal",ui.ink)&&text("Disabled",ui.subdued)&&text("Danger",ui.danger)&&
+        std::any_of(scene.primitives.begin(),scene.primitives.end(),[&](const auto& p){return p.background_replace&&p.fill==ui.surface&&p.stroke==ui.divider;})&&
+        std::any_of(scene.primitives.begin(),scene.primitives.end(),[&](const auto& p){return p.fill==ui.selected&&p.stroke==ui.selected_border;});
+}
+void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
+    if(!options_.smoke_settings || settings_input_blocked() || settings_loading() || context_menu_.is_open() || !focused_session_ || smoke_menu_theme_running_)
+        throw std::runtime_error("Menu theme capture requires the owned Settings smoke window with terminal focus restored.");
+    smoke_menu_theme_running_=true;
+    struct Reset {bool& running;~Reset(){running=false;}} reset{smoke_menu_theme_running_};
+    const auto original_config=config_;const auto actors=sessions_;const auto focused=focused_session_;
+    const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
+    const auto old_clock=smoke_chrome_time_;
+    struct RestoreClock {std::optional<std::uint64_t>& clock;std::optional<std::uint64_t> old;~RestoreClock(){clock=old;}} restore_clock{smoke_chrome_time_,old_clock};
+    RECT original{};if(!GetWindowRect(hwnd_,&original))throw std::runtime_error("Menu theme capture could not read owned window geometry.");
+    smoke_chrome_time_=GetTickCount64();
+    const auto restore=[&] {
+        context_menu_.cancel();menu_input_changed();
+        const auto resized=SetWindowPos(hwnd_,nullptr,0,0,original.right-original.left,original.bottom-original.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        *smoke_chrome_time_+=1000;menu_transition_.finish();settings_transition_.finish();motion_schedule();smoke_chrome_time_=old_clock;
+        return resized!=FALSE;
+    };
+    try {
+        for(const bool narrow:{false,true}) {
+            if(narrow && !SetWindowPos(hwnd_,nullptr,0,0,static_cast<int>(480*scale_),static_cast<int>(720*scale_),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE))
+                throw std::runtime_error("Menu theme capture could not resize owned window.");
+            system_menu({12,48},true);
+            if(!context_menu_.is_open() || focused_session_ || !smoke_menu_has_theme(config_.theme))
+                throw std::runtime_error("Menu theme capture lost host palette or exclusive menu focus.");
+            // The narrow sample also demonstrates selected destructive ink.
+            if(narrow) {context_menu_.key({{"END"}});menu_input_changed();}
+            *smoke_chrome_time_+=1000;motion_schedule();
+            smoke_motion_capture(std::wstring(suffix)+(narrow?L"-narrow":L"-normal"),0);
+            context_menu_.cancel();menu_input_changed();
+            *smoke_chrome_time_+=1000;motion_schedule();
+        }
+    } catch(...) {restore();throw;}
+    if(!restore())throw std::runtime_error("Menu theme capture could not restore owned window geometry.");
+    RECT restored{};
+    if(!GetWindowRect(hwnd_,&restored) || restored.right-restored.left!=original.right-original.left || restored.bottom-restored.top!=original.bottom-original.top)
+        throw std::runtime_error("Menu theme capture did not restore owned window dimensions.");
+    if(config_!=original_config || sessions_!=actors || focused_session_!=focused || context_menu_.is_open() ||
+       smoke_terminal_input_submissions_!=input || smoke_terminal_mouse_submissions_!=mouse || GetCapture()==hwnd_)
+        throw std::runtime_error("Menu theme capture changed config, actor or input ownership.");
+    std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
+}
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
-    if (!options_.smoke_test || smoke_finished_) return;
+    if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_) return;
     if(!options_.smoke_agent&&projects_.active()) {
         if(ai_enabled_||agent_controller_||agent_setup_||agent_panel_.is_open()||footer_layout().agent.width>0||command_context().supports_agent_panel) {smoke_finish("Disabled AI feature exposed UI or provider ownership.");return;}
         for(const auto& entry:palette_commands())if(entry.id=="agent.toggle"){smoke_finish("Disabled AI feature leaked into Commands.");return;}
@@ -5014,7 +5079,10 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             const Point point{found->bounds.x+found->bounds.width/2,found->bounds.y+found->bounds.height/2};
             pointer_down(point,false); pointer_up(point);
             if (config_.font.size_dip!=smoke_settings_original_.font.size_dip+1 || config_.default_profile!=smoke_settings_original_.default_profile) { smoke_finish("Settings preview did not apply only reversible presentation."); return; }
-            if (!activate_setting("appearance.theme.midnight") || config_.theme!=*find_builtin_theme("midnight")) {
+            if (!activate_setting("appearance.theme.daylight") || !smoke_menu_has_theme(config_.theme)) {
+                smoke_finish("Light theme preview did not refresh the host menu palette.");return;
+            }
+            if (!activate_setting("appearance.theme.midnight") || config_.theme!=*find_builtin_theme("midnight") || !smoke_menu_has_theme(config_.theme)) {
                 smoke_finish("Named theme preview did not update the live host palette."); return;
             }
             // Incomplete native hex input must not publish a partial palette.
@@ -5022,7 +5090,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             MSG hex{};hex.hwnd=hwnd_;hex.message=WM_KEYDOWN;hex.wParam='F';key_message(hex);
             hex.wParam=VK_ESCAPE;key_message(hex);
             if (!settings_panel_.is_open() || config_.theme!=*find_builtin_theme("midnight")) {smoke_finish("Partial hex Escape changed the theme or closed Settings.");return;}
-            if (!edit_ansi_red("D080A0",false) || config_.theme.ansi[1]!="#D080A0") {smoke_finish("Native ANSI custom preview failed.");return;}
+            if (!edit_ansi_red("D080A0",false) || config_.theme.ansi[1]!="#D080A0" || !smoke_menu_has_theme(config_.theme)) {smoke_finish("Native ANSI custom preview failed.");return;}
             capture_settings(L"appearance-custom-preview");
             for (const auto* id:{"appearance.import","appearance.export"}) {
                 for(unsigned i=0;i<256&&settings_panel_.focused_control()!=id;++i)settings_panel_.key({{"TAB"}});
@@ -5081,7 +5149,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam=VK_ESCAPE; key_message(key);
             *smoke_chrome_time_=motion_start+40; smoke_motion_capture(L"settings-close-040ms",40);
             *smoke_chrome_time_=motion_start+100; motion_schedule(); smoke_motion_capture(L"settings-close-settled-100ms",100);
-            if (settings_panel_.is_open() || config_!=smoke_settings_original_ || !focused_session_) { smoke_finish("Settings Escape did not roll back preview and restore terminal focus."); return; }
+            if (settings_panel_.is_open() || config_!=smoke_settings_original_ || !focused_session_ || !smoke_menu_has_theme(config_.theme)) { smoke_finish("Settings Escape did not roll back preview and restore terminal focus."); return; }
             system_menu({12,48},true);
             if (!context_menu_.is_open() || focused_session_) { smoke_finish("Custom system menu did not open or trap focus."); return; }
             const auto menu_start=*smoke_chrome_time_;
@@ -5101,6 +5169,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             popup_menu({12,48});
             const Point outside{width_-2,height_-2}; pointer_down(outside,false); pointer_up(outside);
             if (context_menu_.is_open() || drag_!=Drag::none || GetCapture()==hwnd_) { smoke_finish("Menu outside click did not dismiss without starting terminal selection."); return; }
+            smoke_menu_theme_capture(L"appearance-menu-cancelled");
             open_settings("pane.split_right"); smoke_settings_stage(3); return;
         }
         if (smoke_settings_stage_==3) {
@@ -5153,7 +5222,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 smoke_finish("Saved shortcut or original actor identity was not retained."); return;
             }
             if (!actor_has_theme(saved_custom())) return;
-            if (config_.theme!=saved_custom() || config_.appearance.background_opacity!=.25 || config_.appearance.additional_blur!=24) {
+            if (config_.theme!=saved_custom() || config_.appearance.background_opacity!=.25 || config_.appearance.additional_blur!=24 || !smoke_menu_has_theme(config_.theme)) {
                 smoke_finish("Saved theme or opacity did not remain applied."); return;
             }
             if (managed_shell_profile_ && !options_.shell_runtime_override) {
@@ -5181,6 +5250,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 }
                 std::fprintf(stderr,"Settings smoke: saved shell/backend selected for new real actor without CLI; original System actor retained.\n");
             }
+            smoke_menu_theme_capture(L"appearance-menu-saved-custom");
             open_settings(); smoke_settings_stage(5); return;
         }
         if (smoke_settings_stage_==5) {
@@ -5243,7 +5313,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 smoke_finish("Reload did not preserve/refuse the unsaved Settings draft."); return;
             }
             settings_panel_.cancel(); settings_input_changed();
-            if (config_!=saved_baseline) {smoke_finish("Second-cycle Cancel did not restore saved ANSI/Ribbon configuration.");return;}
+            if (config_!=saved_baseline || !smoke_menu_has_theme(config_.theme)) {smoke_finish("Second-cycle Cancel did not restore saved ANSI/Ribbon configuration.");return;}
             if(!notice_.empty()||!settings_draft_notice_.empty()){smoke_finish("Closed Settings retained its draft-only reload notice.");return;}
             if (settings_panel_.is_open() || !focused_session_) { smoke_finish("Reopened Settings did not restore terminal focus on Cancel."); return; }
             smoke_settings_stage(8);
@@ -5300,8 +5370,9 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             smoke_settings_actor_->info().bytes_received<smoke_reload_received_ || !smoke_settings_actor_->frame()) {
             smoke_finish("Reload replaced the live actor or lost retained output."); return;
         }
-        if (config_!=smoke_reload_expected_) { smoke_finish("Reload did not apply valid settings or replaced settings on failure."); return; }
+        if (config_!=smoke_reload_expected_ || !smoke_menu_has_theme(config_.theme)) { smoke_finish("Reload did not apply valid settings or replaced settings on failure."); return; }
         if (smoke_reload_stage_==1) {
+            smoke_menu_theme_capture(L"appearance-menu-reloaded");
             write_fixture("[not valid TOML"); reload_settings(); smoke_reload_stage_=2; return;
         }
         if (smoke_reload_stage_==2) {

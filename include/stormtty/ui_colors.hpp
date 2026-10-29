@@ -16,7 +16,8 @@ struct UiColors {
     Color canvas, surface, navigation, raised;
     Color ink, secondary, subdued, divider, accent;
     Color control, hover, pressed, selected, selected_hover, selected_border;
-    Color on_accent, positive;
+    Color on_accent, positive, danger;
+    bool operator==(const UiColors&) const = default;
 };
 
 inline Color ui_color(std::string_view value, Color fallback) noexcept {
@@ -57,6 +58,28 @@ inline UiColors resolve_ui_colors(const Theme& theme) noexcept {
     const double luminance=ui_luminance(c.accent);
     c.on_accent=(luminance+.05)/.05 >= 1.05/(luminance+.05)?Color{0,0,0,255}:Color{255,255,255,255};
     c.positive=ui_mix(c.accent,c.ink,.25);
+    // Destructive chrome is not terminal ANSI red. Keep the familiar warm red
+    // where readable, otherwise move toward the black/white endpoint with the
+    // strongest minimum contrast on both normal and selected surfaces. Some
+    // adversarial custom pairs cannot share 4.5:1 ink; use the best endpoint in
+    // that case without changing any user-authored foreground/base colors.
+    const auto surface_luminance=ui_luminance(c.surface),selected_luminance=ui_luminance(c.selected);
+    const auto contrast=[](double a,double b) { return (std::max(a,b)+.05)/(std::min(a,b)+.05); };
+    const auto minimum_contrast=[&](Color ink) {
+        const auto luminance=ui_luminance(ink);
+        return std::min(contrast(luminance,surface_luminance),contrast(luminance,selected_luminance));
+    };
+    const Color black{0,0,0,255},white{255,255,255,255};
+    const auto black_contrast=std::min(contrast(0,surface_luminance),contrast(0,selected_luminance));
+    const auto white_contrast=std::min(contrast(1,surface_luminance),contrast(1,selected_luminance));
+    const auto endpoint=black_contrast>=white_contrast?black:white;
+    const auto target=std::min(4.5,std::max(black_contrast,white_contrast));
+    const Color red{244,155,158,255};
+    c.danger=endpoint;
+    for(unsigned step=0;step<=32;++step) {
+        const auto candidate=ui_mix(red,endpoint,step/32.);
+        if(minimum_contrast(candidate)>=target) { c.danger=candidate; break; }
+    }
     return c;
 }
 } // namespace stormtty
