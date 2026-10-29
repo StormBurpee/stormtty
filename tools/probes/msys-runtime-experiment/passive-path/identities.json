@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "scope": "passive-diagnostic-only",
+  "header_sha256": "ece389f18e7d89f7a7744a16f6255b86c38b70c377132157a0d48ac16b5b3834",
+  "variants": {
+    "stock": {
+      "source_sha256": "535bd5f650122192e34e9835e33e72efd35aeecb093439716be6b770cd977d33",
+      "instrumented_sha256": "378d6584d510ff9061e50367149e1545e9f3ecad96dede2bc6f901a7075373ff",
+      "patch_sha256": "bb08413f0c34b41116e40a9a36ec06948f1be7c8a6caf8fb234cbe7df57697a4"
+    },
+    "refined": {
+      "source_sha256": "bc68a642dca059ed76b6ae79b21db85e34ff3376f98a5efe4bb2b0136b79f0ae",
+      "instrumented_sha256": "aaefc9779314100c7cc24e08a401947df334815b7e1ea168ea720326a10cc42b",
+      "patch_sha256": "933f15331ee1dcfabb793eaf49a527f55015166bc8e71be13107a8047f8adab7"
+    }
+  }
+}
