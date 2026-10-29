@@ -52,6 +52,7 @@ namespace stormtty {
 namespace {
 constexpr UINT wake_message = WM_APP + 41;
 constexpr UINT deferred_layout_message = WM_APP + 42;
+constexpr UINT smoke_settings_input_message = WM_APP + 43;
 constexpr UINT_PTR cursor_timer = 1;
 constexpr UINT_PTR smoke_timeout_timer = 2;
 constexpr UINT_PTR chrome_motion_timer = 3;
@@ -420,6 +421,7 @@ private:
     int exit_code_{};
     unsigned smoke_modal_stage_{}, smoke_settings_stage_{};
     bool smoke_modal_presented_{};
+    unsigned smoke_settings_input_stage_{}; // closed scene presented, then separate input dispatch
     std::filesystem::path smoke_shell_state_root_;
     unsigned smoke_typing_stage_{};
     bool smoke_typing_handshake_sent_{}, smoke_typing_handshake_seen_{};
@@ -3200,7 +3202,16 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             settings_panel_.cancel(); settings_input_changed();
             if (settings_panel_.is_open() || !focused_session_) { smoke_finish("Reopened Settings did not restore terminal focus on Cancel."); return; }
             smoke_settings_stage(8);
+            force_redraw_=true; dirty_=true; // Capture the closed scene even if open/cancel coalesced.
+            return; // Cancel cannot also impersonate a subsequent native input event.
         }
+    }
+    if (options_.smoke_settings && smoke_settings_stage_==8 && smoke_settings_input_stage_<2) {
+        if (!smoke_settings_input_stage_ && presented && !settings_panel_.is_open() && !motion_timer_active_) {
+            smoke_settings_input_stage_=1;
+            if (!PostMessageW(hwnd_,smoke_settings_input_message,0,0)) smoke_finish("Could not post the settings-close paste input event.");
+        }
+        return;
     }
     if (options_.smoke_modal && smoke_modal_stage_<2) {
         const auto verify_activation_routing=[&] {
@@ -3666,6 +3677,20 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         layout_pending_=false;
         if (settings_pending_) { settings_pending_=false; settings_changed(); }
         changed(true); return 0;
+    case smoke_settings_input_message:
+        if (options_.smoke_test && options_.smoke_settings && smoke_settings_stage_==8 && smoke_settings_input_stage_==1) {
+            if (settings_panel_.is_open() || !focused_session_) { smoke_finish("Settings-close input event did not retain terminal focus."); return 0; }
+            smoke_settings_input_stage_=2;
+            const auto* actor=active_session(); const auto info=actor?actor->info():SessionInfo{};
+            const auto diagnostics=actor?actor->diagnostics():ProcessDiagnostics{};
+            const auto frame=actor?actor->frame():FramePtr{};
+            std::fprintf(stderr,"Native settings paste event: separate_dispatch=1 closed_scene_presented=1 rx=%llu tx=%llu queued=%zu bracketed=%d resize_requested=%llu resize_applied=%llu\n",
+                static_cast<unsigned long long>(info.bytes_received),static_cast<unsigned long long>(info.bytes_sent),diagnostics.queued_input_bytes,frame&&frame->bracketed_paste,
+                static_cast<unsigned long long>(diagnostics.windows_control?diagnostics.windows_control->requested_resize_generation:0),
+                static_cast<unsigned long long>(diagnostics.windows_control?diagnostics.windows_control->applied_resize_generation:0));
+            smoke_progress();
+        }
+        return 0;
     case wake_message:
         wake_->posted.store(false,std::memory_order_release); update_sessions(); InvalidateRect(hwnd_,nullptr,FALSE); return 0;
     case WM_TIMECHANGE: refresh_clock(); return 0;

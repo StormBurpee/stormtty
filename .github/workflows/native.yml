@@ -76,6 +76,14 @@ jobs:
       - name: Run blocking native baseline tests
         id: native_tests
         run: ctest --test-dir build -LE qualification --no-tests=error --output-on-failure --output-junit test-results.xml --parallel 1
+      - name: Preserve baseline evidence immediately
+        if: always() && steps.native_tests.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: baseline-${{ matrix.os }}
+          path: |
+            build/test-results.xml
+            build/Testing/Temporary/LastTest.log
       - name: Verify bundled console cached repair and portable install
         if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
         shell: python
@@ -200,6 +208,7 @@ jobs:
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         run: python tools/shell-path-tests.py --runtime .deps/stormtty-shell --resolver-probe build/bundled_shell_probe.exe
       - name: Verify application with bundled Zsh
+        id: bundled_application
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         shell: python
         run: |
@@ -217,9 +226,18 @@ jobs:
             print("OWNED_PROCESS_RESULT="+json.dumps(result.metadata(),sort_keys=True),flush=True)
             print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
             code=result.exit_code
+            (pathlib.Path('build/artifacts')/('bundled-'+mode+'.log')).write_bytes(result.output_tail)
             print('BUNDLED_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
             if code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
+      - name: Preserve bundled app evidence immediately
+        if: always() && runner.os == 'Windows' && steps.bundled_application.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bundled-app-windows
+          path: |
+            build/artifacts/bundled-*.log
+            build/artifacts/native-zsh-*.png
       - name: Build with app-owned developer Zsh runtime
         id: developer_shell_build
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
@@ -302,6 +320,7 @@ jobs:
             build/CMakeFiles/CMakeConfigureLog.yaml
             build/artifacts/*.png
             build/artifacts/shell-tools-zoxide-init.zsh
+            build/artifacts/bundled-*.log
             build/artifacts/macos-debugger.log
             build/artifacts/stormtty-crash.*
             build/artifacts/ink-transport/*.bin
