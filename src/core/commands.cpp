@@ -9,6 +9,7 @@
 namespace stormtty {
 namespace {
 constexpr std::array commands{
+    Command{"workspace.navigator", "Switch workspace or terminal…", "Find an existing terminal across open workspaces"},
     Command{"workspace.settings", "Workspace settings…", "Name, icon, colour, shell and saved layouts"},
     Command{"workspace.new", "New workspace…", "Choose a real folder and start its configured shell"},
     Command{"workspace.next", "Next workspace", "Switch projects without restarting hidden sessions"},
@@ -187,6 +188,7 @@ CommandAvailability command_availability(std::string_view id, const CommandConte
     if (id == "settings.reload") return {c.supports_settings_reload, c.supports_settings_reload ? "" : "Settings reload is not implemented by this host"};
     if (id == "agent.toggle") return {c.supports_agent_panel,c.supports_agent_panel?"":"Native agent panel is not implemented by this host"};
     if (id == "window.focus_mode") return {c.supports_focus_mode, c.supports_focus_mode ? "" : "Focus mode is not implemented by this host"};
+    if (id=="workspace.navigator") return {c.supports_workspace_navigator,c.supports_workspace_navigator?"":"Workspace navigator is not implemented by this host"};
     if (id.starts_with("workspace.")) {
         if (!c.supports_project_workspaces) return {false,"Project workspaces are not implemented by this host"};
         if (id=="workspace.next" || id=="workspace.previous") return {c.project_workspaces>1,c.project_workspaces>1?"":"Only one workspace is open"};
@@ -262,7 +264,7 @@ std::vector<Binding> default_bindings(Platform platform) {
     add("edit.copy", platform == Platform::windows ? "Ctrl+Shift+C" : "Cmd+C");
     add("edit.paste", platform == Platform::windows ? "Ctrl+Shift+V" : "Cmd+V");
     add("settings.open", "Primary+,");
-    if(platform==Platform::windows) add("agent.toggle", "Ctrl+Shift+J");
+    if(platform==Platform::windows) {add("agent.toggle", "Ctrl+Shift+J");add("workspace.navigator", "Ctrl+Shift+O");}
     return out;
 }
 bool is_os_reserved(const KeyChord& key, Platform platform) noexcept {

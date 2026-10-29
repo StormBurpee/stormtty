@@ -1,6 +1,7 @@
 #include "stormtty/native_window.hpp"
 #include "stormtty/settings_panel.hpp"
 #include "stormtty/terminal_find.hpp"
+#include "stormtty/workspace_navigator.hpp"
 #include <cstdlib>
 #include <array>
 #include <iostream>
@@ -13,6 +14,21 @@ int main() {
     using namespace stormtty;
     require(terminal_find_fits({0,0,180,112},false)&&!terminal_find_fits({0,0,179,112},false),"Find rejects squeezed width");
     require(terminal_find_fits({0,0,180,140},true)&&!terminal_find_fits({0,0,180,139},true),"Find reserves terminal space in split panes");
+    WorkspaceNavigator navigator;
+    navigator.open({{{1},"alpha","/alpha",{{{11},"Build","/alpha","Running",false,true},{{12},"Logs","/alpha/logs","Exited",true,false}}},{{2},"beta","/beta",{{{21},"Server","/beta/server","Running",false,false}}}}, {1},{11});
+    require(navigator.workspace()->project==ProjectWorkspaceId{1}&&navigator.terminal()->session==SessionId{11},"Navigator preserves initial stable actor selection");
+    navigator.move(false,1);require(navigator.target()->session==SessionId{12}&&navigator.target()->parked,"Navigator distinguishes parked placement without treating it as process state");
+    navigator.search("server");require(navigator.workspaces().size()==1&&navigator.target()->project==ProjectWorkspaceId{2}&&navigator.target()->session==SessionId{21},"Navigator searches terminals across workspace identities");
+    navigator.search("absent");require(!navigator.target(),"Navigator empty results have no stale actionable target");
+    navigator.search("");navigator.select_workspace(0);
+    require(layout_workspace_navigator(320,259,navigator,0).panel.height==0&&layout_workspace_navigator(239,720,navigator,0).panel.width==0,"Navigator refuses unsupported tiny geometry instead of drawing beyond the host");
+    for(double width:{320.0,480.0,800.0,1200.0})for(unsigned focus:{0u,1u,2u}) {
+        const auto layout=layout_workspace_navigator(width,720,navigator,focus);
+        require(layout.panel.x>=0&&layout.panel.x+layout.panel.width<=width,"Navigator panel fits narrow and normal widths");
+        for(const auto& row:layout.workspace_rows)require(row.x>=layout.panel.x&&row.x+row.width<=layout.panel.x+layout.panel.width&&row.y+row.height<=layout.footer.y,"Navigator workspace rows stay out of detail shelf");
+        for(const auto& row:layout.terminal_rows)require(row.x>=layout.panel.x&&row.x+row.width<=layout.panel.x+layout.panel.width&&row.y+row.height<=layout.footer.y,"Navigator terminal rows stay out of detail shelf");
+        if(width<680)require(focus==1?layout.terminal_rows.empty():layout.workspace_rows.empty(),"Compact navigator has one visible list and stable keyboard scope");
+    }
     TerminalFindQuery find_query;
     require(find_query.insert("a界🙂z"),"Find accepts complete Unicode scalars");
     find_query.left();require(find_query.erase(true)&&find_query.text()=="a界z","Find Backspace deletes one scalar, not a UTF-8 fragment");

@@ -1,4 +1,5 @@
 #include "stormtty/settings_panel.hpp"
+#include "stormtty/ui_colors.hpp"
 
 #include <algorithm>
 #include <array>
@@ -541,14 +542,12 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
     // Contrast mode uses stable semantic paint tokens before mapping to the OS
     // palette; arbitrary custom theme colors cannot alias those token roles.
     const auto palette=high_contrast_?Theme{}:draft_.theme;
-    const Color canvas=theme_color(palette.background),ink=theme_color(palette.foreground);
-    const Color panel_color=theme_color(palette.chrome),accent=theme_color(palette.accent);
-    const Color nav_color=blend(panel_color,canvas,.55),border=blend(panel_color,ink,.18);
-    const Color muted=blend(ink,panel_color,.26),subdued=blend(ink,panel_color,.42),selection=blend(panel_color,accent,.22);
-    const Color control=blend(panel_color,ink,.035),control_hover=blend(panel_color,ink,.075),control_pressed=blend(panel_color,ink,.12);
-    const Color selected_hover=blend(panel_color,accent,.30),selected_border=blend(panel_color,accent,.55);
-    const Color primary_ink=(accent.r*299+accent.g*587+accent.b*114)>140000?Color{17,21,32,255}:Color{255,255,255,255};
-    const Color green=blend(accent,ink,.25);
+    const auto ui=resolve_ui_colors(palette);
+    const Color canvas=ui.canvas,ink=ui.ink,panel_color=ui.surface,accent=ui.accent;
+    const Color nav_color=ui.navigation,border=ui.divider,muted=ui.secondary,subdued=ui.subdued;
+    const Color selection=ui.selected,control=ui.control,control_hover=ui.hover,control_pressed=ui.pressed;
+    const Color selected_hover=ui.selected_hover,selected_border=ui.selected_border;
+    const Color primary_ink=ui.on_accent,green=ui.positive;
     const auto pixels=[&](Rect r){return PixelRect{float(r.x*scale),float(r.y*scale),float(r.width*scale),float(r.height*scale)};};
     const auto& p=layout_.panel;
     const auto first_primitive=scene.primitives.size();

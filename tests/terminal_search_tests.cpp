@@ -51,6 +51,11 @@ void safe_native_fixture() {
         check(core.encode_paste(command)==command,"Find fixture encoding changed printable command");
         check(!native_find_fixture_output(command),"command echo must not satisfy output gate");
     }
+    for(bool managed : {false,true}) for(bool enable : {false,true}) {
+        const auto command=native_mouse_fixture_command(managed,enable);
+        check(TerminalCore::paste_is_safe(command),"mouse fixture must use ordinary safe paste");
+        check(core.encode_paste(command)==command,"mouse fixture encoding changed printable command");
+    }
     const std::string unsafe="printf 'alpha\nbeta\n'";
     check(!TerminalCore::paste_is_safe(unsafe),"multiline paste must remain unsafe");
     bool rejected=false;try{core.encode_paste(unsafe);}catch(const std::invalid_argument&){rejected=true;}
