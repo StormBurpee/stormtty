@@ -3,6 +3,7 @@
 #include "stormtty/workspace_ribbon.hpp"
 #include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
+#include "stormtty/windows_settings_wheel.hpp"
 #include "stormtty/terminal_find.hpp"
 #include "stormtty/workspace_navigator.hpp"
 #include <cstdlib>
@@ -15,6 +16,19 @@ namespace { void require(bool condition, const char* message) {
 } }
 int main() {
     using namespace stormtty;
+    // Settings honors Windows wheel preferences without reusing terminal rows
+    // or quantizing small input packets. Packet shape is not device identity.
+    require(settings_wheel_distance(-120,0,false,400)==0,"Zero wheel lines disables Settings movement");
+    require(settings_wheel_distance(-120,1,false,400)==36,"One wheel line maps to 36 DIP");
+    require(settings_wheel_distance(-120,3,false,400)==108,"Default discrete wheel preserves its document distance");
+    require(settings_wheel_distance(240,6,false,400)==-432,"Signed multi-notch wheel honors configured line count");
+    require(settings_wheel_distance(-15,3,false,400)==13.5,"Fractional wheel retains sub-notch distance");
+    require(settings_wheel_distance(-1,3,false,400)==.9,"Smallest signed wheel packet is not discarded");
+    require(settings_wheel_distance(-120,0,true,400)==352,"Page-scroll policy uses viewport minus context margin");
+    require(settings_wheel_distance(60,0,true,400)==-176,"Fractional page-scroll packet retains precision");
+    require(settings_wheel_distance(-120,0,true,20)==48,"Tiny viewport page distance remains useful and bounded");
+    require(!settings_wheel_packet_is_discrete(0) && !settings_wheel_packet_is_discrete(15) && !settings_wheel_packet_is_discrete(-119),"Zero and fractional wheel packets do not animate");
+    require(settings_wheel_packet_is_discrete(120) && settings_wheel_packet_is_discrete(-240),"Only complete notch packets request finite easing");
     // One owned cog shape replaces font/emoji fallback. The panel's existing
     // path is byte-for-byte identical; the sidebar only scales that same path.
     constexpr double tau=6.283185307179586;

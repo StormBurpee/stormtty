@@ -62,6 +62,7 @@ jobs:
               if prepared<0 or exposed<=prepared or (scenario>=0 and scenario<exposed): failures.append(mode+'-startup-order')
               if mode=='settings' and 'Semantic UI capture: saved custom theme, settings closed, presented=1 motion_settled=1' not in log: failures.append('settings-semantic-capture')
               if mode=='settings':
+                  if 'Native Settings scroll: raw wheel conversion, immediate response, finite burst/reversal, partial-control pointer hit, fractional direct input, horizontal consumption, zero/page policy and reduced-motion timer shutdown verified; synthetic_motion_policy=1 controlled_clock=1 native_present=1 physical_frame_pacing_verified=0.' not in log: failures.append('settings-scroll-proof')
                   for state in ['cancelled','saved-custom','reloaded']:
                       if 'Native menu theme capture=appearance-menu-'+state+' normal=1 narrow=1 palette=1 frontend_input_unchanged=1' not in log: failures.append('menu-theme-'+state)
               if mode=='layout' and 'Native command watch: explicit arm' not in log: failures.append('layout-command-watch')
@@ -95,7 +96,9 @@ jobs:
           missing.extend(name for name in expected_menus if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
           expected_pane_focus=['craft-layout-pane-focus-'+sample+'.png' for sample in ['000ms','040ms','reversed-040ms','settled-160ms','settled-120ms','reduced-040ms']]
           missing.extend(name for name in expected_pane_focus if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
-          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'required_menu_theme_captures':expected_menus,'required_pane_focus_captures':expected_pane_focus,'required_previous_terminal_captures':expected_previous_terminal,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
+          expected_scroll=['craft-settings-settings-scroll-'+sample+'.png' for sample in ['first-000ms','intermediate-016ms','burst-032ms','reversed-048ms','settled-138ms','fractional-direct','reduced-motion-direct']]
+          missing.extend(name for name in expected_scroll if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
+          (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'required_menu_theme_captures':expected_menus,'required_pane_focus_captures':expected_pane_focus,'required_settings_scroll_captures':expected_scroll,'settings_scroll_evidence':'synthetic controlled-time native presentation; not physical smoothness or frame-pacing verification','required_previous_terminal_captures':expected_previous_terminal,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')
           if failures or missing: raise SystemExit(1)
       - name: Publish native screenshots immediately
         if: always() && steps.capture.outcome != 'skipped'
@@ -107,6 +110,16 @@ jobs:
       - name: Run layout and renderer checks
         if: always() && steps.capture.outcome != 'skipped'
         run: ctest --test-dir build-ui -R "^(terminal_tests|terminal_search_tests|pane_context_tests|command_watch_tests|previous_terminal_tests|session_write_accounting_tests|window_geometry_tests|core_commands_tests|renderer_smoke|ui_colors_tests|context_menu_tests|settings_panel_tests)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
+      - name: Require normal and narrow Settings clipping rasters
+        if: always() && steps.capture.outcome != 'skipped'
+        shell: python
+        run: |
+          import json,os,pathlib
+          artifacts=pathlib.Path('build-ui/artifacts')
+          expected=['settings-scroll-'+size+'-fractional-'+str(percent)+'pct.png' for size in ['normal','narrow'] for percent in [100,125,150]]
+          missing=[name for name in expected if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n']
+          (artifacts/'settings-scroll-raster-manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'required_settings_viewport_rasters':expected,'missing':missing,'evidence':'Windows WARP offscreen pixel clipping; not physical smoothness'},indent=2),encoding='utf-8')
+          if missing: raise SystemExit('Missing Settings viewport rasters: '+', '.join(missing))
       - name: Preserve focused test diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -116,4 +129,6 @@ jobs:
             build-ui/focused-tests.xml
             build-ui/Testing/Temporary/LastTest.log
             build-ui/CMakeFiles/CMakeConfigureLog.yaml
+            build-ui/artifacts/settings-scroll-*-fractional-*pct.png
+            build-ui/artifacts/settings-scroll-raster-manifest.json
           if-no-files-found: warn

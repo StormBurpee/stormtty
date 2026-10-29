@@ -691,6 +691,12 @@ int main(int argc,char** argv) {
         std::filesystem::current_path(std::filesystem::temp_directory_path());
         RendererOptions layer_options;layer_options.force_warp=true;layer_options.font.family="Consolas";
         stormtty::test::chrome_layer_raster_tests(layer_options);
+        stormtty::test::chrome_viewport_raster_tests(layer_options);
+        wchar_t executable[32768]{};require(GetModuleFileNameW(nullptr,executable,32768)>0,"Settings capture executable path missing");
+        const auto captures=std::filesystem::path(executable).parent_path()/L"artifacts";std::filesystem::create_directories(captures);
+        stormtty::test::settings_viewport_raster_tests(layer_options,[&](std::string_view name,unsigned width,unsigned height,const auto& pixels) {
+            save_motion_png(captures/std::string(name),pixels,width,height);
+        });
         cursor_motion_raster_test();
         native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();chrome_notice_measurement_test();
         std::cout<<"PASS Windows WARP renderer: HWND/DComp style lifecycle and fallback, private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";

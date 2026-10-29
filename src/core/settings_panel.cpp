@@ -137,6 +137,9 @@ void SettingsPanel::set_console_backend_status(bool available, std::string statu
     if (!available && focus_=="console.bundled") focus_control("console.system");
 }
 void SettingsPanel::rebuild_layout() {
+    // Geometry-changing actions interrupt at the displayed position. Animation
+    // frames use set_scroll_offset instead, so no controls/strings are rebuilt.
+    cancel_scroll_at_display();
     layout_={};
     const double margin=viewport_.width<600?8:24;
     const double w=std::min(916.0,std::max(0.0,viewport_.width-margin*2));
@@ -147,7 +150,15 @@ void SettingsPanel::rebuild_layout() {
     const double footer_h=std::min(78.0,h);
     layout_.footer={x,y+h-footer_h,w,footer_h};
     auto add=[&](std::string id,Rect bounds,bool content=false,bool enabled=true) {
-        layout_.controls.push_back({std::move(id),bounds,contains(content?layout_.content:layout_.panel,bounds),enabled&&!saving_});
+        // Only document controls may be partially visible. Fixed controls must
+        // fit their own region, never intrude into the footer on short windows.
+        const auto region=content?layout_.content:id.starts_with("nav.")?layout_.navigation:
+            (id=="save" || id=="binding.confirm" || id=="cancel")?layout_.footer:layout_.panel;
+        const auto viewport=intersection(intersection(region,layout_.panel),{0,0,viewport_.width,viewport_.height});
+        auto hit_bounds=intersection(bounds,viewport);
+        const bool visible=content?(hit_bounds.width>0 && hit_bounds.height>0):contains(viewport,bounds);
+        if (!visible) hit_bounds={};
+        layout_.controls.push_back({std::move(id),bounds,visible,enabled&&!saving_,hit_bounds,content});
     };
     add("close",{x+w-48,y+19,28,28});
     double content_x=x+226, content_w=std::max(0.0,w-254), content_y=y+145;
@@ -170,6 +181,7 @@ void SettingsPanel::rebuild_layout() {
     document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?740.0+theme_gallery_extra(content_w):
         section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
+    scroll_target_=scroll_start_=scroll_;
     const double top=content_y-scroll_, right=content_x+content_w;
     if (section_==SettingsSection::appearance) {
         const auto columns=theme_columns(content_w);
@@ -236,20 +248,22 @@ void SettingsPanel::rebuild_layout() {
     add(terminal_override_?"binding.confirm":"save",{x+w-pad-button_w,layout_.footer.y+23,button_w,34});
 }
 void SettingsPanel::ensure_focus_visible() {
+    cancel_scroll_at_display();
     const auto* item=find_control(layout_,focus_);
-    if (!item || focus_.starts_with("nav.") || focus_=="save" || focus_=="binding.confirm" || focus_=="cancel" || focus_=="close" || layout_.content.height<=0) return;
-    const double bottom=layout_.content.y+layout_.content.height;
+    if (!item || !item->content || layout_.content.height<=0) return;
+    const double before=scroll_,bottom=layout_.content.y+layout_.content.height;
     if (item->bounds.y<layout_.content.y) scroll_-=layout_.content.y-item->bounds.y;
     else if (item->bounds.y+item->bounds.height>bottom) scroll_+=item->bounds.y+item->bounds.height-bottom;
     rebuild_layout();
+    if (scroll_!=before) ++generation_;
 }
 void SettingsPanel::focus_control(std::string id) {
-    if (focus_==id) return;
+    if (focus_==id) {ensure_focus_visible();return;}
     focus_=std::move(id); ++generation_; ensure_focus_visible();
 }
 const SettingsControl* SettingsPanel::hit(Point point) const noexcept {
     if (!finite(point)) return nullptr;
-    for (const auto& item:layout_.controls) if (item.visible && item.enabled && item.bounds.contains(point)) return &item;
+    for (const auto& item:layout_.controls) if (item.visible && item.enabled && item.hit_bounds.contains(point)) return &item;
     return nullptr;
 }
 void SettingsPanel::changed() {
@@ -390,10 +404,12 @@ std::string& SettingsPanel::selected_color() {
 bool SettingsPanel::key(const KeyEvent& event) {
     if (!open_) return false;
     if (saving_ || !event.key_down || event.composing || event.alt_graph) return true;
+    finish_scroll();
     if (capturing_shortcut()) {capture_binding(event);return true;}
     const auto& key=event.chord.key;
     const auto modifiers=event.chord.modifiers;
     if (editing_color_) {
+        ensure_focus_visible();
         if (key=="ESCAPE") {editing_color_=false;color_input_.clear();}
         else if (key=="BACKSPACE" && !color_input_.empty()) color_input_.pop_back();
         else if (key=="ENTER") {
@@ -415,7 +431,7 @@ bool SettingsPanel::key(const KeyEvent& event) {
             const auto count=static_cast<int>(order.size()), step=modifiers==CommandModifier::shift?-1:1;
             focus_control(order[static_cast<std::size_t>((index+step+count)%count)]);
         }
-    } else if ((key=="ENTER" || key=="SPACE") && modifiers==CommandModifier::none) activate(focus_);
+    } else if ((key=="ENTER" || key=="SPACE") && modifiers==CommandModifier::none) {ensure_focus_visible();activate(focus_);}
     else if (key=="ENTER" && (modifiers==CommandModifier::control || modifiers==CommandModifier::command)) request_save();
     else if ((key=="LEFT" || key=="RIGHT" || key=="UP" || key=="DOWN") && modifiers==CommandModifier::none) {
         const int direction=(key=="LEFT" || key=="UP")?-1:1;
@@ -480,12 +496,15 @@ void SettingsPanel::adjust_opacity(Point p,bool blur) {
 bool SettingsPanel::pointer_down(Point point) {
     if (!open_) return false;
     if (saving_) return true;
+    cancel_scroll_at_display();
     const auto* item=hit(point);
     pressed_=item?item->id:"";
     if (item) {
         const auto id=item->id;
         if (editing_color_ && id!="appearance.color.value") {editing_color_=false;color_input_.clear();error_.clear();}
-        focus_control(id);
+        // Pointer focus must not move a partially visible target out from under
+        // the press. Keyboard traversal still reveals the complete control.
+        if (focus_!=id) {focus_=id;++generation_;}
         if (id=="appearance.opacity" || id=="appearance.blur") {dragging_opacity_=true;dragging_blur_=id=="appearance.blur";adjust_opacity(point,dragging_blur_);}
     }
     ++generation_;return true;
@@ -508,18 +527,72 @@ bool SettingsPanel::pointer_up(Point point) {
     return true;
 }
 void SettingsPanel::pointer_cancel() noexcept {
+    cancel_scroll_at_display();
     if (dragging_opacity_ || !pressed_.empty() || !hover_.empty()) ++generation_;
     dragging_opacity_=false;dragging_blur_=false;pressed_.clear();hover_.clear();
 }
-bool SettingsPanel::wheel(Point point,double lines) {
-    if (!open_) return false;
-    if (!saving_ && finite(point) && std::isfinite(lines) && layout_.content.contains(point)) {
-        scroll_-=std::clamp(lines,-50.0,50.0)*36.0;++generation_;rebuild_layout();
+bool SettingsPanel::set_scroll_offset(double value) {
+    const auto next=std::clamp(value,0.0,std::max(0.0,document_height_-layout_.content.height));
+    if (next==scroll_) return false;
+    const double translation=scroll_-next;scroll_=next;
+    const auto viewport=intersection(layout_.content,{0,0,viewport_.width,viewport_.height});
+    for (auto& control:layout_.controls) if (control.content) {
+        control.bounds.y+=translation;
+        control.hit_bounds=intersection(control.bounds,viewport);
+        control.visible=control.hit_bounds.width>0 && control.hit_bounds.height>0;
     }
+    if (layout_.preview.width>0 && layout_.preview.height>0) layout_.preview.y+=translation;
+    ++generation_;return true;
+}
+void SettingsPanel::cancel_scroll_at_display() noexcept {
+    scroll_animating_=false;scroll_target_=scroll_start_=scroll_;scroll_started_ms_=scroll_sampled_ms_=0;
+}
+void SettingsPanel::finish_scroll() {
+    if (scroll_animating_) set_scroll_offset(scroll_target_);
+    cancel_scroll_at_display();
+}
+bool SettingsPanel::tick_scroll(std::uint64_t now_ms) {
+    if (!scroll_animating_ || now_ms<=scroll_sampled_ms_) return false;
+    scroll_sampled_ms_=now_ms;
+    // Short, finite ease-out, never an exponential tail or spring. The final
+    // frame lands exactly even after a delayed wake, and then has no deadline.
+    constexpr double duration_ms=90;
+    const auto elapsed=now_ms>=scroll_started_ms_?now_ms-scroll_started_ms_:0;
+    const double t=std::min(1.0,double(elapsed)/duration_ms),remaining=1-t;
+    const bool changed=set_scroll_offset(t>=1?scroll_target_:
+        scroll_start_+(scroll_target_-scroll_start_)*(1-remaining*remaining*remaining));
+    if (t>=1) cancel_scroll_at_display();
+    return changed;
+}
+bool SettingsPanel::wheel_pixels(Point point,double delta,std::uint64_t now_ms,bool animate_discrete) {
+    if (!open_) return false;
+    if (saving_ || dragging_opacity_ || !finite(point) || !std::isfinite(delta) || delta==0 || !layout_.content.contains(point)) return true;
+    const auto maximum=std::max(0.0,document_height_-layout_.content.height);
+    // Preserve same-direction distance. Reversals discard the old residual so
+    // the display responds in the new direction immediately, with no tug-back.
+    const bool same_direction=animate_discrete && scroll_animating_ && ((delta>0)==(scroll_target_>scroll_));
+    if (scroll_animating_) now_ms=std::max(now_ms,scroll_sampled_ms_);
+    if (same_direction) tick_scroll(now_ms);
+    const double target=std::clamp((same_direction?scroll_target_:scroll_)+std::clamp(delta,-32768.0,32768.0),0.0,maximum);
+    if (!pressed_.empty() || !hover_.empty()) {pressed_.clear();hover_.clear();++generation_;}
+    cancel_scroll_at_display();
+    if (!animate_discrete) {set_scroll_offset(target);cancel_scroll_at_display();return true;}
+    const double distance=target-scroll_;
+    if (distance==0) return true;
+    // A small immediate response removes one-frame latency without returning
+    // to a full-notch jump; the remainder settles within 90 ms of this packet.
+    set_scroll_offset(scroll_+std::copysign(std::min(8.0,std::abs(distance)*.15),distance));
+    scroll_start_=scroll_;scroll_target_=target;scroll_started_ms_=scroll_sampled_ms_=now_ms;
+    scroll_animating_=scroll_!=scroll_target_;
     return true;
+}
+bool SettingsPanel::wheel(Point point,double lines) {
+    if (!std::isfinite(lines)) return open_;
+    return wheel_pixels(point,-std::clamp(lines,-50.0,50.0)*36.0,0,false);
 }
 void SettingsPanel::request_save() {
     if (!open_ || saving_) return;
+    finish_scroll();
     const auto valid=validate_config(draft_,platform_);
     if (!valid) {error_=bounded_message(valid.error);++generation_;return;}
     capture_command_.clear();terminal_override_.reset();error_.clear();saving_=true;dragging_opacity_=false;dragging_blur_=false;pressed_.clear();
@@ -527,6 +600,7 @@ void SettingsPanel::request_save() {
 }
 void SettingsPanel::cancel() {
     if (!open_ || saving_) return;
+    cancel_scroll_at_display();
     pending_=SettingsAction{SettingsActionKind::cancel,original_};
     draft_=original_;initial_draft_=original_;loaded_changes_=false;open_=false;capture_command_.clear();terminal_override_.reset();dragging_opacity_=false;dragging_blur_=false;pressed_.clear();++generation_;
 }
@@ -572,15 +646,20 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
     // dims underlying shapes and text together without mutating their scene.
     const auto first_text=scene.texts.size();
     const Rect window{0,0,viewport_.width,viewport_.height};
+    bool painting_content=false;
     auto box=[&](Rect r,Color fill,Color stroke=transparent,double radius=0,double weight=0,bool replace=false,std::optional<Rect> clip={}) {
-        r=intersection(r,clip?*clip:window);if (r.width<=0 || r.height<=0) return;
+        auto viewport=intersection(window,clip?*clip:painting_content?layout_.content:window);
+        const auto visible=intersection(r,viewport);if (visible.width<=0 || visible.height<=0) return;
+        // Keep rounded corners and stroke paths at their original positions.
         scene.primitives.push_back({pixels(r),fill,stroke,float(radius*scale),float(weight*scale),ChromePrimitiveKind::rectangle,replace});
+        scene.primitives.back().clip=pixels(viewport);
     };
     auto line=[&](double x,double y,double width,Color color) {box({x,y,width,1},color);};
     auto text=[&](Rect r,std::string value,Color color,float size=13,bool bold=false,std::string family="Segoe UI Variable Text",bool content=false,ChromeTextAlignment alignment=ChromeTextAlignment::leading) {
-        if (content && !contains(layout_.content,r)) return;
-        r=intersection(r,content?layout_.content:p);if (r.width<=0 || r.height<=0) return;
+        const auto viewport=intersection(window,(content || painting_content)?layout_.content:p);
+        const auto visible=intersection(r,viewport);if (visible.width<=0 || visible.height<=0) return;
         scene.texts.push_back({pixels(r),std::move(value),color,size,bold,std::move(family),alignment});
+        scene.texts.back().clip=pixels(viewport);
     };
     auto label=[&](Rect r,std::string value,Color color,float size=13,bool bold=false,bool content=false) {text(r,std::move(value),color,size,bold,"Segoe UI Variable Text",content);};
     auto button=[&](std::string_view id,std::string title,bool selected=false,bool primary=false) {
@@ -615,7 +694,8 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
     if (!layout_.compact) {
         box({p.x+1,p.y+77,207,std::max(0.0,p.height-156)},nav_color);
         box({p.x+208,p.y+78,1,std::max(0.0,p.height-157)},border);
-        label({p.x+30,p.y+84,150,16},"PREFERENCES",subdued,10,true);
+        const Rect preferences{p.x+30,p.y+84,150,16};
+        if (contains(layout_.navigation,preferences)) label(preferences,"PREFERENCES",subdued,10,true);
 
     }
     const std::array<std::pair<std::string_view,std::string_view>,4> nav{{{"nav.appearance","Appearance"},{"nav.shell","Shell"},{"nav.shortcuts","Shortcuts"},{"nav.ribbon","Ribbon"}}};
@@ -654,6 +734,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         label({content.x,top+y,std::max(0.0,width),23},std::move(title_text),ink,13,true,true);
         label({content.x,top+y+23,std::max(0.0,width),18},std::move(help),subdued,11,false,true);
     };
+    painting_content=true;
     if (section_==SettingsSection::appearance) {
         const auto preview=layout_.preview;
         content_box(preview,canvas,border,7,1);
@@ -793,6 +874,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             label({r.x+r.width-shortcut_width-12,r.y+7,shortcut_width,21},capturing?"Press keys…":binding_label(draft_,command.id,platform_),capturing?accent:muted,11,capturing,true);
         }
     }
+    painting_content=false;
     if (document_height_>content.height && content.height>20) {
         const double thumb=std::max(22.0,content.height*content.height/document_height_);
         const double y=content.y+scroll_/(document_height_-content.height)*std::max(0.0,content.height-thumb);
@@ -842,7 +924,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         auto behind=[&](Point center,std::size_t before) {
             while (before>first_primitive) {
                 const auto& primitive=scene.primitives[--before];
-                if (primitive.fill.a==255 && Rect{primitive.rect.x,primitive.rect.y,primitive.rect.width,primitive.rect.height}.contains(center))
+                if (primitive.fill.a==255 && (!primitive.clip || Rect{primitive.clip->x,primitive.clip->y,primitive.clip->width,primitive.clip->height}.contains(center)) && Rect{primitive.rect.x,primitive.rect.y,primitive.rect.width,primitive.rect.height}.contains(center))
                     return primitive.fill;
             }
             return high_background_;

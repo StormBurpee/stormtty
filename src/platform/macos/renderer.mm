@@ -209,7 +209,7 @@ struct Renderer::Impl {
         [encoder setFragmentTexture:image atIndex:0];[encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     }
     bool clip(id<MTLRenderCommandEncoder> encoder,PixelRect r) {
-        if(!finite(r))return false;
+        if(!finite(r)||r.width<=0||r.height<=0)return false;
         const auto x=std::clamp(std::floor(r.x),0.f,float(width));
         const auto y=std::clamp(std::floor(r.y),0.f,float(height));
         const auto right=std::clamp(std::ceil(r.x+r.width),0.f,float(width));
@@ -449,6 +449,9 @@ struct Renderer::Impl {
             for(const auto& item:chrome_paint_order(scene)) {
                 if(item.kind==ChromeDrawKind::primitive) {
                     const auto& primitive=scene.primitives[item.index];
+                    // Reset for every item, including the first fixed item after
+                    // scroll content. Raster textures keep their original bounds.
+                    if(!clip(encoder,primitive.clip.value_or(PixelRect{0,0,float(width),float(height)})))continue;
                     if(!finite(primitive.rect)||!std::isfinite(primitive.stroke_width)||!std::isfinite(primitive.radius))continue;
                     const bool line=primitive.kind==ChromePrimitiveKind::line;
                     if(!line&&primitive.radius<=0&&primitive.stroke_width<=0){draw(encoder,white,primitive.rect,primitive.fill,primitive.background_replace);continue;}
@@ -471,6 +474,7 @@ struct Renderer::Impl {
                 } else {
                     // Chrome text is small and infrequent; row text is the bounded cache.
                     const auto& label=scene.texts[item.index];
+                    if(!clip(encoder,label.clip.value_or(PixelRect{0,0,float(width),float(height)})))continue;
                     if(!finite(label.rect)||label.text.empty()||!label.color.a||label.text.size()>65536||!std::isfinite(label.size_dip)||label.size_dip<1||label.size_dip>256)continue;
                     const auto w=static_cast<std::uint32_t>(std::max(0.f,std::ceil(label.rect.width))),h=static_cast<std::uint32_t>(std::max(0.f,std::ceil(label.rect.height)));
                     if(!w||!h||std::uint64_t(w)*h*4>4u*1024u*1024u||std::uint64_t(w)*h*4>max_transient_bytes-transient)continue;

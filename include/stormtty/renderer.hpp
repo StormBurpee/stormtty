@@ -71,6 +71,9 @@ struct ChromePrimitive {
     // For line: rect.x/y is start and x+width/y+height is end.
     bool background_replace{}; // Material fill replaces canvas alpha; never fade text.
     ChromeZOrder z{};
+    // Physical viewport independent of geometry: clip paint, never resize/reflow it.
+    // Native masks cover outward-rounded physical pixels at fractional DPI.
+    std::optional<PixelRect> clip{};
     bool operator==(const ChromePrimitive&) const = default;
 };
 enum class ChromeTextAlignment { leading, center, trailing };
@@ -84,6 +87,8 @@ struct ChromeText {
     ChromeTextAlignment alignment{ChromeTextAlignment::leading}; // Per label, never terminal cells.
     ChromeZOrder z{};
     bool wrap{}; // Owned multiline notices only; other chrome stays single-line.
+    // Preserve the full layout/baseline when a scroll viewport cuts through glyphs.
+    std::optional<PixelRect> clip{};
     bool operator==(const ChromeText&) const = default;
 };
 struct WindowScene {
