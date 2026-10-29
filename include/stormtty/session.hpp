@@ -47,6 +47,9 @@ public:
     SessionSendResult paste(std::string, bool allow_unsafe = false);
     SessionSendResult mouse(MouseInput);
     SessionSendResult focus(bool);
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+    SessionSendResult qualification_typing_phase(bool arm);
+#endif
     SessionSendResult select(std::uint16_t start_column, std::uint16_t start_row,
                              std::uint16_t end_column, std::uint16_t end_row,
                              bool rectangle = false);
