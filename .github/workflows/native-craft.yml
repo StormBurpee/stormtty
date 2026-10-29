@@ -40,7 +40,7 @@ jobs:
       - name: Configure isolated native UI build
         run: cmake -S . -B build-ui -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF -DSTORMTTY_TEST_INK=OFF
       - name: Build native app and layout/renderer checks
-        run: cmake --build build-ui --parallel 2 --target stormtty terminal_search_tests window_geometry_tests core_commands_tests renderer_smoke ui_colors_tests settings_panel_tests
+        run: cmake --build build-ui --parallel 2 --target stormtty terminal_tests terminal_search_tests window_geometry_tests core_commands_tests renderer_smoke ui_colors_tests settings_panel_tests
       - name: Exercise native keyboard flow and capture craft states
         id: capture
         shell: python
@@ -64,6 +64,8 @@ jobs:
               if mode=='layout' and 'Native palette ownership smoke:' not in log: failures.append('layout-input-ownership')
               if mode=='settings' and 'Native Settings loading intent: held completion, Escape, immediate reopen and latest binding reuse same owned worker.' not in log: failures.append('settings-loading-intent')
               if mode=='settings' and 'Native theme gallery: nine preset cards, normal3/narrow2 columns' not in log: failures.append('theme-gallery')
+              if mode=='layout' and 'Native background summary:' not in log: failures.append('background-summary')
+              if mode=='projects' and 'Native background attention:' not in log: failures.append('background-attention')
           expected=['commands','end','narrow','fuzzy','no-results','background']
           missing=[name for name in expected if not (artifacts/('craft-projects-palette-'+name+'.png')).is_file()]
           expected_startup=['craft-projects-startup-prepared.png','craft-projects-startup-exposed.png','craft-settings-startup-prepared.png','craft-settings-startup-exposed.png','craft-projects-workspace-focus-000ms.png']
@@ -72,6 +74,7 @@ jobs:
           missing.extend('find-'+name for name in expected_find if not (artifacts/('craft-projects-find-'+name+'.png')).is_file())
           expected_navigator=['normal','preview','narrow-workspaces','narrow-terminals','empty']
           missing.extend('navigator-'+name for name in expected_navigator if not (artifacts/('craft-projects-navigator-'+name+'.png')).is_file())
+          missing.extend(name for name in ['craft-layout-background-navigator.png','craft-projects-background-finished-navigator.png'] if not (artifacts/name).is_file())
           expected_gallery=['normal','narrow','high-contrast-fixture']
           missing.extend('gallery-'+name for name in expected_gallery if not (artifacts/('craft-settings-theme-gallery-'+name+'.png')).is_file())
           expected_semantic=['craft-settings-appearance-blur-saved-reopened.png','craft-settings-appearance-shell-same-theme.png']
@@ -87,7 +90,7 @@ jobs:
           if-no-files-found: error
       - name: Run layout and renderer checks
         if: always() && steps.capture.outcome != 'skipped'
-        run: ctest --test-dir build-ui -R "^(terminal_search_tests|window_geometry_tests|core_commands_tests|renderer_smoke|ui_colors_tests|settings_panel_tests)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
+        run: ctest --test-dir build-ui -R "^(terminal_tests|terminal_search_tests|window_geometry_tests|core_commands_tests|renderer_smoke|ui_colors_tests|settings_panel_tests)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
       - name: Preserve focused test diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

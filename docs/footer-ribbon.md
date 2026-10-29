@@ -46,3 +46,42 @@ On Windows, capture these states at 100% and 150% DPI:
    contrast; inspect screenshots for readable labels and focus outlines.
 
 No live Codex process, authentication or task is needed or authorized by this test.
+
+## Compact workspace summary contract
+
+Hosts can opt into `RibbonHostData::compact_background` without changing any
+saved binding ID, order, visibility or legacy chip layout. In this mode
+`background.overflow` is the single workspace Navigator target, and `chips` is
+empty. Do not route it into a second picker or use its index as a restore target.
+The host supplies a fresh `WorkspaceBackgroundSummary` by iterating only the
+active workspace's parked placements and calling `add(unread_completion)`.
+`label()` is `Background N`; `completion_label()` is `N finished`, counting
+terminals with unread explicit command completions, not completed commands or
+exited shells. Its accessible label spells out this distinction. A later command
+can be running while that terminal still has an unread prior completion.
+
+Set `background_attention` from `summary.unread() != 0`. Like errors, unread
+completion remains reachable if customization hides the quiet binding. Merely
+opening or previewing the Navigator must not erase attention; remove its entry
+only after a successful restore (existing `ParkedAttention` lifetime contract).
+Quiet hidden Background remains available through commands. Compact narrow
+layout preserves visible Background, session errors and agent attention before
+ordinary bindings, dividing their space if necessary. Clock is the first
+ordinary binding to lose admission. All placements still follow saved order.
+The host should truncate labels in small targets and provide the complete
+accessible/tooltip label; geometry never copies a terminal title or path.
+
+`terminal_status_label(info)` gives terminal lifecycle precedence over OSC
+metadata. Only an explicit running command phase says `Command running`; an
+integration-unknown live shell says `Terminal open`. A matching explicit
+completion says `Command finished`, while process exit says `Terminal exited`.
+This display helper grants no process control, inferred progress, CPU health,
+elapsed-time or Stop-command semantics. Use 12 DIP metadata in the native host;
+this portable change does not itself change native typography or animations.
+
+Focused portable tests additionally cover empty/one/many summaries, very long
+untrusted titles, unknown integration, completion followed by a new command,
+repark baseline, lifecycle precedence, hidden/unread overrides and both saved
+orders across widths 1–1499 with zero/one/10,000 parked terminals. Native Windows
+rendering, DPI, keyboard and mouse behavior still require host integration and
+native verification.

@@ -1,4 +1,6 @@
 #include "stormtty/native_window.hpp"
+#include "stormtty/workspace_ribbon.hpp"
+#include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
 #include "stormtty/terminal_find.hpp"
 #include "stormtty/workspace_navigator.hpp"
@@ -451,5 +453,69 @@ int main() {
     require(error_footer.status.width>0,"session error cannot be hidden");
     const auto attention=layout_session_footer({0,700,200,26},3,true,true,true,true,ribbon_config.ribbon,{true,true});
     require(attention.agent.width>0,"essential agent attention cannot be hidden");
+    // Workspace summary uses explicit unread completions, never title/command text.
+    WorkspaceBackgroundSummary summary;
+    require(summary.label()=="Background 0" && summary.completion_label().empty(),"empty summary is quiet");
+    SessionInfo observed; observed.state=SessionState::running;
+    observed.title=std::string(100000,'x');
+    require(terminal_status_label(observed)=="Terminal open","unknown integration never implies running command");
+    ParkedAttention unread(observed);
+    observed.command={CommandPhase::running,1,0,std::nullopt};
+    require(terminal_status_label(observed)=="Command running","explicit OSC command may say running");
+    require(unread.observe(observed)==ParkedNotice::none,"running is not completion");
+    observed.command={CommandPhase::completed,1,1,7};
+    require(terminal_status_label(observed)=="Command finished · exit 7","command result stays distinct from terminal exit");
+    require(unread.observe(observed)==ParkedNotice::command_finished,"explicit end creates unread");
+    summary.add(unread.unread_completion());
+    require(summary.label()=="Background 1" && summary.completion_label()=="1 finished","one terminal summary");
+    observed.command={CommandPhase::running,2,1,7};
+    require(unread.observe(observed)==ParkedNotice::none && unread.unread_completion(),"new command preserves old unread completion");
+    require(terminal_status_label(observed)=="Command running","old result is not current command status");
+    summary.add(false);summary.add(true);
+    require(summary.label()=="Background 3" && summary.completion_label()=="2 finished","many terminals count unread terminals, not commands");
+    require(summary.accessible_label().find("unread command completions")!=std::string::npos,"summary explains completion scope");
+    observed.state=SessionState::exited; observed.exit_code=0;
+    require(terminal_status_label(observed)=="Terminal exited · exit 0","terminal lifecycle wins over stale running hint");
+    observed.state=SessionState::failed;
+    require(terminal_status_label(observed)=="Terminal failed","failed terminal does not report command finished");
+    observed.state=SessionState::closing;
+    require(terminal_status_label(observed)=="Terminal closing","closing terminal is explicit");
+    observed.state=SessionState::starting;
+    require(terminal_status_label(observed)=="Terminal starting","starting terminal is explicit");
+    observed.state=SessionState::running; observed.command.phase=CommandPhase::interrupted;
+    require(terminal_status_label(observed)=="Command interrupted","interruption does not fabricate completion");
+    observed.command.phase=CommandPhase::completed;
+    require(terminal_status_label(observed)=="Terminal open","inconsistent old completion cannot label newer command finished");
+    ParkedAttention restored(observed);
+    require(!restored.unread_completion(),"successful restore and repark baseline acknowledges old completion");
+    RibbonConfig compact_config;
+    for(int reverse=0;reverse<2;++reverse) {
+        if(reverse) std::reverse(compact_config.order.begin(),compact_config.order.end());
+        for(const auto parked:{0u,1u,10000u}) for(int width=1;width<1500;++width) {
+            const auto f=layout_session_footer({10,700,double(width),26},parked,true,true,true,true,
+                compact_config,{true,true,true,true,parked!=0});
+            require(f.background.chips.empty(),"compact summary never creates per-terminal chips");
+            require(f.status.width>0 && f.agent.width>0 && (!parked || f.background.overflow.width>0),"narrow essential targets remain reachable");
+            const std::array<Rect,6> rects{f.directory,f.git,f.status,f.background.overflow,f.agent,f.clock};
+            for(std::size_t i=0;i<rects.size();++i) if(rects[i].width>0) {
+                require(rects[i].x>=10 && rects[i].x+rects[i].width<=10+width+0.000001,"compact bounds include nonzero workspace origin");
+                for(std::size_t j=i+1;j<rects.size();++j) if(rects[j].width>0)
+                    require(rects[i].x+rects[i].width<=rects[j].x+0.000001 || rects[j].x+rects[j].width<=rects[i].x+0.000001,"compact targets never overlap");
+            }
+            double prior=0;
+            for(const auto binding:compact_config.order) {
+                const auto& r=rects[ribbon_index(binding)];
+                if(r.width) {require(r.x>=prior,"compact layout preserves saved order");prior=r.x+r.width;}
+            }
+            if(width<280) require(f.clock.width==0,"clock yields before essential controls");
+        }
+    }
+    compact_config.hidden.fill(true);
+    auto compact=layout_session_footer({0,0,1000,26},3,true,true,true,true,compact_config,{false,false,false,true,false});
+    require(compact.background.overflow.width==0 && compact.status.width==0,"compact quiet hidden bindings stay hidden");
+    compact=layout_session_footer({0,0,1000,26},3,true,true,true,true,compact_config,{false,false,false,true,true});
+    require(compact.background.overflow.width>0,"unread completion stays reachable despite hidden background");
+    compact=layout_session_footer({0,0,1000,26},0,true,true,true,true,compact_config,{false,false,false,true,true});
+    require(compact.background.overflow.width==0,"stale attention cannot invent background placements");
     std::cout << "window geometry, input and managed shell profile tests passed\n";
 }
