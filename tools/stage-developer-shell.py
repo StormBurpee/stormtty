@@ -25,6 +25,64 @@ REQUIRED += tuple(name for name in CONFIG if name not in REQUIRED) + ("usr/bin/a
 
 REQUIRED += ("usr/bin/nano.exe", "usr/bin/file.exe", "usr/bin/msys-magic-1.dll", "usr/bin/msys-bz2-1.dll", "usr/bin/msys-lzma-5.dll", "usr/share/misc/magic.mgc")
 
+def create_private_runtime_directory(path):
+    """Create, never repair, the fresh runtime root using native state ACL policy.
+
+    CPython >= 3.12.4 tempfile parents grant OWNER RIGHTS, not a concrete user
+    SID. Do not carry that inherited grant into the final executable runtime.
+    A protected DACL at creation gives descendants only user/SYSTEM/admin rights;
+    renaming the directory preserves that policy. The verifier is unchanged.
+    """
+    if os.name != "nt":
+        path.mkdir(mode=0o700)
+        return
+    import ctypes
+    from ctypes import wintypes as w
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    security = ctypes.WinDLL("advapi32", use_last_error=True)
+    pointer = ctypes.c_void_p
+    class Attributes(ctypes.Structure):
+        _fields_ = [("length", w.DWORD), ("descriptor", pointer), ("inherit", w.BOOL)]
+    class SidAndAttributes(ctypes.Structure):
+        _fields_ = [("sid", pointer), ("attributes", w.DWORD)]
+    kernel.GetCurrentProcess.argtypes = []; kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]; kernel.CloseHandle.restype = w.BOOL
+    kernel.LocalFree.argtypes = [pointer]; kernel.LocalFree.restype = pointer
+    kernel.CreateDirectoryW.argtypes = [w.LPCWSTR, ctypes.POINTER(Attributes)]
+    kernel.CreateDirectoryW.restype = w.BOOL
+    security.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+    security.OpenProcessToken.restype = w.BOOL
+    security.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, pointer, w.DWORD, ctypes.POINTER(w.DWORD)]
+    security.GetTokenInformation.restype = w.BOOL
+    security.ConvertSidToStringSidW.argtypes = [pointer, ctypes.POINTER(pointer)]
+    security.ConvertSidToStringSidW.restype = w.BOOL
+    security.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [w.LPCWSTR, w.DWORD, ctypes.POINTER(pointer), ctypes.POINTER(w.DWORD)]
+    security.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = w.BOOL
+    def require(ok):
+        if not ok: raise ctypes.WinError(ctypes.get_last_error())
+    token = w.HANDLE(); sid_text = pointer(); descriptor = pointer()
+    try:
+        require(security.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)))
+        size = w.DWORD()
+        security.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # TokenUser
+        if not size.value: raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(size.value)
+        require(security.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)))
+        sid = ctypes.cast(buffer, ctypes.POINTER(SidAndAttributes)).contents.sid
+        require(security.ConvertSidToStringSidW(sid, ctypes.byref(sid_text)))
+        user = ctypes.wstring_at(sid_text)
+        sddl = "D:P(A;OICI;FA;;;" + user + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+        require(security.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None))
+        attributes = Attributes(ctypes.sizeof(Attributes), descriptor, False)
+        # CREATE_NEW semantics: an existing directory/link is an error, never a
+        # reason to change its permissions or populate it with executable files.
+        require(kernel.CreateDirectoryW(str(path), ctypes.byref(attributes)))
+    finally:
+        if descriptor: kernel.LocalFree(descriptor)
+        if sid_text: kernel.LocalFree(sid_text)
+        if token: kernel.CloseHandle(token)
+
+
 def validation_inputs(lock, preset):
     return [digest(lock), digest(preset), digest(Path(__file__))] + [digest(Path(__file__).with_name(name)) for name in CONFIG.values()]
 
@@ -163,7 +221,7 @@ def stage(source, destination, files, receipt):
             raise RuntimeError("Refusing to replace a destination not owned by build runtime staging")
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".stormtty-runtime-", dir=destination.parent) as temp:
-        fresh = Path(temp) / "new"; fresh.mkdir()
+        fresh = Path(temp) / "new"; create_private_runtime_directory(fresh)
         for name, expected in relative_files.items():
             target = fresh / name
             target.parent.mkdir(parents=True, exist_ok=True)

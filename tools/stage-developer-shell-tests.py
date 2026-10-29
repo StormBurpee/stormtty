@@ -2,6 +2,8 @@
 """Small offline integrity/ownership fixtures, not native shell execution."""
 import importlib.util
 import json
+import os
+import subprocess
 from pathlib import Path
 import shutil
 import tempfile
@@ -61,6 +63,68 @@ class StagingTests(unittest.TestCase):
         self.assertFalse(json.loads((target/stager.RECEIPT).read_text())["release_qualified"])
         stager.stage(self.root,target,files,receipt)
         self.assertEqual((target/"notices/THIRD-PARTY-NOTICES.txt").read_text(),"fixture notices preserved")
+
+    def test_private_creation_collision_preserves_existing_directory(self):
+        target = self.base / "existing"
+        target.mkdir()
+        sentinel = target / "sentinel"
+        sentinel.write_bytes(b"do not change")
+        before = target.stat()
+        with self.assertRaises(OSError): stager.create_private_runtime_directory(target)
+        self.assertEqual(sentinel.read_bytes(), b"do not change")
+        self.assertEqual(target.stat().st_mode, before.st_mode)
+
+    def test_failed_private_creation_never_publishes_or_leaves_temp(self):
+        files, receipt = self.validate()
+        target = self.base / "app/runtimes/zsh"
+        stager.stage(self.root, target, files, receipt)
+        original = (target / stager.RECEIPT).read_bytes()
+        create = stager.create_private_runtime_directory
+        for created in (False, True):
+            def fail(path):
+                if created: create(path)
+                raise OSError("authored staging failure")
+            with patch.object(stager, "create_private_runtime_directory", side_effect=fail):
+                with self.assertRaises(OSError): stager.stage(self.root, target, files, receipt)
+            self.assertEqual((target / stager.RECEIPT).read_bytes(), original)
+            self.assertEqual(list(target.parent.glob(".stormtty-runtime-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "native Windows ACL evidence")
+    def test_windows_staged_root_and_children_keep_private_acl_after_rename(self):
+        files, receipt = self.validate()
+        target = self.base / "app/runtimes/zsh"
+        stager.stage(self.root, target, files, receipt)
+        # Read only authored fixtures. Ask Windows for concrete ACE identities;
+        # this detects inherited OWNER RIGHTS as well as broad mutation grants.
+        script = r"""
+        $ErrorActionPreference = 'Stop'
+        $root = $env:STORMTTY_ACL_TEST_PATH
+        $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $rows = @($root, (Join-Path $root 'usr'), (Join-Path $root 'usr/bin/zsh.exe')) | ForEach-Object {
+          $acl = Get-Acl -LiteralPath $_
+          $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object {
+            @{sid=$_.IdentityReference.Value; allow=($_.AccessControlType -eq 'Allow'); inherited=$_.IsInherited}
+          })
+          @{owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; protected=$acl.AreAccessRulesProtected; rules=$rules}
+        }
+        @{user=$user; rows=@($rows)} | ConvertTo-Json -Depth 6 -Compress
+        """
+        environment = dict(os.environ, STORMTTY_ACL_TEST_PATH=str(target.resolve()))
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                                env=environment, capture_output=True, text=True, check=True, timeout=30)
+        data = json.loads(result.stdout)
+        with self.assertRaises(OSError): stager.create_private_runtime_directory(target)
+        after = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                               env=environment, capture_output=True, text=True, check=True, timeout=30)
+        self.assertEqual(json.loads(after.stdout), data)
+        allowed = {data['user'], 'S-1-5-18', 'S-1-5-32-544'}
+        self.assertTrue(data['rows'][0]['protected'])
+        for index, row in enumerate(data['rows']):
+            self.assertIn(row['owner'], allowed)
+            self.assertEqual({r['sid'] for r in row['rules']}, allowed)
+            self.assertTrue(all(r['allow'] for r in row['rules']))
+            if index: self.assertTrue(all(r['inherited'] for r in row['rules']))
+        self.assertEqual(list(target.parent.glob('.stormtty-runtime-*')), [])
 
     def test_nano_and_dependency_files_cannot_be_omitted(self):
         for name in ("usr/bin/nano.exe", "usr/bin/file.exe", "usr/bin/msys-magic-1.dll",

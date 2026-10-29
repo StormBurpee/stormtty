@@ -107,3 +107,55 @@ compiled trust, hash work and fallback behavior. Stage map: 1 policy creation;
 18 successfully adopted. Object is ancestor depth or inventory ordinal, never a
 path/name. This localizes build-vs-install rejection without treating an
 adoption failure as successful performance evidence.
+
+## ACL-localized run 40874789913 and fresh-staging correction
+
+Exact remote commit `8283a2c599d0bd82cf8c0597a9e826b90418ce7c`, tree
+`0020f41fb6d19d41d73b813dbedcd6f60c2787c0`, passed native build, no-op/repair,
+installed identity, GUID-isolated lifecycle and installed app smoke. Overall
+qualification **failed**: every build-tree fresh sample reported
+`SHIPPING_VERIFY stage=5 object=8 win32_error=0`. The eighth path component is
+`build/runtimes/zsh`'s final root: its handle opened, then owner/DACL policy
+rejected it before any inventory hashing. Rejection cost was .312–.408 ms;
+ordinary completion fallback and first-Tab checks succeeded. This is not successful
+build-tree seed performance evidence.
+
+All six installed fresh samples reached stage 18/adoption 1; warm samples skipped
+adoption. Complete fresh totals (min/median/max seconds) were inbox baseline
+2.379/2.391/2.401 versus seed 1.036/1.053/1.125, and packaged baseline
+2.347/2.370/2.447 versus seed 1.027/1.054/1.068. Included verification/publication
+was 520–555 ms. Warm baseline ranges were .396–.436 s versus seeded .473–.514 s;
+no warm gain is established. This opt-in diagnostic is **not main behavior** or a
+cold-OS-cache comparison. The separate durable process-death journal is absent
+and remains unqualified.
+
+Artifact `12897937394` was downloaded and archive SHA256 verified:
+`8310be0724b571521cc1d68f6d6140acc10b5d612f043975e8d56f8620839bce`.
+Application SHA256 was `2637d3dd007247a8e7a776590fcb0d92da732e45063d376fa6234560854d8bd3`.
+
+The staging source explains the build/install difference: it creates `new`
+inside `tempfile.TemporaryDirectory`, then renames it into the build runtime.
+[CPython v3.12.10's mkdir implementation](https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L5024-L5034)
+uses an inheritable protected SYSTEM/Administrators/OWNER RIGHTS DACL for mode
+0700, including `mkdtemp`. OWNER RIGHTS is not a concrete trusted SID in our
+verifier. The build root inherits this ACL; the installed copy inherits its new
+parent's ACL. Native evidence localizes rejection to the ACL policy, but does not
+itself record the offending ACE; the exact source establishes the staging path.
+
+The correction creates only the **new, owned staging runtime root** with the same
+explicit current-user/SYSTEM/Administrators protected inheritable DACL as native
+private state. Existing directories, source trees and system/user ancestor ACLs
+are never changed. Collision fails rather than repairing permissions. Descendants
+inherit concrete trusted SIDs, and rename retains their security descriptors.
+Runtime validation, hash/open/sharing/security gates and default-OFF remain
+unchanged. The stager source is already part of validation-input identity, so an
+owned prior staging output is regenerated rather than treated as an unchanged
+no-op.
+
+Regression coverage includes creation collision, preservation of existing output,
+cleanup before/after fresh-directory creation failure, and a Windows-only check
+of renamed root/child/file owner and exact allowed SIDs, child inheritance and
+collision ACL preservation. Diagnostic preflight now invokes the staging suite.
+Local Linux results: 25 staging tests passed, native ACL test skipped; all 23
+seed packaging/parser/workflow tests passed. The correction has **not run on
+Windows** until a separately reviewed root publication qualifies it.
