@@ -85,3 +85,14 @@ extended deadline converts a hang into success. This covers the app's actual
 HWND-first ordering, absent from the earlier renderer lifetime fixture. Passing
 it and the real settings-owned process gate qualifies the changed cleanup path;
 it does not establish the underlying driver's lock mechanism or hardware blur.
+
+The next teardown qualification records noninvasive native thread stacks from
+one additional synthetic `renderer_smoke --final-teardown` owned child when the
+existing strict gates fail. `tools/diagnose-renderer-teardown.py` uses the installed
+Windows SDK CDB, samples after 10 seconds, bounds debugger work at 20 seconds,
+and kills/reaps only its retained fixture/debugger handles. It neither retries a
+passing gate nor extends the app or CTest timeout; diagnostic success is not
+renderer success. No real user terminal or desktop process is inspected.
+The previous final-drain candidate moved the app stall to `ID3D11Device::Release`;
+the fixed matrix also stalled there with composition disabled, after
+`ClearState` and `Flush` returned. This disproves a ClearState-only explanation.
