@@ -43,7 +43,9 @@ inline std::vector<ProcessEnvironmentEntry> managed_shell_home_environment() {
         return std::nullopt;
     };
     const auto home=read(L"HOME");
-    std::vector<ProcessEnvironmentEntry> result{{"STORMTTY_EMPTY_HOME",home && home->empty()?"1":""}};
+    std::vector<ProcessEnvironmentEntry> result{{"STORMTTY_EMPTY_HOME",home && home->empty()?"1":""},
+        {"STORMTTY_NATIVE_ZSH_NO_DUMP",std::nullopt},
+        {"STORMTTY_NATIVE_ZSH_INIT_EVENT",std::nullopt}};
     if (home) return result; // Explicit Windows/POSIX/UNC/empty HOME is authoritative.
     std::optional<std::wstring> fallback;
     const auto drive=read(L"HOMEDRIVE"), path=read(L"HOMEPATH");
