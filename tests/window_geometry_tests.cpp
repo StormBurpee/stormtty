@@ -301,5 +301,31 @@ int main() {
     clock_config.appearance.show_clock=false;
     const auto clock_roundtrip=parse_config(serialize_config(clock_config,Platform::windows),Platform::windows);
     require(clock_roundtrip && !clock_roundtrip.config->appearance.show_clock,"clock preference persists");
+    // Declarative ribbon roundtrip, allowlist, priority and exact paint/hit geometry.
+    auto ribbon_config=default_config(Platform::windows);
+    ribbon_config.ribbon.hidden[ribbon_index(RibbonBinding::git)]=true;
+    std::swap(ribbon_config.ribbon.order[0],ribbon_config.ribbon.order[5]);
+    auto ribbon_roundtrip=parse_config(serialize_config(ribbon_config,Platform::windows),Platform::windows);
+    require(ribbon_roundtrip && ribbon_roundtrip.config->ribbon==ribbon_config.ribbon,"ribbon visibility/order persist");
+    require(!parse_config("version = 1\n[ribbon]\nhidden = [\"$(whoami)\"]\n",Platform::windows),"ribbon rejects executable/unknown binding");
+    require(!parse_config("version = 1\n[ribbon]\nhidden = [\"clock.local\",\"clock.local\"]\n",Platform::windows),"ribbon rejects duplicates");
+    for(int width=0;width<1500;++width) {
+        auto f=layout_session_footer({0,700,double(width),26},3,true,true,true,true,ribbon_config.ribbon);
+        require(f.git.width==0,"hidden git has no hitbox");
+        std::vector<Rect> rects{f.directory,f.git,f.status,f.clock,f.agent,f.background.overflow};
+        rects.insert(rects.end(),f.background.chips.begin(),f.background.chips.end());
+        for(std::size_t i=0;i<rects.size();++i) if(rects[i].width>0) {
+            require(rects[i].x>=0 && rects[i].x+rects[i].width<=width,"ribbon bounded at all widths");
+            for(std::size_t j=i+1;j<rects.size();++j) if(rects[j].width>0)
+                require(rects[i].x+rects[i].width<=rects[j].x || rects[j].x+rects[j].width<=rects[i].x,"ribbon has no overlap");
+        }
+    }
+    ribbon_config.ribbon.hidden.fill(true);
+    const auto hidden=layout_session_footer({0,700,1000,26},3,true,true,true,true,ribbon_config.ribbon);
+    require(hidden.directory.width==0 && hidden.background.chips.empty() && hidden.background.overflow.width==0 && hidden.clock.width==0,"hidden items have no controls");
+    const auto error_footer=layout_session_footer({0,700,200,26},3,true,true,true,true,ribbon_config.ribbon,{false,false,true});
+    require(error_footer.status.width>0,"session error cannot be hidden");
+    const auto attention=layout_session_footer({0,700,200,26},3,true,true,true,true,ribbon_config.ribbon,{true,true});
+    require(attention.agent.width>0,"essential agent attention cannot be hidden");
     std::cout << "window geometry, input and managed shell profile tests passed\n";
 }

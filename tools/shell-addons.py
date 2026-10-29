@@ -70,6 +70,21 @@ def patch_loader(data, revision):
     if data.count(first) != 1 or data.count(last) != 1: raise RuntimeError('OMZ completion patch no longer applies')
     begin, end = data.index(first), data.index(last)
     data = data[:begin] + b'if [[ $STORMTTY_EPHEMERAL == 1 ]]; then\n  compinit -i -D\n  unset -f _omz_git_head\nelse\n' + data[begin:end] + b'fi\n\n' + data[end:]
+    # Avoid two cold-state utility processes, without changing compinit's audit,
+    # cache freshness checks, lock protocol, or the upstream module set.
+    old = b'  command rm -f "$ZSH_COMPDUMP"'
+    if data.count(old) != 1: raise RuntimeError('OMZ absent dump patch no longer applies')
+    data = data.replace(old, b'  [[ ! -e "$ZSH_COMPDUMP" ]] || command rm -f "$ZSH_COMPDUMP"')
+    old = b'''  # Use `tee` in case the $ZSH_COMPDUMP filename is invalid, to silence the error
+  # See https://github.com/ohmyzsh/ohmyzsh/commit/dd1a7269#commitcomment-39003489
+  tee -a "$ZSH_COMPDUMP" &>/dev/null <<EOF
+
+$zcompdump_revision
+$zcompdump_fpath
+EOF'''
+    if data.count(old) != 1: raise RuntimeError('OMZ metadata append patch no longer applies')
+    data = data.replace(old, b'''  # StormTTY: builtin append, no utility process for fixed metadata.
+  { print -rl -- "" "$zcompdump_revision" "$zcompdump_fpath" >> "$ZSH_COMPDUMP" } 2>/dev/null''')
     return data
 
 def stage(root, cache, offline, records):

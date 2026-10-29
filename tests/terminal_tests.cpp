@@ -208,6 +208,26 @@ void live_theme_defaults() {
     std::thread foreign([&] { try { t.set_default_colors(original_fg, original_bg); } catch (const std::logic_error&) { foreign_rejected = true; } });
     foreign.join(); CHECK(foreign_rejected && t.snapshot() == stable);
 }
+void themed_ansi_palette() {
+    auto options=small();options.ansi.emplace();
+    for (auto& c:*options.ansi) c={40,50,60,255};
+    (*options.ansi)[1]={190,70,80,255};
+    TerminalCore t(options);t.feed("\x1b[31mR\x1b[38;2;1;2;3mT");
+    const auto before=t.snapshot();CHECK(before->lines[0]->cells[0].foreground==(*options.ansi)[1]);
+    auto edited=*options.ansi;edited[1]={100,110,120,255};
+    t.set_default_colors(before->foreground,before->background,edited);
+    CHECK(t.snapshot()->lines[0]->cells[0].foreground==edited[1]);
+    CHECK(t.snapshot()->lines[0]->cells[1]==before->lines[0]->cells[1]);
+    t.set_default_colors(before->foreground,before->background,options.ansi);
+    CHECK(t.snapshot()->lines[0]->cells==before->lines[0]->cells);
+    t.feed("\x1b]4;1;rgb:aa/bb/cc\a");
+    t.set_default_colors(before->foreground,before->background,edited);
+    CHECK((t.snapshot()->lines[0]->cells[0].foreground==Color{170,187,204,255}));
+    t.feed("\x1b]104;1\a");CHECK(t.snapshot()->lines[0]->cells[0].foreground==edited[1]);
+    edited[1].a=0;bool rejected=false;
+    try {t.set_default_colors(before->foreground,before->background,edited);} catch(const std::invalid_argument&) {rejected=true;}
+    CHECK(rejected);
+}
 void alternate_buffer() {
     TerminalCore t(small()); t.feed("primary"); auto primary = t.snapshot();
     t.feed("\x1b[?1049h\x1b[Halternate"); auto alternate = t.snapshot();
@@ -562,7 +582,7 @@ int main() {
         {"configured theme defaults/query replies", configured_theme_defaults_and_queries},
         {"theme OSC/reset/alpha validation", theme_overrides_reset_and_validation},
         {"live theme defaults/cancel/explicit colors", live_theme_defaults},
-        {"alternate buffer", alternate_buffer}, {"immutable row sharing", immutable_sharing},
+        {"ANSI theme preview/reset/truecolor", themed_ansi_palette}, {"alternate buffer", alternate_buffer}, {"immutable row sharing", immutable_sharing},
         {"resize and reflow", resize_and_wrap}, {"ConPTY/POSIX resize policy", backend_resize_policy}, {"DEC2026 exact pre-hold capture", hold_captures_exact_boundary},
         {"DEC2026 timeout and resize release", hold_timeout_and_resize}, {"back-to-back render holds", back_to_back_holds},
         {"ordered query/title/cwd/bell effects", queries_and_effects}, {"negotiated key encoding", key_encoding},

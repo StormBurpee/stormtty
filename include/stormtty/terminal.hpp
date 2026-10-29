@@ -3,6 +3,7 @@
 #include "stormtty/frame.hpp"
 #include "stormtty/shell_context.hpp"
 #include <chrono>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -24,6 +25,7 @@ struct TerminalOptions {
     // must be 255; background opacity is exclusively a renderer policy.
     std::optional<Color> default_foreground;
     std::optional<Color> default_background;
+    std::optional<std::array<Color,16>> ansi;
     bool resize_pull_scrollback{false}; // ConPTY must use false; POSIX may opt in.
     std::uint64_t image_budget_bytes{64u * 1024u * 1024u};
     std::uint64_t scrollback_budget_bytes{32u * 1024u * 1024u};
@@ -168,7 +170,7 @@ public:
     // Actor-only appearance update. Changes configured opaque RGB defaults,
     // preserving explicit ANSI/RGB cells and terminal-origin OSC overrides.
     // OSC 110/111 resets subsequently resolve to these latest defaults.
-    void set_default_colors(Color foreground, Color background);
+    void set_default_colors(Color foreground, Color background, std::optional<std::array<Color,16>> ansi = {});
     // Encoders return exact PTY bytes. Empty means intentionally suppressed.
     std::string encode_key(const KeyInput& event);
     std::string encode_mouse(const MouseInput& event);

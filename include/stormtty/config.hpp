@@ -1,7 +1,9 @@
 #pragma once
 
 #include "stormtty/commands.hpp"
+#include "stormtty/ribbon.hpp"
 #include <filesystem>
+#include <array>
 #include <map>
 #include <span>
 #include <string>
@@ -15,6 +17,7 @@ struct Theme {
     std::string foreground{"#EEEDEC"};
     std::string chrome{"#181D24"};
     std::string accent{"#8C9EFF"};
+    std::array<std::string,16> ansi{"#1D2027","#E06C75","#98C379","#E5C07B","#82AAFF","#C792EA","#89DDFF","#D8DEE9","#636D83","#F07178","#B5E890","#FFE08A","#A6C8FF","#DAB6FC","#B4F0FF","#FFFFFF"};
     auto operator<=>(const Theme&) const = default;
 };
 // Windows-only transport choice. Stable identity, never an absolute runtime path.
@@ -52,6 +55,7 @@ struct Config {
     Theme theme;
     AppearanceConfig appearance;
     FontConfig font;
+    RibbonConfig ribbon;
     std::size_t scrollback_lines{10000};
     WindowsConsoleBackend windows_console_backend{WindowsConsoleBackend::system};
     std::string default_profile{"default"};
@@ -69,6 +73,7 @@ struct ConfigParseResult {
 // Shared named palettes; config parsing and the Settings selector use one source.
 std::span<const Theme> builtin_themes();
 const Theme* find_builtin_theme(std::string_view name);
+bool theme_is_light(const Theme&) noexcept;
 Config default_config(Platform);
 // Strict bounded declarative StormTTY config v1. See config_format_documentation().
 // No includes, interpolation, script execution or silent partial reloads.

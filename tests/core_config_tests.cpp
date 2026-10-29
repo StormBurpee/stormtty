@@ -26,11 +26,17 @@ int main() { return run_core_tests("config", [] {
         custom.profiles[0].environment["EXAMPLE"] = "x\\y\t#literal"; custom.bindings.clear();
         auto parsed = parse_config(serialize_config(custom, platform), platform); CHECK(parsed); CHECK(*parsed.config == custom);
     }
-    CHECK(builtin_themes().size()==3);CHECK(!find_builtin_theme("not-a-theme"));
+    CHECK(builtin_themes().size()==8);CHECK(!find_builtin_theme("not-a-theme"));
     for (const auto& theme:builtin_themes()) {
         const auto parsed=parse_config("version = 1\n[theme]\nname = \""+theme.name+"\"",Platform::windows);
         CHECK(parsed && parsed.config->theme==theme);CHECK(find_builtin_theme(theme.name)==&theme);
     }
+    CHECK(!parse_config("version = 1\n[theme]\nansi16 = \"#112233\"",Platform::windows));
+    CHECK(!parse_config("version = 1\n[theme]\nansi1 = \"red\"",Platform::windows));
+    auto custom_ansi=default_config(Platform::windows);custom_ansi.theme.name="custom";custom_ansi.bindings.clear();
+    custom_ansi.theme.ansi[15]="#123456";
+    CHECK(parse_config(serialize_config(custom_ansi,Platform::windows),Platform::windows).config==custom_ansi);
+    CHECK(theme_is_light(*find_builtin_theme("daylight")) && !theme_is_light(*find_builtin_theme("midnight")));
     const auto graphite = default_config(Platform::windows);
     CHECK(graphite.theme.name == "graphite" && graphite.theme.background == "#11151B");
     CHECK(graphite.appearance.background_opacity == 0.94 && graphite.appearance.backdrop == BackdropPreference::acrylic);

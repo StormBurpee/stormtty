@@ -176,6 +176,38 @@ class ManagedTests(unittest.TestCase):
         result=subprocess.run([self.shell,'-dfic',command],env=self.env,cwd=self.root,capture_output=True,text=True,timeout=15)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(list(self.home.iterdir()),[])
+    def test_native_history_suggestions_do_not_fork_for_unmatched_text(self):
+        if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
+        # Execute the real pinned history strategy. Replacing only its async
+        # entry point makes any fork-path regression fail, including no match.
+        command = '''OSTYPE=msys; source "$ZDOTDIR/.zshrc"
+          [[ ${+ZSH_AUTOSUGGEST_USE_ASYNC} == 0 ]] || exit 20
+          _zsh_autosuggest_async_request() { return 91; }
+          print -s -- 'echo typing-history-fixture'
+          BUFFER='echo typing-history'; POSTDISPLAY=''
+          _zsh_autosuggest_fetch || exit 21
+          [[ $POSTDISPLAY == '-fixture' ]] || exit 22
+          BUFFER='git commit -m "unmatched typing fixture'; POSTDISPLAY='old'
+          _zsh_autosuggest_fetch || exit 23
+          [[ -z $POSTDISPLAY ]] || exit 24
+          exit 0
+        '''
+        # Feed separate interactive lines: zsh -c does not populate $history.
+        result=subprocess.run([self.shell,'-dfi'],input=command,env=self.env,cwd=self.root,capture_output=True,text=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+    @unittest.skipIf(os.name == 'nt', 'POSIX upstream policy')
+    def test_posix_keeps_upstream_async_suggestions(self):
+        if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
+        result=self.run_shell('[[ ${+ZSH_AUTOSUGGEST_USE_ASYNC} == 1 ]]')
+        self.assertEqual(result.returncode,0,result.stderr)
+    def test_native_custom_strategy_and_explicit_async_optin(self):
+        if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
+        for setup, check in [
+            ('ZSH_AUTOSUGGEST_STRATEGY=(completion)', '[[ $ZSH_AUTOSUGGEST_STRATEGY == completion ]]'),
+            ('ZSH_AUTOSUGGEST_USE_ASYNC=1', '[[ $ZSH_AUTOSUGGEST_STRATEGY == history ]]')]:
+            command='OSTYPE=msys; '+setup+'; source "$ZDOTDIR/.zshrc"; '+check+' && [[ ${+ZSH_AUTOSUGGEST_USE_ASYNC} == 1 ]]'
+            result=subprocess.run([self.shell,'-dfic',command],env=self.env,cwd=self.root,capture_output=True,text=True,timeout=15)
+            self.assertEqual(result.returncode,0,result.stderr)
     @unittest.skipIf(os.name == 'nt', 'POSIX umask fixture; Windows ACL policy separate')
     def test_cache_creation_respects_private_permissions_and_restores_umask(self):
         if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
@@ -203,9 +235,66 @@ class ManagedTests(unittest.TestCase):
         command='OSTYPE=msys; source "$ZDOTDIR/.zshrc"; [[ $STORMTTY_EPHEMERAL == 1 && -z ${STORMTTY_NATIVE_ZSH_STATE+x} ]]'
         result=subprocess.run([self.shell,'-dfic',command],env=self.env,cwd=self.root,capture_output=True,text=True,timeout=15)
         self.assertEqual(result.returncode,0,result.stderr)
+    @unittest.skipIf(os.name == 'nt', 'POSIX process-spy fixture, not native performance evidence')
+    def test_native_warm_state_does_not_spawn_mkdir(self):
+        state=self.root/'native-state'
+        (state/'cache/completions').mkdir(parents=True, mode=0o700)
+        spy=self.root/'bin'; spy.mkdir()
+        (spy/'mkdir').write_text('#!/bin/sh\nexit 97\n')
+        (spy/'mkdir').chmod(0o700)
+        self.env.update(STORMTTY_NATIVE_ZSH_STATE='/'+str(state), PATH=str(spy)+os.pathsep+self.env['PATH'])
+        code='OSTYPE=msys; source "$ZDOTDIR/.zshrc"; [[ $_stormtty_native_validated == 1 && $_stormtty_state == $STORMTTY_EXPECT_STATE ]]'
+        self.env['STORMTTY_EXPECT_STATE']='/'+str(state)
+        result=subprocess.run([self.shell,'-dfic',code],env=self.env,cwd=self.root,capture_output=True,text=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX process-spy fixture, not native performance evidence')
+    def test_cold_cache_metadata_without_tee_or_absent_dump_remove(self):
+        if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
+        spy=self.root/'bin'; spy.mkdir()
+        marker=self.root/'unexpected-process'
+        for name in ['tee','rm']:
+            real=shutil.which(name)
+            # rm for the compiler lock remains legitimate; missing-dump removal does not.
+            test='true' if name == 'tee' else '[ "$1" = "-f" ]'
+            (spy/name).write_text('#!/bin/sh\nif '+test+'; then echo invoked >> "'+str(marker)+'"; exit 97; fi\nexec "'+real+'" "$@"\n')
+            (spy/name).chmod(0o700)
+        self.env['PATH']=str(spy)+os.pathsep+self.env['PATH']
+        result=self.run_shell('[[ $STORMTTY_OMZ_LOADED == 1 && ${+_comps[ls]} == 1 ]]')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertFalse(marker.exists())
+        dump=next(p for p in (self.home/'.stormtty/zsh').glob('zcompdump-*') if p.suffix != '.zwc')
+        self.assertIn('#omz revision:',dump.read_text())
+        self.assertIn('#omz fpath:',dump.read_text())
+        timestamp=dump.stat().st_mtime_ns
+        result=self.run_shell('[[ ${+_comps[ls]} == 1 ]]')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(dump.stat().st_mtime_ns,timestamp)
+        self.assertFalse(marker.exists())
+
+    def test_stale_metadata_still_rebuilds_completion_cache(self):
+        if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
+        result=self.run_shell('[[ ${+_comps[ls]} == 1 ]]')
+        self.assertEqual(result.returncode,0,result.stderr)
+        dump=next(p for p in (self.home/'.stormtty/zsh').glob('zcompdump-*') if p.suffix != '.zwc')
+        dump.write_text(dump.read_text().replace('#omz revision:', '#stale revision:'))
+        result=self.run_shell('[[ ${+_comps[ls]} == 1 && $STORMTTY_OMZ_LOADED == 1 ]]')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('#omz revision:',dump.read_text())
+        self.assertNotIn('#stale revision:',dump.read_text())
+
     def test_custom_prompt_is_not_overwritten(self):
         result=self.run_shell('STORMTTY_PROMPT=custom; PROMPT="custom> "; false; _stormtty_precmd; [[ $? == 0 && $PROMPT == "custom> " && ${STORMTTY_CONTEXT[exit]} == 1 ]]')
         self.assertEqual(result.returncode,0,result.stderr)
+    @unittest.skipIf(os.name == 'nt', 'POSIX PTY test; actual Windows ConPTY editing requires native gate')
+    def test_interactive_native_history_policy_keeps_suggestion_editing(self):
+        if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')
+        # Select the MSYS module policy only, after POSIX state setup. This
+        # exercises actual ZLE widgets, not Windows console/fork behavior.
+        state=self.home/'.stormtty/zsh'; state.mkdir(parents=True,mode=0o700)
+        state.parent.chmod(0o700)
+        (state/'config.zsh').write_text('OSTYPE=msys\n')
+        self.test_interactive_failure_keeps_later_hooks_and_suggestion_editing()
     @unittest.skipIf(os.name == 'nt', 'POSIX PTY test; actual Windows ConPTY editing requires native gate')
     def test_interactive_failure_keeps_later_hooks_and_suggestion_editing(self):
         if not args.assets_cache: self.skipTest('pass --assets-cache for pinned source integration')

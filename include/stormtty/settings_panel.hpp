@@ -9,7 +9,7 @@
 
 namespace stormtty {
 
-enum class SettingsSection { appearance, shell, shortcuts };
+enum class SettingsSection { appearance, shell, shortcuts, ribbon };
 enum class SettingsActionKind { preview, save, cancel };
 struct SettingsAction {
     SettingsActionKind kind{};
@@ -89,6 +89,11 @@ private:
     void focus_control(std::string id);
     void ensure_focus_visible();
     void adjust_opacity(Point);
+    std::string& selected_color();
+    std::optional<Theme> custom_theme_;
+    unsigned color_index_{};
+    bool editing_color_{};
+    std::string color_input_;
     void request_save();
     void capture_binding(const KeyEvent&);
     void assign_binding(const KeyChord&, bool confirm_terminal_override);

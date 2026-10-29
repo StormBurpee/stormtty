@@ -65,6 +65,8 @@ void SettingsPanel::open(const Config& running, const Config& config, std::span<
     if (open_) return;
     original_=running; initial_draft_=config; draft_=config; profiles_.clear(); families_.clear(); pending_.reset();
     error_.clear(); capture_command_.clear(); terminal_override_.reset(); hover_.clear(); pressed_.clear();
+    custom_theme_=has_custom_theme(config)?std::optional<Theme>(config.theme):std::nullopt;
+    editing_color_=false; color_index_=0; color_input_.clear();
     open_=true; saving_=false; dragging_opacity_=false; scroll_=0;
     section_=SettingsSection::appearance; focus_="nav.appearance";
     const auto valid=validate_config(config,platform_);
@@ -140,43 +142,59 @@ void SettingsPanel::rebuild_layout() {
     add("close",{x+w-48,y+19,28,28});
     double content_x=x+226, content_w=std::max(0.0,w-254), content_y=y+145;
     if (layout_.compact) {
-        const double nav_y=y+76, nav_w=std::max(0.0,(w-2*pad-12)/3);
+        const double nav_y=y+76, nav_w=std::max(0.0,(w-2*pad-18)/4);
         layout_.navigation={x+pad,nav_y,w-2*pad,36};
         add("nav.appearance",{x+pad,nav_y,nav_w,36});
         add("nav.shell",{x+pad+nav_w+6,nav_y,nav_w,36});
         add("nav.shortcuts",{x+pad+(nav_w+6)*2,nav_y,nav_w,36});
+        add("nav.ribbon",{x+pad+(nav_w+6)*3,nav_y,nav_w,36});
         content_x=x+pad; content_w=std::max(0.0,w-2*pad); content_y=y+183;
     } else {
         layout_.navigation={x+16,y+84,180,std::max(0.0,h-178)};
         add("nav.appearance",{x+16,y+104,180,40});
         add("nav.shell",{x+16,y+150,180,40});
         add("nav.shortcuts",{x+16,y+196,180,40});
+        add("nav.ribbon",{x+16,y+242,180,40});
     }
     layout_.content={content_x,content_y,content_w,std::max(0.0,layout_.footer.y-content_y-16)};
-    document_height_=section_==SettingsSection::appearance?504.0:
+    document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?684.0:
         section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
     const double top=content_y-scroll_, right=content_x+content_w;
     if (section_==SettingsSection::appearance) {
-        layout_.preview={content_x,top+40,content_w,38};
-        const auto count=builtin_themes().size()+(has_custom_theme(initial_draft_)?1:0);
-        const double theme_width=std::max(0.0,(content_w-(count-1)*6)/count);
+        layout_.preview={content_x,top+116,content_w,64};
+        const double theme_width=std::max(0.0,(content_w-12)/3);
         std::size_t theme_index=0;
-        for (const auto& theme:builtin_themes()) add("appearance.theme."+theme.name,{content_x+theme_index++*(theme_width+6),top,theme_width,30},true);
-        if (has_custom_theme(initial_draft_)) add("appearance.theme.custom",{content_x+theme_index*(theme_width+6),top,theme_width,30},true);
+        const auto add_theme=[&](const std::string& name) {
+            const auto index=theme_index++;
+            add("appearance.theme."+name,{content_x+(index%3)*(theme_width+6),top+(index/3)*36,theme_width,30},true);
+        };
+        for (const auto& theme:builtin_themes()) add_theme(theme.name);
+        add_theme("custom");
+        const double edit_width=std::max(0.0,(content_w-8)/2);
+        add("appearance.color.field",{content_x,top+188,edit_width,32},true);
+        add("appearance.color.value",{content_x+edit_width+8,top+188,edit_width,32},true);
         const double cw=std::min(content_w*0.49,230.0);
-        add("font.family",{right-cw,top+94,cw,34},true);
-        add("font.decrease",{right-118,top+150,32,32},true,draft_.font.size_dip>6);
-        add("font.increase",{right-32,top+150,32,32},true,draft_.font.size_dip<72);
-        add("font.ligatures",{right-42,top+206,42,24},true);
-        add("appearance.opacity",{right-cw,top+262,cw,34},true);
+        add("font.family",{right-cw,top+274,cw,34},true);
+        add("font.decrease",{right-118,top+330,32,32},true,draft_.font.size_dip>6);
+        add("font.increase",{right-32,top+330,32,32},true,draft_.font.size_dip<72);
+        add("font.ligatures",{right-42,top+386,42,24},true);
+        add("appearance.opacity",{right-cw,top+442,cw,34},true);
         const double gap=5, sw=std::max(0.0,(content_w-3*gap)/4);
         for (std::size_t i=0;i<4;++i) {
             constexpr std::array ids{"auto","none","mica","acrylic"};
-            add(std::string("appearance.backdrop.")+ids[i],{content_x+i*(sw+gap),top+360,sw,32},true);
+            add(std::string("appearance.backdrop.")+ids[i],{content_x+i*(sw+gap),top+540,sw,32},true);
         }
-        add("appearance.motion",{right-cw,top+406,cw,34},true);
-        if (platform_==Platform::windows) add("appearance.clock",{right-42,top+462,42,24},true);
+        add("appearance.motion",{right-cw,top+586,cw,34},true);
+        if (platform_==Platform::windows) add("appearance.clock",{right-42,top+642,42,24},true);
+    } else if (section_==SettingsSection::ribbon) {
+        for(std::size_t i=0;i<draft_.ribbon.order.size();++i) {
+            const auto id=std::string(ribbon_bindings[ribbon_index(draft_.ribbon.order[i])].id);
+            const double y=top+i*66;
+            add("ribbon.toggle:"+id,{right-152,y,70,30},true);
+            add("ribbon.up:"+id,{right-76,y,34,30},true,i>0);
+            add("ribbon.down:"+id,{right-36,y,34,30},true,i+1<draft_.ribbon.order.size());
+        }
     } else if (section_==SettingsSection::shell) {
         const double offset=platform_==Platform::windows?142.0:0.0;
         if (platform_==Platform::windows) {
@@ -225,17 +243,33 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     if (id=="save") {request_save();return;}
     if (id=="binding.confirm" && terminal_override_) {assign_binding(*terminal_override_,true);return;}
     if (id.starts_with("nav.")) {
-        section_=id=="nav.shell"?SettingsSection::shell:id=="nav.shortcuts"?SettingsSection::shortcuts:SettingsSection::appearance;
+        section_=id=="nav.ribbon"?SettingsSection::ribbon:id=="nav.shell"?SettingsSection::shell:id=="nav.shortcuts"?SettingsSection::shortcuts:SettingsSection::appearance;
         capture_command_.clear(); terminal_override_.reset(); scroll_=0; ++generation_; rebuild_layout(); return;
     }
     if (id.starts_with("binding:")) {
         capture_command_=std::string(id.substr(8)); terminal_override_.reset(); error_.clear(); ++generation_; return;
     }
     const auto before=draft_;
-    if (id.starts_with("appearance.theme.")) {
+    if (id.starts_with("ribbon.")) {
+        const auto colon=id.find(':');
+        const auto binding=colon==std::string_view::npos?std::optional<RibbonBinding>{}:ribbon_binding(id.substr(colon+1));
+        if(binding) {
+            const auto index=ribbon_index(*binding);
+            auto found=std::find(draft_.ribbon.order.begin(),draft_.ribbon.order.end(),*binding);
+            if(id.starts_with("ribbon.toggle:")) {
+                if(*binding==RibbonBinding::clock) {draft_.appearance.show_clock=!(draft_.appearance.show_clock && !draft_.ribbon.hidden[index]);draft_.ribbon.hidden[index]=false;}
+                else draft_.ribbon.hidden[index]=!draft_.ribbon.hidden[index];
+            } else if(id.starts_with("ribbon.up:") && found!=draft_.ribbon.order.begin()) std::iter_swap(found,found-1);
+            else if(id.starts_with("ribbon.down:") && found+1!=draft_.ribbon.order.end()) std::iter_swap(found,found+1);
+        }
+    } else if (id.starts_with("appearance.theme.")) {
         const auto name=id.substr(std::string_view("appearance.theme.").size());
-        if (name=="custom" && has_custom_theme(initial_draft_)) draft_.theme=initial_draft_.theme;
+        if (name=="custom") { if (!custom_theme_) {custom_theme_=draft_.theme;custom_theme_->name="custom";} draft_.theme=*custom_theme_; }
         else if (const auto* theme=find_builtin_theme(name)) draft_.theme=*theme;
+    } else if (id=="appearance.color.field") {
+        color_index_=static_cast<unsigned>((static_cast<int>(color_index_)+direction+20)%20); ++generation_; return;
+    } else if (id=="appearance.color.value") {
+        editing_color_=true; color_input_.clear(); ++generation_; return;
     } else if (id=="font.family") {
         const auto found=std::find(families_.begin(),families_.end(),draft_.font.family);
         const auto index=found==families_.end()?0:static_cast<int>(found-families_.begin());
@@ -245,7 +279,10 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     else if (id=="font.increase") draft_.font.size_dip=std::clamp(draft_.font.size_dip+1.0,6.0,72.0);
     else if (id=="font.ligatures") draft_.font.ligatures=!draft_.font.ligatures;
     else if (id=="appearance.opacity") draft_.appearance.background_opacity=std::clamp(std::round((draft_.appearance.background_opacity+direction*0.01)*100)/100,0.0,1.0);
-    else if (id=="appearance.clock") draft_.appearance.show_clock=!draft_.appearance.show_clock;
+    else if (id=="appearance.clock") {
+        draft_.appearance.show_clock=!(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)]);
+        draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)]=false;
+    }
     else if (id=="appearance.motion") {
         const int current=static_cast<int>(draft_.appearance.reduced_motion);
         draft_.appearance.reduced_motion=static_cast<ReducedMotionPreference>((current+direction+3)%3);
@@ -313,12 +350,31 @@ void SettingsPanel::assign_binding(const KeyChord& chord,bool confirm_terminal_o
     if (!valid) {error_=bounded_message(valid.error);++generation_;rebuild_layout();return;}
     draft_=std::move(candidate); capture_command_.clear(); terminal_override_.reset(); focus_="nav.shortcuts"; changed();
 }
+std::string& SettingsPanel::selected_color() {
+    if (color_index_==0) return draft_.theme.background;
+    if (color_index_==1) return draft_.theme.foreground;
+    if (color_index_==2) return draft_.theme.chrome;
+    if (color_index_==3) return draft_.theme.accent;
+    return draft_.theme.ansi[color_index_-4];
+}
 bool SettingsPanel::key(const KeyEvent& event) {
     if (!open_) return false;
     if (saving_ || !event.key_down || event.composing || event.alt_graph) return true;
     if (capturing_shortcut()) {capture_binding(event);return true;}
     const auto& key=event.chord.key;
     const auto modifiers=event.chord.modifiers;
+    if (editing_color_) {
+        if (key=="ESCAPE") {editing_color_=false;color_input_.clear();}
+        else if (key=="BACKSPACE" && !color_input_.empty()) color_input_.pop_back();
+        else if (key=="ENTER") {
+            if (color_input_.size()==6) {
+                selected_color()="#"+color_input_; draft_.theme.name="custom";
+                custom_theme_=draft_.theme; editing_color_=false; changed();
+            } else error_="Enter six hexadecimal digits.";
+        } else if (modifiers==CommandModifier::none && key.size()==1 &&
+                   ((key[0]>='0' && key[0]<='9') || (key[0]>='A' && key[0]<='F')) && color_input_.size()<6) color_input_+=key;
+        ++generation_; return true;
+    }
     if (key=="ESCAPE") {cancel();return true;}
     if (key=="TAB" && (modifiers==CommandModifier::none || modifiers==CommandModifier::shift)) {
         std::vector<std::string> order;
@@ -333,12 +389,12 @@ bool SettingsPanel::key(const KeyEvent& event) {
     else if (key=="ENTER" && (modifiers==CommandModifier::control || modifiers==CommandModifier::command)) request_save();
     else if ((key=="LEFT" || key=="RIGHT" || key=="UP" || key=="DOWN") && modifiers==CommandModifier::none) {
         const int direction=(key=="LEFT" || key=="UP")?-1:1;
-        if (focus_=="font.family" || focus_=="appearance.motion" || focus_=="appearance.opacity") activate(focus_,direction);
+        if (focus_=="appearance.color.field" || focus_=="font.family" || focus_=="appearance.motion" || focus_=="appearance.opacity") activate(focus_,direction);
         else if (focus_.starts_with("nav.")) {
-            constexpr std::array ids{"nav.appearance","nav.shell","nav.shortcuts"};
+            constexpr std::array ids{"nav.appearance","nav.shell","nav.shortcuts","nav.ribbon"};
             const auto current=std::find(ids.begin(),ids.end(),focus_);
             const int index=current==ids.end()?0:static_cast<int>(current-ids.begin());
-            const auto id=ids[static_cast<std::size_t>((index+direction+3)%3)];
+            const auto id=ids[static_cast<std::size_t>((index+direction+4)%4)];
             focus_control(id); activate(id);
         } else if (focus_.starts_with("console.")) {
             const auto id=focus_=="console.system" && bundled_console_available_?"console.bundled":"console.system";
@@ -388,7 +444,9 @@ bool SettingsPanel::pointer_down(Point point) {
     const auto* item=hit(point);
     pressed_=item?item->id:"";
     if (item) {
-        const auto id=item->id; focus_control(id);
+        const auto id=item->id;
+        if (editing_color_ && id!="appearance.color.value") {editing_color_=false;color_input_.clear();error_.clear();}
+        focus_control(id);
         if (id=="appearance.opacity") {dragging_opacity_=true;adjust_opacity(point);}
     }
     ++generation_;return true;
@@ -517,14 +575,19 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         label({p.x+30,p.y+84,150,16},"PREFERENCES",subdued,10,true);
 
     }
-    const std::array<std::pair<std::string_view,std::string_view>,3> nav{{{"nav.appearance","Appearance"},{"nav.shell","Shell"},{"nav.shortcuts","Shortcuts"}}};
-    const std::string active=section_==SettingsSection::appearance?"nav.appearance":section_==SettingsSection::shell?"nav.shell":"nav.shortcuts";
+    const std::array<std::pair<std::string_view,std::string_view>,4> nav{{{"nav.appearance","Appearance"},{"nav.shell","Shell"},{"nav.shortcuts","Shortcuts"},{"nav.ribbon","Ribbon"}}};
+    const std::string active=section_==SettingsSection::ribbon?"nav.ribbon":section_==SettingsSection::appearance?"nav.appearance":section_==SettingsSection::shell?"nav.shell":"nav.shortcuts";
     for (const auto& [id,title]:nav) {
         const auto* c=find_control(layout_,id);if (!c || !c->visible) continue;
         const bool selected=id==active;
         if (selected || hover_==id || focus_==id) box(c->bounds,selected?selection:control_hover,focus_==id?accent:transparent,6,focus_==id?1:0);
         if (selected && !layout_.compact) box({c->bounds.x,c->bounds.y+11,2,18},accent,transparent,1);
-        const double offset=layout_.compact?12:42;
+        // Keep full semantic navigation IDs and section headings. Only the
+        // painted compact-tab label is shortened; hit geometry is unchanged.
+        const bool narrow_nav=layout_.compact && c->bounds.width<88;
+        const double offset=layout_.compact?(narrow_nav?8:12):42;
+        const std::string_view display_title=narrow_nav && id=="nav.appearance"?"Style":
+            narrow_nav && id=="nav.shortcuts"?"Keys":title;
         if (!layout_.compact) {
             if (id=="nav.shortcuts") {
                 const Color glyph=selected?accent:muted;
@@ -533,11 +596,11 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
                     box({c->bounds.x+18+column*4.0,c->bounds.y+18+row*4.0,2,1},glyph);
             } else label({c->bounds.x+14,c->bounds.y+8,24,24},id=="nav.appearance"?"Aa":">_",selected?accent:muted,12,true);
         }
-        label({c->bounds.x+offset,c->bounds.y,std::max(0.0,c->bounds.width-offset-8),c->bounds.height},std::string(title),selected?ink:muted,13,selected);
+        label({c->bounds.x+offset,c->bounds.y,std::max(0.0,c->bounds.width-offset-8),c->bounds.height},std::string(display_title),selected?ink:muted,13,selected);
     }
     const auto& content=layout_.content;
-    const std::string title=section_==SettingsSection::appearance?"Appearance":section_==SettingsSection::shell?(platform_==Platform::windows?"Shell and console":"Default shell"):"Keyboard shortcuts";
-    const std::string subtitle=section_==SettingsSection::appearance?"Font, transparency and motion.":section_==SettingsSection::shell?"For new tabs and panes":"Assign shortcuts to terminal actions.";
+    const std::string title=section_==SettingsSection::ribbon?"Footer ribbon":section_==SettingsSection::appearance?"Appearance":section_==SettingsSection::shell?(platform_==Platform::windows?"Shell and console":"Default shell"):"Keyboard shortcuts";
+    const std::string subtitle=section_==SettingsSection::ribbon?"Choose visible items and their left-to-right order.":section_==SettingsSection::appearance?"Theme, color, font and window material.":section_==SettingsSection::shell?"For new tabs and panes":"Assign shortcuts to terminal actions.";
     label({content.x,content.y-61,content.width,28},title,ink,21,true);
     label({content.x,content.y-31,content.width,20},subtitle,muted,12);
     const double top=content.y-scroll_, right=content.x+content.width;
@@ -550,21 +613,33 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         const auto preview=layout_.preview;
         content_box(preview,canvas,border,7,1);
         content_box({preview.x,preview.y+12,2,preview.height-24},accent,transparent,1);
-        for (const auto& theme:builtin_themes()) button("appearance.theme."+theme.name,theme_title(theme.name),draft_.theme==theme);
-        if (has_custom_theme(initial_draft_)) button("appearance.theme.custom","Custom",draft_.theme==initial_draft_.theme);
+        for (const auto& theme:builtin_themes()) {
+            const auto id="appearance.theme."+theme.name;
+            button(id,theme_title(theme.name),draft_.theme==theme);
+            if (const auto* c=find_control(layout_,id);c && c->visible && !high_contrast_) {
+                box({c->bounds.x+6,c->bounds.y+8,3,14},theme_color(theme.accent),transparent,1.5);
+            }
+        }
+        button("appearance.theme.custom","Custom",has_custom_theme(draft_));
+        constexpr std::array color_names{"Background","Foreground","Chrome","Accent"};
+        const auto color_name=color_index_<4?std::string(color_names[color_index_]):"ANSI "+std::to_string(color_index_-4);
+        const auto color_value=color_index_==0?draft_.theme.background:color_index_==1?draft_.theme.foreground:color_index_==2?draft_.theme.chrome:color_index_==3?draft_.theme.accent:draft_.theme.ansi[color_index_-4];
+        button("appearance.color.field",color_name+"   ›");
+        button("appearance.color.value",editing_color_?"#"+(color_input_.empty()?std::string("RRGGBB"):color_input_)+"  Enter":color_value+"   Edit");
+        for (std::size_t i=0;i<16;++i) content_box({preview.x+16+i*(std::max(0.0,preview.width-32)/16),preview.y+43,std::max(0.0,(preview.width-32)/16-3),8},theme_color(draft_.theme.ansi[i]),transparent,2);
         text({preview.x+16,preview.y+4,std::max(0.0,preview.width-32),30},">_  ABC abc 0123 {} [] -> !=",ink,float(std::clamp(draft_.font.size_dip,10.0,22.0)),false,draft_.font.family,true);
         const double cw=std::min(content.width*0.49,230.0), lw=std::max(0.0,content.width-cw-20);
-        row_labels(90,"Terminal font","System fallback if not installed",lw);
+        row_labels(270,"Terminal font","System fallback if not installed",lw);
         button("font.family",draft_.font.family+"   ›");
-        row_labels(146,"Font size","Measured in display-independent pixels",std::max(0.0,content.width-138));
+        row_labels(326,"Font size","Measured in display-independent pixels",std::max(0.0,content.width-138));
         button("font.decrease","−");button("font.increase","+");
-        text({right-86,top+150,54,32},number(draft_.font.size_dip),ink,14,true,"Segoe UI Variable Text",true,ChromeTextAlignment::center);
-        row_labels(202,"Font ligatures","Join supported programming symbols",std::max(0.0,content.width-62));
+        text({right-86,top+330,54,32},number(draft_.font.size_dip),ink,14,true,"Segoe UI Variable Text",true,ChromeTextAlignment::center);
+        row_labels(382,"Font ligatures","Join supported programming symbols",std::max(0.0,content.width-62));
         if (const auto* c=find_control(layout_,"font.ligatures");c && c->visible) {
             box(c->bounds,draft_.font.ligatures?accent:border,focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
             box({c->bounds.x+(draft_.font.ligatures?21:3),c->bounds.y+3,18,18},draft_.font.ligatures?primary_ink:ink,transparent,9);
         }
-        row_labels(258,"Background opacity","Text always stays crisp and opaque",lw);
+        row_labels(438,"Background opacity","Text always stays crisp and opaque",lw);
         if (const auto* slider=find_control(layout_,"appearance.opacity");slider && slider->visible) {
             const auto r=slider->bounds;
             if (focus_==slider->id) box(r,transparent,accent,5,1);
@@ -575,22 +650,32 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             box({r.x+8+width*progress-5,track_y-4,10,11},ink,transparent,5);
             label({r.x+8,r.y-2,std::max(0.0,r.width-16),21},number(std::round(draft_.appearance.background_opacity*100))+"%",ink,12,true,true);
         }
-        row_labels(313,"Window material",material_status_.empty()?"Auto uses Acrylic; Mica uses wallpaper, not other windows.":material_status_,content.width);
+        row_labels(493,"Window material · OS blur fixed",material_status_.empty()?"OS blur is fixed; opacity controls the tint, not blur radius.":material_status_,content.width);
         constexpr std::array ids{"appearance.backdrop.auto","appearance.backdrop.none","appearance.backdrop.mica","appearance.backdrop.acrylic"};
         constexpr std::array names{"Auto","Solid","Mica","Acrylic"};
         const auto material=draft_.appearance.backdrop;
         const int selected=material==BackdropPreference::automatic?0:material==BackdropPreference::none?1:material==BackdropPreference::mica?2:3;
         for (std::size_t i=0;i<ids.size();++i) button(ids[i],names[i],selected==static_cast<int>(i));
-        row_labels(402,"Reduce motion","Use system settings or reduce animations",lw);
+        row_labels(582,"Reduce motion","Use system settings or reduce animations",lw);
         const std::string motion=draft_.appearance.reduced_motion==ReducedMotionPreference::system?"Follow system":draft_.appearance.reduced_motion==ReducedMotionPreference::enabled?"Always reduce":"Allow motion";
         button("appearance.motion",motion+"   ›");
         if (platform_==Platform::windows) {
-            row_labels(458,"Clock","",std::max(0.0,content.width-62));
+            row_labels(638,"Clock","",std::max(0.0,content.width-62));
             if (const auto* c=find_control(layout_,"appearance.clock");c && c->visible) {
-                box(c->bounds,draft_.appearance.show_clock?accent:border,focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
-                box({c->bounds.x+(draft_.appearance.show_clock?21:3),c->bounds.y+3,18,18},draft_.appearance.show_clock?primary_ink:ink,transparent,9);
+                box(c->bounds,(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?accent:border,focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
+                box({c->bounds.x+((draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?21:3),c->bounds.y+3,18,18},(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?primary_ink:ink,transparent,9);
             }
         }
+    } else if (section_==SettingsSection::ribbon) {
+        for(std::size_t i=0;i<draft_.ribbon.order.size();++i) {
+            const auto binding=draft_.ribbon.order[i];const auto index=ribbon_index(binding);
+            const auto& info=ribbon_bindings[index];const auto id=std::string(info.id);
+            const bool visible=!draft_.ribbon.hidden[index] && (binding!=RibbonBinding::clock || draft_.appearance.show_clock);
+            row_labels(i*66,std::string(info.label),std::string(info.id),std::max(0.0,content.width-166));
+            button("ribbon.toggle:"+id,visible?"Shown":"Hidden",visible);
+            button("ribbon.up:"+id,"↑");button("ribbon.down:"+id,"↓");
+        }
+        label({content.x,top+400,content.width,34},"Narrow windows hide lower-priority items. Background terminals remain in Commands.",muted,11,false,true);
     } else if (section_==SettingsSection::shell) {
         if (platform_==Platform::windows) {
             row_labels(0,"Console backend","Existing sessions keep their backend.",content.width);

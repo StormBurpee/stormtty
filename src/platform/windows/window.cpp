@@ -728,7 +728,7 @@ void NativeWindow::refresh_clock() {
     char formatted[6]{};
     std::snprintf(formatted,sizeof formatted,"%02u:%02u",static_cast<unsigned>(time.wHour),static_cast<unsigned>(time.wMinute));
     if (local_clock_!=formatted) { local_clock_=formatted; ++chrome_generation_; dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); }
-    if (config_.appearance.show_clock && !minimized_ && !fullscreen_ && !focus_mode_ && width_>=640)
+    if (config_.appearance.show_clock && !config_.ribbon.hidden[ribbon_index(RibbonBinding::clock)] && !minimized_ && !fullscreen_ && !focus_mode_)
         SetTimer(hwnd_,local_clock_timer,60000-time.wSecond*1000-time.wMilliseconds,nullptr);
 }
 void NativeWindow::settings_changed() {
@@ -746,7 +746,7 @@ void NativeWindow::settings_changed() {
     if (config_.appearance.reduced_motion==ReducedMotionPreference::disabled && animations && !high_contrast_) reduced_motion_=false;
     DWORD transparency = 1, size = sizeof(transparency);
     RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"EnableTransparency", RRF_RT_REG_DWORD, nullptr, &transparency, &size);
-    const BOOL dark = config_.theme.name != "daylight" && !high_contrast_;
+    const BOOL dark = !theme_is_light(config_.theme) && !high_contrast_;
     DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(20), &dark, sizeof(dark));
     // Documented Windows 11 attributes. Unsupported builds return E_INVALIDARG;
     // no undocumented accent-policy calls, layered-window opacity or region hacks.
@@ -1047,6 +1047,8 @@ SessionId NativeWindow::new_session(std::string profile_id) {
     // VT default colors belong to the engine, including OSC queries/resets.
     // Translucency is exclusively a renderer policy; terminal colors stay opaque.
     terminal.default_foreground=color_hex(config_.theme.foreground,{236,238,242,255});
+    terminal.ansi.emplace();
+    for (std::size_t i=0;i<16;++i) (*terminal.ansi)[i]=color_hex(config_.theme.ansi[i],{0,0,0,255});
     terminal.default_background=color_hex(config_.theme.background,{23,25,29,255});
     const SessionId id{next_session_++};
     std::weak_ptr<WakeState> weak = wake_;
@@ -1324,7 +1326,7 @@ NativeWindow::FooterPresentation NativeWindow::footer_presentation() const {
 SessionFooterLayout NativeWindow::footer_layout() const {
     const auto context=footer_presentation();
     return layout_session_footer(navigation_.footer,projects_.active()->parked_sessions.size(),
-        active_session()!=nullptr,!context.head.empty(),!context.status.empty(),config_.appearance.show_clock);
+        active_session()!=nullptr,!context.head.empty(),!context.status.empty(),config_.appearance.show_clock,config_.ribbon,{false,false,context.failed});
 }
 std::string NativeWindow::directory_context() const {
     std::string path;
@@ -1842,11 +1844,13 @@ void NativeWindow::preview_settings(const Config& candidate) {
         const auto background=color_hex(candidate.theme.background,{17,21,27,255});
         // Display-only actor updates are coalesced separately from PTY input.
         // Exited sessions retain their immutable final frame; no shell restarts.
-        for (const auto& [id,session]:sessions_) { (void)id; session->set_default_colors(foreground,background); }
+        std::array<Color,16> ansi;
+        for (std::size_t i=0;i<16;++i) ansi[i]=color_hex(candidate.theme.ansi[i],{0,0,0,255});
+        for (const auto& [id,session]:sessions_) { (void)id; session->set_default_colors(foreground,background,ansi); }
         config_.theme=candidate.theme;
     }
-    config_.font=candidate.font; config_.appearance=candidate.appearance;
-    settings_changed(); caret_schedule(); changed(font_changed);
+    config_.font=candidate.font; config_.appearance=candidate.appearance; config_.ribbon=candidate.ribbon;
+    settings_changed(); caret_schedule(); refresh_tooltips(); changed(font_changed);
 }
 void NativeWindow::settings_actions() {
     while (auto action=settings_panel_.take_action()) {
@@ -2074,7 +2078,7 @@ WindowScene NativeWindow::scene() {
     WindowScene result;
     const Color background = high_contrast_ ? system_color(COLOR_WINDOW) : color_hex(config_.theme.background, {23,25,29,255});
     Color chrome = high_contrast_ ? system_color(COLOR_BTNFACE) : color_hex(config_.theme.chrome, {34,37,43,255});
-    const bool daylight=config_.theme.name=="daylight";
+    const bool daylight=theme_is_light(config_.theme);
     Color raised = high_contrast_ ? system_color(COLOR_WINDOW) : daylight?Color{225,230,235,255}:Color{37,45,58,255};
     const Color text = high_contrast_ ? system_color(COLOR_BTNTEXT) : color_hex(config_.theme.foreground, {236,238,242,255});
     const Color secondary = high_contrast_ ? text : daylight?Color{88,101,114,255}:Color{162,173,190,255};
@@ -3423,6 +3427,34 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (settings_panel_.focused_control()!=control) return false;
             settings_panel_.key({{"ENTER"}}); settings_input_changed(); return true;
         };
+        // Only the owned --smoke-settings window and isolated config participate.
+        // Use the actual native scene renderer; never load user captures or frames.
+        const auto capture_settings=[&](std::wstring_view suffix) {
+            const auto old_clock=smoke_chrome_time_;
+            smoke_chrome_time_=GetTickCount64()+1000;
+            settings_transition_.finish(); motion_schedule();
+            try { smoke_motion_capture(suffix,0); }
+            catch (...) {smoke_chrome_time_=old_clock;throw;}
+            smoke_chrome_time_=old_clock;
+        };
+        const auto edit_ansi_red=[&](std::string_view digits,bool capture_editor) {
+            // Every newly opened Appearance editor starts at Background; ANSI1
+            // is the sixth role. Send hex through the native key trap, not a
+            // direct Config assignment, and assert it never reaches the shell.
+            for (unsigned i=0;i<5;++i) if (!activate_setting("appearance.color.field")) return false;
+            if (!activate_setting("appearance.color.value")) return false;
+            for (const auto c:digits) {
+                MSG key{};key.hwnd=hwnd_;key.message=WM_KEYDOWN;key.wParam=static_cast<WPARAM>(c);
+                if (!key_message(key)) return false;
+            }
+            if (capture_editor) capture_settings(L"appearance-custom-edit");
+            MSG enter{};enter.hwnd=hwnd_;enter.message=WM_KEYDOWN;enter.wParam=VK_RETURN;
+            if (!key_message(enter)) return false;
+            return settings_panel_.draft().theme.name=="custom" && settings_panel_.draft().theme.ansi[1]=="#"+std::string(digits);
+        };
+        const auto saved_custom=[] {
+            auto theme=*find_builtin_theme("evergreen");theme.name="custom";theme.ansi[1]="#C07090";return theme;
+        };
         const auto actor_has_theme=[&](const Theme& theme) {
             const auto frame=smoke_settings_actor_?smoke_settings_actor_->frame():FramePtr{};
             return frame && frame->foreground==color_hex(theme.foreground,{}) && frame->background==color_hex(theme.background,{});
@@ -3450,9 +3482,22 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             const Point point{found->bounds.x+found->bounds.width/2,found->bounds.y+found->bounds.height/2};
             pointer_down(point,false); pointer_up(point);
             if (config_.font.size_dip!=smoke_settings_original_.font.size_dip+1 || config_.default_profile!=smoke_settings_original_.default_profile) { smoke_finish("Settings preview did not apply only reversible presentation."); return; }
-            if (!activate_setting("appearance.theme.daylight") || config_.theme!=*find_builtin_theme("daylight")) {
+            if (!activate_setting("appearance.theme.midnight") || config_.theme!=*find_builtin_theme("midnight")) {
                 smoke_finish("Named theme preview did not update the live host palette."); return;
             }
+            // Incomplete native hex input must not publish a partial palette.
+            if (!activate_setting("appearance.color.value")) {smoke_finish("Custom color editor was unreachable.");return;}
+            MSG hex{};hex.hwnd=hwnd_;hex.message=WM_KEYDOWN;hex.wParam='F';key_message(hex);
+            hex.wParam=VK_ESCAPE;key_message(hex);
+            if (!settings_panel_.is_open() || config_.theme!=*find_builtin_theme("midnight")) {smoke_finish("Partial hex Escape changed the theme or closed Settings.");return;}
+            if (!edit_ansi_red("D080A0",false) || config_.theme.ansi[1]!="#D080A0") {smoke_finish("Native ANSI custom preview failed.");return;}
+            capture_settings(L"appearance-custom-preview");
+            if (!activate_setting("nav.ribbon") || !activate_setting("ribbon.toggle:session.git") ||
+                config_.ribbon.hidden[ribbon_index(RibbonBinding::git)]==smoke_settings_original_.ribbon.hidden[ribbon_index(RibbonBinding::git)]) {
+                smoke_finish("Ribbon toggle did not live preview before Cancel.");return;
+            }
+            capture_settings(L"ribbon-preview");
+            if (!activate_setting("nav.appearance")) {smoke_finish("Appearance return was unreachable.");return;}
             if (switch_console) {
                 if (!activate_setting("nav.shell") || !activate_setting("console.bundled") ||
                     settings_panel_.draft().windows_console_backend!=WindowsConsoleBackend::bundled_preview ||
@@ -3464,7 +3509,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             smoke_settings_stage(2); return;
         }
         if (smoke_settings_stage_==2) {
-            if (!presented || !actor_has_theme(*find_builtin_theme("daylight"))) return;
+            if (!presented || !actor_has_theme(*find_builtin_theme("midnight"))) return;
             if (!smoke_console_capture_pending_) {
                 try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
                 if (switch_console && !options_.capture_path.empty()) {
@@ -3526,9 +3571,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 config_.windows_console_backend!=WindowsConsoleBackend::system || !smoke_bundled_sessions_.empty())) {
                 smoke_finish("Console selection did not remain draft-only before Save."); return;
             }
-            if (!activate_setting("nav.appearance") || !activate_setting("appearance.theme.instrument")) {
+            if (!activate_setting("nav.appearance") || !activate_setting("appearance.theme.evergreen")) {
                 smoke_finish("Named theme could not be selected before Save."); return;
             }
+            if (!edit_ansi_red("C07090",true) || config_.theme!=saved_custom()) {smoke_finish("Custom ANSI save draft did not reach the host.");return;}
+            if (!activate_setting("nav.ribbon") || !activate_setting("ribbon.up:session.status") ||
+                !activate_setting("ribbon.toggle:session.git")) {smoke_finish("Ribbon order/visibility draft was unreachable.");return;}
+            capture_settings(L"ribbon-before-save");
+            if (!activate_setting("nav.appearance")) {smoke_finish("Appearance return before Save failed.");return;}
             for (unsigned i=0;i<256 && settings_panel_.focused_control()!="appearance.opacity";++i) settings_panel_.key({{"TAB"}});
             settings_panel_.key({{"HOME"}});
             for (unsigned i=0;i<25;++i) settings_panel_.key({{"RIGHT"}});
@@ -3548,8 +3598,8 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 sessions_.size()!=1 || sessions_.begin()->second!=smoke_settings_actor_ || workspace().state().panes.size()!=1) {
                 smoke_finish("Saved shortcut or original actor identity was not retained."); return;
             }
-            if (!actor_has_theme(*find_builtin_theme("instrument"))) return;
-            if (config_.theme!=*find_builtin_theme("instrument") || config_.appearance.background_opacity!=.25) {
+            if (!actor_has_theme(saved_custom())) return;
+            if (config_.theme!=saved_custom() || config_.appearance.background_opacity!=.25) {
                 smoke_finish("Saved theme or opacity did not remain applied."); return;
             }
             if (managed_shell_profile_ && !options_.shell_runtime_override) {
@@ -3584,6 +3634,15 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!settings_panel_.is_open() || !settings_baseline_matches(settings_panel_.draft(),config_,Platform::windows)) {
                 smoke_finish("Settings Save-to-reopen falsely rejected its canonical saved baseline."); return;
             }
+            const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
+            if (!saved || saved.config->theme!=saved_custom() || settings_panel_.draft().theme!=saved_custom() ||
+                config_.ribbon.order[1]!=RibbonBinding::status ||
+                config_.ribbon.hidden[ribbon_index(RibbonBinding::git)]==smoke_settings_original_.ribbon.hidden[ribbon_index(RibbonBinding::git)]) {
+                smoke_finish("Custom ANSI or Ribbon order/visibility did not survive Save/reopen.");return;
+            }
+            capture_settings(L"appearance-saved-reopened");
+            if (!activate_setting("nav.ribbon")) {smoke_finish("Saved Ribbon section was unreachable.");return;}
+            capture_settings(L"ribbon-saved-reopened");
             if (switch_console && (!activate_setting("nav.shell") || !activate_setting("console.system") ||
                 config_.windows_console_backend!=WindowsConsoleBackend::bundled_preview)) {
                 smoke_finish("System recovery choice changed provider before Save."); return;
@@ -3615,7 +3674,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!settings_panel_.is_open() || !settings_baseline_matches(settings_panel_.draft(),config_,Platform::windows)) {
                 smoke_finish("Second Save-to-reopen rejected its saved baseline.");return;
             }
+            const auto saved_baseline=config_;
+            if (!activate_setting("appearance.theme.ember") || !activate_setting("appearance.theme.custom") ||
+                settings_panel_.draft().theme!=saved_custom()) {smoke_finish("Saved Custom was lost when switching presets after reopen.");return;}
+            if (!activate_setting("appearance.theme.aubergine") || !edit_ansi_red("B090E0",false)) {
+                smoke_finish("Second-cycle custom preview was unreachable.");return;
+            }
             settings_panel_.cancel(); settings_input_changed();
+            if (config_!=saved_baseline) {smoke_finish("Second-cycle Cancel did not restore saved ANSI/Ribbon configuration.");return;}
             if (settings_panel_.is_open() || !focused_session_) { smoke_finish("Reopened Settings did not restore terminal focus on Cancel."); return; }
             smoke_settings_stage(8);
             force_redraw_=true; dirty_=true; // Capture the closed scene even if open/cancel coalesced.
@@ -3939,7 +4005,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
         if (using_managed_shell()) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
-        if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, theme/font preview rollback, custom system menu/outside-click routing, confirmed Alt+], 25% opacity, two atomic Save/reopen cycles, original live actor retained. Not physical UI/accessibility QA.\n",stderr);
+        if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, midnight/custom ANSI hex and font preview rollback, Ribbon visibility/order Save/reopen, native Appearance/Ribbon captures, custom system menu/outside-click routing, confirmed Alt+], 25% opacity, two atomic Save/reopen cycles, original live actor retained. Not physical UI/accessibility QA.\n",stderr);
         if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts; final-pane parking, canceled background close, cross-project isolation, live parked output and same retained actor restored after exit; scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
         if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());

@@ -32,7 +32,18 @@ std::string frame_text(const FramePtr& frame) {
 }
 struct WakeCounter {
     std::mutex mutex; std::condition_variable cv; unsigned wakes{};
-    void signal() { { std::lock_guard lock(mutex); ++wakes; } cv.notify_all(); }
+    // Optional observed-publication acknowledgment. The callback and test use
+    // this same mutex, so observing a new frame alone cannot race its notify.
+    std::weak_ptr<Session> observed_session;
+    std::uint64_t notified_generation{};
+    void signal() {
+        {
+            std::lock_guard lock(mutex); ++wakes;
+            if (const auto session=observed_session.lock())
+                if (const auto frame=session->frame()) notified_generation=frame->generation;
+        }
+        cv.notify_all();
+    }
 };
 template<class Predicate> bool await(Predicate predicate, const std::shared_ptr<WakeCounter>& wake, std::chrono::milliseconds timeout=5s) {
     const auto end=std::chrono::steady_clock::now()+timeout;
@@ -236,6 +247,7 @@ void retained_document(const std::string& executable) {
     TerminalOptions t; t.size={80,8,8,16}; t.scrollback_lines=10000;
     auto session=Session::start(p,t,[wake]{wake->signal();},SessionRetentionPolicy::retain_document);
     CloseSession close{session};
+    { std::lock_guard lock(wake->mutex); wake->observed_session=session; }
     check(await([&]{return frame_text(session->frame()).find("READY:")!=std::string::npos;},wake),"retained child did not reach ready marker");
     check(!session->process_finished() && !session->wait_for_process_exit(1ms),"running child reported a terminal result");
     const auto ready_text=frame_text(session->frame());
@@ -290,8 +302,20 @@ void retained_document(const std::string& executable) {
     check(await([&]{return frame_text(session->frame()).find("FINAL:"+identity)!=std::string::npos;},wake),"reopening retained output lost child identity/final marker");
     const auto cancelled=session->cancel_search();
     check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==cancelled.request_id&&r->status==SearchStatus::cancelled;},wake),"retained cancellation failed");
+    // Controlled slow-consumer regression: actor work may take longer than the
+    // old 40ms guess. This injects scheduling delay; it is not an idle barrier.
+    check(session->copy_selection([](std::string) { std::this_thread::sleep_for(80ms); })==SessionSendResult::accepted,"retained slow callback rejected");
     check(session->clear_selection()==SessionSendResult::accepted,"retained clear selection rejected");
-    std::this_thread::sleep_for(40ms); // Let the last bounded display publication settle.
+    // A 40ms sleep was not an actor-completion barrier: a delayed clear or its
+    // pending publication/notification could legitimately land in the idle
+    // observation interval. A distinct final display command fences all prior
+    // FIFO operations. Wait for its published frame AND callback acknowledgment,
+    // not just a frame which becomes visible before notify() has run.
+    check(session->request_resize({61,10,8,16})==SessionSendResult::accepted,"retained idle fence rejected");
+    check(await([&] {
+        const auto f=session->frame();
+        return f&&f->columns==61&&f->rows==10&&wake->notified_generation==f->generation;
+    },wake),"retained final display publication was not acknowledged");
     unsigned wakes{}; {std::lock_guard lock(wake->mutex);wakes=wake->wakes;}
     const auto generation=session->frame()->generation;
     std::this_thread::sleep_for(120ms);

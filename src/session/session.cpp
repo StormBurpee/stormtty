@@ -29,6 +29,7 @@ struct Command {
     MouseInput mouse;
     TerminalSize size;
     Color foreground, background;
+    std::optional<std::array<Color,16>> ansi;
     std::string text;
     Session::SelectionCallback selection;
     std::int64_t rows{};
@@ -106,11 +107,12 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
         { std::lock_guard lock(mutex); information.error = std::move(value); }
         notify();
     }
-    SessionSendResult enqueue_default_colors(Color foreground, Color background) {
+    SessionSendResult enqueue_default_colors(Color foreground, Color background, std::optional<std::array<Color,16>> ansi) {
         if (foreground.a != 255 || background.a != 255)
             throw std::invalid_argument("terminal default colors must be opaque RGB; apply opacity in the renderer");
+        if (ansi) for (const auto c:*ansi) if (c.a!=255) throw std::invalid_argument("ANSI colors must be opaque RGB");
         Command command; command.op = Op::default_colors;
-        command.foreground = foreground; command.background = background;
+        command.foreground = foreground; command.background = background; command.ansi=ansi;
         {
             std::lock_guard lock(mutex);
             if (close_requested || done.load() ||
@@ -222,7 +224,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     void apply_document_command(TerminalCore& core, Command& c, bool& dirty,
                                 TerminalCore::Clock::time_point& next_search_step) {
         switch (c.op) {
-        case Op::default_colors: core.set_default_colors(c.foreground, c.background); dirty = true; break;
+        case Op::default_colors: core.set_default_colors(c.foreground, c.background, c.ansi); dirty = true; break;
         case Op::select: core.select(c.x1, c.y1, c.x2, c.y2, c.flag); dirty = true; break;
         case Op::clear: core.clear_selection(); dirty = true; break;
         case Op::copy: {
@@ -537,7 +539,7 @@ SessionSendResult Session::copy_selection(SelectionCallback value) { Command c; 
 SessionSendResult Session::scroll(std::int64_t value) { Command c; c.op = Op::scroll; c.rows = value; return impl_->enqueue(std::move(c)); }
 SessionSendResult Session::scroll_to_bottom() { Command c; c.op = Op::bottom; return impl_->enqueue(std::move(c)); }
 SessionSendResult Session::request_resize(TerminalSize value) { Command c; c.op = Op::resize; c.size = value; return impl_->enqueue(std::move(c)); }
-SessionSendResult Session::set_default_colors(Color foreground, Color background) { return impl_->enqueue_default_colors(foreground, background); }
+SessionSendResult Session::set_default_colors(Color foreground, Color background, std::optional<std::array<Color,16>> ansi) { return impl_->enqueue_default_colors(foreground, background, ansi); }
 SearchSubmission Session::search(SearchOptions options) { return impl_->enqueue_search(std::move(options), false); }
 SearchSubmission Session::cancel_search() { return impl_->enqueue_search({}, true); }
 SearchSnapshotPtr Session::search_snapshot() const { std::lock_guard lock(impl_->search_mutex); return impl_->latest_search; }

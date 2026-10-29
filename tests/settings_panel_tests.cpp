@@ -102,6 +102,7 @@ int main() {return run_core_tests("settings panel",[] {
     panel.set_material_status("Opaque: Windows Transparency effects are off.");CHECK(panel.generation()==material_generation);
     panel.open(defaults);CHECK(panel.is_open());CHECK(!panel.dirty());CHECK(panel.draft()==defaults);
     CHECK(!panel.take_action());
+    focus(panel,"appearance.backdrop.auto");
     WindowScene material_scene;panel.append_scene(material_scene);
     CHECK(std::any_of(material_scene.texts.begin(),material_scene.texts.end(),[](const auto& t){return t.text=="Opaque: Windows Transparency effects are off.";}));
     CHECK(panel.draft()==defaults && !panel.dirty());
@@ -116,7 +117,7 @@ int main() {return run_core_tests("settings panel",[] {
     CHECK(near(font_value->rect.y+font_value->rect.height/2,decrease.y+decrease.height/2));
     // Semantic controls are unique; the optional clock is reachable by scrolling.
     std::set<std::string> ids;
-    for (const auto& c:panel.layout().controls) {CHECK(ids.insert(c.id).second);if(c.id!="appearance.clock") CHECK(c.visible);}
+    for (const auto& c:panel.layout().controls) CHECK(ids.insert(c.id).second);
     activate(panel,"appearance.clock");CHECK(!panel.draft().appearance.show_clock);
     activate(panel,"appearance.clock");CHECK(panel.draft().appearance.show_clock);
     activate(panel,"font.increase");CHECK(panel.draft().font.size_dip==16);CHECK(panel.original()==defaults);
@@ -168,6 +169,27 @@ int main() {return run_core_tests("settings panel",[] {
         themes.persistence_result(true);themes.open(saved->config);CHECK(!themes.dirty() && themes.draft().theme==config.theme);
         themes.cancel();
     }
+
+    // Native custom editor never publishes a partial hex value. Escape cancels
+    // the edit first; the modal's next Escape rolls back the entire preview.
+    SettingsPanel editor;editor.open(defaults);
+    activate(editor,"appearance.color.value");
+    editor.key({{"1"}});editor.key({{"ENTER"}});CHECK(editor.draft()==defaults);
+    CHECK(!editor.error().empty());editor.key({{"ESCAPE"}});CHECK(editor.is_open());
+    activate(editor,"appearance.color.value");
+    for (char digit:std::string("ABCDEF")) editor.key({{std::string(1,digit)}});
+    editor.key({{"ENTER"}});CHECK(editor.draft().theme.background=="#ABCDEF");
+    CHECK(editor.draft().theme.name=="custom");
+    const auto customized=editor.draft();CHECK(editor.take_action()->config==customized);
+    activate(editor,"appearance.theme.midnight");activate(editor,"appearance.theme.custom");
+    CHECK(editor.draft()==customized);
+    activate(editor,"appearance.color.field"); // Foreground
+    activate(editor,"appearance.color.value");
+    for (char digit:std::string("123456")) editor.key({{std::string(1,digit)}});
+    editor.key({{"ENTER"}});CHECK(editor.draft().theme.foreground=="#123456");
+    activate(editor,"save");const auto custom_saved=editor.take_action();CHECK(custom_saved->kind==SettingsActionKind::save);
+    editor.persistence_result(true);editor.open(custom_saved->config);CHECK(!editor.dirty());
+    activate(editor,"appearance.theme.ember");editor.cancel();CHECK(editor.take_action()->config==custom_saved->config);
 
     // Reopening reads new disk content without replacing the running Cancel
     // baseline or committing external shell/binding changes during preview.
@@ -304,6 +326,29 @@ int main() {return run_core_tests("settings panel",[] {
             responsive.cancel();
         }
     }
+    // Four compact tabs retain their hit targets and full semantic identities;
+    // narrow painted names fit inside each tab rather than clipping long words.
+    for (const auto width:{320.0,480.0,700.0}) {
+        SettingsPanel narrow;narrow.resize({width,640});narrow.open(defaults);
+        WindowScene scene;narrow.append_scene(scene);
+        const std::array<std::string_view,4> nav_ids{"nav.appearance","nav.shell","nav.shortcuts","nav.ribbon"};
+        double previous_right=-1;
+        for (const auto id:nav_ids) {
+            const auto& control=item(narrow,id);CHECK(control.visible);
+            CHECK(control.bounds.width>=44 && control.bounds.height>=36);
+            CHECK(control.bounds.x>=previous_right);previous_right=control.bounds.x+control.bounds.width;
+            const bool abbreviated=control.bounds.width<88;
+            const auto expected=id=="nav.appearance"?(abbreviated?"Style":"Appearance"):
+                id=="nav.shortcuts"?(abbreviated?"Keys":"Shortcuts"):id=="nav.shell"?"Shell":"Ribbon";
+            const auto text=std::find_if(scene.texts.begin(),scene.texts.end(),[&](const auto& t){
+                return t.text==expected && near(t.rect.y,control.bounds.y);
+            });
+            CHECK(text!=scene.texts.end());
+            CHECK(text->rect.x>=control.bounds.x && text->rect.x+text->rect.width<=control.bounds.x+control.bounds.width);
+        }
+        activate(narrow,"nav.shortcuts");CHECK(narrow.section()==SettingsSection::shortcuts);
+        activate(narrow,"nav.appearance");CHECK(narrow.section()==SettingsSection::appearance);
+    }
     SettingsPanel bounds;bounds.open(defaults);bounds.resize({std::numeric_limits<double>::infinity(),768});CHECK(bounds.layout().panel.width>0);
     const auto before=bounds.draft();CHECK(bounds.pointer_down({std::numeric_limits<double>::quiet_NaN(),1}));CHECK(bounds.pointer_move({1,std::numeric_limits<double>::infinity()}));CHECK(bounds.pointer_up({1,1}));CHECK(bounds.draft()==before);
     WindowScene hidden;const auto panel_bounds=bounds.layout().panel;
@@ -352,4 +397,24 @@ int main() {return run_core_tests("settings panel",[] {
     bounds.persistence_result(false,"Retry");bounds.set_high_contrast(false);
     WindowScene graphite;bounds.append_scene(graphite);CHECK(graphite.primitives.front().fill.a<255);
     bounds.cancel();WindowScene closed;bounds.append_scene(closed);CHECK(closed.primitives.empty() && closed.texts.empty());
+    SettingsPanel ribbon_panel;ribbon_panel.resize({1000,800});ribbon_panel.open(defaults);
+    activate(ribbon_panel,"nav.ribbon");
+    activate(ribbon_panel,"ribbon.toggle:session.git");
+    CHECK(ribbon_panel.draft().ribbon.hidden[ribbon_index(RibbonBinding::git)]);
+    activate(ribbon_panel,"ribbon.down:session.directory");
+    CHECK(ribbon_panel.draft().ribbon.order[1]==RibbonBinding::directory);
+    activate(ribbon_panel,"ribbon.toggle:clock.local");CHECK(!ribbon_panel.draft().appearance.show_clock);
+    WindowScene ribbon_scene;ribbon_panel.append_scene(ribbon_scene);validate_scene(ribbon_scene,1000,800,1);
+    const auto ribbon_saved=parse_config(serialize_config(ribbon_panel.draft(),Platform::windows),Platform::windows);
+    CHECK(ribbon_saved && ribbon_saved.config->ribbon==ribbon_panel.draft().ribbon);
+    for(const auto size:std::array<Size,3>{{{420,360},{640,480},{1400,1000}}}) {
+        ribbon_panel.resize(size);WindowScene scene;ribbon_panel.append_scene(scene);validate_scene(scene,size.width,size.height,1);
+    }
+    ribbon_panel.cancel();const auto ribbon_cancel=ribbon_panel.take_action();
+    CHECK(ribbon_cancel && ribbon_cancel->config.ribbon==defaults.ribbon);
+    SettingsPanel ribbon_save;ribbon_save.open(defaults);activate(ribbon_save,"nav.ribbon");
+    activate(ribbon_save,"ribbon.toggle:workspace.background");activate(ribbon_save,"save");
+    auto save_ribbon=ribbon_save.take_action();CHECK(save_ribbon && save_ribbon->kind==SettingsActionKind::save);
+    CHECK(save_ribbon->config.ribbon.hidden[ribbon_index(RibbonBinding::background)]);
+    ribbon_save.persistence_result(true);CHECK(!ribbon_save.is_open());
 });}
