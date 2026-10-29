@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Portable structural tests, not native static-safety certification."""
-import importlib.util,json,pathlib,tempfile,unittest
+import hashlib,importlib.util,json,pathlib,tempfile,unittest
 from unittest.mock import patch
 HERE=pathlib.Path(__file__).resolve().parent
 ROOT=HERE.parents[3]
@@ -20,6 +20,17 @@ class Evidence(unittest.TestCase):
  def test_modern_binutils_export_format(self):
   self.fixture();self.root.joinpath('diagnostic-dll-pe.txt').write_text('[Ordinal/Name Pointer] Table -- Ordinal Base 1\n Ordinal Hint Name\n [ 0] +base[ 1] 0000 stormtty_path_init_v1\n [ 1] +base[ 2] 0001 stormtty_path_handler_v1\n\n')
   self.assertEqual(review.review(self.root)['exports_verified'],list(review.EXPORTS))
+ def test_crlf_native_text_preserves_raw_identity(self):
+  self.fixture()
+  for name in ('diagnostic-dll-pe.txt','console-native-disassembly.txt'):
+   path=self.root/name
+   raw=path.read_bytes().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n')
+   path.write_bytes(raw)
+  pe=self.root.joinpath('diagnostic-dll-pe.txt').read_bytes()
+  self.assertIn(b'\r\n',pe)
+  result=review.review(self.root)
+  self.assertEqual(result['evidence_sha256']['diagnostic-dll-pe.txt'],hashlib.sha256(pe).hexdigest())
+  self.assertEqual(self.root.joinpath('diagnostic-dll-pe.txt').read_bytes(),pe)
  def test_import_name_is_not_export_proof(self):
   self.fixture();self.root.joinpath('diagnostic-dll-pe.txt').write_text('DLL Name: other.dll\n stormtty_path_init_v1\n stormtty_path_handler_v1\n')
   with self.assertRaises(ValueError):review.review(self.root)

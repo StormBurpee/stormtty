@@ -1,4 +1,5 @@
 # BUILD/EVIDENCE ONLY. Runtime phase requires root review of actual native code.
+# Parser correction: accept CRLF native text while hashing original bytes.
 # No fixtures run here; successful job does not mean async-signal/path qualification.
 name: Private MSYS passive build and static evidence
 on:

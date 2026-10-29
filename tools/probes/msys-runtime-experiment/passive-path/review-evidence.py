@@ -6,7 +6,10 @@ EXPORTS=('stormtty_path_init_v1','stormtty_path_handler_v1')
 def read(path):
  with path.open('rb') as stream: raw=stream.read(LIMIT+1)
  if len(raw)>LIMIT:raise ValueError('oversize native evidence')
- return raw.decode('utf-8',errors='strict')
+ # Native Windows fixture writers may emit CRLF; objdump text is not a byte
+ # identity. Normalize only line endings for parsing; provenance hashes below
+ # remain over untouched raw artifact bytes.
+ return raw.decode('utf-8',errors='strict').replace('\r\n','\n')
 def review(provenance):
  pe=read(provenance/'diagnostic-dll-pe.txt')
  # Names must occur in the actual PE export-name table, not imports or symbols.
