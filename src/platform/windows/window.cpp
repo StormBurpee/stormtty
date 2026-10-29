@@ -767,11 +767,17 @@ void NativeWindow::refresh_clock() {
     if (config_.appearance.show_clock && !config_.ribbon.hidden[ribbon_index(RibbonBinding::clock)] && !minimized_ && !fullscreen_ && !focus_mode_)
         SetTimer(hwnd_,local_clock_timer,60000-time.wSecond*1000-time.wMilliseconds,nullptr);
 }
+struct RendererCallGuard {
+    bool& flag;
+    explicit RendererCallGuard(bool& value):flag(value){flag=true;}
+    ~RendererCallGuard(){flag=false;}
+};
 void NativeWindow::settings_changed() {
     refresh_clock();
     if (renderer_call_) { settings_pending_=true; defer_layout(); return; }
     HIGHCONTRASTW contrast{}; contrast.cbSize=sizeof(contrast);
-    high_contrast_ = SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0) && (contrast.dwFlags & HCF_HIGHCONTRASTON);
+    const bool contrast_known=SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0)!=FALSE;
+    high_contrast_ = contrast_known && (contrast.dwFlags & HCF_HIGHCONTRASTON);
     const auto background=system_color(COLOR_WINDOW), foreground=system_color(COLOR_WINDOWTEXT);
     const auto highlight=system_color(COLOR_HIGHLIGHT), highlight_text=system_color(COLOR_HIGHLIGHTTEXT), disabled=system_color(COLOR_GRAYTEXT);
     settings_panel_.set_high_contrast(high_contrast_,background,foreground,highlight,highlight_text,disabled);
@@ -781,22 +787,37 @@ void NativeWindow::settings_changed() {
     reduced_motion_ = high_contrast_ || !animations || config_.appearance.reduced_motion==ReducedMotionPreference::enabled;
     if (config_.appearance.reduced_motion==ReducedMotionPreference::disabled && animations && !high_contrast_) reduced_motion_=false;
     DWORD transparency = 1, size = sizeof(transparency);
-    RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"EnableTransparency", RRF_RT_REG_DWORD, nullptr, &transparency, &size);
+    const auto transparency_result=RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"EnableTransparency", RRF_RT_REG_DWORD, nullptr, &transparency, &size);
     const BOOL dark = !theme_is_light(config_.theme) && !high_contrast_;
     DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(20), &dark, sizeof(dark));
     // Documented Windows 11 attributes. Unsupported builds return E_INVALIDARG;
     // no undocumented accent-policy calls, layered-window opacity or region hacks.
     const DWORD corners = 2; // DWMWCP_ROUND; DWM suppresses rounding when snapped/maximized.
     DwmSetWindowAttribute(hwnd_, static_cast<DWMWINDOWATTRIBUTE>(33), &corners, sizeof(corners));
-    const auto render_capability = renderer_ ? renderer_->stats() : RendererStats{};
-    material_tracker_.observe({render_capability.composition,render_capability.warp,render_capability.device_recoveries});
+    auto render_capability = renderer_ ? renderer_->stats() : RendererStats{};
+    material_tracker_.observe({render_capability.composition,render_capability.warp,render_capability.device_recoveries,render_capability.host_backdrop});
     const auto policy=window_material_policy(config_.appearance,render_capability.composition,render_capability.warp,high_contrast_,transparency!=0);
-    const DWORD material=policy.system_backdrop;
+    const bool extra_requested=config_.appearance.additional_blur>0;
+    const bool extra_eligible=policy.fallback==MaterialFallback::none &&
+        config_.appearance.backdrop!=BackdropPreference::mica && contrast_known && transparency_result==ERROR_SUCCESS;
+    if(renderer_) {
+        RendererCallGuard guard(renderer_call_);
+        // Never stack system acrylic under the host-effect recipe. Zero returns
+        // to the original OS material; opacity remains a separate canvas value.
+        if(extra_requested && extra_eligible) {
+            const DWORD none=1;
+            DwmSetWindowAttribute(hwnd_,static_cast<DWMWINDOWATTRIBUTE>(38),&none,sizeof none);
+        }
+        renderer_->set_additional_blur(extra_eligible?static_cast<float>(config_.appearance.additional_blur):0);
+        render_capability=renderer_->stats();
+    }
+    const bool extra_active=render_capability.host_backdrop;
+    const DWORD material=extra_active?1:policy.system_backdrop;
     const HRESULT material_result=DwmSetWindowAttribute(hwnd_,static_cast<DWMWINDOWATTRIBUTE>(38),&material,sizeof(material));
     const bool material_requested=SUCCEEDED(material_result) && material!=1;
-    MARGINS margins=material_requested?MARGINS{-1,-1,-1,-1}:MARGINS{1,1,1,1};
+    MARGINS margins=extra_active?MARGINS{0,0,0,0}:material_requested?MARGINS{-1,-1,-1,-1}:MARGINS{1,1,1,1};
     const HRESULT frame_result=DwmExtendFrameIntoClientArea(hwnd_,&margins);
-    backdrop_=material_requested && SUCCEEDED(frame_result);
+    backdrop_=extra_active || (material_requested && SUCCEEDED(frame_result));
     if (renderer_) renderer_->set_background_opacity(backdrop_?policy.opacity:1.0f);
     std::string status;
     switch(policy.fallback) {
@@ -812,6 +833,11 @@ void NativeWindow::settings_changed() {
         else status=std::string(material==3?"Acrylic requested":"Mica (wallpaper) requested")+" · "+std::to_string(std::lround(policy.opacity*100))+"% tint.";
         break;
     }
+    if(extra_active) status="Additional blur "+std::to_string(std::lround(config_.appearance.additional_blur))+" · added to the Windows backdrop.";
+    else if(extra_requested) status="Additional blur unavailable · "+status;
+    if(extra_requested && config_.appearance.backdrop==BackdropPreference::mica)
+        status="Additional blur needs Acrylic or Auto, not Mica.";
+    if(extra_active && policy.opacity>=1) status="100% opacity hides additional blur. Lower Background opacity.";
     const bool policy_changed=status!=material_status_;
     if(policy_changed) {
         material_status_=std::move(status);
@@ -924,7 +950,7 @@ void NativeWindow::poll_material_probe() {
 void NativeWindow::observe_material_renderer() {
     if(!renderer_) return;
     const auto capability=renderer_->stats();
-    if(material_tracker_.observe({capability.composition,capability.warp,capability.device_recoveries})) {
+    if(material_tracker_.observe({capability.composition,capability.warp,capability.device_recoveries,capability.host_backdrop})) {
         // Recovery can change an opaque child to DComp or vice versa. Reapply
         // after the renderer call, never reenter resource construction or poll.
         settings_pending_=true;defer_layout();
@@ -944,11 +970,6 @@ void NativeWindow::changed(bool geometry) {
 void NativeWindow::defer_layout() {
     if (!layout_pending_ && hwnd_) { layout_pending_=true; if (!PostMessageW(hwnd_,deferred_layout_message,0,0)) layout_pending_=false; }
 }
-struct RendererCallGuard {
-    bool& flag;
-    explicit RendererCallGuard(bool& value):flag(value){flag=true;}
-    ~RendererCallGuard(){flag=false;}
-};
 void NativeWindow::refresh_layout() {
     // Style changes during DirectComposition construction can synchronously send
     // WM_SIZE. Never reenter renderer resource construction through that message.
@@ -3690,6 +3711,15 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             catch (...) {smoke_chrome_time_=old_clock;throw;}
             smoke_chrome_time_=old_clock;
         };
+        const auto set_blur=[&](unsigned sigma) {
+            for(unsigned i=0;i<256 && settings_panel_.focused_control()!="appearance.blur";++i) settings_panel_.key({{"TAB"}});
+            if(settings_panel_.focused_control()!="appearance.blur") return false;
+            settings_panel_.key({{"HOME"}});
+            for(unsigned i=0;i<sigma;++i) settings_panel_.key({{"RIGHT"}});
+            settings_input_changed();
+            return config_.appearance.additional_blur==sigma && settings_panel_.draft().appearance.additional_blur==sigma &&
+                renderer_->stats().warp && !renderer_->stats().host_backdrop;
+        };
         const auto edit_ansi_red=[&](std::string_view digits,bool capture_editor) {
             // Every newly opened Appearance editor starts at Background; ANSI1
             // is the sixth role. Send hex through the native key trap, not a
@@ -3745,6 +3775,10 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!settings_panel_.is_open() || config_.theme!=*find_builtin_theme("midnight")) {smoke_finish("Partial hex Escape changed the theme or closed Settings.");return;}
             if (!edit_ansi_red("D080A0",false) || config_.theme.ansi[1]!="#D080A0") {smoke_finish("Native ANSI custom preview failed.");return;}
             capture_settings(L"appearance-custom-preview");
+            if(smoke_settings_original_.appearance.additional_blur!=0 || !set_blur(24)) {
+                smoke_finish("Additional blur default/preview or WARP fallback failed.");return;
+            }
+            capture_settings(L"appearance-blur-preview");
             if (!activate_setting("nav.ribbon") || !activate_setting("ribbon.toggle:session.git") ||
                 config_.ribbon.hidden[ribbon_index(RibbonBinding::git)]==smoke_settings_original_.ribbon.hidden[ribbon_index(RibbonBinding::git)]) {
                 smoke_finish("Ribbon toggle did not live preview before Cancel.");return;
@@ -3837,6 +3871,8 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             for (unsigned i=0;i<25;++i) settings_panel_.key({{"RIGHT"}});
             settings_input_changed();
             if (settings_panel_.draft().appearance.background_opacity!=.25) {smoke_finish("Full-range opacity did not accept 25%.");return;}
+            if(!set_blur(24) || config_.appearance.background_opacity!=.25) {smoke_finish("Blur preview changed independent opacity.");return;}
+            capture_settings(L"appearance-blur-before-save");
             settings_panel_.key({{"ENTER",CommandModifier::control},false,false,true}); settings_input_changed();
             if (!settings_panel_.saving() || !settings_job_) { smoke_finish("Settings Save did not enter nonblocking pending state."); return; }
             message(WM_CLOSE,0,0);
@@ -3852,7 +3888,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 smoke_finish("Saved shortcut or original actor identity was not retained."); return;
             }
             if (!actor_has_theme(saved_custom())) return;
-            if (config_.theme!=saved_custom() || config_.appearance.background_opacity!=.25) {
+            if (config_.theme!=saved_custom() || config_.appearance.background_opacity!=.25 || config_.appearance.additional_blur!=24) {
                 smoke_finish("Saved theme or opacity did not remain applied."); return;
             }
             if (managed_shell_profile_ && !options_.shell_runtime_override) {
@@ -3894,6 +3930,9 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 smoke_finish("Custom ANSI or Ribbon order/visibility did not survive Save/reopen.");return;
             }
             capture_settings(L"appearance-saved-reopened");
+            if(saved.config->appearance.additional_blur!=24 || !set_blur(24)) {smoke_finish("Additional blur did not persist/reopen.");return;}
+            capture_settings(L"appearance-blur-saved-reopened");
+            std::fputs("Additional blur settings: persisted=24 software=1 host_graph=0 physical_blur_verified=0\n",stderr);
             if (!activate_setting("nav.ribbon")) {smoke_finish("Saved Ribbon section was unreachable.");return;}
             capture_settings(L"ribbon-saved-reopened");
             if (switch_console && (!activate_setting("nav.shell") || !activate_setting("console.system") ||
@@ -3972,6 +4011,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 std::swap(smoke_reload_expected_.bindings[0].chord,smoke_reload_expected_.bindings[1].chord);
             ++smoke_reload_expected_.scrollback_lines;
             smoke_reload_expected_.profiles.front().label="Reloaded profile";
+            smoke_reload_expected_.appearance.additional_blur=36;
             smoke_reload_expected_.appearance.show_clock=!config_.appearance.show_clock;
             smoke_reload_received_=smoke_settings_actor_->info().bytes_received;
             const auto bytes=serialize_config(smoke_reload_expected_,Platform::windows);
@@ -4312,7 +4352,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
         if (using_managed_shell()) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
-        if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, midnight/custom ANSI hex and font preview rollback, Ribbon visibility/order Save/reopen, native Appearance/Ribbon captures, custom system menu/outside-click routing, confirmed Alt+], 25% opacity, two atomic Save/reopen cycles, original live actor retained, explicit hot reload / repeat / draft refusal / invalid and missing file preservation. Not physical UI/accessibility QA.\n",stderr);
+        if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, midnight/custom ANSI hex and font preview rollback, Ribbon visibility/order Save/reopen, native Appearance/Ribbon captures, custom system menu/outside-click routing, confirmed Alt+], independent 25% opacity and extra blur 24 with WARP fallback, two atomic Save/reopen cycles, original live actor retained, explicit hot reload / repeat / draft refusal / invalid and missing file preservation. Not physical UI/accessibility QA.\n",stderr);
         if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts; final-pane parking, canceled background close, cross-project isolation, live parked output and same retained actor restored after exit; scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
         if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());

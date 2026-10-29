@@ -31,6 +31,7 @@ struct AppearanceConfig {
     BackdropPreference backdrop{BackdropPreference::acrylic};
     ReducedMotionPreference reduced_motion{ReducedMotionPreference::system};
     bool show_clock{true};
+    double additional_blur{0}; // Windows host-backdrop Gaussian sigma; 0 preserves OS material.
     auto operator<=>(const AppearanceConfig&) const = default;
 };
 struct FontConfig {

@@ -127,6 +127,8 @@ Status validate_config(const Config& c, Platform platform) {
     if (!find_builtin_theme(c.theme.name) && c.theme.name != "custom") return Status::failure("Theme name must be a built-in name or custom");
     if (!color(c.theme.background) || !color(c.theme.foreground) || !color(c.theme.chrome) || !color(c.theme.accent)) return Status::failure("Theme colors must be #RRGGBB");
     for (const auto& value:c.theme.ansi) if (!color(value)) return Status::failure("ANSI colors must be #RRGGBB");
+    if (!std::isfinite(c.appearance.additional_blur) || c.appearance.additional_blur < 0.0 || c.appearance.additional_blur > 64.0)
+        return Status::failure("additional_blur must be between 0.0 and 64.0");
     if (!std::isfinite(c.appearance.background_opacity) || c.appearance.background_opacity < 0.0 || c.appearance.background_opacity > 1.0)
         return Status::failure("background_opacity must be between 0.0 and 1.0");
     if (c.appearance.backdrop != BackdropPreference::automatic && c.appearance.backdrop != BackdropPreference::none && c.appearance.backdrop != BackdropPreference::mica && c.appearance.backdrop != BackdropPreference::acrylic)
@@ -246,6 +248,7 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
             bool_field("experimental_ai", config.experimental_ai);
         } else if (section == "appearance") {
             bool_field("show_clock", config.appearance.show_clock);
+            number_field("additional_blur", config.appearance.additional_blur, 0.0, 64.0, false);
             number_field("background_opacity", config.appearance.background_opacity, 0.0, 1.0, false);
             if (key == "backdrop") {
                 handled = true; const auto* text_value = std::get_if<std::string>(&*value);
@@ -362,6 +365,7 @@ std::string serialize_config(const Config& config, Platform platform) {
     for (std::size_t i=0;i<16;++i) out << "\nansi" << i << " = " << quote(config.theme.ansi[i]);
     out << "\n\n[features]\nexperimental_ai = " << (config.experimental_ai?"true":"false");
     out << "\n\n[appearance]\nbackground_opacity = " << config.appearance.background_opacity
+        << "\nadditional_blur = " << config.appearance.additional_blur
         << "\nshow_clock = " << (config.appearance.show_clock ? "true" : "false")
         << "\nbackdrop = " << quote(config.appearance.backdrop == BackdropPreference::automatic ? "auto" : config.appearance.backdrop == BackdropPreference::mica ? "mica" : config.appearance.backdrop == BackdropPreference::acrylic ? "acrylic" : "none")
         << "\nreduced_motion = " << quote(config.appearance.reduced_motion == ReducedMotionPreference::system ? "system" : config.appearance.reduced_motion == ReducedMotionPreference::enabled ? "enabled" : "disabled")
@@ -415,6 +419,7 @@ name = "graphite" # graphite, instrument, daylight, custom
 experimental_ai = false # Restart required; missing in old files means disabled.
 [appearance]
 show_clock = true
+additional_blur = 0 # 0..64 additional Windows Gaussian blur; 0 retains OS material
 background_opacity = 0.94 # 0.0..1.0; default canvas only, not text or ANSI colors
 backdrop = "acrylic" # auto, none, mica or acrylic; unsupported hosts use opaque
 reduced_motion = "system" # system, enabled or disabled; default follows the OS

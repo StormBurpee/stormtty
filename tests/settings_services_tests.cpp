@@ -141,10 +141,12 @@ int main() { return run_core_tests("settings_services (Windows native)", [] {
     // A successful token can be reused for a second Save without hidden reload.
     auto baseline = load_settings_snapshot(path); CHECK(baseline);
     config.appearance.background_opacity = 0.8;
+    config.appearance.additional_blur = 24;
     auto second = save_settings_config(path, config, *baseline.snapshot); CHECK(second);
     config.font.size_dip = 18;
     auto third = save_settings_config(path, config, *second.snapshot); CHECK(third);
     CHECK(load_settings_snapshot(path).config->font.size_dip == 18);
+    CHECK(load_settings_snapshot(path).config->appearance.additional_blur == 24);
     CHECK(!has_temporaries(directory.path));
 
     // Actual external-file editor lifecycle: fresh disk draft, separate running

@@ -271,6 +271,16 @@ void native_host_surface_test() {
                 host.add_unrelated_style();const auto shell_changes=host.style_changes;
                 WindowScene scene;renderer.render(scene);
                 require(renderer.read_pixels().size()==96*48*4,"Native host surface did not render");
+                const auto unblurred=renderer.read_pixels();
+                for(const float sigma : {24.f,64.f,0.f}) {
+                    renderer.set_additional_blur(sigma);renderer.render(scene);
+                    require(!renderer.stats().host_backdrop,"WARP must never enable the hardware host blur graph");
+                    require(renderer.stats().composition==expected_composition,"Blur preference changed safe fallback presentation");
+                    require(renderer.read_pixels()==unblurred,"Unavailable blur altered foreground pixels or faked blur with opacity");
+                }
+                bool rejected=false;
+                try {renderer.set_additional_blur(65);} catch(const std::invalid_argument&) {rejected=true;}
+                require(rejected,"Additional blur accepted out-of-range sigma");
                 renderer.recreate_device();renderer.render(scene);
                 require(renderer.stats().composition==expected_composition && renderer.stats().device_recoveries==1,
                         "Native host did not reconstruct its valid presentation path");

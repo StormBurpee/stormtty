@@ -53,3 +53,44 @@ Ribbon visibility preview/Cancel and order/visibility Save/reopen. It captures
 smoke scenes, not screenshots of the user's terminal or physical DWM blur proof.
 ANSI engine resolution/OSC semantics remain covered by the portable terminal
 suite; the native smoke checks host/config propagation and actor identity/defaults.
+
+
+## Additional Windows blur
+
+Appearance now has a separate **Additional blur** slider (0–64). It is persisted
+as `appearance.additional_blur`, previews immediately, and follows the existing
+Cancel/Save/reload lifecycle. Background opacity remains independent. At zero,
+the existing system material renderer is unchanged: zero does **not** mean a
+sharp desktop, because Windows already blurs its host backdrop.
+
+On native MSVC/Windows SDK builds, positive values with Acrylic/Auto request a
+Gaussian CompositionEffectBrush over CreateHostBackdropBrush. A separate sibling
+visual presents the unchanged premultiplied terminal swapchain above it, keeping
+text outside the effect. Mica, Solid, WARP, high contrast, transparency-off and
+unsupported runtime/toolchain paths do not enable this graph. The settings status
+reports unavailability instead of pretending opacity is blur. macOS exposes no
+public adjustable radius here and keeps the control disabled.
+
+No desktop capture, private API, global window alpha, additional runtime package,
+or per-pane blur is used. Presentation failures retain the existing DComp/ordinary
+opaque-child fallback. Resource recreation reattaches the requested graph when
+possible; graph loss changes material status even if composition itself survives.
+The dispatcher queue is retained across preview changes and shut down only after
+the application HWND has been destroyed and its user data cleared.
+
+Qualification: the standalone native MSVC/WARP experiment established effect ABI
+and child recovery lifecycle, **not** physical blur quality. Production native
+compile, renderer tests and hardware/interactive spatial-blur verification are
+separate gates. Physical live-window blur, sharpness and GPU cost must still be
+checked on an interactive Windows 11 hardware session; no pixel/blur claim follows
+from WARP, source review or a screenshot of the slider alone.
+
+
+The native `host_backdrop_backend_tests` target now exercises the **actual app
+helper** against an owned WARP swapchain source (not desktop pixels): three
+attach/update/resize/detach cycles and explicit final dispatcher shutdown. It
+requires completion, with a 30-second external test deadline. Final shutdown
+continues pumping bounded batches after a five-second warning; it does not release
+a still-started controller or balance WinRT early. An exceptional shutdown failure
+returns failure and retains that owner until process exit. This ownership test
+still cannot prove hardware host-backdrop sampling or spatial blur quality.

@@ -95,6 +95,36 @@ int main() {return run_core_tests("settings panel",[] {
         CHECK(compact.key({{"LEFT"}}));CHECK(compact.draft().windows_console_backend==WindowsConsoleBackend::system);
         WindowScene scene;compact.append_scene(scene);validate_scene(scene,size.width,size.height,1.0);
     }
+    // Additional blur is independent of tint and publishes reversible previews.
+    SettingsPanel blur;blur.open(defaults);focus(blur,"appearance.blur");
+    CHECK(blur.key({{"END"}}));CHECK(blur.draft().appearance.additional_blur==64);
+    CHECK(blur.key({{"RIGHT"}}));CHECK(blur.draft().appearance.additional_blur==64);
+    CHECK(blur.key({{"LEFT"}}));CHECK(blur.draft().appearance.additional_blur==63);
+    CHECK(blur.key({{"HOME"}}));CHECK(blur.draft().appearance.additional_blur==0);
+    CHECK(blur.key({{"LEFT"}}));CHECK(blur.draft().appearance.additional_blur==0);
+    auto blur_slider=item(blur,"appearance.blur").bounds;
+    CHECK(blur.pointer_down({blur_slider.x+8,blur_slider.y+10}));
+    CHECK(blur.pointer_move({blur_slider.x+blur_slider.width*5,blur_slider.y+10}));CHECK(blur.draft().appearance.additional_blur==64);
+    CHECK(blur.pointer_up({blur_slider.x+blur_slider.width/2,blur_slider.y+10}));CHECK(blur.draft().appearance.additional_blur==32);
+    CHECK(blur.draft().appearance.background_opacity==defaults.appearance.background_opacity);
+    auto blur_preview=blur.take_action();CHECK(blur_preview && blur_preview->kind==SettingsActionKind::preview && blur_preview->config.appearance.additional_blur==32);
+    CHECK(!blur.take_action());
+    CHECK(blur.pointer_down({blur_slider.x+8,blur_slider.y+10}));blur.pointer_cancel();
+    CHECK(blur.pointer_move({blur_slider.x+blur_slider.width,blur_slider.y+10}));CHECK(blur.draft().appearance.additional_blur==0);
+    blur.cancel();auto blur_cancel=blur.take_action();CHECK(blur_cancel && blur_cancel->kind==SettingsActionKind::cancel && blur_cancel->config==defaults);
+    blur.open(defaults);focus(blur,"appearance.blur");CHECK(blur.key({{"RIGHT"}}));activate(blur,"save");
+    auto blur_save=blur.take_action();CHECK(blur_save && blur_save->kind==SettingsActionKind::save && blur_save->config.appearance.additional_blur==1);
+    blur.persistence_result(false,"Test failure");CHECK(blur.is_open() && blur.dirty());
+    activate(blur,"save");blur.take_action();blur.persistence_result(true);CHECK(!blur.is_open());
+    auto blur_reload=parse_config(serialize_config(blur_save->config,Platform::windows),Platform::windows);CHECK(blur_reload);
+    blur.open(*blur_reload.config);CHECK(!blur.dirty() && blur.draft().appearance.additional_blur==1);blur.cancel();
+    for(const auto size:std::vector<Size>{{1024,768},{480,480},{320,260}}) {
+        SettingsPanel compact_blur;compact_blur.resize(size);compact_blur.open(defaults);focus(compact_blur,"appearance.blur");
+        if(compact_blur.layout().content.height>=34) CHECK(item(compact_blur,"appearance.blur").visible);
+        CHECK(compact_blur.key({{"END"}}));
+        WindowScene scene;compact_blur.append_scene(scene);validate_scene(scene,size.width,size.height,1.0);
+    }
+    SettingsPanel mac_blur(Platform::macos);mac_blur.open(default_config(Platform::macos));CHECK(!item(mac_blur,"appearance.blur").enabled);
     SettingsPanel panel;
     CHECK(!panel.is_open());CHECK(!panel.key({{"TAB"}}));CHECK(!panel.pointer_down({0,0}));
     panel.set_material_status("Opaque: Windows Transparency effects are off.");

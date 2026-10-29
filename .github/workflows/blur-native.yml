@@ -1,0 +1,89 @@
+name: Additional blur native application qualification
+on:
+  push:
+    branches: [feature/adjustable-host-blur]
+permissions:
+  contents: read
+concurrency:
+  group: blur-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-ui:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/adjustable-host-blur'
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Initialize native MSVC toolchain
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Restore pinned terminal engine
+        id: engine_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Bootstrap pinned terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Cache successfully built terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ${{ steps.engine_cache.outputs.cache-primary-key }}
+      - name: Configure isolated native UI build
+        run: cmake -S . -B build-ui -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF -DSTORMTTY_TEST_INK=OFF
+      - name: Build real application backend and blur-related tests
+        run: cmake --build build-ui --parallel 2 --target stormtty host_backdrop_backend_tests core_config_tests settings_panel_tests settings_services_tests window_geometry_tests renderer_smoke
+      - name: Capture real settings blur preview and persisted reopen (WARP fallback)
+        id: capture
+        shell: python
+        run: |
+          import importlib.util,json,pathlib,sys,os
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
+          artifacts=pathlib.Path('build-ui/artifacts').resolve();artifacts.mkdir(parents=True,exist_ok=True)
+          capture=artifacts/'blur-settings.png'
+          result=runner.run_owned([str(pathlib.Path('build-ui/stormtty.exe').resolve()),'--smoke-settings','--capture',str(capture)],timeout=90,output_dir=artifacts)
+          text=result.output_tail.decode('utf-8',errors='replace')
+          (artifacts/'blur-owned.log').write_text(json.dumps(result.metadata(),sort_keys=True)+'\n'+text,encoding='utf-8')
+          print(text,flush=True)
+          names=['appearance-blur-preview','appearance-blur-before-save','appearance-blur-saved-reopened']
+          expected=[artifacts/('blur-settings-'+name+'.png') for name in names]
+          missing=[p.name for p in expected if not p.is_file() or p.stat().st_size<8 or p.read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n']
+          fallback_verified='Additional blur settings: persisted=24 software=1 host_graph=0 physical_blur_verified=0' in text
+          manifest={'source_sha':os.environ['GITHUB_SHA'],'physical_blur_verified':False,'hardware_host_verified':False,'warp_fallback':fallback_verified,'real_provider_calls':False,'captures':[p.name for p in expected],'missing':missing,'process':result.metadata()}
+          (artifacts/'blur-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          if result.exit_code or result.timed_out or result.output_truncated or not result.reaped or result.cleanup_error or missing or not fallback_verified:
+              raise SystemExit(result.exit_code or 1)
+      - name: Publish actual slider screenshots
+        if: always() && steps.capture.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: blur-native-settings-${{ github.sha }}
+          path: |
+            build-ui/artifacts/blur-settings-appearance-blur-*.png
+            build-ui/artifacts/blur-owned.log
+            build-ui/artifacts/blur-manifest.json
+          if-no-files-found: error
+      - name: Run native settings persistence, policy and renderer fallback tests
+        if: always() && steps.capture.outcome != 'skipped'
+        run: ctest --test-dir build-ui -R "^(host_backdrop_backend_tests|core_config_tests|settings_panel_tests|settings_services_tests|window_geometry_tests|renderer_smoke)$" --no-tests=error --output-on-failure --output-junit blur-tests.xml
+      - name: Preserve native test diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: blur-native-tests-${{ github.sha }}
+          path: |
+            build-ui/blur-tests.xml
+            build-ui/Testing/Temporary/LastTest.log
+            build-ui/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn

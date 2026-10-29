@@ -87,6 +87,9 @@ int main() {
     require(!tracker.observe({false,true,1}),"unchanged fallback creates no loop");
     require(tracker.observe({true,false,2}),"device recovery restores requested material");
     require(tracker.observe({true,false,3}),"same-path device reconstruction refreshes native material");
+    require(tracker.observe({true,false,3,true}),"host Gaussian activation refreshes material status");
+    require(!tracker.observe({true,false,3,true}),"unchanged host Gaussian creates no idle loop");
+    require(tracker.observe({true,false,3,false}),"host Gaussian loss refreshes unavailable status");
     auto navigation=layout_project_navigation(1100,700,32,{{1},{2}},0,true,false,true);
     auto chrome=layout_chrome(1100,700,{{1},{2}},{1},46,32,navigation.rail.width,navigation.tabs.height);
     require(chrome.band.height==32 && chrome.tabs_band.y==32,"thin caption is global, tasks occupy the next row");

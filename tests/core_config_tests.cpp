@@ -12,6 +12,24 @@ int main() { return run_core_tests("config", [] {
     auto legacy=serialize_config(opted,Platform::windows);const auto fs=legacy.find("[features]");const auto fe=legacy.find("[appearance]",fs);legacy.erase(fs,fe-fs);
     auto old_file=parse_config(legacy,Platform::windows);CHECK(old_file&&!old_file.config->experimental_ai);
     CHECK(!parse_config("version = 1\n[features]\nexperimental_ai = \"true\"\n",Platform::windows));
+    CHECK(default_config(Platform::windows).appearance.additional_blur==0);
+    for (const auto platform:{Platform::windows,Platform::macos}) {
+        for (const double sigma:{0.0,0.5,8.0,24.0,48.0,64.0}) {
+            auto config=default_config(platform);config.appearance.additional_blur=sigma;
+            const auto roundtrip=parse_config(serialize_config(config,platform),platform);
+            CHECK(roundtrip && roundtrip.config->appearance.additional_blur==sigma);
+            auto running=default_config(platform);CHECK(reload_config(running,serialize_config(config,platform),platform));
+            CHECK(running.appearance.additional_blur==sigma);
+        }
+        for (const double invalid:{-0.01,64.01,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}) {
+            auto config=default_config(platform);config.appearance.additional_blur=invalid;CHECK(!validate_config(config,platform));
+        }
+        for(const auto* invalid:{"-1","65","nan","inf","true","\"24\""}) {
+            auto running=default_config(platform);running.appearance.additional_blur=24;
+            CHECK(!reload_config(running,std::string("version = 1\n[appearance]\nadditional_blur = ")+invalid,platform));
+            CHECK(running.appearance.additional_blur==24);
+        }
+    }
     SettingsReload reload;
     auto current=default_config(Platform::windows);
     SettingsSnapshotResult loaded{ConfigFileSnapshot{},current,{}};

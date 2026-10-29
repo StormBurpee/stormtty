@@ -90,7 +90,7 @@ private:
     void activate(std::string_view id, int direction = 1);
     void focus_control(std::string id);
     void ensure_focus_visible();
-    void adjust_opacity(Point);
+    void adjust_opacity(Point, bool blur=false);
     std::string& selected_color();
     std::optional<Theme> custom_theme_;
     unsigned color_index_{};
@@ -110,7 +110,7 @@ private:
     std::string focus_{"nav.appearance"}, hover_, pressed_, error_, capture_command_, material_status_, console_backend_status_;
     double scroll_{}, document_height_{};
     bool bundled_console_available_{};
-    bool open_{}, saving_{}, dragging_opacity_{}, high_contrast_{}, loaded_changes_{};
+    bool open_{}, saving_{}, dragging_opacity_{}, dragging_blur_{}, high_contrast_{}, loaded_changes_{};
     Color high_background_{0,0,0,255}, high_foreground_{255,255,255,255};
     Color high_highlight_{0,120,215,255}, high_highlight_text_{255,255,255,255};
     Color high_disabled_text_{128,128,128,255};
