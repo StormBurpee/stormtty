@@ -438,7 +438,7 @@ private:
     bool smoke_find_progress();
     bool smoke_navigator_evidence();
     bool smoke_previous_terminal_evidence();
-    bool smoke_previous_terminal_done_{};
+    bool smoke_previous_terminal_done_{},smoke_previous_terminal_running_{};
     bool smoke_palette_input_progress();
     bool smoke_context_progress();
     bool smoke_watch_progress();
@@ -4448,6 +4448,11 @@ bool NativeWindow::smoke_navigator_evidence() {
 }
 bool NativeWindow::smoke_previous_terminal_evidence() {
     if(smoke_previous_terminal_done_)return true;
+    // update_sessions deliberately exercises output invariance below, and ends
+    // by calling smoke_progress. Block nested fixture execution, not that update.
+    if(smoke_previous_terminal_running_)return false;
+    smoke_previous_terminal_running_=true;
+    struct Reset {bool& running;~Reset(){running=false;}} reset{smoke_previous_terminal_running_};
     const auto original_project=projects_.active_id();
     const auto saved_history=previous_terminal_;
     const auto original_pane=workspace().active_pane();
