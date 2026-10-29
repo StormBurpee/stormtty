@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -73,6 +74,84 @@ def can_remove_fixture(launched, result):
             and not result.timed_out and result.returncode == 0)
 
 
+def checked_fixture_path(root, path, identity):
+    """No links/junctions, escapes or replacement of the exclusively created root."""
+    relative = path.relative_to(root)
+    if '..' in relative.parts:
+        raise ValueError('fixture path escapes root')
+    current = root
+    for part in (None, *relative.parts):
+        if part is not None:
+            current = current / part
+        info = current.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError('fixture contains a link or reparse point')
+        if current == root and (info.st_dev, info.st_ino) != identity:
+            raise ValueError('fixture root identity changed')
+        if current != path and not stat.S_ISDIR(info.st_mode):
+            raise ValueError('fixture ancestor is not a directory')
+    if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+        raise ValueError('fixture contains a special file')
+    if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+        raise ValueError('fixture contains a multiply linked file')
+    return info
+
+
+def remove_fixture(root, identity, launched, result):
+    """Fail closed; only the caller's freshly created, marker-owned tree is eligible."""
+    if not can_remove_fixture(launched, result):
+        raise ValueError('clean owned-process completion was not confirmed')
+    marker = root / 'fixture.marker'
+    def validate(path):
+        info = checked_fixture_path(root, path, identity)
+        marker_info = checked_fixture_path(root, marker, identity)
+        if not stat.S_ISREG(marker_info.st_mode) or marker.read_bytes() != MARKER.encode():
+            raise ValueError('fixture ownership marker missing or changed')
+        return info
+
+    # Inspect the complete tree before deleting anything. Keep the marker until
+    # all children are gone so failure leaves an identifiable retained fixture.
+    def preflight(path):
+        info = validate(path)
+        if stat.S_ISDIR(info.st_mode):
+            for child in path.iterdir():
+                preflight(child)
+    preflight(root)
+    retried = set()
+    def readonly_git_object(function, path, exc_info):
+        error = exc_info[1]
+        path = Path(path)
+        info = validate(path)
+        parts = path.relative_to(root).parts
+        git_object = (len(parts) == 5 and parts[0] in ('Theme Lab', 'Notes')
+                      and parts[1:3] == ('.git', 'objects')
+                      and len(parts[3]) == 2 and len(parts[4]) == 38
+                      and all(c in '0123456789abcdef' for c in parts[3] + parts[4]))
+        if (sys.platform != 'win32' or function is not os.unlink
+                or not isinstance(error, PermissionError) or getattr(error, 'winerror', None) != 5
+                or not stat.S_ISREG(info.st_mode) or not git_object or path in retried
+                or not getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_READONLY):
+            raise error
+        retried.add(path)
+        # Windows chmod changes only the readonly attribute, not ACLs. One
+        # retry only; sharing violations and all other failures retain the tree.
+        os.chmod(path, stat.S_IWRITE)
+        validate(path)
+        os.unlink(path)
+
+    for child in root.iterdir():
+        if child == marker:
+            continue
+        info = validate(child)
+        if stat.S_ISDIR(info.st_mode):
+            shutil.rmtree(child, onerror=readonly_git_object)
+        else:
+            child.unlink()
+    validate(marker)
+    marker.unlink()
+    root.rmdir()
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--app',type=Path,required=True)
@@ -83,7 +162,8 @@ def main():
     git_path=shutil.which('git')
     if not git_path: raise SystemExit('Git is required; no synthetic Git output fallback')
     output=args.output.resolve();output.mkdir(parents=True,exist_ok=True)
-    root=Path(tempfile.mkdtemp(prefix='StormTTY.Presentation.'))
+    root=Path(tempfile.mkdtemp(prefix='StormTTY.Presentation.')).resolve()
+    root_stat=root.lstat();identity=(root_stat.st_dev,root_stat.st_ino)
     result=None;launched=False
     try:
         env=fixture_environment(root,Path(git_path).resolve());create_fixture(root,Path(git_path).resolve(),env)
@@ -106,11 +186,12 @@ def main():
         print(log)
         return 0 if passed else 1
     finally:
-        # Do not remove paths whose app could still own a live process handle.
-        if can_remove_fixture(launched,result):
-            shutil.rmtree(root)
-        else:
-            print('Owned demo fixture retained: clean owned-process completion was not confirmed: '+str(root),file=sys.stderr)
+        try:
+            remove_fixture(root,identity,launched,result)
+        except (OSError, ValueError) as error:
+            print('Owned demo fixture retained: '+str(root)+': '+str(error),file=sys.stderr)
+            raise
+
 
 
 if __name__=='__main__':raise SystemExit(main())

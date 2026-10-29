@@ -27,3 +27,21 @@ Normal/narrow functional captures remain in `native-craft.yml`; the demo does
 not replace them. High contrast, physical accessibility, IME, DWM materials,
 and frame pacing still require their own evidence. Images must be shared as
 native owned-demo frames without pixel alteration.
+
+Cleanup is a harness concern, not an application qualification result. The
+runner checks the freshly created root identity and exact ownership marker,
+rejects links/reparse points and multiply linked or special files before any
+deletion, and retains uncertain process roots. For a Windows access-denied
+unlink of a verified readonly loose Git object in the owned sample repos only,
+it clears that file's readonly attribute and retries once. It never changes
+ACLs, repairs directories, or retries other permission/sharing failures. The
+marker remains until child cleanup succeeds; failure is reported and the
+remaining fixture is retained. This assumes the private fixture has no other
+writers after the owned processes exit; it is not a hostile concurrent-writer
+sandbox. The existing captured frames remain valid if later harness cleanup
+fails; the overall CI step still fails and must not be reported green.
+
+The attribute-only repair follows Python's Windows
+[`rmtree` example](https://docs.python.org/3.12/library/shutil.html#rmtree-example)
+and [`chmod` contract](https://docs.python.org/3.12/library/os.html#os.chmod), with
+stricter ownership, regular-file and object-path checks.
