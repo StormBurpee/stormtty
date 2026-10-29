@@ -35,7 +35,8 @@ inline CommandPaletteLayout layout_command_palette(double width, double height,
     const double margin=std::min(16.0,width/2), w=std::min(640.0,width-2*margin);
     const double y_margin=std::min(8.0,height/2);
     const double preferred_y=std::min(72.0,std::max(y_margin,height*.12));
-    const double header=58, footer=rename?28:64;
+    const bool has_detail=!rename && !row_heights.empty();
+    const double header=58, footer=has_detail?64:28;
     const double available=std::max(0.0,height-2*y_margin);
     const double budget=std::max(0.0,available-header-footer);
     selected=row_heights.empty()?0:std::min(selected,row_heights.size()-1);
@@ -59,7 +60,7 @@ inline CommandPaletteLayout layout_command_palette(double width, double height,
     out.search={out.panel.x+inset,y+std::min(14.0,h),std::max(0.0,w-2*inset-40),std::min(26.0,std::max(0.0,h-14))};
     const double hint_h=std::min(28.0,std::max(0.0,h-header));
     out.hints={out.panel.x+inset,y+h-hint_h,std::max(0.0,w-2*inset),hint_h};
-    const double detail_h=rename?0:std::min(36.0,std::max(0.0,h-header-hint_h));
+    const double detail_h=has_detail?std::min(36.0,std::max(0.0,h-header-hint_h)):0;
     out.detail={out.panel.x+inset,out.hints.y-detail_h,std::max(0.0,w-2*inset),detail_h};
     double top=y+header;
     for (const auto rh:heights) { out.row_bounds.push_back({out.panel.x+std::min(8.0,w/2),top,std::max(0.0,w-16),rh}); top+=rh; }

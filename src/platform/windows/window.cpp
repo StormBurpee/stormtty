@@ -2501,8 +2501,9 @@ WindowScene NativeWindow::scene() {
         line(x+1,layout.detail.y,x+w-1,layout.detail.y,seam);
         if (!rename_open_ && !commands.empty()) {
             const auto& selected=commands[std::min(palette_index_,commands.size()-1)];
-            const auto available=palette_availability(selected);
-            const auto description=available.enabled?selected.description:available.reason;
+            // Row context already explains availability/session identity. The
+            // shelf describes the operation, never repeats that same context.
+            const std::string_view description=selected.session?"Restore this terminal in a new tab":std::string_view(selected.description);
             label({layout.detail.x,layout.detail.y+9,layout.detail.width,20},std::string(description),secondary,12);
         }
         const double count_width=!rename_open_ && w>=420?66:0;

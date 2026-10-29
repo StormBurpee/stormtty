@@ -27,7 +27,7 @@ int main() {
         require(rename.rows==0 && rename.detail.height==0,"rename remains a compact field, not a command list");
     }
     const auto empty_palette=layout_command_palette(1044,720,{},0);
-    require(empty_palette.rows==0 && empty_palette.panel.height==170,"empty search reserves useful feedback space");
+    require(empty_palette.rows==0 && empty_palette.panel.height==134,"empty search reserves feedback space without a blank detail shelf");
     for (double width : {0., 24., 120., 300., 640., 1100.}) for (std::size_t count : {0u,1u,4u,256u}) {
         const auto footer=layout_background_footer({0,700,width,26},count);
         double right=0;
