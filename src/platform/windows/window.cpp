@@ -3371,7 +3371,10 @@ void NativeWindow::terminal_mouse(Point point, MouseAction action, MouseButton b
         }
         const bool physical_button=button==MouseButton::left || button==MouseButton::right || button==MouseButton::middle;
         if (action==MouseAction::press && physical_button) {
-            mouse_capture_pane_=placement.pane; mouse_capture_button_=button; SetCapture(hwnd_);
+            mouse_capture_pane_=placement.pane; mouse_capture_button_=button;
+            // Reacquiring the same HWND sends WM_CAPTURECHANGED synchronously
+            // on Windows, which would release this just-established owner.
+            if(GetCapture()!=hwnd_)SetCapture(hwnd_);
         }
         MouseInput input{action,button,terminal_modifiers(),(point.x-content.x)*scale_,(point.y-content.y)*scale_,pressed};
         if(options_.smoke_test)++smoke_terminal_mouse_submissions_;
@@ -3582,7 +3585,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
         }
         auto* session=active_session(); auto frame=session?session->frame():nullptr;
         if (frame && frame->mouse_reporting && !(GetKeyState(VK_SHIFT)&0x8000)) {
-            SetCapture(hwnd_); terminal_mouse(point,MouseAction::press,MouseButton::left,true); return;
+            terminal_mouse(point,MouseAction::press,MouseButton::left,true); return;
         }
         for (const auto& current:layout_.panes) if (current.pane==pane) {
             const auto content=content_bounds(current); const auto metrics=renderer_->metrics();
