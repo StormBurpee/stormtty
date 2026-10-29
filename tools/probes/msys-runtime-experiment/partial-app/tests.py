@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Portable fixed app-matrix contracts, not Windows execution."""
-import collections,copy,hashlib,importlib.util,json,pathlib,tempfile,unittest
+import collections,copy,hashlib,importlib.util,json,pathlib,subprocess,tempfile,unittest
 from unittest.mock import patch
 HERE=pathlib.Path(__file__).resolve().parent;REPO=HERE.parents[3]
 def module(name,path):
@@ -52,6 +52,16 @@ class Matrix(unittest.TestCase):
   self.assertIn('reap_timeout=10',s);self.assertNotIn('sleep(',s)
   self.assertIn("if row['mode']=='explicit'",s)
   self.assertIn("'--shell-runtime',str(app_roots[variant])",s)
+ def test_actual_autocrlf_checkout_preserves_locked_source_bytes(self):
+  plan=json.loads((HERE/'app-plan.json').read_text())
+  paths=list(plan['source_files'])+[(HERE/'managed-native'/name).relative_to(REPO).as_posix() for name in plan['managed_fixture_files']]
+  with tempfile.TemporaryDirectory() as temporary:
+   destination=pathlib.Path(temporary)
+   subprocess.run(['git','-c','core.autocrlf=true','checkout-index','--prefix='+destination.as_posix()+'/', '--',*paths],cwd=REPO,check=True,capture_output=True)
+   for relative,digest in plan['source_files'].items():self.assertEqual(hashlib.sha256((destination/relative).read_bytes()).hexdigest(),digest,relative)
+   for name,digest in plan['managed_fixture_files'].items():
+    relative=(HERE/'managed-native'/name).relative_to(REPO)
+    self.assertEqual(hashlib.sha256((destination/relative).read_bytes()).hexdigest(),digest,str(relative))
  def test_provider_hashes_preserved(self):
   p=json.loads((HERE/'app-plan.json').read_text());s=(REPO/'tools/prepare-conpty-probe.ps1').read_text()
   for digest in p['packaged_provider_sha256'].values():self.assertIn(digest,s)
@@ -90,9 +100,13 @@ class BuildContract(unittest.TestCase):
 
 class Collection(unittest.TestCase):
  def test_only_fixed_logs_sources_not_binary_home_capture(self):
-  names=[str(p) for p,_ in collector.candidates()];self.assertEqual(len(names),len(set(names)))
+  names=[p.as_posix() for p,_ in collector.candidates()];self.assertEqual(len(names),len(set(names)))
   self.assertEqual(sum(p.endswith('.log') and any('/'+k+'/' in p for k in ('raw','managed','settings')) for p in names),108)
   for name in names:self.assertNotIn('private-captures',name);self.assertFalse(name.endswith(('.exe','.dll','.png')))
+ def test_windows_path_serialization_counts_same_fixed_logs(self):
+  names=[pathlib.PureWindowsPath(*p.parts).as_posix() for p,_ in collector.candidates()]
+  self.assertEqual(sum(p.endswith('.log') and any('/'+kind+'/' in p for kind in ('raw','managed','settings')) for p in names),108)
+  self.assertEqual(names,[p.as_posix() for p,_ in collector.candidates()])
  def test_missing_evidence_incomplete_preserved(self):
   with tempfile.TemporaryDirectory() as temporary:
    r=pathlib.Path(temporary);(r/'evidence/raw').mkdir(parents=True);p=r/'evidence/raw/inbox-raw-1-stock.log';p.write_text('FAIL retained')

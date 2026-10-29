@@ -1,3 +1,4 @@
+# Portability correction only: preserve locked LF bytes and Windows path test spelling.
 # Separate uninstrumented real-app phase; root review required before publication.
 # No production/default changes. Unsupported paths remain INCONCLUSIVE.
 name: Private MSYS uninstrumented partial-read real-app qualification

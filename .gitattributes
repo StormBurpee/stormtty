@@ -20,3 +20,10 @@ tools/shell-tools-notices/texts/** -text
 tools/probes/msys-runtime-experiment/0005-conditional-retirement.patch -text
 # Keep the unchanged PR7 raw probe byte pin stable on Windows checkout.
 tests/paste_input_probe.cpp -text
+
+# Exact current-app qualification source pins must survive Windows checkout.
+CMakeLists.txt text eol=lf
+src/platform/windows/window.cpp text eol=lf
+src/app/windows_main.cpp text eol=lf
+tools/run-owned-process.py text eol=lf
+tools/prepare-conpty-probe.ps1 text eol=lf
