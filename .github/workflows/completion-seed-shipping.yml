@@ -1,13 +1,9 @@
-# One intentional root-owned publication; do not push retries until green.
+# Root-owned intentional source pushes on this diagnostic branch qualify.
+# Never push unchanged retries until green; no main/PR/dispatch trigger.
 name: Opt-in shipping completion seed qualification
 on:
   push:
     branches: [diagnostic/completion-seed-shipping]
-    # Source corrections to the build-only generator must qualify on this branch.
-    paths:
-      - .github/workflows/completion-seed-shipping.yml
-      - tools/prepare-bundled-completion-seed.py
-      - tools/prepare-bundled-completion-seed-tests.py
 permissions:
   contents: read
 concurrency:

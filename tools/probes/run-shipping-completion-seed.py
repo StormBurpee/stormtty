@@ -54,7 +54,8 @@ def main():
     (a.output/'shipping-identity.json').write_text(json.dumps(identity,sort_keys=True)+'\n')
     result=runner.run_owned([str((a.build/'managed_shell_initialization_probe.exe').resolve())],timeout=120,reap_timeout=10,tail_bytes=8192,output_dir=a.output)
     allowed=re.compile(r'INITIALIZATION_CHECKS code=(?:0 contention=1 config_preserved=1 native_ack=1 child_exit_release=1 abandoned_owner_no_dump=1 public_runtime_acl=1 cross_process_contention=1|1 stage=[0-9]+)')
-    lines=[line for line in result.output_tail.decode('utf-8',errors='replace').splitlines() if allowed.fullmatch(line)]
+    abandoned=re.compile(r'INITIALIZATION_ABANDONED recovery_no_dump=[01] recovery_event=[01] state_valid=[01] marker_present=[01] marker_error=[0-9]+')
+    lines=[line for line in result.output_tail.decode('utf-8',errors='replace').splitlines() if allowed.fullmatch(line) or abandoned.fullmatch(line)]
     valid=good(result) and any(x.startswith('INITIALIZATION_CHECKS code=0 ') for x in lines)
     lines.append('SHIPPING_LIFECYCLE_VALID code='+str(0 if valid else 1))
     (a.output/'shipping-lifecycle.log').write_text('\n'.join(lines)+'\n')

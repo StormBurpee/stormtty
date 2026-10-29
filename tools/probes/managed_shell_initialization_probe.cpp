@@ -73,9 +73,15 @@ int main(){unsigned stage{};try{
     std::thread departed([&]{std::vector<ProcessEnvironmentEntry> e;abandoned->prepare(e);held=abandoned->ready_event()!=0;});
     departed.join();check(held);stage=4;
     auto recover=managed_shell_initialization_at(abandoned_fixture.root,{});env.clear();recover->prepare(env);
-    check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1");recover->finished();
+    const auto uncertain_state=prepare_managed_shell_state_at(abandoned_fixture.root,false);
+    std::error_code marker_error;
+    const bool marker_present=uncertain_state && fs::exists(uncertain_state.directory/L"completion-init-uncertain",marker_error);
+    std::cout<<"INITIALIZATION_ABANDONED recovery_no_dump="<<(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1")
+             <<" recovery_event="<<(recover->ready_event()!=0)<<" state_valid="<<static_cast<bool>(uncertain_state)
+             <<" marker_present="<<marker_present<<" marker_error="<<marker_error.value()<<'\n';
+    stage=41;check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1");recover->finished();
     auto uncertain=managed_shell_initialization_at(abandoned_fixture.root,{});env.clear();uncertain->prepare(env);
-    check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1");uncertain->finished();abandoned.reset();
+    stage=42;check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1");uncertain->finished();abandoned.reset();
     // Same-user second process, not a same-thread recursive mutex acquisition.
     Fixture process_fixture;stage=5;
     std::wstring release_name=L"Local\\StormTTY-InitProbe-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
