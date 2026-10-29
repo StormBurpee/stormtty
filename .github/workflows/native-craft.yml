@@ -78,7 +78,7 @@ jobs:
           missing.extend('navigator-'+name for name in expected_navigator if not (artifacts/('craft-projects-navigator-'+name+'.png')).is_file())
           missing.extend(name for name in ['craft-layout-background-navigator.png','craft-projects-background-finished-navigator.png'] if not (artifacts/name).is_file())
           missing.extend('context-'+name for name in ['headers','inspect','narrow','high-contrast-fixture'] if not (artifacts/('craft-layout-context-'+name+'.png')).is_file())
-          missing.extend('watch-'+name for name in ['armed','open-commands']+['result-'+str(i) for i in range(6)] if not (artifacts/('craft-layout-watch-'+name+'.png')).is_file())
+          missing.extend('watch-'+name for name in ['armed','open-commands','indicator-narrow','indicator-high-contrast-fixture']+['result-'+str(i) for i in range(6)] if not (artifacts/('craft-layout-watch-'+name+'.png')).is_file())
           expected_gallery=['normal','narrow','high-contrast-fixture']
           missing.extend('gallery-'+name for name in expected_gallery if not (artifacts/('craft-settings-theme-gallery-'+name+'.png')).is_file())
           expected_semantic=['craft-settings-appearance-blur-saved-reopened.png','craft-settings-appearance-shell-same-theme.png']
