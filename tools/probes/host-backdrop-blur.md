@@ -22,11 +22,13 @@ sharp-to-blurred desktop radius. Effect/host creation success is not proof that 
 actually displays the expected content. Use another moving window behind this HWND
 for physical verification; do not substitute a bitmap inside the probe.
 
-An ordinary redirection HWND is intentional in this isolated harness: its topmost
+An ordinary redirection HWND is the default in this isolated harness: its topmost
 DesktopWindowTarget covers the backing surface, and GDI remains available if
 composition fails. This differs from production's WS_EX_NOREDIRECTIONBITMAP host;
-passing this probe is NOT enough to migrate that host without a separate integration
-test. WM_NCACTIVATE is left to DefWindowProc. No frame/material hacks are used.
+passing ordinary mode is NOT enough to migrate that host. `--no-redirection`
+repeats the probe with the production HWND flag. In that mode a graphics failure
+closes with a failure code: this probe does not pretend GDI can recover a
+no-redirection HWND. Production opaque-child recovery remains a separate gate. WM_NCACTIVATE is left to DefWindowProc. No frame/material hacks are used.
 
 ## Build (MSVC x64, SDK 10.0.22621+)
 
@@ -57,8 +59,8 @@ production dependencies, packaging and tests remain unchanged.
 ## Automated and physical qualification
 
 ```powershell
-# Real HWND + D3D/D2D WARP + opaque-policy + recreate/resize + queue teardown.
-# A success is NOT evidence of the host effect or visual blur.
+# Real HWND + D3D/D2D WARP + owned-surface Gaussian graph construction,
+# opaque-policy + recreate/resize + queue teardown. No host-effect/blur proof.
 ./out/host-backdrop-probe/host-backdrop-blur.exe --warp --smoke
 if ($LASTEXITCODE -ne 0) { throw 'Opaque WARP smoke failed' }
 # Hardware Windows 11 session: requires active host graph outside forced fallback.
@@ -110,3 +112,89 @@ but exposes no public blur-radius setting. No macOS implementation or parity cla
 is part of this Windows experiment.
 
 The Gaussian effect GUID is provided by `dxguid.lib`; see the [Direct2D Gaussian blur library requirements](https://learn.microsoft.com/en-us/windows/win32/direct2d/gaussian-blur#requirements).
+
+## Bounded owned-window experiment
+
+From an **x64 Developer PowerShell**, the runner compiles this standalone file
+with MSVC and SDK 10.0.22621+, without Ghostty or production app dependencies:
+
+```powershell
+# Both ordinary and production-style HWNDs; approximately one second each.
+./tools/probes/run-host-backdrop-blur.ps1 -Mode Warp
+# Interactive Windows 11 hardware session: two 12-second runs to observe.
+./tools/probes/run-host-backdrop-blur.ps1 -Mode HardwareSweep
+```
+
+Use `-SkipBuild` only after the executable has been built. Each owned process has
+an external 30-second deadline and local stdout/stderr logs in
+`out/host-backdrop-probe`. The runner does not capture, upload, install, or change
+system settings. No native binary has been produced by the Linux cross-check:
+Zig's headers stop at missing `windows.system.h`; MSVC/native verification remains
+required. The optional existing CMake target remains
+`stormtty_host_backdrop_probe`, enabled with
+`STORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE=ON` in a native MSVC build.
+
+`--sweep` creates a **separate owned HWND** containing only a 64-pixel black/white
+checkerboard and moving red stripe. The probe opens above it. It holds opacity
+at 0.25 while sigma is 0, 8, 24, then 48 for two seconds each; the remaining four
+seconds test forced opaque policy, restoration, device recreation, and resize.
+Keyboard adjustments are disabled during this controlled sweep (Escape cancels).
+It closes both owned windows, then pumps dispatcher shutdown for at most five
+seconds. External timeout remains necessary for a blocked driver call.
+
+Direct executable equivalents:
+
+```powershell
+./out/host-backdrop-probe/host-backdrop-blur.exe --require-host --sweep
+./out/host-backdrop-probe/host-backdrop-blur.exe --require-host --sweep --no-redirection
+# Unbounded interactive inspection, still only synthetic source content:
+./out/host-backdrop-probe/host-backdrop-blur.exe --synthetic-backdrop --no-redirection
+```
+
+The WARP path now always constructs the Gaussian effect factory and effect brush,
+binds the **owned swapchain surface**, and sets all four sigma values before
+choosing the opaque policy. This validates effect-descriptor ABI/property
+construction if it passes. It does not validate blurred pixels, the hardware host
+source, or performance; the validation graph is not used to infer host behavior.
+Hardware `--require-host` fails when the host graph is unavailable. Both modes
+report `physical_blur_verified=0` or equivalent wording even after API success.
+Exit 2 means invalid modes or cancellation, not a completed qualification.
+
+For physical acceptance, record whether the checkerboard/stripe edges visibly
+spread more at larger sigma **with fixed tint**, whether motion stays live, and
+whether foreground glyphs remain sharp. Compare both HWND variants. Record OS,
+GPU/driver and DPI separately; no automated claim is inferred from the local log.
+The host source's OS blur remains at sigma 0. No production slider should promise
+an unblurred desktop at zero based on this experiment.
+
+## Separate branch/PR CI gate
+
+`.github/workflows/host-backdrop-probe.yml` is independent of the app's native
+baseline/qualification workflows. Its `pull_request` path filter runs this new
+workflow from a PR containing the probe changes; alternatively a push to
+`probe/host-backdrop-*` runs the branch workflow. It does not depend on first
+merging a dispatch-only workflow into main. Root owns publication.
+
+The native Windows job initializes MSVC, configures the standalone project with
+`cmake -S tools/probes -B build/host-backdrop -G Ninja -DCMAKE_CXX_COMPILER=cl`,
+and builds the same `stormtty_host_backdrop_probe` target/source without fetching
+Ghostty or changing app gates. Compilation errors fail the job. It then runs only
+`--warp --smoke`, both HWND variants, using the existing owned-process runner
+(30-second deadline, five-second reap bound). It never runs the hardware sweep.
+
+Evidence JSON distinguishes:
+
+- `warp-graph-lifecycle-passed`: exit zero plus explicit owned Gaussian graph and
+  software/host-off lifecycle markers; still **not** hardware or physical blur.
+- `runtime-unsupported`: exit 3 plus an explicit capability marker. Only
+  `E_NOTIMPL`, `REGDB_E_CLASSNOTREG`, or `ERROR_NOT_SUPPORTED` during runtime
+  initialization or compositor/owned-graph creation qualify. This emits a warning
+  and a summary saying the diagnostic did **not** pass. It is not blur proof.
+- `failed`: timeout/unreaped child, cleanup failure, cancellation, missing markers,
+  invalid effect metadata (`E_INVALIDARG`), `E_NOINTERFACE`, device errors, generic
+  failures, or unexpected exits. These fail the diagnostic step.
+
+The artifact retains the native executable, configure log and bounded diagnostic
+logs/JSON for root review. Do not offer the interactive probe to a user before its
+native compile has succeeded. The Python classifier's negative cases run on Linux
+and Windows; this does not substitute for native compilation or execution.

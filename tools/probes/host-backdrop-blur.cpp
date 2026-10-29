@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cwchar>
 #include <string>
+#include <string_view>
 
 namespace wc = winrt::Windows::UI::Composition;
 namespace wf = winrt::Windows::Foundation;
@@ -75,20 +76,71 @@ struct Gaussian : winrt::implements<Gaussian, wg::IGraphicsEffect,
     }
 };
 
+// A separate owned HWND is essential: an image inside the probe cannot prove
+// that HostBackdrop samples other windows. Only synthetic geometry is painted.
+struct SyntheticBackdrop {
+    HWND hwnd{};
+    unsigned tick{};
+    ~SyntheticBackdrop() { if (IsWindow(hwnd)) DestroyWindow(hwnd); }
+    static LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) noexcept {
+        auto* self=reinterpret_cast<SyntheticBackdrop*>(GetWindowLongPtrW(window,GWLP_USERDATA));
+        if (message==WM_NCCREATE) {
+            self=static_cast<SyntheticBackdrop*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
+            self->hwnd=window;SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self));
+        }
+        if (self && message==WM_TIMER) {++self->tick;InvalidateRect(window,nullptr,FALSE);return 0;}
+        if (self && message==WM_PAINT) {
+            PAINTSTRUCT paint{};const auto dc=BeginPaint(window,&paint);
+            RECT client{};GetClientRect(window,&client);
+            for (LONG y=0;y<client.bottom;y+=64) for(LONG x=0;x<client.right;x+=64) {
+                const RECT cell{x,y,std::min(x+64,client.right),std::min(y+64,client.bottom)};
+                FillRect(dc,&cell,static_cast<HBRUSH>(GetStockObject(((x/64+y/64)%2)?WHITE_BRUSH:BLACK_BRUSH)));
+            }
+            const LONG x=static_cast<LONG>((self->tick*7)%std::max(1L,client.right));
+            const RECT stripe{x,0,std::min(x+24,client.right),client.bottom};
+            const auto brush=CreateSolidBrush(RGB(255,32,64));
+            if (brush) {FillRect(dc,&stripe,brush);DeleteObject(brush);}
+            EndPaint(window,&paint);return 0;
+        }
+        if (message==WM_CLOSE) return 0; // The owning probe closes both windows.
+        if (message==WM_DESTROY) {KillTimer(window,2);return 0;}
+        return DefWindowProcW(window,message,wparam,lparam);
+    }
+    void create(HINSTANCE instance) {
+        WNDCLASSW klass{};klass.hInstance=instance;klass.lpfnWndProc=procedure;
+        klass.lpszClassName=L"StormTTY.SyntheticBackdrop";
+        check_hresult(RegisterClassW(&klass)?S_OK:HRESULT_FROM_WIN32(GetLastError()));
+        hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,klass.lpszClassName,L"Owned synthetic checkerboard — no user data",
+            WS_POPUP,160,120,1040,720,nullptr,nullptr,instance,this);
+        check_hresult(hwnd?S_OK:HRESULT_FROM_WIN32(GetLastError()));
+        ShowWindow(hwnd,SW_SHOWNOACTIVATE);
+        if(!SetTimer(hwnd,2,50,nullptr)) winrt::throw_last_error();
+    }
+};
+
+// Narrow, explicit runtime capability failures. Invalid effect metadata,
+// invalid arguments, device removal and generic E_FAIL remain real failures.
+bool unsupported_runtime(HRESULT hr) noexcept {
+    return hr==E_NOTIMPL || hr==REGDB_E_CLASSNOTREG || hr==HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+}
+
 struct Probe {
     HWND hwnd{};
     bool force_warp{}, warp{}, active{}, failed{}, blocked_test{}, high_contrast{}, smoke{}, require_host{};
+    bool no_redirection{}, synthetic{}, sweep{}, graph_validated{};
+    ULONGLONG started{};
     unsigned smoke_step{};
     int smoke_result{};
     float opacity{.25f}, sigma{};
     UINT width{960}, height{640};
     unsigned recovery_count{};
+    const char* initialization_stage{"device"};
     std::wstring status{L"initializing"};
     wc::Compositor compositor{nullptr};
     wc::Desktop::DesktopWindowTarget target{nullptr};
     wc::ContainerVisual root{nullptr};
     wc::SpriteVisual background{nullptr}, foreground{nullptr};
-    wc::CompositionEffectBrush effect{nullptr};
+    wc::CompositionEffectBrush effect{nullptr}, validation_effect{nullptr};
     wc::CompositionSurfaceBrush surface_brush{nullptr};
     winrt::com_ptr<ID3D11Device> device;
     winrt::com_ptr<ID3D11DeviceContext> immediate;
@@ -108,13 +160,13 @@ struct Probe {
     void release_graphics() noexcept {
         disable_host();
         try { if (target) target.Root(nullptr); } catch (...) {}
-        effect = nullptr; surface_brush = nullptr; foreground = nullptr;
+        effect = nullptr; validation_effect = nullptr; surface_brush = nullptr; foreground = nullptr;
         background = nullptr; root = nullptr; target = nullptr; compositor = nullptr;
         if (dc) dc->SetTarget(nullptr);
         bitmap = nullptr; ink = nullptr; font = nullptr; write = nullptr;
         dc = nullptr; d2d_device = nullptr; swapchain = nullptr; immediate = nullptr; device = nullptr;
     }
-    ~Probe() { release_graphics(); }
+    ~Probe() { if (IsWindow(hwnd)) DestroyWindow(hwnd); release_graphics(); }
     void create_bitmap() {
         winrt::com_ptr<IDXGISurface> surface;
         check_hresult(swapchain->GetBuffer(0, __uuidof(IDXGISurface), surface.put_void()));
@@ -124,7 +176,7 @@ struct Probe {
         dc->SetTarget(bitmap.get());
     }
     void initialize() {
-        release_graphics(); failed = false;
+        release_graphics(); failed = false; graph_validated=false; initialization_stage="device";
         RECT r{}; GetClientRect(hwnd, &r); width = std::max(1L, r.right); height = std::max(1L, r.bottom);
         D3D_FEATURE_LEVEL level{};
         auto create = [&](D3D_DRIVER_TYPE type) {
@@ -155,6 +207,7 @@ struct Probe {
         check_hresult(write->CreateTextFormat(L"Consolas", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 20, L"en-US", font.put()));
         create_bitmap();
+        initialization_stage="desktop-composition";
         compositor = wc::Compositor();
         auto desktop = compositor.as<ABI::Windows::UI::Composition::Desktop::ICompositorDesktopInterop>();
         check_hresult(desktop->CreateDesktopWindowTarget(hwnd, TRUE,
@@ -170,6 +223,18 @@ struct Probe {
         // Do not stack the system acrylic recipe below our own host brush.
         const DWORD none = DWMSBT_NONE;
         DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &none, sizeof none);
+        // This graph is constructed even in WARP/opaque policy. Its input is
+        // our owned swapchain, never desktop pixels; it checks the native effect
+        // descriptor ABI without claiming host blur or pixel correctness.
+        initialization_stage="owned-effect-graph";
+        auto descriptor=winrt::make_self<Gaussian>();
+        descriptor->source=wc::CompositionEffectSourceParameter(L"OwnedSurface");
+        auto factory=compositor.CreateEffectFactory(*descriptor,{L"Blur.BlurAmount"});
+        validation_effect=factory.CreateBrush();
+        validation_effect.SetSourceParameter(L"OwnedSurface",surface_brush);
+        for (const float value:{0.f,8.f,24.f,48.f}) validation_effect.Properties().InsertScalar(L"Blur.BlurAmount",value);
+        graph_validated=true; initialization_stage="drawing";
+        std::printf("Owned surface Gaussian graph: constructed=1 scalar_sweep=0,8,24,48 software=%u host_pixel_proof=0\n",unsigned(warp));
         policy();
     }
     void policy() {
@@ -223,7 +288,9 @@ struct Probe {
         dc->Clear(high_contrast ? system_color(COLOR_WINDOW) : D2D1::ColorF(.055f, .075f, .105f, active ? opacity : 1.f));
         const auto text = L"StormTTY HOST BACKDROP PROBE — not production\n\n" + status +
             L"\nAdditional sigma: " + std::to_wstring(sigma) + L" (0 retains OS blur)\nBackground opacity: " +
-            std::to_wstring(opacity) + L"\n\nLeft/Right: sigma 0..64; Up/Down: opacity 0..1\nHome/End: sigma 0/64; F: opaque-policy test; R: recreate\n\n" +
+            std::to_wstring(opacity) + L"\n\nLeft/Right: sigma 0..64; Up/Down: opacity 0..1\nHome/End: sigma 0/64; F: opaque-policy test; R: recreate\n" +
+            (no_redirection?std::wstring(L"HWND: production no-redirection\n"):std::wstring(L"HWND: ordinary redirection\n")) +
+            (sweep?std::wstring(L"BOUNDED SWEEP: fixed opacity 0.25; sigma 0 / 8 / 24 / 48\n\n"):std::wstring(L"\n")) +
             L"Opaque foreground: ABC 0123456789 []{} /\\ <>\nMove another window behind this one; inspect spatial blur.\nNo capture, readback, private API, or global window alpha.";
         ink->SetColor(high_contrast ? system_color(COLOR_WINDOWTEXT) : D2D1::ColorF(D2D1::ColorF::White));
         dc->DrawText(text.c_str(), static_cast<UINT32>(text.size()), font.get(),
@@ -238,10 +305,18 @@ struct Probe {
             if (!rebuild && (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == D2DERR_RECREATE_TARGET)) {
                 ++recovery_count; safe_update(true); return;
             }
+            const bool unsupported=unsupported_runtime(hr) &&
+                (std::string_view(initialization_stage)=="desktop-composition" || std::string_view(initialization_stage)=="owned-effect-graph");
+            smoke_result=unsupported?3:1;
+            std::fprintf(stderr,"PROBE_RUNTIME_UNSUPPORTED=%u stage=%s hr=0x%08lx\n",unsigned(unsupported),initialization_stage,static_cast<unsigned long>(hr));
             release_graphics(); failed = true;
-            status = L"Opaque GDI fallback: graphics initialization/render failed HRESULT=" +
+            status = L"Graphics initialization/render failed HRESULT=" +
                 std::to_wstring(static_cast<unsigned long>(hr));
-            InvalidateRect(hwnd, nullptr, TRUE);
+            if (no_redirection) {
+                // This HWND cannot promise the ordinary-window GDI fallback.
+                // Fail closed instead of claiming a usable production fallback.
+                if(!smoke_result) smoke_result=1;DestroyWindow(hwnd);
+            } else InvalidateRect(hwnd, nullptr, TRUE);
         }
     }
 };
@@ -266,9 +341,34 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
         }
         case WM_SIZE: probe->resize(); probe->safe_update(); return 0;
         case WM_TIMER:
+            if (wparam==3 && probe->sweep) {
+                const auto elapsed=GetTickCount64()-probe->started;
+                const unsigned step=static_cast<unsigned>(elapsed/2000);
+                if (probe->failed || !probe->graph_validated || (probe->warp && probe->active) ||
+                    (probe->require_host && !probe->blocked_test && !probe->active)) {if(!probe->smoke_result) probe->smoke_result=1;}
+                if (step!=probe->smoke_step) {
+                    probe->smoke_step=step;
+                    if (step<4) {
+                        constexpr float values[]{0,8,24,48};probe->sigma=values[step];probe->opacity=.25f;
+                        if(probe->effect) probe->effect.Properties().InsertScalar(L"Blur.BlurAmount",probe->sigma);
+                    } else if(step==4) {probe->blocked_test=true;probe->policy();}
+                    else if(step==5) {
+                        probe->blocked_test=false;probe->safe_update(true);
+                        SetWindowPos(hwnd,nullptr,0,0,800,500,SWP_NOMOVE|SWP_NOZORDER);
+                    } else {
+                        std::printf("Bounded blur sweep complete: result=%d graph=%u hardware_host=%u no_redirection=%u physical_blur_verified=0\n",
+                            probe->smoke_result,unsigned(probe->graph_validated),unsigned(probe->active&&!probe->warp),unsigned(probe->no_redirection));
+                        KillTimer(hwnd,3);DestroyWindow(hwnd);return 0;
+                    }
+                    std::printf("Blur sweep: phase=%u sigma=%.1f opacity=%.2f host_active=%u elapsed_ms=%llu\n",
+                        step,double(probe->sigma),double(probe->opacity),unsigned(probe->active),elapsed);
+                    probe->safe_update();
+                }
+                return 0;
+            }
             if (wparam == 1 && probe->smoke) {
                 ++probe->smoke_step;
-                if (probe->failed || (probe->warp && probe->active)) probe->smoke_result = 1;
+                if (probe->failed || !probe->graph_validated || (probe->warp && probe->active)) {if(!probe->smoke_result) probe->smoke_result=1;}
                 if (probe->require_host && !probe->blocked_test && !probe->active) probe->smoke_result = 1;
                 if (probe->smoke_step == 1) {
                     probe->sigma = 24; probe->opacity = 0;
@@ -281,7 +381,7 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
                     probe->blocked_test = false; probe->safe_update(true);
                     SetWindowPos(hwnd, nullptr, 0, 0, 800, 500, SWP_NOMOVE | SWP_NOZORDER);
                 } else {
-                    std::printf("Host backdrop smoke: result=%d software=%u host_active=%u. No physical blur verification.\n",
+                    std::printf("Host backdrop smoke: result=%d software=%u host_active=%u. Owned graph construction only; no physical blur verification.\n",
                         probe->smoke_result, unsigned(probe->warp), unsigned(probe->active));
                     KillTimer(hwnd, 1); DestroyWindow(hwnd);
                 }
@@ -293,6 +393,7 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             SetWindowPos(hwnd, nullptr, r->left, r->top, r->right-r->left, r->bottom-r->top, SWP_NOZORDER | SWP_NOACTIVATE); return 0;
         }
         case WM_KEYDOWN:
+            if (probe->sweep && wparam!=VK_ESCAPE) return 0; // Fixed experimental variables.
             switch (wparam) {
             case VK_LEFT: probe->sigma = std::max(0.f, probe->sigma-2); break;
             case VK_RIGHT: probe->sigma = std::min(64.f, probe->sigma+2); break;
@@ -302,11 +403,12 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
             case VK_DOWN: probe->opacity = std::max(0.f, probe->opacity-.05f); break;
             case 'F': probe->blocked_test = !probe->blocked_test; probe->policy(); break;
             case 'R': probe->safe_update(true); return 0;
-            case VK_ESCAPE: DestroyWindow(hwnd); return 0;
+            case VK_ESCAPE: if(probe->smoke || probe->sweep) probe->smoke_result=2;DestroyWindow(hwnd);return 0;
             default: return DefWindowProcW(hwnd, message, wparam, lparam);
             }
             if (probe->effect) probe->effect.Properties().InsertScalar(L"Blur.BlurAmount", probe->sigma);
             probe->safe_update(); return 0;
+        case WM_CLOSE: if(probe->smoke || probe->sweep) probe->smoke_result=2;DestroyWindow(hwnd);return 0;
         case WM_DESTROY: probe->release_graphics(); PostQuitMessage(0); return 0;
         }
     } catch (...) { if (probe) probe->safe_update(true); }
@@ -315,40 +417,65 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam
 }
 
 int main(int argc, char** argv) {
+    bool initializing_runtime=true;
     try {
         winrt::init_apartment(winrt::apartment_type::single_threaded);
         winrt::Windows::System::DispatcherQueueController queue{nullptr};
         DispatcherQueueOptions options{sizeof(options), DQTYPE_THREAD_CURRENT, DQTAT_COM_NONE};
         check_hresult(CreateDispatcherQueueController(options,
             reinterpret_cast<ABI::Windows::System::IDispatcherQueueController**>(winrt::put_abi(queue))));
+        initializing_runtime=false;
         int exit_code = 0;
-        {
+        try {
+          exit_code=[&]() -> int {
             Probe probe;
             for (int i = 1; i < argc; ++i) {
                 if (std::string(argv[i]) == "--warp") probe.force_warp = true;
                 else if (std::string(argv[i]) == "--smoke") probe.smoke = true;
                 else if (std::string(argv[i]) == "--require-host") probe.require_host = true;
-                else { std::fputs("Usage: host-backdrop-blur [--warp] [--smoke] [--require-host]\n", stderr); return 2; }
+                else if (std::string(argv[i]) == "--no-redirection") probe.no_redirection=true;
+                else if (std::string(argv[i]) == "--synthetic-backdrop") probe.synthetic=true;
+                else if (std::string(argv[i]) == "--sweep") {probe.sweep=true;probe.synthetic=true;}
+                else { std::fputs("Usage: host-backdrop-blur [--warp] [--smoke | --sweep] [--require-host] [--no-redirection] [--synthetic-backdrop]\n", stderr); return 2; }
             }
+            if ((probe.force_warp && probe.require_host) || (probe.smoke && probe.sweep)) {
+                std::fputs("Incompatible probe modes: WARP cannot require a host; choose smoke OR sweep.\n",stderr);return 2;
+            }
+            SyntheticBackdrop synthetic;
             SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             WNDCLASSW klass{}; klass.hInstance = GetModuleHandleW(nullptr); klass.lpfnWndProc = procedure;
             klass.lpszClassName = L"StormTTY.HostBackdropProbe"; klass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
             check_hresult(RegisterClassW(&klass) ? S_OK : HRESULT_FROM_WIN32(GetLastError()));
             // Ordinary redirection HWND permits a true GDI fallback if composition creation fails.
             // DesktopWindowTarget is topmost, so the swapchain overlays its backing surface.
-            HWND hwnd = CreateWindowExW(0, klass.lpszClassName, L"Experimental host backdrop — additional blur only",
-                WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 960, 640, nullptr, nullptr, klass.hInstance, &probe);
+            if(probe.synthetic) synthetic.create(klass.hInstance);
+            HWND hwnd = CreateWindowExW(probe.no_redirection?WS_EX_NOREDIRECTIONBITMAP:0, klass.lpszClassName, L"Experimental host backdrop — additional blur only",
+                WS_OVERLAPPEDWINDOW, 200, 160, 960, 640, nullptr, nullptr, klass.hInstance, &probe);
             check_hresult(hwnd ? S_OK : HRESULT_FROM_WIN32(GetLastError()));
-            probe.safe_update(true); ShowWindow(hwnd, SW_SHOW);
+            probe.safe_update(true);
+            if (!IsWindow(hwnd)) return probe.smoke_result?probe.smoke_result:1;
+            ShowWindow(hwnd, SW_SHOW);
+            probe.started=GetTickCount64();
+            if(probe.sweep) {
+                std::printf("Blur sweep: phase=0 sigma=0 opacity=0.25 host_active=%u elapsed_ms=0\n",unsigned(probe.active));
+                if(!SetTimer(hwnd,3,100,nullptr)) winrt::throw_last_error();
+            }
             if (probe.smoke && !SetTimer(hwnd, 1, 250, nullptr)) winrt::throw_last_error();
             MSG message{}; int result;
             while ((result = GetMessageW(&message, nullptr, 0, 0)) > 0) { TranslateMessage(&message); DispatchMessageW(&message); }
             if (IsWindow(hwnd)) DestroyWindow(hwnd);
-            exit_code = result == -1 ? 1 : probe.smoke_result;
-        }
+            return result == -1 ? 1 : probe.smoke_result;
+          }();
+        } catch (const winrt::hresult_error& error) {
+            std::fprintf(stderr,"Probe operation failed: 0x%08lx\n",static_cast<unsigned long>(error.code().value));exit_code=1;
+        } catch (...) {std::fputs("Probe operation failed unexpectedly\n",stderr);exit_code=1;}
         // Shutdown requires a live message pump; do not synchronously .get() on this thread.
         auto shutdown = queue.ShutdownQueueAsync();
+        const auto shutdown_deadline=GetTickCount64()+5000;
         while (shutdown.Status() == wf::AsyncStatus::Started) {
+            if(GetTickCount64()>=shutdown_deadline) {
+                std::fputs("Dispatcher shutdown exceeded five seconds.\n",stderr);return 1;
+            }
             MSG message{};
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                 if (message.message != WM_QUIT) { TranslateMessage(&message); DispatchMessageW(&message); }
@@ -357,7 +484,8 @@ int main(int argc, char** argv) {
         }
         shutdown.GetResults(); queue = nullptr; winrt::uninit_apartment(); return exit_code;
     } catch (winrt::hresult_error const& error) {
-        std::fprintf(stderr, "Host backdrop probe failed: 0x%08lx\n", static_cast<unsigned long>(error.code().value));
-        return 1;
+        const bool unsupported=initializing_runtime && unsupported_runtime(error.code());
+        std::fprintf(stderr, "PROBE_RUNTIME_UNSUPPORTED=%u stage=runtime-lifecycle hr=0x%08lx\n", unsigned(unsupported),static_cast<unsigned long>(error.code().value));
+        return unsupported?3:1;
     } catch (...) { std::fputs("Host backdrop probe failed unexpectedly\n", stderr); return 1; }
 }
