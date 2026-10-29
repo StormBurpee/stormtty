@@ -13,8 +13,9 @@ struct TabSelectionColors { Color surface, border; };
 inline TabSelectionColors tab_selection_colors(const UiColors& ui, bool high_contrast=false,
         Color contrast_background={}, Color contrast_foreground={}) noexcept {
     if(high_contrast) return {contrast_background,contrast_foreground};
-    auto border=ui.selected_border;border.a=180; // Existing tab-border material.
-    return {ui.selected,border};
+    // A restrained surface plus the host's bottom marker, rather than a framed
+    // card. All hues remain derived from the chosen theme. Contrast keeps a rim.
+    return {ui_mix(ui.raised,ui.selected,.45),{0,0,0,0}};
 }
 
 struct PaneFocusColors { Color wash, marker, label; bool show_marker; };

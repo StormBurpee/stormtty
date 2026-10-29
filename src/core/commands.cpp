@@ -17,7 +17,7 @@ constexpr std::array commands{
     Command{"workspace.previous", "Previous workspace", "Switch projects without restarting hidden sessions"},
     Command{"workspace.close", "Close workspace…", "Close this project's tabs and sessions after confirmation"},
     Command{"workspace.toggle_navigation", "Expand or collapse workspaces", "Toggle the compact project navigation rail"},
-    Command{"window.focus_mode", "Toggle focus mode", "Hide project navigation and directory context; keep the terminal"},
+    Command{"window.focus_mode", "Toggle focus mode", "Hide project navigation and footer; the task-row focus button restores them"},
     Command{"app.command_palette", "Show commands", "Search every application action and its shortcut"},
     Command{"tab.new", "New tab", "Start a fresh session using the selected profile"},
     Command{"tab.close", "Close tab", "Close all panes in the current tab; host confirms running processes"},

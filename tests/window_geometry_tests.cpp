@@ -46,13 +46,13 @@ int main() {
         for(double width:{320.,480.,1044.})for(bool expanded:{false,true}) {
             const auto nav=layout_project_navigation(width,720,32,{{1}},0,expanded,false,true);
             const auto bounds=nav.settings;
-            require(bounds==Rect{4,654,nav.expanded?176.:36.,36},"Settings hit bounds remain unchanged in compact and expanded rails");
+            require(bounds==Rect{4,672,nav.expanded?176.:36.,36},"Settings hit bounds anchor to the full-height sidebar above native bottom resizing");
             WindowScene icon;append_settings_icon(icon,{bounds.x+18,bounds.y+18},8,ink,dpi,1.2,{ChromeLayer::base});
             require(icon.primitives.size()==56 && icon.texts.empty(),"Settings icon contains only the owned cog path, no color-font text");
             for(const auto& p:icon.primitives) {
                 require(p.stroke==ink && p.fill.a==0 && p.stroke_width==float(1.2*dpi) && p.z==ChromeZOrder{ChromeLayer::base},"Sidebar cog uses caller ink/stroke/layer exactly");
                 for(const Point endpoint:std::array<Point,2>{{{p.rect.x/dpi,p.rect.y/dpi},{(p.rect.x+p.rect.width)/dpi,(p.rect.y+p.rect.height)/dpi}}})
-                    require(endpoint.x-.61>=bounds.x && endpoint.x+.61<=bounds.x+bounds.width && endpoint.y-.61>=bounds.y && endpoint.y+.61<=bounds.y+bounds.height,"Sidebar cog and stroke remain within unchanged Settings hit target");
+                    require(endpoint.x-.61>=bounds.x && endpoint.x+.61<=bounds.x+bounds.width && endpoint.y-.61>=bounds.y && endpoint.y+.61<=bounds.y+bounds.height,"Sidebar cog and stroke remain within the Settings hit target");
             }
         }
     }
@@ -258,14 +258,16 @@ int main() {
     require(tracker.observe({true,false,3,true}),"host Gaussian activation refreshes material status");
     require(!tracker.observe({true,false,3,true}),"unchanged host Gaussian creates no idle loop");
     require(tracker.observe({true,false,3,false}),"host Gaussian loss refreshes unavailable status");
-    auto navigation=layout_project_navigation(1100,700,32,{{1},{2}},0,true,false,true);
-    auto chrome=layout_chrome(1100,700,{{1},{2}},{1},46,32,navigation.rail.width,navigation.tabs.height);
+    auto navigation=layout_project_navigation(1100,700,32,{{1},{2}},0,true,false,false);
+    auto chrome=layout_chrome(1100,700,{{1},{2}},{1},46,32,navigation.rail.width,navigation.tabs.height,workspace_action_lane(navigation));
     require(chrome.band.height==32 && chrome.tabs_band.y==32,"thin caption is global, tasks occupy the next row");
     require(navigation.expanded && navigation.rail.width==184 && navigation.rail.y==32,"workspace navigation defaults below caption");
     require(chrome.tabs_band.x==navigation.rail.width && chrome.tabs[0].bounds.x>=navigation.rail.width,"workspace owns task tabs, not global caption");
     require(chrome.tabs[0].bounds.height==32 && chrome.tabs[0].bounds.y==36,"32-DIP task tabs centered in 40-DIP workspace row");
     require(chrome.tabs[0].bounds.width==188 && chrome.tabs.size()==2,"preferred task width");
-    require(navigation.context.y==72 && navigation.viewport.y==104,"workspace context separates tasks from terminal");
+    require(navigation.context.y==72 && navigation.context.height==0 && navigation.viewport.y==72,"duplicate context band gives 32 DIP back to the terminal");
+    require(navigation.footer.x==184 && navigation.footer.width==916 && navigation.rail.height==668,"footer belongs to workspace; sidebar reaches window bottom");
+    require(navigation.focus==Rect{1060,38,28,28},"focus action is centered in a dedicated trailing task lane clear of native edge resizing");
     require(navigation.viewport.y+navigation.viewport.height==navigation.footer.y && navigation.footer.height==26,"factual footer never overlaps terminal");
     require(chrome.drag.width>=48,"global caption reserves a genuine drag target");
     require(chrome_hit_test(chrome,{chrome.maximize.x+10,15},{1100,700},6,false)==NativeHit::maximize,"Snap maximize region");
@@ -278,27 +280,32 @@ int main() {
     for(unsigned i=1;i<=256;++i)projects.push_back({i});
     for(int width=330;width<=2400;width+=37) for(int height=180;height<=1000;height+=53)
       for(const bool expanded:{false,true}) for(const bool focus:{false,true}) {
-        const auto nav=layout_project_navigation(width,height,32,projects,250,expanded,focus,true);
+        const auto nav=layout_project_navigation(width,height,32,projects,250,expanded,focus,false);
         const auto inside=[&](Rect r) { return r.x>=0 && r.y>=0 && r.width>=0 && r.height>=0 && r.x+r.width<=width && r.y+r.height<=height; };
         for(const auto r:{nav.rail,nav.tabs,nav.context,nav.focus,nav.viewport,nav.footer,nav.toggle,nav.new_project,nav.settings})
             require(inside(r),"all shell chrome remains bounded at narrow/short window sizes");
-        require(nav.viewport.x==nav.rail.width && nav.tabs.x==nav.rail.width,"tabs/context/body share navigation boundary");
-        require(nav.viewport.x+nav.viewport.width==width && nav.viewport.y+nav.viewport.height==nav.footer.y,"body excludes global footer");
+        require(nav.viewport.x==nav.rail.width && nav.tabs.x==nav.rail.width && nav.footer.x==nav.rail.width,"tabs/footer/body share navigation boundary");
+        require(nav.viewport.x+nav.viewport.width==width && nav.viewport.y+nav.viewport.height==nav.footer.y,"body excludes workspace footer");
         require(nav.context.y==nav.tabs.y+nav.tabs.height && nav.viewport.y==nav.context.y+nav.context.height,"vertical workspace hierarchy has no gaps/overlap");
         require(nav.projects.size()<=nav.capacity,"navigation rows bounded");
         for(const auto& row:nav.projects) {
             require(inside(row.bounds) && row.bounds.y>=nav.toggle.y+nav.toggle.height,"rows exclude sidebar header");
-            const auto bottom=nav.new_project.height>0?nav.new_project.y:nav.settings.height>0?nav.settings.y:nav.footer.y;
+            const auto bottom=nav.new_project.height>0?nav.new_project.y:nav.settings.height>0?nav.settings.y:double(height);
             require(row.bounds.y+row.bounds.height<=bottom,"rows exclude sidebar actions");
             require(row.project.value>=1 && row.project.value<=256,"only actual projects are displayed");
         }
         require(focus?nav.rail.width==0 && nav.context.height==0 && nav.footer.height==0:nav.rail.width==(expanded && width>=640?184:44),"focus and narrow windows retain useful terminal width");
         for(int count=1;count<=32;++count) {
             std::vector<TabId> tabs;for(int i=1;i<=count;++i)tabs.push_back({static_cast<std::uint64_t>(i)});
-            const auto geometry=layout_chrome(width,height,tabs,tabs.back(),46,32,nav.rail.width,nav.tabs.height);
+            const auto geometry=layout_chrome(width,height,tabs,tabs.back(),46,32,nav.rail.width,nav.tabs.height,workspace_action_lane(nav));
             require(geometry.tabs_band==nav.tabs,"render/hit-test task band matches navigation model");
             require(geometry.close.x+geometry.close.width==width && geometry.drag.width>=48,"caption/Snap and drag independent of tab count");
-            require(geometry.new_tab.x+geometry.new_tab.width<=width,"new task remains bounded");
+            require(geometry.new_tab.x+geometry.new_tab.width<=nav.focus.x,"new task excludes reserved focus action");
+            require(nav.focus.y>=nav.tabs.y && nav.focus.y+nav.focus.height<=nav.tabs.y+nav.tabs.height,"focus action stays inside task row in normal and focus mode");
+            require(chrome_hit_test(geometry,{nav.focus.x+nav.focus.width/2,nav.focus.y+nav.focus.height/2},{double(width),double(height)},6,false)==NativeHit::client,"focus action never starts native drag");
+            for(const double x:{nav.focus.x+.5,nav.focus.x+nav.focus.width-.5})
+              for(const double y:{nav.focus.y+.5,nav.focus.y+nav.focus.height-.5})
+                require(chrome_hit_test(geometry,{x,y},{double(width),double(height)},12,false)==NativeHit::client,"entire focus action excludes native edge resizing");
             for(const auto& tab:geometry.tabs) {
                 require(inside(tab.bounds) && tab.bounds.x>=nav.rail.width && tab.bounds.y>=32,"tasks are children of current workspace column");
                 require(tab.bounds.x+tab.bounds.width<=geometry.new_tab.x,"task and new-task hit targets don't overlap");
@@ -310,8 +317,8 @@ int main() {
             }
         }
       }
-    navigation=layout_project_navigation(330,180,32,{{1}},0,true,false,true);
-    chrome=layout_chrome(330,180,{{1},{2},{3}},{2},46,32,navigation.rail.width,navigation.tabs.height);
+    navigation=layout_project_navigation(330,180,32,{{1}},0,true,false,false);
+    chrome=layout_chrome(330,180,{{1},{2},{3}},{2},46,32,navigation.rail.width,navigation.tabs.height,workspace_action_lane(navigation));
     require(chrome.compact && chrome.tabs.size()==1 && chrome.tabs[0].tab==TabId{2},"compact mode preserves active task picker");
     require(chrome.new_tab.width==28,"narrow layout retains new task without stealing caption drag");
     const auto no_context=layout_project_navigation(1100,720,32,{{1}},0,false,false,false);
