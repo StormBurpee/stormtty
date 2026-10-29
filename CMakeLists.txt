@@ -260,7 +260,7 @@ if(WIN32)
         add_dependencies(managed_shell_state_probe stormtty-console-setup)
         # Explicit target only: measurement never builds/runs in normal app CI.
         add_executable(managed_shell_startup_probe EXCLUDE_FROM_ALL tools/probes/managed_shell_startup_probe.cpp)
-        target_link_libraries(managed_shell_startup_probe PRIVATE stormtty_session stormtty_settings_services shell32 ole32)
+        target_link_libraries(managed_shell_startup_probe PRIVATE stormtty_session stormtty_settings_services shell32 ole32 bcrypt)
         target_compile_definitions(managed_shell_startup_probe PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
         stormtty_warnings(managed_shell_startup_probe)
         stormtty_copy_ghostty_runtime(managed_shell_startup_probe)

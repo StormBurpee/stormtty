@@ -144,3 +144,74 @@ failure, **not** a performance regression threshold. Existing interactive/ACL/
 navigation correctness gates remain separate and unchanged. A single candidate
 CI run is not a before/after comparison or evidence of improvement; compare
 exact baseline/candidate commits with the same runtime pins, provider and machine.
+
+## Native source attribution (separate instrumented samples)
+
+PR8 native Windows evidence recorded **fresh-state first-ZLE 4.25–5.08 s**, warm
+0.52–0.75 s, and native state preparation around 1–3 ms on the hosted runner.
+That excludes the native state validator as the dominant measured stage. It
+**does not** establish which shell stage is slow. The earlier POSIX compinit
+profile suggests a hypothesis, not a Windows performance finding.
+
+The optional `--source-profile` probe mode accepts only an authored fixture
+runtime with `stormtty-source-profile.json`, and runs three fresh-state samples
+plus three warm samples. Normal mode rejects that marker, keeping instrumented
+samples separate from the original three-fresh/seven-warm benchmark.
+
+```powershell
+python tools/probes/run-managed-source-profile.py `
+  --runtime .deps/stormtty-shell --probe build/managed_shell_startup_probe.exe `
+  --provider "$env:RUNNER_TEMP/stormtty-conpty-qualified" `
+  --scratch "$env:RUNNER_TEMP" --output build/artifacts/source-profile
+```
+
+The driver verifies the source manifest, rejects links/uninventoried code,
+checks the exact addon/tool locks and current loader, then copies the bundle
+into a new disposable directory. It verifies every copied inventoried file.
+Only that copy's `.zshrc` gains timestamps and `zprof`; no executable or module
+bytes, production loader, runtime pins, user configuration or default behavior
+are changed. The fixture manifest records the loader change and forbids default
+activation/release. The original and instrumented loader hashes plus original
+manifest hash are saved, never filesystem paths.
+
+Nine consecutive source intervals use Zsh's builtin `EPOCHREALTIME`:
+
+- bootstrap (including native console setup and state-function definitions);
+- private-state setup; fpath discovery; eager OMZ/completion;
+- defaults/private authored config; real fzf/zoxide integration;
+- autosuggestion source; context/hook definitions; syntax-highlighting source.
+
+Module loading for the profiler happens before the first timestamp. Writing
+private diagnostic files and producing zprof occur **after** all timed source
+intervals. First precmd/ZLE hooks and shell/DLL startup before `.zshrc` are outside
+those intervals. They remain inside launch-to-ZLE, together with instrumentation
+cost, so that difference is **not** a clean measurement of any one stage.
+`EPOCHREALTIME` is wall clock and profiler overhead is nonzero. Do not compare
+instrumented launch-to-ZLE directly to uninstrumented performance samples.
+
+Zprof function totals/self time distinguish compinit, compaudit, compdef,
+compdump, zrecompile, OMZ metadata checks/libraries, private-state setup and
+highlighting loader work. Only fixed function names and numeric fields from the
+first summary table are published. Raw call graphs (which can contain synthetic
+fixture paths) stay in private fixture files and are deleted; they are never
+printed or uploaded. First-Tab completion is not deferred, compaudit is not
+skipped, and all modules remain eager. The probe checks completion registration
+and module/state validity; existing interactive first-Tab/suggestion gates still
+provide the behavior proof.
+
+CI preserves the existing baseline, then runs this diagnostic separately on both
+providers. Each owned process has 240 seconds plus a 10-second reap bound, the
+driver has a 660-second outer bound, and the workflow step has 12 minutes. No
+latency threshold or speedup claim is introduced. Missing stages, missing
+compinit/compaudit attribution, truncated output, module/cache failure or cleanup
+failure makes evidence invalid. Only sanitized logs and source identity hashes
+are uploaded; no raw profile, runtime copy, history, config or frame is uploaded.
+
+Interpretation is prespecified: if Windows OMZ is dominant, compare compinit
+inclusive time against its compdef/compdump/audit components; if bootstrap or
+fpath dominates, investigate native helper/filesystem work instead. If source
+intervals are small relative to first-ZLE, attribute shell launch and first-prompt
+hooks next. Do not optimize based on the POSIX numbers or disable audit/modules
+to manufacture improvement. Native profiled results remain pending until the
+reviewed workflow runs; local fixture/parser tests and cross-compilation are not
+native timing evidence.

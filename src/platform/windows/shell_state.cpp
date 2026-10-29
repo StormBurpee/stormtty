@@ -170,6 +170,68 @@ ManagedShellState prepare_managed_shell_state_at(const std::filesystem::path& lo
         return {ManagedShellStateStatus::ready, part};
     } catch (...) { return {}; } // Fail closed, no path/history logging or repairs.
 }
+bool publish_managed_completion_seed_at(const std::filesystem::path& local_app_data,
+    std::wstring_view filename, std::string_view text) noexcept {
+    try {
+        require(filename.starts_with(L"zcompdump-") && filename.size() < 64 &&
+            filename.size() > 10 && text.size() <= 1024 * 1024);
+        for (auto c : filename.substr(10)) require((c >= L'0' && c <= L'9') || c == L'.');
+        const auto state = prepare_managed_shell_state_at(local_app_data, false);
+        require(static_cast<bool>(state));
+        Security security;
+        std::vector<Handle> guards;
+        auto part = checked_root(state.directory).root_path();
+        guards.push_back(open_checked(part, security, true, true));
+        for (const auto& component : state.directory.relative_path()) {
+            part /= component;
+            guards.push_back(open_checked(part, security, true, part != state.directory));
+        }
+        unsigned count{};
+        inspect_tree(state.directory, security, 0, count, guards);
+        SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), security.descriptor.value, FALSE};
+        auto cache = state.directory;
+        for (const auto* component : {L"cache", L"completions"}) {
+            cache /= component;
+            if (!CreateDirectoryW(native(cache).c_str(), &attributes)) require(GetLastError() == ERROR_ALREADY_EXISTS);
+            guards.push_back(open_checked(cache, security, true, false));
+        }
+        require(std::filesystem::is_empty(cache));
+        const auto target = state.directory / filename;
+        for (const auto& entry : std::filesystem::directory_iterator(state.directory))
+            require(!entry.path().filename().wstring().starts_with(L"zcompdump-"));
+        // A fixed exclusive temporary file also serializes competing seed adopters.
+        // Keep DELETE access for handle-based no-replace publication/cleanup.
+        const auto temporary = state.directory / L"completion-seed.tmp";
+        Handle file(CreateFileW(native(temporary).c_str(), GENERIC_WRITE | DELETE | READ_CONTROL,
+            0, &attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        require(file.value != INVALID_HANDLE_VALUE);
+        bool published{};
+        try {
+            security.inspect(file.value, false);
+            DWORD written{};
+            require(WriteFile(file.value, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) && written == text.size());
+            require(FlushFileBuffers(file.value) != FALSE);
+            // Recheck conflicts immediately before publishing. Ordinary shell startup
+            // remains outside this prototype's owned fixture until this returns.
+            require(std::filesystem::is_empty(cache));
+            for (const auto& entry : std::filesystem::directory_iterator(state.directory))
+                require(!entry.path().filename().wstring().starts_with(L"zcompdump-"));
+            const auto destination = native(target);
+            std::vector<BYTE> storage(sizeof(FILE_RENAME_INFO) + destination.size() * sizeof(wchar_t));
+            auto* rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
+            rename->ReplaceIfExists = FALSE;
+            rename->RootDirectory = nullptr;
+            rename->FileNameLength = static_cast<DWORD>(destination.size() * sizeof(wchar_t));
+            std::copy(destination.begin(), destination.end(), rename->FileName);
+            require(SetFileInformationByHandle(file.value, FileRenameInfo, rename, static_cast<DWORD>(storage.size())) != FALSE);
+            published = true;
+        } catch (...) {
+            FILE_DISPOSITION_INFO disposition{TRUE};
+            (void)SetFileInformationByHandle(file.value, FileDispositionInfo, &disposition, sizeof(disposition));
+        }
+        return published;
+    } catch (...) { return false; }
+}
 ManagedShellState prepare_managed_shell_state(bool empty_home) noexcept {
     if (empty_home) return {ManagedShellStateStatus::disabled, {}};
     try {

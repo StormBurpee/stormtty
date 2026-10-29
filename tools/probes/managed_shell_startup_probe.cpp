@@ -3,6 +3,7 @@
 #include "stormtty/session.hpp"
 #include "stormtty/windows_shell_state.hpp"
 #include "stormtty/windows_managed_shell.hpp"
+#include "completion_seed.hpp"
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -13,12 +14,16 @@
 #include <memory>
 #include <stdexcept>
 #include <thread>
+#include <regex>
+#include <set>
+#include <vector>
 namespace fs = std::filesystem;
 using namespace stormtty;
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 namespace {
 unsigned stage{}, sample{};
+fs::path seed_package;
 void require(bool ok) { if (!ok) throw std::runtime_error("startup measurement failed"); }
 std::string utf8(const fs::path& path) {
     const auto value = path.generic_u8string();
@@ -68,13 +73,94 @@ constexpr char config[] = R"ZSH(autoload -Uz add-zle-hook-widget
 _stormtty_measure_ready() { zle -M 'STORMTTY_STARTUP_READY'; }
 add-zle-hook-widget line-init _stormtty_measure_ready
 )ZSH";
-void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture, bool fresh) {
+void source_profile(const fs::path& state) {
+    // Parse only a fixed numeric/name whitelist. Never print raw zprof, paths,
+    // configuration, history, exceptions or terminal content.
+    const std::vector<std::string> stages{"bootstrap", "private_state", "fpath", "omz", "defaults_config", "tools", "autosuggestions", "context_hooks", "highlighting"};
+    const std::set<std::string> names{"compinit", "compaudit", "compdump", "compdef", "zrecompile", "_omz_compdump_has_metadata", "_stormtty_private_state", "_zsh_highlight_load_highlighters", "_omz_source"};
+    const std::string number=R"([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)";
+    const std::regex stage_line("([a-z_]+) ("+number+")");
+    require(fs::file_size(state / L"startup-source-stages") <= 8192);
+    std::ifstream intervals(state / L"startup-source-stages");
+    std::string line; std::smatch match; std::size_t index{};
+    while (std::getline(intervals,line)) {
+        require(index<stages.size() && std::regex_match(line,match,stage_line) && match[1].str()==stages[index]);
+        std::cout << "SOURCE_STAGE sample=" << sample << " name=" << stages[index++] << " elapsed_ms=" << match[2].str() << '\n';
+    }
+    require(index==stages.size());
+    require(fs::file_size(state / L"startup-source-functions") <= 1024*1024);
+    std::ifstream functions(state / L"startup-source-functions");
+    const std::regex row(" *[0-9]+[)] +([0-9]+) +("+number+") +"+number+" +"+number+"% +("+number+") +"+number+" +"+number+"% +([A-Za-z_][A-Za-z_0-9]*) *");
+    bool table{}; std::set<std::string> seen;
+    while (std::getline(functions,line)) {
+        if (table && line.empty()) break; // Header table only; not repeated call graph rows.
+        if (!std::regex_match(line,match,row)) continue;
+        table=true;
+        const auto name=match[4].str();
+        if (!names.contains(name)) continue;
+        require(seen.insert(name).second);
+        std::cout << "SOURCE_FUNCTION sample=" << sample << " name=" << name << " calls=" << match[1].str()
+                  << " total_ms=" << match[2].str() << " self_ms=" << match[3].str() << '\n';
+    }
+    require(seen.contains("compinit") && seen.contains("compaudit"));
+}
+void seed_checks(const fs::path& runtime) {
+    unsigned checks{};
+    for (unsigned test=0;test<5;++test) {
+        Fixture fixture;
+        const auto state=prepare_managed_shell_state_at(fixture.root,false);
+        require(static_cast<bool>(state));
+        if(test==0) {
+            require(completion_seed::adopt(runtime,seed_package,fixture.root,state.directory));
+            require(!completion_seed::adopt(runtime,seed_package,fixture.root,state.directory));
+        } else {
+            if(test==1) write(state.directory/L"zcompdump-5.9.2","DO_NOT_REPLACE");
+            if(test==2) write(state.directory/L"zcompdump-5.9.2.zwc","DO_NOT_REPLACE");
+            if(test==3) {
+                fs::create_directories(state.directory/L"cache/completions");
+                write(state.directory/L"cache/completions/_custom","#compdef custom\n");
+            }
+            if(test==4) write(state.directory/L"completion-seed.tmp","DO_NOT_REPLACE");
+            require(!completion_seed::adopt(runtime,seed_package,fixture.root,state.directory));
+        }
+        ++checks;
+    }
+    // Mutate only a copy of the tiny authored package, not the supplied runtime.
+    for(unsigned test=0;test<3;++test) {
+        Fixture fixture;const auto state=prepare_managed_shell_state_at(fixture.root,false);require(static_cast<bool>(state));
+        const auto package=fixture.root/L"package";fs::copy(seed_package,package,fs::copy_options::recursive);
+        if(test==0) write(package/L"seed.dump","corrupt");
+        else {
+            auto identity=completion_seed::read(package/L"identity.txt",8*1024*1024);
+            if(test==1) { // Same file names/count; wrong actual content fingerprint.
+                auto begin=identity.find("\nF\t");require(begin!=identity.npos);
+                auto& digit=identity[begin+3];digit=digit=='0'?'1':'0';
+            } else { // Reordered effective fpath must not be silently accepted.
+                auto begin=identity.find("@R/stormtty/vendor/oh-my-zsh/functions\n");require(begin!=identity.npos);
+                const auto end=identity.find('\n',begin);const auto next=identity.find('\n',end+1);
+                identity.replace(begin,next-begin+1,identity.substr(end+1,next-end)+identity.substr(begin,end-begin+1));
+            }
+            write(package/L"identity.txt",identity);
+        }
+        require(!completion_seed::adopt(runtime,package,fixture.root,state.directory));++checks;
+    }
+    std::cout << "SEED_CHECKS code=0 cases=" << checks << '\n';
+}
+void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture, bool fresh, bool profiling) {
     stage = 2;
     const auto prepared = Clock::now();
     const auto state = prepare_managed_shell_state_at(fixture.root, false);
     const auto state_ms = milliseconds(prepared);
     require(static_cast<bool>(state));
-    if (fresh) write(state.directory / L"config.zsh", config);
+    if (fresh) {
+        write(state.directory / L"config.zsh", config);
+        write(fixture.cwd / L"stormtty_unique_completion_fixture", "authored fixture");
+    }
+    const auto seed_start = Clock::now();
+    const bool adopted = fresh && !seed_package.empty() && completion_seed::adopt(runtime, seed_package, fixture.root, state.directory);
+    const auto seed_ms = milliseconds(seed_start);
+    if (!seed_package.empty()) std::cout << "SEED_SAMPLE sample=" << sample << " fresh_state=" << fresh
+        << " adopted=" << adopted << " verification_publish_ms=" << seed_ms << '\n';
     fs::path existing_dump;
     fs::file_time_type dump_time{};
     if (!fresh) {
@@ -85,6 +171,11 @@ void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture
         }
         require(!existing_dump.empty());
         dump_time = fs::last_write_time(existing_dump);
+    }
+    if (profiling) {
+        // Require fresh diagnostics even on reused state; never accept a stale file.
+        fs::remove(state.directory / L"startup-source-stages");
+        fs::remove(state.directory / L"startup-source-functions");
     }
     // Fixture setup/config I/O are deliberately outside the two measured stages.
     ProcessOptions process;
@@ -111,8 +202,17 @@ void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture
     until([&] { return screen(owned.value).find("STORMTTY_STARTUP_READY") != std::string::npos; });
     const auto ready_ms = milliseconds(started);
     stage = 4;
+    if (profiling) source_profile(state.directory);
+    // Exercise eager first Tab on an authored filename before running commands.
+    require(owned.value->text("[[ -f stormtty_unique_comp") == SessionSendResult::accepted);
+    KeyInput tab; tab.key = Key::tab;
+    require(owned.value->key(tab) == SessionSendResult::accepted);
+    require(owned.value->text(" ]] && print -r -- STARTUP_TAB$((80+1))") == SessionSendResult::accepted);
+    KeyInput first_enter; first_enter.key = Key::enter;
+    require(owned.value->key(first_enter) == SessionSendResult::accepted);
+    until([&] { return screen(owned.value).find("STARTUP_TAB81") != std::string::npos; });
     // A quick prompt with missing modules is not an acceptable sample.
-    require(owned.value->text("[[ $STORMTTY_CONSOLE_UTF8 == 1 && ${+functions[fzf-file-widget]} == 1 && ${+functions[z]} == 1 && ${+functions[zi]} == 1 && $STORMTTY_OMZ_LOADED == 1 && $STORMTTY_EPHEMERAL == 0 && ${+functions[_zsh_autosuggest_start]} == 1 && ${+functions[_zsh_highlight]} == 1 ]] && print -r -- STARTUP_VALID$((60+4))") == SessionSendResult::accepted);
+    require(owned.value->text("[[ ${+_comps[ls]} == 1 && $STORMTTY_CONSOLE_UTF8 == 1 && ${+functions[fzf-file-widget]} == 1 && ${+functions[z]} == 1 && ${+functions[zi]} == 1 && $STORMTTY_OMZ_LOADED == 1 && $STORMTTY_EPHEMERAL == 0 && ${+functions[_zsh_autosuggest_start]} == 1 && ${+functions[_zsh_highlight]} == 1 ]] && print -r -- STARTUP_VALID$((60+4))") == SessionSendResult::accepted);
     KeyInput enter; enter.key = Key::enter;
     require(owned.value->key(enter) == SessionSendResult::accepted);
     until([&] { return screen(owned.value).find("STARTUP_VALID64") != std::string::npos; });
@@ -135,18 +235,38 @@ int main() {
         stage = 1;
         int count{}; LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
         struct Arguments { LPWSTR* p; ~Arguments() { if (p) LocalFree(p); } } owned{args};
-        require(args && (count == 2 || count == 3));
-        const fs::path runtime = fs::absolute(args[1]);
-        const fs::path provider = count == 3 ? fs::absolute(args[2]) : fs::path{};
+        require(args && count>=2);
+        const auto mode=std::wstring_view(args[1]);
+        const bool profiling=mode==L"--source-profile" || mode==L"--completion-seed-profile";
+        const bool checking=mode==L"--completion-seed-checks";
+        const bool seeding=mode==L"--completion-seed" || mode==L"--completion-seed-profile" || checking;
+        if(seeding){require(count>=4);seed_package=fs::absolute(args[2]);}
+        const int first=seeding?3:(profiling?2:1);
+        require(count==first+1 || count==first+2);
+        const fs::path runtime = fs::absolute(args[first]);
+        const fs::path provider = count==first+2 ? fs::absolute(args[first+1]) : fs::path{};
+        if(checking){
+            seed_checks(runtime);
+            // One real inbox launch after a verified-content rejection. Owned
+            // corrupt package only; supplied runtime and package stay immutable.
+            sample=1;Fixture fallback;
+            const auto bad=fallback.root/L"corrupt seed package";
+            fs::copy(seed_package,bad,fs::copy_options::recursive);
+            write(bad/L"seed.dump","corrupted authored fixture");seed_package=bad;
+            measure(runtime,{},fallback,true,fs::is_regular_file(runtime/L"stormtty-source-profile.json"));
+            std::cout << "SEED_FALLBACK code=0\n";
+            return 0;
+        }
+        require(fs::is_regular_file(runtime / L"stormtty-source-profile.json")==profiling);
         require(fs::is_regular_file(runtime / L"usr/bin/zsh.exe"));
         require(fs::is_regular_file(runtime / L"stormtty/vendor/oh-my-zsh/oh-my-zsh.sh"));
         std::unique_ptr<Fixture> fixture;
-        for (sample = 1; sample <= 10; ++sample) {
+        for (sample = 1; sample <= ((profiling || seeding)?6u:10u); ++sample) {
             const bool fresh = sample <= 3;
             if (fresh) fixture = std::make_unique<Fixture>();
-            measure(runtime, provider, *fixture, fresh);
+            measure(runtime, provider, *fixture, fresh, profiling);
         }
-        std::cout << "STARTUP_RESULT code=0 fresh_samples=3 warm_samples=7\n";
+        std::cout << "STARTUP_RESULT code=0 fresh_samples=3 warm_samples=" << ((profiling || seeding)?3:7) << '\n';
         return 0;
     } catch (...) {
         std::cout << "STARTUP_RESULT code=1 sample=" << sample << " stage=" << stage << '\n';
