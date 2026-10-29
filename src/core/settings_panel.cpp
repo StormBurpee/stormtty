@@ -24,6 +24,14 @@ bool has_custom_theme(const Config& config) {
     return !named || *named!=config.theme;
 }
 std::string theme_title(std::string name) {if (!name.empty() && name[0]>='a' && name[0]<='z') name[0]=static_cast<char>(name[0]-'a'+'A');return name;}
+// The same geometry drives painting, scrolling and spatial keyboard traversal.
+constexpr double theme_card_height=96, theme_card_gap=8;
+unsigned theme_columns(double width) { return width>=510?3:width>=320?2:1; }
+double theme_gallery_extra(double width) {
+    const auto columns=theme_columns(width);
+    const auto rows=(builtin_themes().size()+1+columns-1)/columns;
+    return rows*(theme_card_height+theme_card_gap)-108;
+}
 constexpr Color transparent{0,0,0,0};
 bool finite(Point p) { return std::isfinite(p.x) && std::isfinite(p.y); }
 bool contains(Rect outer, Rect inner) {
@@ -158,41 +166,43 @@ void SettingsPanel::rebuild_layout() {
         add("nav.ribbon",{x+16,y+242,180,40});
     }
     layout_.content={content_x,content_y,content_w,std::max(0.0,layout_.footer.y-content_y-16)};
-    document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?740.0:
+    document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?740.0+theme_gallery_extra(content_w):
         section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
     const double top=content_y-scroll_, right=content_x+content_w;
     if (section_==SettingsSection::appearance) {
-        layout_.preview={content_x,top+116,content_w,64};
-        const double theme_width=std::max(0.0,(content_w-12)/3);
+        const auto columns=theme_columns(content_w);
+        const double detail_top=top+theme_gallery_extra(content_w);
+        layout_.preview={content_x,detail_top+116,content_w,64};
+        const double theme_width=std::max(0.0,(content_w-(columns-1)*theme_card_gap)/columns);
         std::size_t theme_index=0;
         const auto add_theme=[&](const std::string& name) {
             const auto index=theme_index++;
-            add("appearance.theme."+name,{content_x+(index%3)*(theme_width+6),top+(index/3)*36,theme_width,30},true);
+            add("appearance.theme."+name,{content_x+(index%columns)*(theme_width+theme_card_gap),top+(index/columns)*(theme_card_height+theme_card_gap),theme_width,theme_card_height},true);
         };
         for (const auto& theme:builtin_themes()) add_theme(theme.name);
         add_theme("custom");
         const double edit_width=std::max(0.0,(content_w-8)/2);
-        add("appearance.color.field",{content_x,top+188,edit_width,32},true);
-        add("appearance.color.value",{content_x+edit_width+8,top+188,edit_width,32},true);
+        add("appearance.color.field",{content_x,detail_top+188,edit_width,32},true);
+        add("appearance.color.value",{content_x+edit_width+8,detail_top+188,edit_width,32},true);
         if (platform_==Platform::windows) {
-            add("appearance.import",{content_x,top+228,edit_width,30},true);
-            add("appearance.export",{content_x+edit_width+8,top+228,edit_width,30},true);
+            add("appearance.import",{content_x,detail_top+228,edit_width,30},true);
+            add("appearance.export",{content_x+edit_width+8,detail_top+228,edit_width,30},true);
         }
         const double cw=std::min(content_w*0.49,230.0);
-        add("font.family",{right-cw,top+274,cw,34},true);
-        add("font.decrease",{right-118,top+330,32,32},true,draft_.font.size_dip>6);
-        add("font.increase",{right-32,top+330,32,32},true,draft_.font.size_dip<72);
-        add("font.ligatures",{right-42,top+386,42,24},true);
-        add("appearance.opacity",{right-cw,top+442,cw,34},true);
+        add("font.family",{right-cw,detail_top+274,cw,34},true);
+        add("font.decrease",{right-118,detail_top+330,32,32},true,draft_.font.size_dip>6);
+        add("font.increase",{right-32,detail_top+330,32,32},true,draft_.font.size_dip<72);
+        add("font.ligatures",{right-42,detail_top+386,42,24},true);
+        add("appearance.opacity",{right-cw,detail_top+442,cw,34},true);
         const double gap=5, sw=std::max(0.0,(content_w-3*gap)/4);
         for (std::size_t i=0;i<4;++i) {
             constexpr std::array ids{"auto","none","mica","acrylic"};
-            add(std::string("appearance.backdrop.")+ids[i],{content_x+i*(sw+gap),top+540,sw,32},true);
+            add(std::string("appearance.backdrop.")+ids[i],{content_x+i*(sw+gap),detail_top+540,sw,32},true);
         }
-        add("appearance.blur",{right-cw,top+586,cw,34},true,platform_==Platform::windows);
-        add("appearance.motion",{right-cw,top+642,cw,34},true);
-        if (platform_==Platform::windows) add("appearance.clock",{right-42,top+698,42,24},true);
+        add("appearance.blur",{right-cw,detail_top+586,cw,34},true,platform_==Platform::windows);
+        add("appearance.motion",{right-cw,detail_top+642,cw,34},true);
+        if (platform_==Platform::windows) add("appearance.clock",{right-42,detail_top+698,42,24},true);
     } else if (section_==SettingsSection::ribbon) {
         std::size_t visible_row=0;
         for(std::size_t i=0;i<draft_.ribbon.order.size();++i) {
@@ -432,9 +442,15 @@ bool SettingsPanel::key(const KeyEvent& event) {
             std::vector<std::string> ids;
             for (const auto& item:layout_.controls) if (item.id.starts_with("appearance.theme.")) ids.push_back(item.id);
             const auto current=std::find(ids.begin(),ids.end(),focus_);
-            const auto index=static_cast<int>(current-ids.begin()),count=static_cast<int>(ids.size());
-            const auto id=ids[static_cast<std::size_t>((index+direction+count)%count)];
-            focus_control(id);activate(id);
+            if (current!=ids.end() && !ids.empty()) {
+                const auto index=static_cast<int>(current-ids.begin()),count=static_cast<int>(ids.size());
+                const int step=(key=="UP" || key=="DOWN")?static_cast<int>(theme_columns(layout_.content.width)):1;
+                // Vertical motion stays in its column; an incomplete last row
+                // clamps to its last card rather than jumping to the first row.
+                const int next=std::clamp(index+direction*step,0,count-1);
+                const auto id=ids[static_cast<std::size_t>(next)];
+                focus_control(id);activate(id);
+            }
         } else if (focus_.starts_with("appearance.backdrop.")) {
             constexpr std::array ids{"appearance.backdrop.auto","appearance.backdrop.none","appearance.backdrop.mica","appearance.backdrop.acrylic"};
             const auto current=std::find(ids.begin(),ids.end(),focus_);
@@ -640,7 +656,9 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
     label({content.x,content.y-31,content.width,20},subtitle,muted,12);
     const double top=content.y-scroll_, right=content.x+content.width;
     auto content_box=[&](Rect r,Color fill,Color stroke=transparent,double radius=0,double weight=0) {box(r,fill,stroke,radius,weight,false,content);};
+    const double appearance_offset=section_==SettingsSection::appearance?theme_gallery_extra(content.width):0;
     auto row_labels=[&](double y,std::string title_text,std::string help,double width) {
+        y+=appearance_offset;
         label({content.x,top+y,std::max(0.0,width),23},std::move(title_text),ink,13,true,true);
         label({content.x,top+y+23,std::max(0.0,width),18},std::move(help),subdued,11,false,true);
     };
@@ -648,14 +666,36 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         const auto preview=layout_.preview;
         content_box(preview,canvas,border,7,1);
         content_box({preview.x,preview.y+12,2,preview.height-24},accent,transparent,1);
-        for (const auto& theme:builtin_themes()) {
-            const auto id="appearance.theme."+theme.name;
-            button(id,theme_title(theme.name),draft_.theme==theme);
-            if (const auto* c=find_control(layout_,id);c && c->visible && !high_contrast_) {
-                box({c->bounds.x+6,c->bounds.y+8,3,14},theme_color(theme.accent),transparent,1.5);
+        const auto theme_card=[&](const Theme& theme,std::string_view name,bool selected) {
+            const auto* c=find_control(layout_,"appearance.theme."+std::string(name));
+            if (!c || !c->visible) return;
+            const auto r=c->bounds;
+            const bool focused=focus_==c->id;
+            const auto paint=resolve_ui_colors(high_contrast_?palette:theme);
+            const Color fill=pressed_==c->id?control_pressed:hover_==c->id?control_hover:control;
+            // Fixed geometry: hover/focus never scale or move the terminal sample.
+            box(r,fill,focused?accent:selected?selected_border:border,7,focused?2:1);
+            label({r.x+10,r.y+4,std::max(0.0,r.width-36),23},theme_title(std::string(name)),ink,12,selected);
+            if (selected) {
+                box({r.x+r.width-22,r.y+10,12,12},accent,transparent,6);
+                text({r.x+r.width-22,r.y+7,12,18},"✓",primary_ink,9,true,"Segoe UI Variable Text",false,ChromeTextAlignment::center);
             }
-        }
-        button("appearance.theme.custom","Custom",has_custom_theme(draft_));
+            const Rect sample{r.x+7,r.y+30,std::max(0.0,r.width-14),r.height-37};
+            box(sample,paint.canvas,paint.divider,4,1);
+            box({sample.x+1,sample.y+1,std::max(0.0,sample.width-2),7},paint.surface);
+            box({sample.x+8,sample.y+3,std::min(24.0,std::max(0.0,sample.width-16)),2},paint.accent,transparent,1);
+            // Authored terminal content, rendered by the native scene text path.
+            // The palette is not a thumbnail or a separately generated image.
+            text({sample.x+8,sample.y+10,std::max(0.0,sample.width-16),18},"~/workspace",paint.ink,10,false,draft_.font.family);
+            text({sample.x+8,sample.y+27,std::max(0.0,sample.width-16),16},"> git status",paint.ink,10,false,draft_.font.family);
+            const double swatch_width=std::max(0.0,(sample.width-16)/8);
+            for (std::size_t i=0;i<8;++i)
+                box({sample.x+8+i*swatch_width,sample.y+47,std::max(0.0,swatch_width-2),4},
+                    high_contrast_?muted:theme_color(theme.ansi[i+8]),transparent,1);
+            if (!c->enabled) box(r,Color{panel_color.r,panel_color.g,panel_color.b,100},transparent,7);
+        };
+        for (const auto& theme:builtin_themes()) theme_card(theme,theme.name,draft_.theme==theme);
+        theme_card(custom_theme_?*custom_theme_:draft_.theme,"custom",has_custom_theme(draft_));
         if (platform_==Platform::windows) {button("appearance.import","Import…");button("appearance.export","Export…");}
         constexpr std::array color_names{"Background","Foreground","Chrome","Accent"};
         const auto color_name=color_index_<4?std::string(color_names[color_index_]):"ANSI "+std::to_string(color_index_-4);
@@ -669,7 +709,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         button("font.family",draft_.font.family+"   ›");
         row_labels(326,"Font size","Measured in display-independent pixels",std::max(0.0,content.width-138));
         button("font.decrease","−");button("font.increase","+");
-        text({right-86,top+330,54,32},number(draft_.font.size_dip),ink,14,true,"Segoe UI Variable Text",true,ChromeTextAlignment::center);
+        text({right-86,top+appearance_offset+330,54,32},number(draft_.font.size_dip),ink,14,true,"Segoe UI Variable Text",true,ChromeTextAlignment::center);
         row_labels(382,"Font ligatures","Join supported programming symbols",std::max(0.0,content.width-62));
         if (const auto* c=find_control(layout_,"font.ligatures");c && c->visible) {
             box(c->bounds,draft_.font.ligatures?accent:border,focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
