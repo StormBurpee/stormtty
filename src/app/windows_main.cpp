@@ -16,6 +16,7 @@
 #include "stormtty/native_window.hpp"
 #include "../platform/windows/startup_notice.hpp"
 #include "../platform/windows/smoke_teardown_trace.hpp"
+#include <fstream>
 #include <filesystem>
 #include <cstdio>
 #include <stdexcept>
@@ -66,7 +67,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
         Arguments args;
         if (!args.values) throw std::runtime_error("Could not read command-line arguments.");
-        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-settings") smoke=true;
+        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-settings" || std::wstring_view(args.values[i])==L"--smoke-workspaces") smoke=true;
         completed.enabled=smoke;
         stormtty::NativeRunOptions options; options.smoke_test=smoke;
         // Must precede creation of any HWND, including startup error dialogs.
@@ -77,11 +78,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (FAILED(apartment.status)) throw std::runtime_error("Could not initialize the UI COM apartment.");
         auto config = stormtty::default_config(stormtty::Platform::windows);
         std::filesystem::path config_path;
+        std::filesystem::path workspace_fixture;
         bool required = false;
         unsigned smoke_modes=0;
         for (int i = 1; i < args.count; ++i) {
             const std::wstring argument(args.values[i]);
             if (argument == L"--config" && i + 1 < args.count) { config_path = args.values[++i]; required = true; }
+            else if (argument == L"--smoke-workspaces" && i + 1 < args.count) {
+                const std::wstring stage(args.values[++i]);
+                if(stage!=L"seed" && stage!=L"restore" && stage!=L"corrupt") throw std::runtime_error("Invalid workspace smoke stage.");
+                options.smoke_workspaces=std::string(stage.begin(),stage.end()); ++smoke_modes;
+            }
+            else if (argument == L"--workspace-fixture" && i + 1 < args.count) workspace_fixture=args.values[++i];
             else if (argument == L"--smoke") { ++smoke_modes; }
             else if (argument == L"--smoke-layout") { options.smoke_layout=true; ++smoke_modes; }
             else if (argument == L"--smoke-modal") { options.smoke_modal=true; ++smoke_modes; }
@@ -112,7 +120,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                     "--smoke-layout --capture layout.png\n"
                     "--smoke-modal --capture modal.png\n"
                     "--smoke-projects --capture projects.png\n"
-                    "--smoke-settings --capture settings.png\n\n"
+                    "--smoke-settings --capture settings.png\n"
+                    "--smoke-workspaces seed|restore|corrupt --workspace-fixture isolated-directory\n\n"
                     "--console-runtime explicitly opts this launch into the pinned experimental\n"
                     "Microsoft ConPTY runtime (1.25.260930003). No system fallback on failure.\n"
                     "It can also be combined with any verification mode above.\n"
@@ -149,6 +158,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             }
         }
         if (!config_path.empty()) { config_path=std::filesystem::absolute(config_path).lexically_normal(); options.config_path=config_path; }
+        if (!options.smoke_workspaces.empty()) {
+            if (!workspace_fixture.is_absolute() || !workspace_fixture.filename().wstring().starts_with(L"StormTTY.WorkspaceSmoke.") ||
+                (GetFileAttributesW(workspace_fixture.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT)) throw std::runtime_error("Workspace smoke requires an explicit isolated absolute fixture directory.");
+            std::ifstream marker(workspace_fixture / L"fixture.marker",std::ios::binary);
+            const std::string bytes((std::istreambuf_iterator<char>(marker)),{});
+            if(bytes!="StormTTY isolated workspace qualification v1\n") throw std::runtime_error("Missing workspace fixture marker.");
+            options.config_path=workspace_fixture/L"config.stormtty";
+            if(std::filesystem::exists(options.config_path) || std::filesystem::is_symlink(workspace_fixture/L"workspaces.stormtty"))
+                throw std::runtime_error("Unsafe workspace fixture contents.");
+            options.shell_runtime_directory.clear();
+            config=stormtty::default_config(stormtty::Platform::windows);
+        } else if (!workspace_fixture.empty()) throw std::runtime_error("Workspace fixture requires dedicated smoke mode.");
         bool config_loaded=false;
         if (!config_path.empty() && (required || std::filesystem::exists(config_path))) {
             auto loaded = stormtty::load_config(config_path, stormtty::Platform::windows);

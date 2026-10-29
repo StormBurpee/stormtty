@@ -50,6 +50,27 @@ void check_rejected(const std::filesystem::path& path, const Config& config) {
 int main() { return run_core_tests("settings_services (Windows native)", [] {
     TestDirectory directory;
     const auto path = directory.path / L"new-directory" / L"config-\u00e9.stormtty";
+    const auto workspace_path = directory.path / L"workspaces.stormtty";
+    auto workspace_missing = load_workspace_library_snapshot(workspace_path);
+    CHECK(workspace_missing); CHECK(!workspace_missing.snapshot->existed);
+    ProjectWorkspaceCatalog projects;
+    CHECK(projects.create({"Project", "C:/work", "Local", "code", "#abcdef", "default"}));
+    auto workspace_capture = capture_workspace_snapshot(projects); CHECK(workspace_capture);
+    auto library = *workspace_missing.library;
+    library.last_session = *workspace_capture.value;
+    CHECK(save_workspace_preset(library, "Development", *workspace_capture.value));
+    auto workspace_saved = save_workspace_library(workspace_path, library, *workspace_missing.snapshot);
+    CHECK(workspace_saved); CHECK(!has_temporaries(directory.path));
+    auto workspace_loaded = load_workspace_library_snapshot(workspace_path); CHECK(workspace_loaded);
+    CHECK(serialize_workspace_library(*workspace_loaded.library).value == serialize_workspace_library(library).value);
+    CHECK(save_workspace_library(workspace_path, library, *workspace_missing.snapshot).conflict);
+    const auto workspace_bytes = read(workspace_path);
+    auto invalid_library = library; invalid_library.last_session.active_index = 99;
+    CHECK(!save_workspace_library(workspace_path, invalid_library, *workspace_saved.snapshot));
+    CHECK(read(workspace_path) == workspace_bytes);
+    write(workspace_path, "invalid"); CHECK(!load_workspace_library_snapshot(workspace_path));
+    CHECK(save_workspace_library(workspace_path, library, *workspace_saved.snapshot).conflict);
+    CHECK(!has_temporaries(directory.path));
     const auto defaults = default_config(Platform::windows);
     auto missing = load_settings_snapshot(path);
     CHECK(missing); CHECK(!missing.snapshot->existed); CHECK(*missing.config == defaults);

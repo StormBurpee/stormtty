@@ -5,6 +5,7 @@
 #include <atomic>
 #include <limits>
 #include <set>
+#include <random>
 #include <utility>
 
 namespace stormtty {
@@ -27,6 +28,14 @@ bool safe_text(std::string_view text, std::size_t maximum) {
         std::none_of(text.begin(), text.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; });
 }
 
+std::string new_persistent_id() {
+    std::random_device random;
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result(32, '0');
+    for (auto& c : result) c = digits[random() & 15];
+    return result;
+}
+
 Status validate_metadata(const ProjectWorkspaceMetadata& metadata) {
     if (!safe_text(metadata.name, ProjectWorkspaceCatalog::maximum_name_bytes) ||
         metadata.name.find_first_not_of(' ') == std::string::npos)
@@ -35,6 +44,19 @@ Status validate_metadata(const ProjectWorkspaceMetadata& metadata) {
         return Status::failure("Invalid project working directory");
     if (!safe_text(metadata.environment_label, ProjectWorkspaceCatalog::maximum_environment_bytes))
         return Status::failure("Invalid project environment label");
+    if (!metadata.persistent_id.empty() && (metadata.persistent_id.size() != 32 ||
+        !std::all_of(metadata.persistent_id.begin(), metadata.persistent_id.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        }))) return Status::failure("Invalid persistent workspace identity");
+    static constexpr std::string_view icons[]{"terminal", "code", "folder", "globe", "server", "bolt", "flask", "book", "cloud", "git"};
+    if (std::find(std::begin(icons), std::end(icons), metadata.icon) == std::end(icons))
+        return Status::failure("Unknown workspace icon");
+    if (!metadata.accent.empty() && (metadata.accent.size() != 7 || metadata.accent[0] != '#' ||
+        !std::all_of(metadata.accent.begin() + 1, metadata.accent.end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        }))) return Status::failure("Workspace accent must be #RRGGBB");
+    if (!safe_text(metadata.preferred_profile, 256) || metadata.preferred_profile.empty())
+        return Status::failure("Invalid workspace preferred profile");
     return {};
 }
 
@@ -69,6 +91,9 @@ const Workspace* ProjectWorkspaceCatalog::workspace(ProjectWorkspaceId id) const
 }
 
 Result<ProjectWorkspaceId> ProjectWorkspaceCatalog::create(ProjectWorkspaceMetadata metadata, Workspace workspace) {
+    if (metadata.persistent_id.empty()) metadata.persistent_id = new_persistent_id();
+    if (std::any_of(entries_.begin(), entries_.end(), [&](const auto& p) { return p.metadata.persistent_id == metadata.persistent_id; }))
+        return {{}, "Duplicate persistent workspace identity"};
     if (entries_.size() >= maximum_projects) return {{}, "Project workspace limit exceeded"};
     if (auto status = validate_metadata(metadata); !status) return {{}, std::move(status.error)};
     if (auto status = workspace.validate(); !status) return {{}, std::move(status.error)};
@@ -98,6 +123,11 @@ Status ProjectWorkspaceCatalog::rename(ProjectWorkspaceId id, std::string name) 
 }
 
 Status ProjectWorkspaceCatalog::update_metadata(ProjectWorkspaceId id, ProjectWorkspaceMetadata metadata) {
+    if (const auto* existing = find(id)) {
+        if (!metadata.persistent_id.empty() && metadata.persistent_id != existing->metadata.persistent_id)
+            return Status::failure("Workspace identity cannot be changed by editing metadata");
+        metadata.persistent_id = existing->metadata.persistent_id;
+    }
     const auto it = std::find_if(entries_.begin(), entries_.end(),
         [id](const ProjectWorkspace& project) { return project.id == id; });
     if (it == entries_.end()) return Status::failure("Project workspace no longer exists");
@@ -234,10 +264,13 @@ Status ProjectWorkspaceCatalog::validate() const {
         if (active_) return Status::failure("Empty catalog has an active project workspace");
     } else if (!find(active_)) return Status::failure("Active project workspace is stale");
     std::set<ProjectWorkspaceId> ids;
+    std::set<std::string> persistent_ids;
     std::set<SessionId> sessions;
     for (const auto& project : entries_) {
         if (!project.id || !ids.insert(project.id).second)
             return Status::failure("Invalid or duplicate project workspace ID");
+        if (project.metadata.persistent_id.empty() || !persistent_ids.insert(project.metadata.persistent_id).second)
+            return Status::failure("Missing or duplicate persistent workspace identity");
         if (auto status = validate_metadata(project.metadata); !status) return status;
         if (auto status = project.workspace.validate(); !status) return status;
         if (project.parked_sessions.size() > maximum_parked_sessions)
@@ -252,6 +285,16 @@ Status ProjectWorkspaceCatalog::validate() const {
                 return Status::failure("Session belongs to more than one project workspace");
         }
     }
+    return {};
+}
+
+Status ProjectWorkspaceCatalog::replace_unbound(ProjectWorkspaceCatalog& prepared) {
+    if (this == &prepared) return {};
+    if (!all_session_ids().empty() || !prepared.all_session_ids().empty())
+        return Status::failure("Close live sessions before replacing workspace layouts");
+    if (auto status = prepared.validate(); !status) return status;
+    entries_.swap(prepared.entries_);
+    std::swap(active_, prepared.active_);
     return {};
 }
 
