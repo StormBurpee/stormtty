@@ -1,5 +1,6 @@
 # Windows application builds include the pinned shell. Core/non-Windows builds
 # never include this module and acquire no Python/download dependency.
+option(STORMTTY_EXPERIMENTAL_COMPLETION_SEED "Opt in to native build-anchored completion seed and serialized initialization" OFF)
 option(STORMTTY_BUNDLE_ZSH "Bundle pinned upstream Zsh and the managed preset with the Windows app" ON)
 set(STORMTTY_DEVELOPER_SHELL_RUNTIME "" CACHE PATH "Optional already-staged Windows Zsh root; overrides automatic build preparation")
 if(STORMTTY_BUNDLE_ZSH OR STORMTTY_DEVELOPER_SHELL_RUNTIME)
@@ -54,5 +55,34 @@ if(STORMTTY_BUNDLE_ZSH OR STORMTTY_DEVELOPER_SHELL_RUNTIME)
     message(STATUS "Bundled Zsh enabled for fresh app launches; existing saved shell choices win. No launch-time downloads.")
     # This local install layout is not a public redistribution/source approval.
     install(CODE "execute_process(COMMAND [==[${Python3_EXECUTABLE}]==] [==[${_shell_stager}]==] --source [==[${_shell_source}]==] --lock [==[${_shell_lock}]==] --preset [==[${_shell_preset}]==] RESULT_VARIABLE result)\nif(NOT result EQUAL 0)\nmessage(FATAL_ERROR \"Bundled runtime validation failed; install stopped\")\nendif()")
-    install(DIRECTORY "${_shell_source}/" DESTINATION runtimes/zsh)
+    if(STORMTTY_EXPERIMENTAL_COMPLETION_SEED)
+        if(CMAKE_CROSSCOMPILING OR NOT CMAKE_HOST_WIN32)
+            message(FATAL_ERROR "Completion seed generation requires the exact native Windows runtime; cross-build activation is forbidden")
+        endif()
+        set(_seed_generated "${CMAKE_CURRENT_BINARY_DIR}/generated/completion-seed")
+        file(MAKE_DIRECTORY "${_seed_generated}")
+        add_custom_target(stormtty_completion_seed_package
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/prepare-bundled-completion-seed.py"
+                --runtime "$<TARGET_FILE_DIR:stormtty>/runtimes/zsh"
+                --destination "$<TARGET_FILE_DIR:stormtty>/runtimes/zsh-seed"
+                --trust-header "${_seed_generated}/stormtty_completion_seed_trust.hpp"
+            BYPRODUCTS "${_seed_generated}/stormtty_completion_seed_trust.hpp"
+            COMMENT "Generating or verifying exact native completion seed and compiled trust anchor" VERBATIM)
+        add_dependencies(stormtty_completion_seed_package stormtty_developer_shell_runtime)
+        add_dependencies(stormtty_settings_services stormtty_completion_seed_package)
+        target_sources(stormtty_settings_services PRIVATE src/platform/windows/completion_seed.cpp)
+        target_include_directories(stormtty_settings_services PRIVATE "${_seed_generated}")
+        target_compile_definitions(stormtty_settings_services PUBLIC STORMTTY_EXPERIMENTAL_COMPLETION_SEED=1)
+        target_link_libraries(stormtty_settings_services PRIVATE bcrypt)
+        # Copy the SAME final tree used by generation, including its staging
+        # receipt. Installing _shell_source instead would invalidate the anchor.
+        install(DIRECTORY "$<TARGET_FILE_DIR:stormtty>/runtimes/zsh/" DESTINATION runtimes/zsh)
+        install(DIRECTORY "$<TARGET_FILE_DIR:stormtty>/runtimes/zsh-seed/" DESTINATION runtimes/zsh-seed)
+    else()
+        install(DIRECTORY "${_shell_source}/" DESTINATION runtimes/zsh)
+    endif()
+endif()
+
+if(STORMTTY_EXPERIMENTAL_COMPLETION_SEED AND NOT (STORMTTY_BUNDLE_ZSH OR STORMTTY_DEVELOPER_SHELL_RUNTIME))
+    message(FATAL_ERROR "Completion seed option requires an exact staged bundled runtime")
 endif()

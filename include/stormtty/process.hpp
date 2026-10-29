@@ -28,11 +28,27 @@ struct ProcessEnvironmentEntry {
     std::optional<std::string> value;
 };
 
+#ifdef _WIN32
+// Optional launch-owned initialization gate. All methods run on the controller
+// worker, never UI/reader threads. No caller supplies one by default.
+class WindowsProcessInitialization {
+public:
+    virtual ~WindowsProcessInitialization() = default;
+    virtual void prepare(std::vector<ProcessEnvironmentEntry>&) noexcept = 0;
+    [[nodiscard]] virtual std::uintptr_t ready_event() const noexcept = 0;
+    virtual void ready() noexcept = 0;
+    virtual void finished() noexcept = 0;
+};
+#endif
+
 enum class ProcessProvider { platform_default, windows_inbox_basic, windows_packaged_experimental };
 enum class ProcessState { starting, running, close_requested, draining, exited, failed };
 enum class ProcessSendResult { accepted, would_block, closed, too_large };
 
 struct ProcessOptions {
+#ifdef _WIN32
+    std::shared_ptr<WindowsProcessInitialization> initialization;
+#endif
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
     // Isolated synthetic-fixture build only; absent from the shipped ABI.
     std::shared_ptr<qualification::InputEvidence> qualification_input_evidence;
@@ -69,7 +85,7 @@ struct WindowsProcessControlDiagnostics {
     std::uint64_t requested_resize_generation{}, applied_resize_generation{};
     ProcessGridSize requested_grid;
     std::optional<ProcessGridSize> applied_grid; // Empty until CreatePseudoConsole succeeds.
-    std::uint64_t wait_calls{}, control_wakes{}, child_exit_wakes{};
+    std::uint64_t wait_calls{}, control_wakes{}, child_exit_wakes{}, initialization_wakes{};
     std::uint64_t resize_calls{}, resize_failures{};
 };
 

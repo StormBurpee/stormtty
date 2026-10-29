@@ -41,6 +41,29 @@ class ManagedTests(unittest.TestCase):
         self.shell = str(args.zsh.resolve()) if args.zsh else shutil.which('zsh')
         if not self.shell: self.skipTest('zsh unavailable')
         if args.zsh: self.env['PATH'] = str(args.zsh.resolve().parent) + os.pathsep + self.env.get('PATH', '')
+    @unittest.skipIf(os.name == 'nt', 'POSIX state fixture; native lease separately qualified')
+    def test_no_dump_keeps_private_config_history_and_custom_completions(self):
+        if not args.assets_cache: self.skipTest('requires pinned modules')
+        first=self.run_shell('[[ $STORMTTY_EPHEMERAL == 0 ]]')
+        self.assertEqual(first.returncode,0,first.stderr)
+        state=self.home/'.stormtty/zsh'
+        dump=next(p for p in state.glob('zcompdump-*') if p.is_file() and not p.name.endswith('.zwc'))
+        sentinel=self.root/'cache-was-executed'
+        dump.write_text(dump.read_text()+f"\nprint BAD > '{sentinel}'\n")
+        (state/'config.zsh').write_text("HISTSIZE=4321\nSTORMTTY_USER_OVERRIDE=yes\nfpath+=(/authored/user/override)\n")
+        (state/'history').write_text('authored history fixture\n')
+        custom=state/'cache/completions/_stormtty_fixture'
+        custom.write_text('#compdef stormtty_fixture\nreturn 0\n')
+        # Both text and a fresh compiled sibling are present and must be ignored.
+        result=subprocess.run([self.shell,'-fc','zcompile "$1"','fixture',str(dump)],capture_output=True,text=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        before={p.name:p.read_bytes() for p in (dump,Path(str(dump)+'.zwc'),state/'config.zsh',state/'history')}
+        self.env['STORMTTY_NATIVE_ZSH_NO_DUMP']='1'
+        result=self.run_shell('[[ $STORMTTY_EPHEMERAL == 0 && $STORMTTY_USER_OVERRIDE == yes && $HISTSIZE == 4321 && $fpath[-1] == /authored/user/override && ${+_comps[stormtty_fixture]} == 1 && -n $HISTFILE && -z ${STORMTTY_NATIVE_ZSH_NO_DUMP+x} ]]')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertFalse(sentinel.exists())
+        for name,data in before.items():self.assertEqual((state/name).read_bytes(),data)
+
     def run_shell(self, command, **kwargs):
         return subprocess.run([self.shell, '-dic', command], env=self.env, cwd=self.root, capture_output=True, text=True, timeout=15, **kwargs)
     @unittest.skipIf(os.name == 'nt', 'POSIX helper stub; actual sidecar tested in native ConPTY')
