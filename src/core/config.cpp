@@ -230,6 +230,7 @@ ConfigParseResult parse_config(std::string_view text, Platform platform) {
             string_field("name", config.theme.name); string_field("background", config.theme.background);
             string_field("foreground", config.theme.foreground); string_field("chrome", config.theme.chrome); string_field("accent", config.theme.accent);
         } else if (section == "appearance") {
+            bool_field("show_clock", config.appearance.show_clock);
             number_field("background_opacity", config.appearance.background_opacity, 0.0, 1.0, false);
             if (key == "backdrop") {
                 handled = true; const auto* text_value = std::get_if<std::string>(&*value);
@@ -326,6 +327,7 @@ std::string serialize_config(const Config& config, Platform platform) {
         << "\nbackground = " << quote(config.theme.background) << "\nforeground = " << quote(config.theme.foreground)
         << "\nchrome = " << quote(config.theme.chrome) << "\naccent = " << quote(config.theme.accent)
         << "\n\n[appearance]\nbackground_opacity = " << config.appearance.background_opacity
+        << "\nshow_clock = " << (config.appearance.show_clock ? "true" : "false")
         << "\nbackdrop = " << quote(config.appearance.backdrop == BackdropPreference::automatic ? "auto" : config.appearance.backdrop == BackdropPreference::mica ? "mica" : config.appearance.backdrop == BackdropPreference::acrylic ? "acrylic" : "none")
         << "\nreduced_motion = " << quote(config.appearance.reduced_motion == ReducedMotionPreference::system ? "system" : config.appearance.reduced_motion == ReducedMotionPreference::enabled ? "enabled" : "disabled")
         << "\n\n[font]\nfamily = " << quote(config.font.family) << "\nsize_dip = " << config.font.size_dip
@@ -368,6 +370,7 @@ allow_terminal_shortcut_override = false
 name = "graphite" # graphite, instrument, daylight, custom
 # Optional #RRGGBB: background, foreground, chrome, accent.
 [appearance]
+show_clock = true
 background_opacity = 0.94 # 0.0..1.0; default canvas only, not text or ANSI colors
 backdrop = "acrylic" # auto, none, mica or acrylic; unsupported hosts use opaque
 reduced_motion = "system" # system, enabled or disabled; default follows the OS

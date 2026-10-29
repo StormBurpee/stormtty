@@ -43,10 +43,15 @@ class OwnedProcessTests(unittest.TestCase):
     def test_exited_child_with_descendant_holding_stdout(self):
         # The short-lived descendant intentionally inherits the capture handle.
         # It is not killed by the runner. An explicit marker lets the test wait
-        # for its natural exit before deleting our own temporary test directory.
+        # for its output handles to close before deleting our temporary directory.
         with tempfile.TemporaryDirectory() as directory:
             finished = Path(directory) / "descendant-finished"
-            descendant = "import os,pathlib,time; time.sleep(3); os.close(1); os.close(2); pathlib.Path(" + repr(str(finished)) + ").write_text('done')"
+            # Publish only after write_text has closed its file. exists() on the
+            # written file races that close and causes WinError 32 in cleanup.
+            pending = finished.with_name('descendant-pending')
+            descendant = ("import os,pathlib,time; time.sleep(3); os.close(1); os.close(2); "
+                          "pathlib.Path(" + repr(str(pending)) + ").write_text('done'); "
+                          "os.replace(" + repr(str(pending)) + "," + repr(str(finished)) + ")")
             parent = ("import subprocess,sys; subprocess.Popen([sys.executable,'-c'," + repr(descendant) +
                       "],stdout=sys.stdout,stderr=sys.stderr); print('parent done',flush=True); sys.exit(23)")
             result = runner.run_owned([sys.executable, "-c", parent], timeout=1.5, output_dir=directory)
@@ -60,7 +65,9 @@ class OwnedProcessTests(unittest.TestCase):
                 deadline = time.monotonic() + 8
                 while not finished.exists() and time.monotonic() < deadline:
                     time.sleep(0.02)
-                self.assertTrue(finished.exists(), "controlled descendant did not finish naturally")
+                self.assertTrue(finished.exists(), "controlled descendant did not publish completion")
+                self.assertEqual(finished.read_text(), "done")
+                self.assertFalse(pending.exists())
                 # The descendant closes its inherited output handles before
                 # the marker, so Windows can remove the capture directory.
                 # No process-tree kill is used even in this test.

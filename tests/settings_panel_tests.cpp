@@ -114,9 +114,11 @@ int main() {return run_core_tests("settings panel",[] {
     const auto decrease=item(panel,"font.decrease").bounds,increase=item(panel,"font.increase").bounds;
     CHECK(near(font_value->rect.x+font_value->rect.width/2,(decrease.x+decrease.width+increase.x)/2));
     CHECK(near(font_value->rect.y+font_value->rect.height/2,decrease.y+decrease.height/2));
-    // Semantic controls are unique and every field fits the ordinary modal.
+    // Semantic controls are unique; the optional clock is reachable by scrolling.
     std::set<std::string> ids;
-    for (const auto& c:panel.layout().controls) {CHECK(ids.insert(c.id).second);CHECK(c.visible);}
+    for (const auto& c:panel.layout().controls) {CHECK(ids.insert(c.id).second);if(c.id!="appearance.clock") CHECK(c.visible);}
+    activate(panel,"appearance.clock");CHECK(!panel.draft().appearance.show_clock);
+    activate(panel,"appearance.clock");CHECK(panel.draft().appearance.show_clock);
     activate(panel,"font.increase");CHECK(panel.draft().font.size_dip==16);CHECK(panel.original()==defaults);
     auto preview=panel.take_action();CHECK(preview && preview->kind==SettingsActionKind::preview);CHECK(preview->config.font.size_dip==16);
     activate(panel,"font.ligatures");CHECK(panel.draft().font.ligatures);

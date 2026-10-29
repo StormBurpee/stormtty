@@ -153,7 +153,7 @@ void SettingsPanel::rebuild_layout() {
         add("nav.shortcuts",{x+16,y+196,180,40});
     }
     layout_.content={content_x,content_y,content_w,std::max(0.0,layout_.footer.y-content_y-16)};
-    document_height_=section_==SettingsSection::appearance?448.0:
+    document_height_=section_==SettingsSection::appearance?504.0:
         section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
     const double top=content_y-scroll_, right=content_x+content_w;
@@ -176,6 +176,7 @@ void SettingsPanel::rebuild_layout() {
             add(std::string("appearance.backdrop.")+ids[i],{content_x+i*(sw+gap),top+360,sw,32},true);
         }
         add("appearance.motion",{right-cw,top+406,cw,34},true);
+        if (platform_==Platform::windows) add("appearance.clock",{right-42,top+462,42,24},true);
     } else if (section_==SettingsSection::shell) {
         const double offset=platform_==Platform::windows?142.0:0.0;
         if (platform_==Platform::windows) {
@@ -244,6 +245,7 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     else if (id=="font.increase") draft_.font.size_dip=std::clamp(draft_.font.size_dip+1.0,6.0,72.0);
     else if (id=="font.ligatures") draft_.font.ligatures=!draft_.font.ligatures;
     else if (id=="appearance.opacity") draft_.appearance.background_opacity=std::clamp(std::round((draft_.appearance.background_opacity+direction*0.01)*100)/100,0.0,1.0);
+    else if (id=="appearance.clock") draft_.appearance.show_clock=!draft_.appearance.show_clock;
     else if (id=="appearance.motion") {
         const int current=static_cast<int>(draft_.appearance.reduced_motion);
         draft_.appearance.reduced_motion=static_cast<ReducedMotionPreference>((current+direction+3)%3);
@@ -582,6 +584,13 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
         row_labels(402,"Reduce motion","Use system settings or reduce animations",lw);
         const std::string motion=draft_.appearance.reduced_motion==ReducedMotionPreference::system?"Follow system":draft_.appearance.reduced_motion==ReducedMotionPreference::enabled?"Always reduce":"Allow motion";
         button("appearance.motion",motion+"   ›");
+        if (platform_==Platform::windows) {
+            row_labels(458,"Clock","",std::max(0.0,content.width-62));
+            if (const auto* c=find_control(layout_,"appearance.clock");c && c->visible) {
+                box(c->bounds,draft_.appearance.show_clock?accent:border,focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
+                box({c->bounds.x+(draft_.appearance.show_clock?21:3),c->bounds.y+3,18,18},draft_.appearance.show_clock?primary_ink:ink,transparent,9);
+            }
+        }
     } else if (section_==SettingsSection::shell) {
         if (platform_==Platform::windows) {
             row_labels(0,"Console backend","Existing sessions keep their backend.",content.width);
