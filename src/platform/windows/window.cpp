@@ -3925,7 +3925,9 @@ bool NativeWindow::smoke_palette_input_progress() {
     const auto content=content_bounds(*pane);const Point inside{content.x+20,content.y+20};
     const auto mouse=[&](UINT message,Point p,WPARAM flags=0){SendMessageW(hwnd_,message,flags,MAKELPARAM(static_cast<int>(p.x*scale_),static_cast<int>(p.y*scale_)));};
     const auto key=[&](WPARAM vk){MSG message{};message.hwnd=hwnd_;message.message=WM_KEYDOWN;message.wParam=vk;key_message(message);message.message=WM_KEYUP;key_message(message);};
+    std::fprintf(stderr,"Native palette press before: point=%.1f,%.1f content=%.1f,%.1f,%.1f,%.1f pane=%llu active=%llu mouse=%d shift=%d overlay=%d drag=%d capture=%d\n",inside.x,inside.y,content.x,content.y,content.width,content.height,static_cast<unsigned long long>(pane->pane.value),static_cast<unsigned long long>(workspace().active_pane().value),frame->mouse_reporting,bool(GetKeyState(VK_SHIFT)&0x8000),overlay_open(),int(drag_),GetCapture()==hwnd_);
     mouse(WM_LBUTTONDOWN,inside,MK_LBUTTON);
+    std::fprintf(stderr,"Native palette press after: active=%llu mouse_capture=%llu capture=%d drag=%d submissions=%llu overlay=%d\n",static_cast<unsigned long long>(workspace().active_pane().value),static_cast<unsigned long long>(mouse_capture_pane_.value),GetCapture()==hwnd_,int(drag_),static_cast<unsigned long long>(smoke_terminal_mouse_submissions_),overlay_open());
     if(!mouse_capture_pane_||GetCapture()!=hwnd_){smoke_finish("Palette fixture did not acquire terminal mouse capture.");return false;}
     const auto before_release=smoke_terminal_mouse_submissions_;toggle_palette();
     if(mouse_capture_pane_||GetCapture()==hwnd_||focused_session_||smoke_terminal_mouse_submissions_!=before_release+1){smoke_finish("Palette failed to release old terminal pointer ownership before transfer.");return false;}
