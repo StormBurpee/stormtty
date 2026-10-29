@@ -21,19 +21,21 @@
        /* longjmp() may be called in the signal handler like less,
  	 so release input_mutex temporarily before kill_pgrp(). */
        release_input_mutex ();
-@@ -1646,7 +1651,10 @@
+@@ -1646,7 +1651,12 @@
  	  break;
  
  	case MOUSE_EVENT:
 -	  send_winch_maybe ();
 +	  if (send_winch_maybe (i))
-+            /* Preserve the mouse path's existing ready/processing status;
-+               never resume this borrowed peek after signal delivery. */
-+            return stat;
++	    {
++	      /* Preserve the mouse path's existing ready/processing status;
++	         never resume this borrowed peek after signal delivery. */
++	      return stat;
++	    }
  	    {
  	      MOUSE_EVENT_RECORD& mouse_event = input_rec[i].Event.MouseEvent;
  	      /* As a unique guard for mouse report generation,
-@@ -1832,11 +1840,10 @@
+@@ -1832,11 +1842,10 @@
  	  break;
  
  	case WINDOW_BUFFER_SIZE_EVENT:

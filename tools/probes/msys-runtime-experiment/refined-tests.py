@@ -61,11 +61,19 @@ class RefinedTests(unittest.TestCase):
     def test_settings_fixed_cases(self):self.run_matrix('settings')
     def test_truncated_evidence_fails_without_retry(self):self.run_matrix('raw',truncated=True)
 
+    def test_mouse_return_is_braced_without_status_change(self):
+        patch=(HERE/'0006-refined-prefix.patch').read_text()
+        added='\n'.join(line[1:] for line in patch.splitlines() if line.startswith('+') and not line.startswith('+++'))
+        self.assertIn('if (send_winch_maybe (i))\n\t    {',added)
+        self.assertIn('return stat;\n\t    }',added)
+        self.assertEqual(added.count('return input_winch;'),1)
+        self.assertNotIn('send_winch_maybe (i + 1)',added)
+
     def test_only_refined_source_patch(self):
         script=(HERE/'build-refined.sh').read_text()
         self.assertNotIn('0003-',script);self.assertNotIn('0004-',script);self.assertNotIn('0001-',script)
         self.assertIn('[[ $variant == refined ]]',script)
-        self.assertEqual(m.identity.sha(HERE/'0006-refined-prefix.patch'),'ceb70e9c04be478e051f2be891409e4d7e4ad30c8654141c86f520f165b70693')
+        self.assertEqual(m.identity.sha(HERE/'0006-refined-prefix.patch'),'1afc3483da5dcc8848f336619f858c0ffcfbef608d1446464e6566135b2aff66')
         self.assertIn('201703L',script);self.assertIn('15.3.0',script)
         self.assertNotIn('--skipinteg', '\n'.join(line for line in script.splitlines() if not line.startswith('#')))
 

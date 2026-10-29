@@ -106,3 +106,13 @@ patch is for source review only; it is not proven safe or promotable.
 Patch dry-run applied cleanly to exact preserved console/header. No C++ compile
 or Windows execution performed. Patch SHA256:
 `ceb70e9c04be478e051f2be891409e4d7e4ad30c8654141c86f520f165b70693`.
+
+## Native compile-only correction (2026-10-29)
+
+The original review patch above was attempted in native run40875619536. Stock
+built; refined failed GCC15 misleading-indentation at the unbraced mouse return.
+Current `0006-refined-prefix.patch` adds braces around only that existing mouse
+return branch, retaining `return stat` and every reviewed control-flow choice.
+Current patch SHA256 `1afc3483da5dcc8848f336619f858c0ffcfbef608d1446464e6566135b2aff66`.
+No warning suppression, semantics broadening, or runtime pass is implied. See
+REFINED-QUALIFICATION.md for preserved failure/artifact and source identities.

@@ -10,7 +10,7 @@ here=$(cd -- "$(dirname -- "$0")" && pwd)
 [[ ${MSYSTEM:-} == MSYS && $(uname -m) == x86_64 ]] || { echo 'Native MSYS x86_64 build shell required' >&2; exit 2; }
 [[ ! -e $output ]] || { echo 'Output must not exist' >&2; exit 2; }
 echo '4b178dfb5b77bce293706dcfabea673b77d8da061a4725bdf4cd94f17533c204  '"$archive" | sha256sum -c -
-echo 'ceb70e9c04be478e051f2be891409e4d7e4ad30c8654141c86f520f165b70693  '"$here/0006-refined-prefix.patch" | sha256sum -c -
+echo '1afc3483da5dcc8848f336619f858c0ffcfbef608d1446464e6566135b2aff66  '"$here/0006-refined-prefix.patch" | sha256sum -c -
 mkdir -p "$output/packages" "$output/provenance"
 df -k "$output" | tee "$output/provenance/disk-before.txt"
 available=$(df -Pk "$output" | awk 'NR==2 {print $4}')
@@ -85,7 +85,7 @@ header_expected=c8e4a76e2a7aa5963763c62319e5f51ab08445be2f7ea6e3c1c314de91223650
 console_expected=535bd5f650122192e34e9835e33e72efd35aeecb093439716be6b770cd977d33
 if [[ $variant == refined ]]; then
   header_expected=ef5f8cd8db11a874807d37661a87ac0a65a9e5bad04c6f37039bd9b814a5f3d4
-  console_expected=c6ca2d2d9e72c38f6c698c7c5b3288f935ef16a8d7a52d79391ba54339a52b8d
+  console_expected=bc68a642dca059ed76b6ae79b21db85e34ff3376f98a5efe4bb2b0136b79f0ae
 fi
 printf '%s  winsup/cygwin/fhandler/console.cc\n' "$console_expected" | sha256sum -c -
 echo 'e65b607b331586533fd495dc228361b01b10f4ec85682abb2342b5c29867a36f  winsup/cygwin/fhandler/termios.cc' | sha256sum -c -

@@ -10,7 +10,7 @@ and successful alternative-PTY prototype remain preserved independently.
 ## Why this candidate, not the previous conditional patch
 
 The exact refined patch is `0006-refined-prefix.patch`, SHA-256
-`ceb70e9c04be478e051f2be891409e4d7e4ad30c8654141c86f520f165b70693`.
+`1afc3483da5dcc8848f336619f858c0ffcfbef608d1446464e6566135b2aff66`.
 `REFINED-SOURCE-REVIEW.md` preserves the source-control-flow review and remaining
 caveats; `refined-model-tests.py` contains its 13 simplified tests, not proof of
 native behavior. The patch retires only already-traversed records (`i`, not the
@@ -41,7 +41,7 @@ integrity checks. Build pre/post package inventory must match for both variants.
 
 Exact source identities are checked independently by build, staging and runner:
 stock console `535bd5f650122192e34e9835e33e72efd35aeecb093439716be6b770cd977d33`;
-refined console `c6ca2d2d9e72c38f6c698c7c5b3288f935ef16a8d7a52d79391ba54339a52b8d`.
+refined console `bc68a642dca059ed76b6ae79b21db85e34ff3376f98a5efe4bb2b0136b79f0ae`.
 Full header/termios hashes remain in stage-refined.py. Private runtime copies
 retain all identical non-DLL bundle bytes; no active DLL replaced. Runtime and
 source manifests mark qualification-only and forbid default activation.
@@ -113,7 +113,7 @@ supports its observed cases; production promotion remains a separate decision.
 
 Windows-GNU cross-link passed for the actual managed Session target, unchanged
 raw paste probe, external injector and native console fixture. Reader passes
-Linux C syntax and config passes Zsh syntax. Sixty-nine portable tests pass: 9 fixed
+Linux C syntax and config passes Zsh syntax. Seventy portable tests pass: 10 fixed
 raw/settings orchestration, 2 identity, 20 staging, 13 control-flow model,
 11 external-log/owned-completion checks, 7 workflow/managed negative-outcome/import
 tests and 7 owned-process tests.
@@ -131,3 +131,30 @@ scoped child environment is passed directly to Popen, never installed into the
 parent environment. The24-case matrix and runtime patch are unchanged. The
 step budget is12min, not10min, to include all24 worst-case25s invocations plus
 setup. No internal-path qualification claim changes.
+
+### First refined native source build: preserved compile failure
+
+Run40875619536, source3367b522941b1b56a3357dc87aa9ae79520d930b,
+passed stock source build and failed refined compilation before any native edge,
+managed, raw or settings matrix executed. GCC15 reports
+`console.cc:1654:11: -Werror=misleading-indentation`: the new mouse `if` had an
+unbraced return followed by the more-indented existing mouse processing block.
+This is a source build defect, not evidence of runtime behavior or regression.
+Artifact12899707931 was downloaded and verified SHA-256
+`f6e2652ee9593f2e44eb3e37bbb18a38a3e0067690e368be60d44676f22f304a`.
+
+The only behavioral-patch correction is to brace that already single-statement
+mouse branch and use matching upstream indentation. The changed mouse still
+returns existing `stat`; resize still returns `input_winch`; prefix `i`, zero
+skip, signal ordering and all untouched code remain unchanged. No warning flag
+is removed. New exact patch SHA-256:
+`1afc3483da5dcc8848f336619f858c0ffcfbef608d1446464e6566135b2aff66`;
+new console SHA-256:
+`bc68a642dca059ed76b6ae79b21db85e34ff3376f98a5efe4bb2b0136b79f0ae`.
+Original failed patch was `ceb70e9c04be478e051f2be891409e4d7e4ad30c8654141c86f520f165b70693`.
+The source-review control-flow conclusions and every inconclusive limit remain
+binding. A minimal identical-indentation GCC C++17 snippet reproduces the warning
+before the correction and compiles with `-Wall -Wextra -Werror` after it. This is
+not a substitute for the still-required full native GCC15 source build and fixed
+runtime matrix. Root must publish the changed source explicitly; no workflow
+rerun, automatic retry or default activation is performed here.
