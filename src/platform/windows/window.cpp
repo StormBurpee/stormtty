@@ -3999,7 +3999,7 @@ bool NativeWindow::smoke_context_progress() {
         if(pane_context(smoke_context_actors_[0].first).primary!=pane_context_text(smoke_context_actors_[0].second->info().title) || !pane_context(smoke_context_actors_[1].first).detached)return fail("Context title provenance or detached HEAD changed.");
         capture(L"context-headers");
         for(const auto& [pane,actor]:smoke_context_actors_) {
-            activate(pane);const auto before=actor->info().bytes_sent;const auto geometry=layout_.panes;const auto frame=actor->frame();
+            activate(pane);const auto before_info=actor->info();const auto before=before_info.bytes_sent;const auto geometry=layout_.panes;const auto frame=actor->frame();
             toggle_palette();query_="Inspect pane context";const auto commands=palette_commands();
             if(commands.empty()||commands.front().id!="pane.inspect")return fail("Context command is not discoverable.");
             key(VK_RETURN);
@@ -4010,7 +4010,12 @@ bool NativeWindow::smoke_context_progress() {
                 static_cast<unsigned long long>(pane.value),static_cast<unsigned long long>(before),static_cast<unsigned long long>(after_info.bytes_sent),
                 static_cast<unsigned long long>(smoke_terminal_input_submissions_-baseline),static_cast<unsigned long long>(smoke_terminal_mouse_submissions_-mouse_baseline),
                 unsigned(active_session()==actor.get()),count,sessions_.size(),geometry.size(),layout_.panes.size(),actor->diagnostics().queued_input_bytes);
-            if(after_info.bytes_sent!=before)return fail("Read-only context inspection changed PTY transport bytes.");
+            const auto frontend=after_info.sent.frontend()-before_info.sent.frontend();
+            const auto focus=after_info.sent.focus_bytes-before_info.sent.focus_bytes;
+            const auto protocol=after_info.sent.protocol_bytes-before_info.sent.protocol_bytes;
+            std::fprintf(stderr,"Native context write origins: frontend=%llu focus=%llu protocol=%llu total_before=%llu total_after=%llu\n",static_cast<unsigned long long>(frontend),static_cast<unsigned long long>(focus),static_cast<unsigned long long>(protocol),static_cast<unsigned long long>(before_info.sent.total()),static_cast<unsigned long long>(after_info.sent.total()));
+            if(before_info.sent.total()!=before || after_info.sent.total()!=after_info.bytes_sent || after_info.bytes_sent-before!=frontend+focus+protocol)return fail("Context inspection has unattributed transport bytes.");
+            if(frontend || smoke_terminal_input_submissions_!=baseline || smoke_terminal_mouse_submissions_!=mouse_baseline)return fail("Read-only context inspection submitted frontend input.");
             if(layout_.panes.size()!=geometry.size()||active_session()!=actor.get()||sessions_.size()!=count)return fail("Read-only context inspection changed pane or actor identity.");
             const auto after=actor->frame();if(!frame||!after||frame->columns!=after->columns||frame->rows!=after->rows)return fail("Context inspection changed the terminal grid.");
             capture(L"context-inspect");key(VK_ESCAPE);
@@ -4030,7 +4035,7 @@ bool NativeWindow::smoke_context_progress() {
         const auto info=actor->info();if(info.shell_context&&info.shell_context->directory_key.starts_with("file:///C:/context-fixture-"))return false;
     }
     smoke_context_stage_=3;
-    std::fputs("Native pane context: three distinct owned actors, exact OSC titles preserved, observed directory/branch/detached HEAD, Unicode long path, keyboard Commands inspection, zero PTY input, unchanged grid and identity, narrow/high-contrast captures; context from explicit test child, not live Git discovery.\n",stderr);
+    std::fputs("Native pane context: three distinct owned actors, exact OSC titles preserved, observed directory/branch/detached HEAD, Unicode long path, keyboard Commands inspection, zero frontend PTY input with all focus/protocol writes attributed, unchanged grid and identity, narrow/high-contrast captures; context from explicit test child, not live Git discovery.\n",stderr);
     return true;
 }
 bool NativeWindow::smoke_palette_input_progress() {
@@ -4056,7 +4061,7 @@ bool NativeWindow::smoke_palette_input_progress() {
     if(!smoke_palette_input_stage_){if(mode(true))smoke_palette_input_stage_=1;return false;}
     const auto frame=actor->frame();if(!frame)return false;
     if(smoke_palette_disable_sent_){if(frame->mouse_reporting)return false;
-        bool done=false;for(const auto& row:frame->lines){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;while(!text.empty()&&text.back()==' ')text.pop_back();done=done||text=="STORMTTY_MOUSE_DONE";}if(!done)return false;smoke_palette_input_stage_=2;std::fputs("Native palette ownership smoke: acknowledged1003/1006 mouse mode, captured-button release before transfer, zero hidden mouse/key ingress, Escape/Enter release consumption, real divider ratio and capture cancellation verified.\n",stderr);return true;}
+        bool done=false;for(const auto& row:frame->lines){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;while(!text.empty()&&text.back()==' ')text.pop_back();done=done||text=="STORMTTY_MOUSE_DONE";}if(!done)return false;const auto sent=actor->info();if(!sent.sent.mouse_bytes||sent.sent.total()!=sent.bytes_sent){smoke_finish("Palette mouse transport origin accounting failed.");return false;}smoke_palette_input_stage_=2;std::fputs("Native palette ownership smoke: acknowledged1003/1006 mouse mode, captured-button release before transfer, zero hidden mouse/key ingress, Escape/Enter release consumption, real divider ratio and capture cancellation verified.\n",stderr);return true;}
     if(!frame->mouse_reporting)return false;
     const auto pane=std::find_if(layout_.panes.begin(),layout_.panes.end(),[&](const auto& p){return p.pane==workspace().active_pane();});
     if(pane==layout_.panes.end()||layout_.dividers.empty()){smoke_finish("Palette ownership smoke requires its real split layout.");return false;}

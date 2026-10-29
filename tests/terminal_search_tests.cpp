@@ -274,7 +274,7 @@ int child() {
     return 0;
 }
 void session_coalescing_and_fairness(const std::string& executable) {
-    auto wake=std::make_shared<WakeCounter>(); ProcessOptions process; process.executable=executable; process.arguments={"--search-child"};
+    auto wake=std::make_shared<WakeCounter>(); ProcessOptions process; process.executable=executable; process.arguments={"--search-child"};process.input_capacity_bytes=3; // Force mixed frontend writes through partial transport chunks.
     auto session=Session::start(process,make_search_terminal_options(80,8),[wake]{wake->signal();});
     struct Close { std::shared_ptr<Session> value; ~Close(){value->request_close(); (void)value->wait_closed(5s);} } close{session};
     check(await([&]{return frame_text(session->frame()).find("READY")!=std::string::npos;},wake),"session child fixture did not arrive");
@@ -295,8 +295,11 @@ void session_coalescing_and_fairness(const std::string& executable) {
     check(await([&]{return frame_text(session->frame()).find("ECHO:PING")!=std::string::npos;},wake),"PTY/input fairness lost during search");
     check(await([&]{const auto r=session->search_snapshot();return r&&r->token.request_id==submitted.request_id&&r->status==SearchStatus::complete;},wake),"interleaved large query failed to complete");
     result=session->search_snapshot(); check(result->matches.size()==3000,"large concurrent query lost history");
-    check(session->text("PONG")==SessionSendResult::accepted,"second input blocked"); (void)session->key(enter);
+    check(session->paste("PONG")==SessionSendResult::accepted,"second input blocked"); (void)session->key(enter);
     check(await([&]{return frame_text(session->frame()).find("ECHO:PONG")!=std::string::npos;},wake),"second PTY echo lost");
+    const auto accounting=session->info();
+    check(accounting.sent.total()==accounting.bytes_sent,"actual partial transport writes lost accounting");
+    check(accounting.sent.text_bytes>=4&&accounting.sent.paste_bytes>=4&&accounting.sent.key_bytes>=2,"mixed text/paste/key origins not retained through partial writes");
     check(await([&]{const auto r=session->search_snapshot();return r&&r->status==SearchStatus::complete&&r->token.revision!=result->token.revision;},wake),"live query not refreshed");
     (void)session->navigate_search(result->token,SearchDirection::backward);
     check(await([&]{const auto r=session->search_snapshot();return r&&r->last_apply_result==SearchApplyResult::stale;},wake),"session blindly applied stale navigation");

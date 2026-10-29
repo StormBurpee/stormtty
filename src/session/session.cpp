@@ -43,7 +43,7 @@ struct Command {
     std::size_t bytes() const { return sizeof(Command) + text.size() + key.text.size() + search_options.query.size(); }
 };
 struct OutputEvent { std::uint64_t sequence{}; std::string bytes; };
-struct PendingWrite { std::string bytes; std::size_t offset{}; };
+struct PendingWrite { std::string bytes; std::size_t offset{}; SessionWriteOrigin origin{}; };
 }
 struct Session::Impl : std::enable_shared_from_this<Impl> {
     ProcessOptions process_options;
@@ -341,19 +341,19 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
         bool closing = false, dirty = false;
         auto last_frame = TerminalCore::Clock::now();
         auto next_search_step = last_frame;
-        auto append = [&](std::string bytes) {
+        auto append = [&](std::string bytes,SessionWriteOrigin origin) {
             if (bytes.empty()) return;
             if (bytes.size() > write_budget - write_bytes)
                 throw std::runtime_error("Terminal input backlog exceeded its safety limit");
             write_bytes += bytes.size();
-            writes.push_back({std::move(bytes), 0});
+            writes.push_back({std::move(bytes), 0, origin});
         };
         auto effects = [&] {
             const auto command = core.command_snapshot();
             auto context = core.shell_context();
             auto pending = core.take_effects();
             for (auto& effect : pending)
-                if (effect.kind == EffectKind::write_pty) append(std::move(effect.text));
+                if (effect.kind == EffectKind::write_pty) append(std::move(effect.text),SessionWriteOrigin::protocol);
             bool metadata_changed{};
             {
                 std::lock_guard lock(mutex);
@@ -413,11 +413,11 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                             apply_document_command(core, c, dirty, next_search_step);
                             if (c.op == Op::resize) process->request_resize({c.size.columns, c.size.rows});
                         } else switch (c.op) {
-                        case Op::key: append(core.encode_key(c.key)); core.scroll_to_bottom(); dirty = true; break;
-                        case Op::text: { KeyInput key; key.text = std::move(c.text); append(core.encode_key(key)); core.scroll_to_bottom(); dirty = true; break; }
-                        case Op::paste: append(core.encode_paste(c.text, c.flag)); core.scroll_to_bottom(); dirty = true; break;
-                        case Op::mouse: append(core.encode_mouse(c.mouse)); break;
-                        case Op::focus: append(core.encode_focus(c.flag)); break;
+                        case Op::key: append(core.encode_key(c.key),SessionWriteOrigin::key); core.scroll_to_bottom(); dirty = true; break;
+                        case Op::text: { KeyInput key; key.text = std::move(c.text); append(core.encode_key(key),SessionWriteOrigin::text); core.scroll_to_bottom(); dirty = true; break; }
+                        case Op::paste: append(core.encode_paste(c.text, c.flag),SessionWriteOrigin::paste); core.scroll_to_bottom(); dirty = true; break;
+                        case Op::mouse: append(core.encode_mouse(c.mouse),SessionWriteOrigin::mouse); break;
+                        case Op::focus: append(core.encode_focus(c.flag),SessionWriteOrigin::focus); break;
                         default: break;
                         }
                     } catch (const std::invalid_argument& e) { set_error(e.what()); }
@@ -436,7 +436,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                 if (sent == ProcessSendResult::closed) { writes.clear(); write_bytes = 0; break; }
                 if (sent == ProcessSendResult::too_large) throw std::runtime_error("Process rejected bounded input chunk");
                 pending.offset += count; write_bytes -= count; progress = true;
-                { std::lock_guard lock(mutex); information.bytes_sent += count; }
+                { std::lock_guard lock(mutex); information.bytes_sent += count; information.sent.accepted(pending.origin,count); }
                 if (pending.offset == pending.bytes.size()) writes.pop_front();
             }
             const auto now = TerminalCore::Clock::now();

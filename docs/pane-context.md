@@ -100,3 +100,14 @@ includes 64 KiB of hostile label bytes (589,824 escaped display bytes), 1,000
 cache hits, width/DPI changes and intact Unicode/combining text. Existing native
 renderer coverage validates lossless Unicode wrapping and measured widths.
 This bounds layout creation count; it is not a measured latency claim.
+
+Transport-isolation evidence distinguishes actual sent frontend key/text/paste/
+mouse bytes from focus reports and automatic VT replies. Every queued write
+retains its origin through partial sends; counters are updated alongside
+`bytes_sent` under the existing mutex only after transport acceptance. Their
+sum must equal total bytes in the same `SessionInfo` snapshot. Context inspection
+requires unchanged frontend bytes and UI submissions, and exactly accounts any
+raw delta as focus/protocol traffic; unexplained bytes remain a failure. No raw
+input bytes are recorded. Portable accounting tests cover every origin/mixed
+partial counts; the real session search fixture forces 3-byte transport chunks
+while mixing text, paste and Enter, with unchanged echo/ordering assertions.
