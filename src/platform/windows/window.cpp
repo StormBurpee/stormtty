@@ -5068,6 +5068,10 @@ void NativeWindow::smoke_finish(std::string_view error) {
     }
     if (!error.empty()) {
         smoke_typing_diagnostic("failure");
+        std::fprintf(stderr,"Native smoke failure gates: frame_ready=%d marker_presented=%d motion_timer=%d material_requested=%d material_running=%d material_succeeded=%d presents=%llu pending_input=%zu\n",
+            smoke_frame_ready(),smoke_marker_presented_,motion_timer_active_,
+            material_probe_requested_,material_probe_running_,material_probe_succeeded_,
+            static_cast<unsigned long long>(renderer_?renderer_->stats().presents:0),pending_input_.size());
         // Only isolated smoke-owned shells are eligible for fixture text evidence.
         // Never dump a normal user session or inherited history/configuration.
         if (!smoke_shell_state_root_.empty()) for (const auto& [id,session]:sessions_) {
@@ -5075,6 +5079,38 @@ void NativeWindow::smoke_finish(std::string_view error) {
             std::fprintf(stderr,"Native smoke failed actor=%llu modal_stage=%u modal_presented=%d command_sent=%d rx=%llu tx=%llu bracketed=%d\n",
                 static_cast<unsigned long long>(id.value),smoke_modal_stage_,smoke_modal_presented_,smoke_commands_sent_.contains(id),
                 static_cast<unsigned long long>(info.bytes_received),static_cast<unsigned long long>(info.bytes_sent),frame&&frame->bracketed_paste);
+            const auto diagnostics=session->diagnostics();
+            const bool visible=std::any_of(layout_.panes.begin(),layout_.panes.end(),
+                [&](const auto& placement){return placement.session==id;});
+            // Failure-only numeric observations; never log shell paths or data.
+            std::fprintf(stderr,"Native smoke actor state: actor=%llu state=%d finished=%d closed=%d exit_present=%d exit_code=%llu error_present=%d managed_requested=%d bundled_requested=%d provider_known=%d actual_system=%d actual_bundled=%d context_present=%d visible=%d frame_present=%d frame_generation=%llu columns=%u rows=%u marker=%d queued_input=%zu\n",
+                static_cast<unsigned long long>(id.value),static_cast<int>(info.state),
+                session->process_finished(),session->closed(),info.exit_code.has_value(),
+                static_cast<unsigned long long>(info.exit_code.value_or(0)),!info.error.empty(),
+                smoke_managed_sessions_.contains(id),smoke_bundled_sessions_.contains(id),
+                !diagnostics.provider.empty(),diagnostics.provider=="Windows ConPTY (system)",
+                diagnostics.bundled_provider,info.shell_context.has_value(),visible,bool(frame),
+                static_cast<unsigned long long>(frame?frame->generation:0),
+                unsigned(frame?frame->columns:0),unsigned(frame?frame->rows:0),
+                frame_has_smoke_marker(frame),diagnostics.queued_input_bytes);
+            std::fprintf(stderr,"Native smoke actor control: actor=%llu available=%d",
+                static_cast<unsigned long long>(id.value),diagnostics.windows_control.has_value());
+            if (diagnostics.windows_control) {
+                const auto& control=*diagnostics.windows_control;
+                std::fprintf(stderr," resize_requested=%llu resize_applied=%llu requested_columns=%u requested_rows=%u applied_grid_present=%d applied_columns=%u applied_rows=%u wait_calls=%llu control_wakes=%llu child_exit_wakes=%llu initialization_wakes=%llu resize_calls=%llu resize_failures=%llu",
+                    static_cast<unsigned long long>(control.requested_resize_generation),
+                    static_cast<unsigned long long>(control.applied_resize_generation),
+                    unsigned(control.requested_grid.columns),unsigned(control.requested_grid.rows),
+                    control.applied_grid.has_value(),unsigned(control.applied_grid?control.applied_grid->columns:0),
+                    unsigned(control.applied_grid?control.applied_grid->rows:0),
+                    static_cast<unsigned long long>(control.wait_calls),
+                    static_cast<unsigned long long>(control.control_wakes),
+                    static_cast<unsigned long long>(control.child_exit_wakes),
+                    static_cast<unsigned long long>(control.initialization_wakes),
+                    static_cast<unsigned long long>(control.resize_calls),
+                    static_cast<unsigned long long>(control.resize_failures));
+            }
+            std::fputc('\n',stderr);
             if (frame) for (std::size_t row=0;row<frame->lines.size() && row<24;++row) {
                 std::string text;
                 for (const auto& cell:frame->lines[row]->cells) { text+=cell.grapheme.empty()?" ":cell.grapheme; if(text.size()>512)break; }
