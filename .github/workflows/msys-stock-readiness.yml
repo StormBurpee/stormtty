@@ -1,0 +1,94 @@
+# One stock-only scheduling comparison. Never retry a red cell or promote a runtime.
+name: Private stock MSYS readiness-path diagnostic
+on:
+  push:
+    branches: ['experiment/msys-stock-readiness']
+    paths: ['.github/workflows/msys-stock-readiness.yml']
+permissions:
+  contents: read
+concurrency:
+  group: msys-stock-readiness-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/msys-stock-readiness'
+    runs-on: windows-2025
+    timeout-minutes: 95
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - name: Prepare isolated evidence destination
+        shell: pwsh
+        run: |
+          $env:READINESS_ROOT = Join-Path $env:RUNNER_TEMP 'stormtty-stock-readiness'
+          "READINESS_ROOT=$env:READINESS_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Path "$env:READINESS_ROOT/evidence" | Out-Null
+          git rev-parse HEAD | Set-Content "$env:READINESS_ROOT/evidence/commit.txt"
+      - name: Check fixed matrix and fail-closed evidence contracts
+        shell: pwsh
+        run: |
+          python tools/probes/msys-readiness/tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage untouched pinned official runtime only
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          python tools/shell-bootstrap.py --destination "$env:READINESS_ROOT/original" --cache .cache/shell-bootstrap
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:READINESS_ROOT/original/.stormtty-packages/msys2-runtime/.BUILDINFO" "$env:READINESS_ROOT/evidence/upstream-buildinfo.txt"
+      - name: Initialize native fixture compiler (not an MSYS runtime compiler)
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Restore pinned terminal engine
+        id: engine
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Build missing pinned terminal engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        timeout-minutes: 25
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Build isolated reader fixture without application or runtime rebuild
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          cmake -S . -B build-readiness -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_TEST_SHELL_PROBE=ON -DSTORMTTY_TEST_MSYS_READINESS=ON -DSTORMTTY_BUILD_APP=OFF -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-readiness --target msys_readiness_probe msys_readiness_contract_tests qualification_input_evidence_tests --parallel 2 2>&1 | Tee-Object "$env:READINESS_ROOT/evidence/probe-build.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-readiness -R '^(qualification_input_evidence_tests|msys_readiness_contract_tests)$' --no-tests=error --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run eight fixed official inbox launches once
+        timeout-minutes: 27
+        shell: pwsh
+        run: |
+          python tools/probes/msys-readiness/compare.py --runtime "$env:READINESS_ROOT/original" --probe build-readiness/msys_readiness_probe.exe --output "$env:READINESS_ROOT/evidence/matrix"
+          exit $LASTEXITCODE
+      - name: Preserve bounded diagnostics even on failure (no binaries or HOME)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msys-stock-readiness-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            ${{ env.READINESS_ROOT }}/evidence/commit.txt
+            ${{ env.READINESS_ROOT }}/evidence/upstream-buildinfo.txt
+            ${{ env.READINESS_ROOT }}/evidence/probe-build.log
+            ${{ env.READINESS_ROOT }}/evidence/matrix/results.json
+            ${{ env.READINESS_ROOT }}/evidence/matrix/1-timed-plain.log
+            ${{ env.READINESS_ROOT }}/evidence/matrix/1-direct-plain.log
+            ${{ env.READINESS_ROOT }}/evidence/matrix/1-timed-resize.log
+            ${{ env.READINESS_ROOT }}/evidence/matrix/1-direct-resize.log
+            ${{ env.READINESS_ROOT }}/evidence/matrix/2-direct-resize.log
+            ${{ env.READINESS_ROOT }}/evidence/matrix/2-timed-resize.log
+            ${{ env.READINESS_ROOT }}/evidence/matrix/2-direct-plain.log
+            ${{ env.READINESS_ROOT }}/evidence/matrix/2-timed-plain.log
+            build-readiness/Testing/Temporary/LastTest.log
+            build-readiness/CMakeFiles/CMakeConfigureLog.yaml

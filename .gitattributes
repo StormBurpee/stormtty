@@ -27,3 +27,6 @@ src/platform/windows/window.cpp text eol=lf
 src/app/windows_main.cpp text eol=lf
 tools/run-owned-process.py text eol=lf
 tools/prepare-conpty-probe.ps1 text eol=lf
+
+# Standalone readiness diagnostics are byte-pinned on every host.
+tools/probes/msys-readiness/* text eol=lf
