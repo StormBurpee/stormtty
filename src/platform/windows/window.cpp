@@ -3711,6 +3711,9 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         for(const auto& entry:palette_commands())if(entry.id=="agent.toggle"){smoke_finish("Disabled AI feature leaked into Commands.");return;}
     }
     if (smoke_deadline_.expired(GetTickCount64())) { smoke_finish("Native smoke phase deadline expired."); return; }
+    // Wake messages can arrive before the first normal render. Do not let
+    // scenario actions/direct capture renders precede first-exposure evidence.
+    if (!first_exposed_frame_) return;
     if (!options_.smoke_workspaces.empty()) { smoke_workspace_progress(presented); return; }
     if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
     for (const auto& [id,session]:sessions_) { (void)id; const auto info=session->info(); if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; } }
