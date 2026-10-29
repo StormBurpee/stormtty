@@ -57,6 +57,9 @@ int main(){@autoreleasepool{return run_core_tests("native AppKit pane inspector"
         NSView* surface=shown.window.contentView;[surface layoutSubtreeIfNeeded];[surface displayIfNeeded];
         NSBitmapImageRep* bitmap=[surface bitmapImageRepForCachingDisplayInRect:surface.bounds];CHECK(bitmap!=nil);
         [surface cacheDisplayInRect:surface.bounds toBitmapImageRep:bitmap];
+        NSColor* background=[[bitmap colorAtX:0 y:0] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        CHECK(background!=nil);CHECK(background.alphaComponent>0.99);
+        CHECK([appearance isEqualToString:NSAppearanceNameAqua]?background.redComponent>0.5:background.redComponent<0.5);
         NSData* png=[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];CHECK(png.length>0);
         NSString* file=[appearance isEqualToString:NSAppearanceNameAqua]?@"pane-context-light.png":@"pane-context-dark.png";
         CHECK([png writeToFile:file atomically:YES]);

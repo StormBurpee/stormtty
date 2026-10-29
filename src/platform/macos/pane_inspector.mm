@@ -1,6 +1,18 @@
 #include "pane_inspector.hpp"
 #import <QuartzCore/QuartzCore.h>
 
+// The owned surface draws its own semantic background. NSWindow's backing
+// otherwise sits outside content-view rasterization, leaving exported captures
+// transparent and making their text illegible against arbitrary viewer colors.
+@interface STPaneInspectorSurface : NSView
+@end
+@implementation STPaneInspectorSurface
+- (BOOL)isOpaque {return YES;}
+- (void)drawRect:(NSRect)dirtyRect {
+    [NSColor.windowBackgroundColor setFill];NSRectFill(dirtyRect);
+}
+@end
+
 @implementation STPaneInspector
 - (instancetype)initWithSnapshot:(const stormtty::PaneContextPresentation&)snapshot {
     NSPanel* panel=[[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,580,440)
@@ -9,7 +21,8 @@
     panel.title=@"Pane context";panel.releasedWhenClosed=NO;
     panel.titleVisibility=NSWindowTitleHidden;panel.titlebarAppearsTransparent=YES;
     panel.backgroundColor=NSColor.windowBackgroundColor;
-    NSView* surface=panel.contentView;
+    NSView* surface=[[STPaneInspectorSurface alloc] initWithFrame:panel.contentView.bounds];
+    panel.contentView=surface;
     NSTextField* heading=[NSTextField labelWithString:@"Pane context"];
     heading.font=[NSFont systemFontOfSize:22 weight:NSFontWeightSemibold];
     heading.frame=NSMakeRect(24,378,532,30);[surface addSubview:heading];
