@@ -241,6 +241,7 @@ void enforce_custom_frame_style(HWND window, bool diagnostics) {
 class NativeWindow final {
 public:
     explicit NativeWindow(Config config, NativeRunOptions options) : config_(std::move(config)), options_(std::move(options)), wake_(std::make_shared<WakeState>()) {
+        if(!options_.presentation_root.empty()&&!options_.smoke_test)throw std::runtime_error("Presentation requires explicit isolated smoke mode.");
         if (!options_.shell_runtime_directory.empty() && options_.shell_runtime_error.empty()) {
             const auto& root=options_.shell_runtime_directory;
             Profile managed;
@@ -265,6 +266,7 @@ public:
         if (!options_.shell_runtime_error.empty()) notice_="Managed Zsh unavailable. Close StormTTY and rebuild to restore runtimes/zsh. Your saved shell is unchanged.";
         std::string directory;
         for (const auto& profile:config_.profiles) if (profile.id==config_.default_profile) { directory=profile.working_directory; break; }
+        if(!options_.presentation_root.empty())directory=narrow((options_.presentation_root/L"Theme Lab").wstring());
         if (directory.empty()) directory=narrow(std::filesystem::current_path().wstring());
         const auto path=std::filesystem::path(widen(directory));
         auto name=project_name(path);
@@ -410,6 +412,8 @@ private:
     bool smoke_palette_evidence(SessionId);
     bool smoke_find_progress();
     bool smoke_navigator_evidence();
+    void presentation_progress(bool presented);
+    unsigned presentation_stage_{};
     bool smoke_palette_input_progress();
     unsigned smoke_palette_input_stage_{};
     bool smoke_palette_disable_sent_{};
@@ -722,6 +726,17 @@ void NativeWindow::create() {
         std::fputs("Native smoke shell state: unique owned root; user history/config excluded.\n",stderr);
     }
     if (restored_workspaces_) launch_restored_project(); else new_tab();
+    if(!options_.presentation_root.empty()) {
+        if(!using_managed_shell())throw std::runtime_error("Owned presentation never substitutes a fallback shell.");
+        const auto primary=projects_.active_id();const auto first=workspace().active_pane();
+        workspace().rename_tab(workspace().active_tab(),"Changes");
+        new_tab();workspace().rename_tab(workspace().active_tab(),"Shell");
+        new_tab();workspace().rename_tab(workspace().active_tab(),"Scratch");park_pane(workspace().active_pane());
+        const auto second=projects_.create({"Notes",narrow((options_.presentation_root/L"Notes").wstring()),"Local"});
+        if(!second)throw std::runtime_error(second.error);
+        activate_project(*second.value);new_tab();workspace().rename_tab(workspace().active_tab(),"Notes");
+        activate_project(primary);activate(first);navigation_expanded_=true;
+    }
     if (options_.smoke_projects) {
         smoke_primary_project_=projects_.active_id();
         std::array<wchar_t,MAX_PATH+1> directory{};
@@ -768,7 +783,7 @@ void NativeWindow::create() {
     }
     ShowWindow(hwnd_, SW_SHOWNORMAL);
     UpdateWindow(hwnd_);
-    if (options_.smoke_test && !options_.smoke_agent && !options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && options_.smoke_workspaces.empty() && !SetTimer(hwnd_,typing_smoke_timer,25,nullptr)) throw std::runtime_error("Could not start bounded typing smoke progress timer.");
+    if (options_.smoke_test && !options_.smoke_agent && !options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && options_.smoke_workspaces.empty() && options_.presentation_root.empty() && !SetTimer(hwnd_,typing_smoke_timer,25,nullptr)) throw std::runtime_error("Could not start bounded typing smoke progress timer.");
     if (options_.smoke_test && !SetTimer(hwnd_,smoke_timeout_timer,250,nullptr)) throw std::runtime_error("Could not start the native smoke deadline.");
 }
 int NativeWindow::run() {
@@ -3896,6 +3911,35 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
         settings_transition_.value(chrome_now()),menu_transition_.value(chrome_now()),
         workspace_focus_[projects_.active_id()].value(chrome_now()),pane_focus_[workspace().active_pane()].value(chrome_now()),motion_timer_active_);
 }
+void NativeWindow::presentation_progress(bool presented) {
+    auto* actor=active_session();if(!actor){smoke_finish("Owned demo lost its active terminal.");return;}
+    const auto send=[&](const std::shared_ptr<Session>& target,std::string command){
+        if(!TerminalCore::paste_is_safe(command)||target->text(std::move(command))!=SessionSendResult::accepted)return false;
+        KeyInput enter;enter.key=Key::enter;return target->key(enter)==SessionSendResult::accepted;
+    };
+    if(!presentation_stage_) {
+        const auto owned=sessions_.at(workspace().pane(workspace().active_pane())->session);
+        // Printable trusted fixture command through ordinary typing, not pasted
+        // user data. It displays actual Git state, never authored success logs.
+        if(!send(owned,std::string(native_presentation_command()))){smoke_finish("Owned demo command was not accepted.");return;}
+        presentation_stage_=1;return;
+    }
+    if(presentation_stage_==1) {
+        const auto frame=actor->frame();const auto info=actor->info();if(!frame||!info.shell_context||info.shell_context->git!=GitHeadKind::branch||info.shell_context->head!="palette-review"||!frame->bracketed_paste||!presented||motion_timer_active_)return;
+        std::string output;for(const auto& row:frame->lines){for(const auto& cell:row->cells)output+=cell.grapheme;output+='\n';}
+        if(output.find("## palette-review")==std::string::npos||output.find("theme.toml")==std::string::npos||output.find("insertion")==std::string::npos)return;
+        notice_.clear();smoke_chrome_time_=GetTickCount64()+1000;
+        smoke_motion_capture(L"workspace-owned-demo",0);
+        open_navigator();smoke_motion_capture(L"navigator-owned-demo",0);close_navigator();
+        open_navigator(true);smoke_motion_capture(L"background-owned-demo",0);close_navigator();
+        smoke_chrome_time_.reset();
+        for(const auto& [id,session]:sessions_){(void)id;if(!send(session,"exit")){smoke_finish("Owned demo exit was not accepted.");return;}}
+        presentation_stage_=2;return;
+    }
+    for(const auto& [id,session]:sessions_){(void)id;if(!session->process_finished())return;const auto info=session->info();if(!info.exit_code||*info.exit_code!=0){smoke_finish("Owned demo shell did not exit successfully.");return;}}
+    std::fputs("Owned presentation capture: real managed Zsh, disposable Git repositories and observed status/diff, retained actors exited0; presentation only, not paste/input or performance qualification.\n",stderr);
+    smoke_finish();
+}
 bool NativeWindow::smoke_palette_input_progress() {
     if(smoke_palette_input_stage_==2)return true;
     auto* actor=active_session();if(!actor){smoke_finish("Palette ownership smoke lost its actor.");return false;}
@@ -4300,6 +4344,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         }
         smoke_phase(SmokeDeadline::Phase::interaction);
     }
+    if(!options_.presentation_root.empty()){presentation_progress(presented);return;}
     if (options_.smoke_layout && !smoke_palette_input_progress()) return;
     if (options_.smoke_projects && !smoke_find_progress()) return;
     if (options_.smoke_projects && !smoke_navigator_evidence()) return;
@@ -5082,8 +5127,8 @@ void NativeWindow::smoke_finish(std::string_view error) {
     smoke_finished_=true; exit_code_=error.empty()?0:2;
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
-        std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
-        if (using_managed_shell()) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
+        if(options_.presentation_root.empty())std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
+        if (using_managed_shell()&&options_.presentation_root.empty()) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
         if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, midnight/custom ANSI hex and font preview rollback, Ribbon visibility/order Save/reopen, native Appearance/Ribbon captures, custom system menu/outside-click routing, confirmed Alt+], independent 25% opacity and extra blur 24 with WARP fallback, two atomic Save/reopen cycles, original live actor retained, explicit hot reload / repeat / draft refusal / invalid and missing file preservation. Not physical UI/accessibility QA.\n",stderr);
         if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts; final-pane parking, canceled background close, cross-project isolation, live parked output and same retained actor restored after exit; scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");

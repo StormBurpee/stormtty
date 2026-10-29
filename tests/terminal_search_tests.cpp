@@ -74,6 +74,8 @@ void safe_native_fixture() {
     check(!mouse_command.empty()&&TerminalCore::paste_is_safe(mouse_command),"native mouse child command must be paste-safe");
     check(core.encode_paste(mouse_command)==mouse_command,"native mouse child command encoding changed");
     check(native_mouse_child_command("bad\npath").empty()&&native_mouse_child_command("bad\"path").empty(),"unsafe child path accepted");
+    check(TerminalCore::paste_is_safe(native_presentation_command()),"owned demo command contains unsafe typing bytes");
+    check(core.encode_paste(native_presentation_command())==native_presentation_command(),"owned demo command encoding changed");
     const std::string unsafe="printf 'alpha\nbeta\n'";
     check(!TerminalCore::paste_is_safe(unsafe),"multiline paste must remain unsafe");
     bool rejected=false;try{core.encode_paste(unsafe);}catch(const std::invalid_argument&){rejected=true;}
