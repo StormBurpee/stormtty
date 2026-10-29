@@ -17,6 +17,7 @@ std::string validate_agent_provider_settings(const AgentProviderSettings& s) {
         begin=i+1;
     }
     const auto& account=s.account_reference;
+    if(account.empty())return {}; // Identity comes from account/read, never manual entry.
     if(!account.starts_with("chatgpt:")||account.size()>256)return "Account reference must be chatgpt: followed by the signed-in account email. Never enter a token.";
     const auto email=account.substr(8);const auto at=email.find('@');
     if(at==std::string::npos||at==0||at+1==email.size()||email.find('@',at+1)!=std::string::npos||

@@ -1,0 +1,88 @@
+name: Codex native UI fixtures
+on:
+  push:
+    branches: [feature/codex-onboarding]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: codex-ui-fixture-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-ui:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Initialize native MSVC toolchain
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Restore pinned terminal engine
+        id: engine_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Bootstrap pinned terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Cache successfully built terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ${{ steps.engine_cache.outputs.cache-primary-key }}
+      - name: Configure isolated native UI build
+        run: cmake -S . -B build-ui -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF -DSTORMTTY_TEST_INK=OFF
+      - name: Build app and focused native tests
+        run: cmake --build build-ui --parallel 2 --target stormtty agent_panel_tests agent_panel_controller_tests agent_auth_tests agent_service_tests agent_discovery_tests agent_provider_settings_tests agent_stdio_tests agent_retirement_tests renderer_smoke
+      - name: Capture nine authored native onboarding and conversation states
+        id: capture
+        shell: python
+        run: |
+          import importlib.util,json,pathlib,sys
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
+          artifacts=pathlib.Path('build-ui/artifacts').resolve();artifacts.mkdir(parents=True,exist_ok=True)
+          capture=artifacts/'codex-ui.png'
+          # The native smoke fixture bypasses discovery, provider launch and browser actions.
+          # Use only supported flags; default shell/inbox ConPTY, no packaged runtime.
+          result=runner.run_owned([str(pathlib.Path('build-ui/stormtty.exe').resolve()),'--smoke-agent','--capture',str(capture)],timeout=90,output_dir=artifacts)
+          text=result.output_tail.decode('utf-8',errors='replace')
+          (artifacts/'codex-ui-owned.log').write_text(json.dumps(result.metadata(),sort_keys=True)+'\n'+text,encoding='utf-8')
+          print(text,flush=True)
+          states=['missing-cli','detecting','sign-in-needed','browser-continuation','signed-in','running','permission','disconnected','advanced']
+          expected=[artifacts/('codex-ui-agent-'+str(i)+'.png') for i in range(1,10)]
+          missing=[p.name for p in expected if not p.is_file() or p.stat().st_size<8 or p.read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n']
+          manifest={'source_sha':__import__('os').environ['GITHUB_SHA'],'fixture_only':True,'real_provider_calls':False,'states':[{'state':name,'file':p.name} for name,p in zip(states,expected)],'missing':missing,'process':result.metadata()}
+          (artifacts/'codex-ui-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          if result.exit_code or not result.reaped or result.cleanup_error or missing:
+              raise SystemExit(result.exit_code or 1)
+      - name: Publish native screenshots immediately
+        if: always() && steps.capture.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: codex-native-ui-${{ github.sha }}
+          path: |
+            build-ui/artifacts/codex-ui-agent-*.png
+            build-ui/artifacts/codex-ui-owned.log
+            build-ui/artifacts/codex-ui-manifest.json
+          if-no-files-found: error
+      - name: Run focused native provider, layout and renderer tests
+        if: always() && steps.capture.outcome != 'skipped'
+        run: ctest --test-dir build-ui -R "^(agent_panel_tests|agent_panel_controller_tests|agent_auth_tests|agent_service_tests|agent_discovery_tests|agent_provider_settings_tests|agent_stdio_tests|agent_retirement_tests|renderer_smoke)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
+      - name: Preserve focused test diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: codex-native-ui-tests-${{ github.sha }}
+          path: |
+            build-ui/focused-tests.xml
+            build-ui/Testing/Temporary/LastTest.log
+            build-ui/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn

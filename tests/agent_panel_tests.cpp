@@ -5,10 +5,10 @@
 using namespace stormtty;
 namespace {
 void click(AgentPanel& p,std::string_view id) {for(const auto& c:p.controls())if(c.id==id){Point point{c.bounds.x+1,c.bounds.y+1};p.pointer_down(point);p.pointer_up(point);return;}CHECK(false);}
-AgentPanelView view(std::string id="workspace-a") {AgentPanelView v;v.workspace_id=id;v.workspace_name="StormTTY";v.directory="C:/project";v.execution_scope="Read-only sandbox; untrusted commands require approval";return v;}
+AgentPanelView view(std::string id="workspace-a") {AgentPanelView v;v.state=AgentPanelState::ready;v.task_available=true;v.workspace_id=id;v.workspace_name="StormTTY";v.directory="C:/project";v.execution_scope="Read-only sandbox; untrusted commands require approval";return v;}
 }
 int main() {
-    AgentPanel p; p.open(view());p.text("Build tests");click(p,"start");CHECK(!p.take_action());CHECK(p.status_label()=="Unavailable");
+    AgentPanel p; p.open(view());p.text("Build tests");click(p,"start");CHECK(!p.take_action());CHECK(p.status_label()=="Ready");
     p.close();p.open(view("workspace-b"));CHECK(p.draft().empty());p.text("Other task");p.close();p.open(view());CHECK(p.draft()=="Build tests");CHECK(!p.take_action());
     auto ready=view();ready.state=AgentPanelState::ready;ready.provider_generation=5;p.update(ready);
     click(p,"start");CHECK(!p.take_action()); // Review is not start consent.
@@ -60,13 +60,13 @@ int main() {
     click(setup,"settings.open");CHECK(setup.editing_settings());setup.text("relative.exe");click(setup,"settings.save");CHECK(!setup.take_action());
     click(setup,"settings.cancel");CHECK(!setup.editing_settings());CHECK(!setup.take_action());
     click(setup,"settings.open");click(setup,"settings.executable");setup.text("C:\\Installed\\codex.exe");
-    click(setup,"settings.account");setup.text("chatgpt:new@example.com");click(setup,"settings.save");
+    click(setup,"settings.save");
     auto saved=setup.take_action();CHECK(saved&&saved->kind==AgentPanelActionKind::save_settings);
-    CHECK(saved->provider_settings.executable=="C:\\Installed\\codex.exe");CHECK(saved->provider_settings.account_reference=="chatgpt:new@example.com");
+    CHECK(saved->provider_settings.executable=="C:\\Installed\\codex.exe");CHECK(saved->provider_settings.account_reference.empty());
     local.setup_busy=true;setup.update(local);setup.key({{"ESCAPE"}});CHECK(setup.editing_settings());CHECK(!setup.take_action());
     local.setup_busy=false;local.provider_settings=saved->provider_settings;setup.update(local);setup.settings_result(true);CHECK(!setup.editing_settings());CHECK(!setup.take_action());
     setup.close();setup.open(local);click(setup,"settings.open");scene={};setup.append_scene(scene,Theme{});
-    CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](auto& t){return t.text=="chatgpt:new@example.com";}));
+    CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](auto& t){return t.text=="C:\\Installed\\codex.exe";}));
     setup.key({{"ESCAPE"}});CHECK(setup.is_open()&&!setup.editing_settings());
     setup.resize({480,320});click(setup,"settings.open");for(const auto& c:setup.controls()){CHECK(c.bounds.x>=0&&c.bounds.y>=0);CHECK(c.bounds.x+c.bounds.width<=480);CHECK(c.bounds.y+c.bounds.height<=320);}
     click(setup,"settings.executable");setup.text("C:\\Unsaved\\codex.exe");click(setup,"settings.reload");CHECK(!setup.take_action());
@@ -75,7 +75,7 @@ int main() {
     setup.settings_result(false,"Local settings changed outside StormTTY.");
     click(setup,"settings.reload");CHECK(!setup.take_action());click(setup,"settings.reload");auto reload=setup.take_action();CHECK(reload&&reload->kind==AgentPanelActionKind::reload_settings);
     AgentProviderSettings external{"C:\\External\\codex.exe","chatgpt:external@example.com"};setup.settings_reloaded(external);scene={};setup.append_scene(scene,Theme{});
-    CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](const auto& t){return t.text=="chatgpt:external@example.com";}));CHECK(!setup.take_action());
+    CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](const auto& t){return t.text=="C:\\External\\codex.exe";}));CHECK(!setup.take_action());
     setup.close();local.setup_available=false;local.setup_status="Corrupt local settings";setup.open(local);click(setup,"settings.open");CHECK(setup.editing_settings());
     click(setup,"settings.save");CHECK(!setup.take_action());click(setup,"settings.reload");CHECK(setup.take_action()->kind==AgentPanelActionKind::reload_settings);
     const std::string scope_line="Read-only fixture scope: src/platform/windows/window.cpp";
@@ -92,5 +92,33 @@ int main() {
     scene={};measured.append_scene(scene,Theme{},1,wrap);CHECK(measures==1);
     measured.resize({1100,800});scene={};measured.append_scene(scene,Theme{},1.25f,wrap);CHECK(measures==2);
     CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](const auto& text){return text.text=="Allow once"&&text.alignment==ChromeTextAlignment::center;}));
+    // Onboarding actions never start work; URLs remain transient and invisible.
+    AgentPanel onboarding;auto auth=view();auth.state=AgentPanelState::ready;auth.auth=AgentAuth::signed_out;
+    auth.transcript={{"assistant","Earlier conversation is retained during reauthentication."}};
+    onboarding.open(auth);CHECK(onboarding.status_label()=="Sign in needed");
+    CHECK(std::none_of(onboarding.controls().begin(),onboarding.controls().end(),[](const auto& c){return c.id=="composer";}));
+    click(onboarding,"sign_in");CHECK(onboarding.take_action()->kind==AgentPanelActionKind::sign_in);
+    auth.auth=AgentAuth::signing_in;auth.login_id="login-1";auth.auth_url="https://auth.openai.com/secret-link";onboarding.update(auth);
+    click(onboarding,"open_sign_in");auto browser=onboarding.take_action();CHECK(browser->kind==AgentPanelActionKind::open_sign_in);CHECK(browser->login_id=="login-1");
+    scene={};onboarding.append_scene(scene,Theme{});for(const auto& text:scene.texts)CHECK(text.text.find("secret-link")==std::string::npos);
+    click(onboarding,"cancel_sign_in");CHECK(onboarding.take_action()->kind==AgentPanelActionKind::cancel_sign_in);
+    // Repeating Enter cannot jump from review directly into task authorization.
+    AgentPanel keyboard;keyboard.open(view());keyboard.text("Inspect code");keyboard.key({{"ENTER"}});CHECK(!keyboard.take_action());CHECK(keyboard.focused_control()=="cancel");
+    keyboard.key({{"ENTER"}});CHECK(!keyboard.take_action());
+    // Every enabled control is keyboard reachable and narrow layouts are bounded.
+    for(const auto size:std::vector<Size>{{480,500},{1044,720},{1280,800}}) {
+        onboarding.resize(size);std::vector<std::string> visited;
+        for(std::size_t i=0;i<onboarding.controls().size()+1;++i){onboarding.key({{"TAB"}});visited.push_back(onboarding.focused_control());}
+        for(const auto& control:onboarding.controls()) {
+            CHECK(control.bounds.x>=0&&control.bounds.y>=0&&control.bounds.x+control.bounds.width<=size.width&&control.bounds.y+control.bounds.height<=size.height);
+            if(control.enabled)CHECK(std::find(visited.begin(),visited.end(),control.id)!=visited.end());
+        }
+    }
+    // Opening or returning to onboarding never accepts an invisible draft.
+    AgentPanel hidden;auto hidden_view=view();hidden.open(hidden_view);hidden.text("preserved draft");hidden.close();
+    for(const auto state:std::vector<AgentPanelState>{AgentPanelState::unavailable,AgentPanelState::connecting,AgentPanelState::ready}) {
+        hidden_view.state=state;hidden_view.auth=state==AgentPanelState::ready?AgentAuth::signed_out:AgentAuth::unknown;hidden_view.task_available=false;
+        hidden.open(hidden_view);CHECK(hidden.focused_control()!="composer");hidden.text(" invisible text");CHECK(hidden.draft()=="preserved draft");CHECK(!hidden.take_action());hidden.close();
+    }
     return 0;
 }

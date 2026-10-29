@@ -31,6 +31,8 @@ int main(int argc,char** argv) {
 #endif
             }
             if(method=="initialize") { std::cerr<<"fixture stderr (not protocol)\n"<<std::flush; send("{\"id\":"+request_id+",\"result\":{\"userAgent\":\"stormtty-authored-fixture\"}}"); }
+            else if(method=="account/read" && mode.starts_with("agent-signed-out-")) send("{\"id\":"+request_id+",\"result\":{\"account\":null}}");
+            else if(method=="account/login/start" && mode.starts_with("agent-signed-out-")) send("{\"id\":"+request_id+",\"result\":{\"type\":\"chatgpt\",\"loginId\":\"fixture-login\",\"authUrl\":\"https://auth.openai.com/fixture\"}}");
             else if(method=="account/read") send("{\"id\":"+request_id+",\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"fixture@example.invalid\"},\"requiresOpenaiAuth\":true}}");
             else if(method=="thread/start" || method=="thread/resume") send("{\"id\":"+request_id+",\"result\":{\"thread\":{\"id\":\"fixture-thread\",\"status\":{\"type\":\"idle\"}},\"cwd\":"+quote(msg.at("params").at("cwd").text())+",\"approvalPolicy\":\"untrusted\",\"approvalsReviewer\":\"user\",\"sandbox\":{\"type\":\"readOnly\",\"networkAccess\":false}}}");
             else if(method=="turn/start") {
@@ -38,6 +40,10 @@ int main(int argc,char** argv) {
                 if(prompt=="fixture-malformed") { send("{broken-json"); continue; }
                 if(prompt=="fixture-exit") return 0;
                 send("{\"id\":"+request_id+",\"result\":{\"turn\":{\"id\":\"fixture-turn\",\"status\":\"inProgress\"}}}");
+                if(prompt=="fixture-turn-failure") {
+                    send("{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"fixture-thread\",\"turn\":{\"id\":\"fixture-turn\",\"status\":\"failed\",\"error\":{\"message\":\"Authored turn failed; connection remains ready.\"}}}}");
+                    continue;
+                }
                 send("{\"id\":\"fixture-approval\",\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"kind\":\"command\",\"threadId\":\"fixture-thread\",\"turnId\":\"fixture-turn\",\"itemId\":\"fixture-item\",\"command\":\"echo authored fixture\",\"cwd\":\"/fixture\"}}");
             } else if(method=="turn/interrupt") {
                 send("{\"id\":"+request_id+",\"result\":{}}");

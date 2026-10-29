@@ -14,7 +14,7 @@ using agent_json::quote;
 std::atomic<std::uint64_t> provider_generation{1};
 bool opaque(std::string_view s, std::size_t max=256) { return !s.empty() && s.size()<=max && detail::valid_utf8(s) && std::none_of(s.begin(),s.end(),[](unsigned char c){return c<0x20 || c==0x7f;}); }
 bool workspace_id(std::string_view s) { return s.size()==32 && s.find_first_not_of("0123456789abcdef")==std::string_view::npos; }
-bool association_valid(const WorkspaceAgentAssociation& a) { return workspace_id(a.workspace_persistent_id) && a.provider=="codex" && opaque(a.account_reference) && (a.thread_id.empty() || opaque(a.thread_id)); }
+bool association_valid(const WorkspaceAgentAssociation& a) { return workspace_id(a.workspace_persistent_id) && a.provider=="codex" && (a.account_reference.empty() || opaque(a.account_reference)) && (!a.account_reference.empty() || a.thread_id.empty()) && (a.thread_id.empty() || opaque(a.thread_id)); }
 std::string required(const Value& v, std::string_view key) { auto s=v.at(key).text(); if(!opaque(s)) throw std::runtime_error("Missing or invalid protocol identity"); return s; }
 bool active(AgentConversation c) { return c==AgentConversation::starting || c==AgentConversation::running || c==AgentConversation::interrupting; }
 std::string clipped(std::string s, std::size_t n) { if(s.size()>n) { s.resize(n); while(!detail::valid_utf8(s) && !s.empty()) s.pop_back(); } return s; }
@@ -29,9 +29,15 @@ struct AgentService::Impl {
     std::map<std::string,std::string> requests;
     std::map<std::string,std::string> item_scopes;
     std::set<std::string> seen_approvals;
-    bool thread_loaded{};
+    bool thread_loaded{}, login_pending{}, login_cancelled{};
+    void clear_login() { state.login_id.clear(); state.auth_url.clear(); login_pending=false; login_cancelled=false; }
+    void read_account() {
+        std::erase_if(requests,[](const auto& r){return r.second=="account/read";});
+        request("account/read","{\"refreshToken\":false}");
+    }
+    void invalidate_account() { state.generation=provider_generation.fetch_add(1); state.association.thread_id.clear(); state.association.account_reference.clear(); state.account_label.clear(); state.auth=AgentAuth::unknown; thread_loaded=false; state.transcript.clear(); state.diff.clear(); state.approvals.clear(); }
     void changed() { ++state.revision; }
-    void clear_transient() { input.clear(); pending_prompt.clear(); pending_cwd.clear(); requests.clear(); outbound.clear(); outbound_bytes=0; state.approvals.clear(); item_scopes.clear(); seen_approvals.clear(); thread_loaded=false; }
+    void clear_transient() { clear_login(); state.auth=AgentAuth::unknown; input.clear(); pending_prompt.clear(); pending_cwd.clear(); requests.clear(); outbound.clear(); outbound_bytes=0; state.approvals.clear(); item_scopes.clear(); seen_approvals.clear(); thread_loaded=false; }
     void fail(std::string error) { clear_transient(); state.connection=AgentConnection::failed; if(active(state.conversation)) state.conversation=AgentConversation::failed; state.error=std::move(error); changed(); }
     void send(std::string frame) {
         if(outbound.size()>=64 || outbound_bytes+frame.size()+1>2*1024*1024) throw std::runtime_error("Outbound queue limit; transport must reconnect explicitly");
@@ -75,6 +81,9 @@ struct AgentService::Impl {
         auto id=agent_json::id(msg.at("id")); auto found=requests.find(id);
         if(found==requests.end()) return; // late/duplicate response cannot mutate state
         auto method=found->second; requests.erase(found);
+        if(method=="account/login/cancel") return; // Late acknowledgements/errors never alter a newer attempt.
+        if(msg.has("error") && method=="account/read") state.connection=AgentConnection::ready;
+        if(msg.has("error") && method.starts_with("account/")) { clear_login(); state.auth=AgentAuth::failed; state.error="Codex account request failed. Retry or reconnect."; changed(); return; }
         if(msg.has("error")) { fail("Codex request failed ("+method+"): "+clipped(msg.at("error").at("message").text(),4096)); return; }
         if(msg.at("result").type!=Value::Type::object) throw std::runtime_error("Missing response result");
         const auto& result=msg.at("result");
@@ -84,8 +93,24 @@ struct AgentService::Impl {
             request("account/read","{\"refreshToken\":false}");
         } else if(method=="account/read") {
             const auto& account=result.at("account");
-            if(account.at("type").text()!="chatgpt" || !opaque(account.at("email").text()) || "chatgpt:"+account.at("email").text()!=state.association.account_reference) throw std::runtime_error("Signed-in account identity mismatch or unsupported account type; no thread resumed");
             state.connection=AgentConnection::ready;
+            if(account.type==Value::Type::null) { invalidate_account(); state.auth=AgentAuth::signed_out; }
+            else if(account.at("type").text()=="chatgpt" && opaque(account.at("email").text())) {
+                const auto identity="chatgpt:"+account.at("email").text();
+                if(!state.association.account_reference.empty() && state.association.account_reference!=identity) {
+                    invalidate_account(); throw std::runtime_error("Signed-in account changed; saved thread discarded. Reconnect to verify the new account.");
+                }
+                state.association.account_reference=identity; state.account_label=account.at("email").text(); state.auth=AgentAuth::signed_in;
+            } else { invalidate_account(); state.auth=AgentAuth::failed; state.error="This account type cannot be verified. Sign in with a ChatGPT account with an email address."; }
+        } else if(method=="account/login/start") {
+            if(!login_pending) return;
+            const auto login=required(result,"loginId");
+            if(login_cancelled) { clear_login(); state.error.clear(); request("account/login/cancel","{\"loginId\":"+quote(login)+'}'); state.auth=AgentAuth::signed_out; }
+            else if(result.at("type").text()!="chatgpt" || !valid_agent_auth_url(result.at("authUrl").text())) {
+                clear_login(); request("account/login/cancel","{\"loginId\":"+quote(login)+'}'); state.auth=AgentAuth::failed; state.error="Codex returned an unsupported sign-in address. No browser was opened.";
+            } else { state.login_id=login; state.auth_url=result.at("authUrl").text(); }
+        } else if(method=="account/login/cancel") {
+            // Cancellation acknowledgements cannot change a newer sign-in attempt.
         } else if(method=="thread/start" || method=="thread/resume") {
             auto thread=required(result.at("thread"),"id");
             if(result.at("cwd").text()!=pending_cwd) throw std::runtime_error("Provider cwd mismatch; no turn started");
@@ -132,7 +157,19 @@ struct AgentService::Impl {
     }
     void notification(const Value& msg) {
         const auto method=msg.at("method").text(); const auto& p=msg.at("params");
-        if(method=="account/updated" && state.connection==AgentConnection::ready) { fail("Provider account changed; reconnect explicitly to verify identity"); return; }
+        if(method=="account/login/completed") {
+            if(!login_pending || login_cancelled || state.login_id.empty() || p.at("loginId").text()!=state.login_id) return;
+            clear_login();
+            if(p.at("success").type==Value::Type::boolean && p.at("success").scalar=="true") { state.auth=AgentAuth::unknown; read_account(); }
+            else { state.auth=AgentAuth::failed; state.error="Sign-in did not complete. Try again."; }
+            changed(); return;
+        }
+        if(method=="account/updated" && state.connection==AgentConnection::ready) {
+            const bool was_active=active(state.conversation); invalidate_account();
+            if(was_active) { fail("Provider account changed during a task; thread discarded. Reconcile before retry."); return; }
+            if(!login_pending) read_account(); else state.auth=AgentAuth::signing_in;
+            changed(); return;
+        }
         if(method=="turn/started" || method=="turn/completed") {
             if(!scoped(p) || !active(state.conversation)) return;
             set_turn(p.at("turn")); changed(); return;
@@ -186,7 +223,7 @@ bool AgentService::connect(std::string_view version,std::string_view account) {
 }
 bool AgentService::start(const AgentStartRequest& r) {
     auto& x=*impl_; std::lock_guard lock(x.mutex);
-    if(!r.user_confirmed || x.state.connection!=AgentConnection::ready || active(x.state.conversation) || r.prompt.empty() || r.prompt.size()>65536 || !detail::valid_utf8(r.prompt) || !opaque(r.cwd,4096)) return false;
+    if(!r.user_confirmed || x.state.connection!=AgentConnection::ready || x.state.auth!=AgentAuth::signed_in || active(x.state.conversation) || r.prompt.empty() || r.prompt.size()>65536 || !detail::valid_utf8(r.prompt) || !opaque(r.cwd,4096)) return false;
     try {
         x.state.conversation=AgentConversation::starting; x.state.turn_id.clear(); x.state.error.clear(); x.state.diff.clear(); x.state.approvals.clear(); x.item_scopes.clear(); x.pending_prompt=r.prompt; x.pending_cwd=r.cwd;
         if(x.thread_loaded) x.turn_start();
@@ -194,6 +231,33 @@ bool AgentService::start(const AgentStartRequest& r) {
         else x.request("thread/resume","{\"excludeTurns\":true,\"threadId\":"+quote(x.state.association.thread_id)+",\"cwd\":"+quote(r.cwd)+",\"approvalPolicy\":\"untrusted\",\"approvalsReviewer\":\"user\",\"sandbox\":\"read-only\"}");
         x.changed(); return true;
     } catch(const std::exception& e) { x.fail(e.what()); return false; }
+}
+bool AgentService::login() {
+    auto& x=*impl_; std::lock_guard lock(x.mutex);
+    if(x.state.connection!=AgentConnection::ready || active(x.state.conversation) || x.login_pending || (x.state.auth!=AgentAuth::signed_out && x.state.auth!=AgentAuth::failed)) return false;
+    try { x.clear_login(); x.login_pending=true; x.state.auth=AgentAuth::signing_in; x.state.error.clear(); x.request("account/login/start","{\"type\":\"chatgpt\"}"); x.changed(); return true; }
+    catch(...) { x.fail("Could not begin sign-in."); return false; }
+}
+bool AgentService::cancel_login() {
+    auto& x=*impl_; std::lock_guard lock(x.mutex);
+    if(!x.login_pending || x.login_cancelled) return false;
+    try {
+        if(x.state.login_id.empty()) { x.login_cancelled=true; x.state.auth_url.clear(); x.state.error="Cancelling sign-in. Disconnect if Codex does not respond."; }
+        else { auto id=x.state.login_id; x.clear_login(); x.request("account/login/cancel","{\"loginId\":"+quote(id)+'}'); }
+        x.state.auth=AgentAuth::signed_out; x.changed(); return true;
+    } catch(...) { x.fail("Could not cancel sign-in. Disconnect to stop the provider."); return false; }
+}
+bool AgentService::refresh_account() {
+    auto& x=*impl_; std::lock_guard lock(x.mutex);
+    if(x.state.connection!=AgentConnection::ready || active(x.state.conversation) || x.login_pending) return false;
+    try { x.state.auth=AgentAuth::unknown; x.read_account(); x.changed(); return true; }
+    catch(...) { x.fail("Could not check account."); return false; }
+}
+bool valid_agent_auth_url(std::string_view url) {
+    if(url.size()>16384 || !url.starts_with("https://") || std::any_of(url.begin(),url.end(),[](unsigned char c){return c<=32 || c>=127 || c=='\\';})) return false;
+    url.remove_prefix(8); const auto end=url.find('/'); if(end==std::string_view::npos) return false;
+    const auto origin=url.substr(0,end);
+    return origin=="auth.openai.com" || origin=="chatgpt.com";
 }
 bool AgentService::interrupt() {
     auto& x=*impl_; std::lock_guard lock(x.mutex);

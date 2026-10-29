@@ -103,13 +103,17 @@ separate app-server adapter owns structured JSONL communication.
 
 The boundary is deliberate:
 
-- **Unavailable until configured.** StormTTY neither installs Codex nor starts it
-  when the panel opens. Choose Setup in the panel, enter an already installed executable
-  and signed-in ChatGPT account reference, then Save. Setup is machine-local
-  and inert; normal CLion launches need no flags.
-- **Connect is not Start.** Review connect → Connect authorizes the provider
-  process. Review start → Start task separately confirms the workspace and
-  execution scope before submitting a prompt.
+- **Finds your installation.** Opening the panel checks supported native and npm
+  installation locations and starts a status-only app-server. No path or email
+  entry is needed for the normal flow. Missing Codex? Open the official install
+  guide, install it yourself, then retry. Advanced path overrides remain optional.
+- **Guided sign-in.** Your existing ChatGPT sign-in is read from Codex. If signed
+  out, choose Sign in, then Continue in browser; Codex owns the official login
+  and credentials. StormTTY never asks for passwords, tokens or API keys.
+- **Connection is not a task.** Opening the panel or signing in never submits a
+  prompt. Review start → Start task separately confirms the workspace and
+  execution scope. An unknown Advanced executable requires Connect confirmation.
+  See the [onboarding contract](docs/codex-onboarding.md) for discovery and auth limits.
 - **A restricted first slice.** The service checks account identity and the
   returned policy before starting: read-only sandbox, network disabled, untrusted
   command approval policy and user review. Unsupported account identities or
