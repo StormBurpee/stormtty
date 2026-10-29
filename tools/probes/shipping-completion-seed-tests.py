@@ -8,11 +8,21 @@ class ResultTests(unittest.TestCase):
         lines=[]
         for i in range(1,7):
             lines.append(f'STARTUP_SAMPLE sample={i} fresh_state={int(i<=3)} state_prepare_ms=2 launch_to_zle_ms=1000')
-            if candidate:lines.append(f'SHIPPING_SAMPLE sample={i} adoption={1 if i<=3 else -1} verification_publish_ms=500 native_ack=1')
+            if candidate:
+                lines.append(f'SHIPPING_SAMPLE sample={i} adoption={1 if i<=3 else -1} verification_publish_ms=500 native_ack=1')
+                lines.append(f'SHIPPING_INITIALIZATION sample={i} prepare_ms=600 journal_create_write_ms=1 journal_flush_ms=2 native_ready_wait_ms=390 ready_cleanup_ms=3')
         return ('\n'.join(lines+[m.RESULT])+'\n').encode()
     def test_verification_not_double_counted(self):
         _,ok,metrics=m.sanitized(self.data(True),True);self.assertTrue(ok)
         self.assertEqual([r['total_ms'] for r in metrics],[1002]*6)
+    def test_timing_is_numeric_required_and_not_added_twice(self):
+        lines,ok,metrics=m.sanitized(self.data(True),True)
+        self.assertTrue(ok);self.assertEqual(metrics[0]['initialization']['journal_flush_ms'],2)
+        self.assertEqual(metrics[0]['total_ms'],1002)
+        broken=self.data(True).replace(b'journal_flush_ms=2',b'journal_flush_ms=secret/path',1)
+        lines,ok,_=m.sanitized(broken,True)
+        self.assertFalse(ok);self.assertNotIn('secret','\n'.join(lines))
+        self.assertFalse(m.sanitized(self.data(True).replace(b'native_ready_wait_ms=390',b'native_ready_wait_ms=-1',1),True)[1])
     def test_rejected_seed_not_a_speedup_sample(self):
         _,ok,_=m.sanitized(self.data(True).replace(b'adoption=1',b'adoption=0',1),True);self.assertFalse(ok)
     def test_native_ack_required(self):

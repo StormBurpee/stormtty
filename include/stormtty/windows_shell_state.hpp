@@ -5,6 +5,7 @@
 #include <functional>
 #include <cstdint>
 #include <memory>
+#include <atomic>
 
 namespace stormtty {
 class WindowsProcessInitialization;
@@ -29,10 +30,16 @@ bool publish_managed_completion_seed_at(const std::filesystem::path& local_app_d
 // ownership, no untrusted mutation grants. Construct once per bounded traversal.
 // Caller must retain the already-opened, non-reparse file/directory handle.
 std::function<bool(std::uintptr_t, bool)> managed_runtime_access_check();
+// Optional qualification-only counters. No paths or shell content; production
+// callers omit these and do not perform clock reads.
+struct ManagedShellInitializationTiming {
+    std::atomic<double> journal_create_write_ms{}, journal_flush_ms{};
+};
 // Inactive unless explicitly assigned to ProcessOptions::initialization.
 // The callback must be backed by a build-trusted seed identity; it is attempted
 // only for new completion state, under the cross-process initialization lease.
 std::shared_ptr<WindowsProcessInitialization> managed_shell_initialization_at(
-    const std::filesystem::path& local_app_data, std::function<bool()> adopt);
+    const std::filesystem::path& local_app_data, std::function<bool()> adopt,
+    std::shared_ptr<ManagedShellInitializationTiming> timing = {});
 } // namespace stormtty
 #endif

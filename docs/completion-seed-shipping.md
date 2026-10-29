@@ -229,3 +229,178 @@ translation units compiled for Windows x86-64 with Zig C++20 and
 `-Wall -Wextra -Werror`. This is cross-compilation, not Windows execution. Prior
 installed timing and lifecycle success do not qualify this new journal or its
 flush overhead. No default enablement or automatic recovery policy is included.
+
+## Successful staging/adoption run 40877538476 (journal still separate)
+
+Exact remote `8c9cc268be5c9b776551c5cfeaef9b32581dd59b`, tree
+`2afbaeb50395c8b2a2dc365bbe19da0c9be4d854`, **passed** the full native
+qualification. Native ACL regression verified concrete private grants on the
+renamed runtime root and inherited children, including unchanged collision ACLs.
+Build, owned no-op/header repair, identical portable installation, installed app
+smoke and existing lifecycle checks passed. All nine fresh candidates (three
+build, six installed) reached verifier stage 18 and adoption 1; all nine warm
+candidates skipped adoption. Thus the build-root rejection is resolved without
+changing runtime ACL policy, hash work or open-sharing guards.
+
+| Condition | Fresh min / median / max seconds | Warm min / median / max seconds |
+|---|---|---|
+| Build inbox seed | 1.883 / 1.929 / 1.955 | .711 / .736 / .739 |
+| Installed inbox baseline | 4.753 / 4.765 / 4.812 | .633 / .675 / .692 |
+| Installed inbox seed | 1.993 / 2.008 / 2.035 | .712 / .728 / .770 |
+| Installed packaged seed | 1.974 / 2.000 / 2.007 | .741 / .759 / .791 |
+| Installed packaged baseline | 5.083 / 5.191 / 5.491 | .633 / .643 / .654 |
+
+Totals include state preparation and launch-to-ZLE; full native verification/
+publication of 1.166–1.224 s is already inside launch. First-Tab, module, native
+acknowledgement and owned-child reap checks passed in every condition without
+timeout, truncation or cleanup error. Fresh means private cache, not controlled
+cold OS caches. Warm candidates remain slower; no warm gain is claimed.
+This default-OFF diagnostic is not shipping main behavior.
+
+Artifact `12898209727` archive SHA256 verified:
+`369e09bf41cbd19b67eb94a6502b96d60b1c6f5a9afe2972fb554bf2ee906999`.
+Application SHA256: `10f1df0823200cdb856dee74481c765f8350cd571b6d07554d94ceddd19867d0`.
+Seed identity SHA256: `d8eb4a87f8e23aa6f6dd10ac5cf255c3b3b941f944862c27ac0cf3f0a7cede5a`.
+
+This run predates the integrated durable journal. Sole-mutex-handle process death,
+retained-journal suppression and journal flush overhead still require their own
+native qualification. Successful older lifecycle checks do not establish those
+new guarantees. No activation, automatic uncertainty recovery or remote retry is
+implied by this result.
+
+## Successful durable-journal run 40879470794
+
+Exact remote `98418241f5d9032c5190bc88c1c99101d8e6f163`, tree
+`537148ee03f88a5e3964a196c1b52058d99c139c`, passed native preflight, build,
+repair, relocation, exact installation, application smoke and full lifecycle/
+startup matrix. The new gate explicitly emitted:
+
+```
+INITIALIZATION_JOURNAL code=0 process_exit_persistent=1 prior_journal_not_cleared=1
+```
+
+This establishes that the authored child exiting with the sole mutex handle
+leaves durable uncertainty: the next launch skips adoption and shared dump use,
+and its acknowledgement does not erase the previous journal. The probe also
+verified journal presence before adoption, custom-config preservation, successful
+owner acknowledgement, child-exit release, thread/process contention, abandoned
+owner handling and public-read/untrusted-write ACL policy. It is a process-exit
+fixture, not a hardware power-loss simulation or a guarantee against arbitrary
+same-user writers.
+
+All nine fresh seed samples reached verifier stage 18/adoption 1. All nine warm
+samples skipped adoption; all first-Tab/module/native-ack assertions passed and
+children exited/reaped without timeout, truncation or cleanup errors.
+
+| Condition | Fresh min / median / max seconds | Warm min / median / max seconds |
+|---|---|---|
+| Build inbox seed | 1.407 / 1.415 / 1.457 | .560 / .599 / .644 |
+| Installed inbox baseline | 3.271 / 3.319 / 3.394 | .501 / .507 / .516 |
+| Installed inbox seed | 1.415 / 1.470 / 1.521 | .576 / .581 / .592 |
+| Installed packaged seed | 1.340 / 1.346 / 1.436 | .566 / .585 / .601 |
+| Installed packaged baseline | 3.158 / 3.162 / 3.195 | .474 / .486 / .496 |
+
+Totals include state preparation plus launch-to-ZLE. Full seed verification/
+publication was .764–.823 s and is already inside launch; journal creation/write/
+flush also occurs inside launch. Warm seeded medians exceeded the same-run
+baseline by about **74 ms inbox / 99 ms packaged**. These are combined lifecycle,
+acknowledgement and journal costs, **not isolated FlushFileBuffers timings**.
+The run has no individual journal/flush timer or otherwise-identical no-journal
+candidate. Different runners' earlier results cannot isolate that cost. There
+is no warm speedup claim and no claim of cold OS filesystem caches.
+
+Artifact `12900460609` archive SHA256 verified:
+`55c4057e8d1ab9a78738f3d0b79807c407b8473ec9696738d17d6fd33e8230c8`.
+Application SHA256: `b36bf0ca1cc584a83336234dee9f3545cfc530c54ec66e8ffb3191001919ad4d`.
+Seed identity SHA256: `69124d0b429ff28b921e95936f2fb0e7f7871d58a8da5ab4dabbca413ab963fa`.
+
+The opt-in candidate now has native process-exit journal evidence and fresh-cache
+benefit. Default activation is still OFF and not authorized by qualification.
+Retained uncertainty intentionally persists; there is no automatic marker cleanup
+or product recovery flow. A separate promotion review must address recovery UX,
+combined warm overhead and exact integration evidence rather than silently
+weakening crash handling or reusing these timings as main-branch behavior.
+
+## Bounded warm-start follow-on: scans and measurement only
+
+Warm state does not prove completion initialization is read-only. Secure compinit
+and OMZ may update the text dump or compiled sibling after runtime/fpath changes.
+Therefore the private validation, cross-process lease, journal flush, compaudit,
+readiness acknowledgement and same-file journal deletion remain mandatory.
+The earlier no-journal successful run already showed warm median gaps of about
+53 ms inbox / 116 ms packaged; the later 74/99 ms cannot be assigned solely to
+journal flush. First-ZLE acknowledgement also launches a native helper process.
+No helper protocol change or durability shortcut is justified by current evidence.
+
+The narrow optimization short-circuits **only adoption-eligibility checks**:
+previous uncertainty or no adoption callback skips them; existing config skips
+completion/cache enumeration; the first dump entry stops the dump search and
+skips private-completion enumeration. Full security tree validation still runs.
+New native cases cover config, compiled config, dump and custom completion:
+adoption stays suppressed, a fresh journal still exists before readiness,
+readiness removes only that journal, and existing-file mtime remains unchanged.
+No speed claim is made for avoiding these small redundant scans.
+
+Qualification now requires a numeric `SHIPPING_INITIALIZATION` row for each seed
+sample. Counters are opt-in to the probe, not default production clock reads:
+
+- `prepare_ms`: real native gate preparation, including verification when fresh.
+- `journal_create_write_ms`: CreateFile plus writing the fixed journal marker.
+- `journal_flush_ms`: the actual FlushFileBuffers call and measurement overhead.
+- `native_ready_wait_ms`: end of probe preparation through controller receipt of
+  the native readiness signal; includes child creation, shell initialization,
+  first-ZLE helper process and dispatch, **not just kernel wait latency**.
+- `ready_cleanup_ms`: native ready handling, identity/ACL checks, journal deletion
+  and lease release.
+
+Journal timings are subintervals of preparation; verification is also inside
+preparation. All are inside existing launch-to-ZLE totals, never added twice.
+No paths, configuration, user text, or terminal content are logged. The parser
+requires all six ordered numeric timing rows and rejects malformed/missing rows.
+Actual timing and new native fixture execution await root publication.
+
+### Recovery options and promotion criteria
+
+**Safe action today:** keep using the terminal in uncached completion mode after
+an interrupted startup. Config, history and custom completion remain untouched;
+the marker is not an instruction to manually delete files. This protects safety
+but can retain slower startup, so it is not a complete recovery experience.
+
+**Recommended explicit recovery UI (design, not implemented):** offer “Rebuild
+managed completion cache” with an explanation that config/history/custom
+completions are preserved. Require all managed sessions across processes to close
+and exclusive recovery ownership; the existing initialization mutex alone is
+insufficient because it is released while older shells remain alive. Validate
+private state/ancestors/identities, then atomically **quarantine**, never silently
+delete, only the known versioned generated text/compiled dump and uncertainty
+records in a private owned recovery directory. Preserve all other files. Require
+a durable recovery transaction before the first rename; partial failure or crash
+must continue no-dump mode. Rebuild through ordinary audited compinit with eager
+first-Tab, and clear only the current recovery transaction after native readiness.
+Never source quarantined executable caches. Unknown/unverifiable objects or
+active sessions must block rebuilding, not trigger broad cleanup. Keep the backup
+available until explicit user-directed removal. This needs its own crash matrix
+and ownership/provenance design before implementation; matching a filename prefix
+alone is not proof of disposable app-generated content.
+
+Promotion should be a bounded decision, not endless experimentation:
+1. Qualify exact scan/timing source on both providers, preserve the sole-handle
+   crash and all adoption/first-Tab gates, and measure rather than assume the
+   source of warm overhead.
+2. Accept a documented fresh/warm tradeoff or make an evidence-based helper
+   optimization without reducing readiness trust or durability.
+3. Provide a truthful uncertainty notice and an explicitly authorized recovery
+   flow, with interrupted recovery retaining no-dump protection and every user
+   config/history/custom-completion byte preserved.
+4. Integrate into the current application factory and test existing/custom/warm
+   states, normal exits, early close, failed spawn and cross-process launches;
+   document unsupported concurrent older/nonparticipating clients.
+5. Root reviews default activation only after that exact native evidence. This
+   candidate does not flip defaults, erase markers or mutate remote state.
+
+Local follow-on validation: 57 Python/POSIX tests passed, with the separate Windows
+ACL reader test skipped on Linux. Lifecycle state/probe and shipping factory/
+startup-probe translation units compile for Windows x86-64 using C++20 with
+`-Wall -Wextra -Werror`; factory compilation uses an authored dummy anchor only
+for type checking, never native execution. New warm-preservation cases and actual
+numeric overhead values are still pending native qualification.

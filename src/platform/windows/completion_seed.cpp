@@ -4,8 +4,9 @@
 #include <chrono>
 namespace stormtty {
 CompletionSeedLaunch completion_seed_launch(const std::filesystem::path& local,
-                                            const std::filesystem::path& runtime) {
+                                            const std::filesystem::path& runtime, bool collect_initialization_timing) {
     auto observation=std::make_shared<CompletionSeedObservation>();
+    if(collect_initialization_timing)observation->initialization_timing=std::make_shared<ManagedShellInitializationTiming>();
     const auto state=local/L"StormTTY/managed-zsh-v1";
     const auto package=runtime.parent_path()/L"zsh-seed";
     auto gate=managed_shell_initialization_at(local,[local,runtime,state,package,observation] {
@@ -20,7 +21,7 @@ CompletionSeedLaunch completion_seed_launch(const std::filesystem::path& local,
             std::chrono::steady_clock::now()-start).count());
         observation->adoption.store(adopted?1:0);
         return adopted;
-    });
+    },observation->initialization_timing);
     return {std::move(gate),std::move(observation)};
 }
 }

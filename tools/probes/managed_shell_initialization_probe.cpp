@@ -154,5 +154,22 @@ int main(){unsigned stage{};try{
         check(checker(reinterpret_cast<std::uintptr_t>(file),false)==(permission==FILE_GENERIC_READ));
     }
     LocalFree(everyone);CloseHandle(file);
+    // Each already-existing form suppresses adoption without suppressing the
+    // journal. Ready clears only this launch's journal and preserves user data.
+    stage=7;
+    for(const auto name:{L"config.zsh",L"config.zsh.zwc",L"zcompdump-fixture",L"cache/completions/_custom"}) {
+        Fixture warm_fixture;
+        const auto warm_state=prepare_managed_shell_state_at(warm_fixture.root,false);check(static_cast<bool>(warm_state));
+        const auto existing=warm_state.directory/name;
+        fs::create_directories(existing.parent_path());std::ofstream(existing)<<"authored existing state\n";
+        const auto before=fs::last_write_time(existing);
+        unsigned warm_callbacks{};
+        auto warm=managed_shell_initialization_at(warm_fixture.root,[&]{++warm_callbacks;return false;});
+        env.clear();warm->prepare(env);
+        check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="0" && warm->ready_event()!=0 && warm_callbacks==0);
+        const auto journal=warm_state.directory/L"completion-init-in-progress";
+        check(fs::is_regular_file(journal));warm->ready();check(!fs::exists(journal));
+        check(fs::is_regular_file(existing) && fs::last_write_time(existing)==before);
+    }
     std::cout<<"INITIALIZATION_CHECKS code=0 contention=1 config_preserved=1 native_ack=1 child_exit_release=1 abandoned_owner_no_dump=1 public_runtime_acl=1 cross_process_contention=1\n";return 0;
 }catch(...){std::cout<<"INITIALIZATION_CHECKS code=1 stage="<<stage<<'\n';return 1;}}

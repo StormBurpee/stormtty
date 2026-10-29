@@ -83,16 +83,25 @@ add-zle-hook-widget line-init _stormtty_measure_ready
 class FixtureInitialization final : public WindowsProcessInitialization {
     std::shared_ptr<WindowsProcessInitialization> real_;
     fs::path config_;
+    Clock::time_point prepared_{};
 public:
     std::atomic<bool> acknowledged{};
+    std::atomic<double> prepare_ms{}, native_ready_wait_ms{}, ready_cleanup_ms{};
     FixtureInitialization(std::shared_ptr<WindowsProcessInitialization> real,fs::path config)
         :real_(std::move(real)),config_(std::move(config)){}
     void prepare(std::vector<ProcessEnvironmentEntry>& env) noexcept override {
+        const auto start=Clock::now();
         real_->prepare(env);
+        prepare_ms.store(milliseconds(start));
         if(!config_.empty()) {try{write(config_,config);}catch(...){}}
+        prepared_=Clock::now();
     }
     std::uintptr_t ready_event() const noexcept override {return real_->ready_event();}
-    void ready() noexcept override {real_->ready();acknowledged.store(true);}
+    void ready() noexcept override {
+        const auto start=Clock::now();
+        native_ready_wait_ms.store(std::chrono::duration<double,std::milli>(start-prepared_).count());
+        real_->ready();ready_cleanup_ms.store(milliseconds(start));acknowledged.store(true);
+    }
     void finished() noexcept override {real_->finished();}
 };
 #endif
@@ -224,7 +233,7 @@ void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture
     CompletionSeedLaunch shipping_plan;
     std::shared_ptr<FixtureInitialization> shipping_fixture;
     if(shipping) {
-        shipping_plan=completion_seed_launch(fixture.root,runtime);
+        shipping_plan=completion_seed_launch(fixture.root,runtime,true);
         shipping_fixture=std::make_shared<FixtureInitialization>(shipping_plan.initialization,
             fresh?state.directory/L"config.zsh":fs::path{});
         process.initialization=shipping_fixture;
@@ -245,6 +254,10 @@ void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture
     if(shipping) {
         const auto diagnostics=owned.value->diagnostics();
         require(diagnostics.windows_control && diagnostics.windows_control->initialization_wakes==1);
+        const auto timing=shipping_plan.observation->initialization_timing;require(static_cast<bool>(timing));
+        std::cout<<"SHIPPING_INITIALIZATION sample="<<sample<<" prepare_ms="<<shipping_fixture->prepare_ms.load()
+            <<" journal_create_write_ms="<<timing->journal_create_write_ms.load()<<" journal_flush_ms="<<timing->journal_flush_ms.load()
+            <<" native_ready_wait_ms="<<shipping_fixture->native_ready_wait_ms.load()<<" ready_cleanup_ms="<<shipping_fixture->ready_cleanup_ms.load()<<'\n';
         std::cout<<"SHIPPING_VERIFY sample="<<sample<<" stage="<<shipping_plan.observation->verification_stage.load()
             <<" object="<<shipping_plan.observation->verification_object.load()
             <<" win32_error="<<shipping_plan.observation->verification_win32_error.load()<<'\n';

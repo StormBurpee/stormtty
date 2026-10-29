@@ -18,19 +18,27 @@ seed=load('shipping_seed_inventory',HERE/'prepare-completion-seed.py')
 N=r'[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?'
 SAMPLE=re.compile(r'STARTUP_SAMPLE sample=([1-6]) fresh_state=([01]) state_prepare_ms=('+N+r') launch_to_zle_ms=('+N+r')')
 SHIPPING=re.compile(r'SHIPPING_SAMPLE sample=([1-6]) adoption=(-1|0|1) verification_publish_ms=('+N+r') native_ack=1')
+TIMING_NAMES=('prepare_ms','journal_create_write_ms','journal_flush_ms','native_ready_wait_ms','ready_cleanup_ms')
+TIMING=re.compile(r'SHIPPING_INITIALIZATION sample=([1-6]) '+ ' '.join(name+'=('+N+')' for name in TIMING_NAMES))
 RESULT='STARTUP_RESULT code=0 fresh_samples=3 warm_samples=3'
 
 def sanitized(data,candidate):
-    lines=[];samples=[];adoptions=[];metrics=[]
+    lines=[];samples=[];adoptions=[];metrics=[];timings=[]
     for line in data.decode('utf-8',errors='replace').splitlines():
         if m:=SAMPLE.fullmatch(line):
             lines.append(line);samples.append((int(m[1]),int(m[2])))
             metrics.append({'sample':int(m[1]),'fresh':bool(int(m[2])),'total_ms':float(m[3])+float(m[4])})
+        elif m:=TIMING.fullmatch(line):
+            lines.append(line);timings.append((int(m[1]),{name:float(m[i+2]) for i,name in enumerate(TIMING_NAMES)}))
         elif re.fullmatch(r'SHIPPING_VERIFY sample=[1-6] stage=[0-9]+ object=[0-9]+ win32_error=[0-9]+',line):lines.append(line)
         elif m:=SHIPPING.fullmatch(line):lines.append(line);adoptions.append((int(m[1]),int(m[2])))
         elif line==RESULT or re.fullmatch(r'STARTUP_RESULT code=1 sample=[0-9]+ stage=[0-9]+',line):lines.append(line)
     valid=(samples==[(i,int(i<=3)) for i in range(1,7)] and RESULT in lines and
-           adoptions==([(i,1 if i<=3 else -1) for i in range(1,7)] if candidate else []))
+           adoptions==([(i,1 if i<=3 else -1) for i in range(1,7)] if candidate else []) and
+           [i for i,_ in timings]==(list(range(1,7)) if candidate else []))
+    by_sample=dict(timings)
+    for row in metrics:
+        if row['sample'] in by_sample:row['initialization']=by_sample[row['sample']]
     # Verification is INSIDE launch_to_zle_ms in this shipping factory. Never add twice.
     return lines,valid,metrics
 

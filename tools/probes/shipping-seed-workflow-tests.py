@@ -17,6 +17,14 @@ class WorkflowTests(unittest.TestCase):
         cmake=(ROOT/'cmake/StormTTYDeveloperShell.cmake').read_text()
         self.assertIn('serialized initialization" OFF)',cmake)
         self.assertIn('add_dependencies(stormtty_settings_services stormtty_completion_seed_package)',cmake)
+    def test_initialization_timing_is_probe_opt_in(self):
+        header=(ROOT/'include/stormtty/windows_completion_seed.hpp').read_text()
+        self.assertIn('bool collect_initialization_timing = false',header)
+        probe=(ROOT/'tools/probes/managed_shell_startup_probe.cpp').read_text()
+        self.assertIn('completion_seed_launch(fixture.root,runtime,true)',probe)
+        source=(ROOT/'src/platform/windows/shell_state.cpp').read_text()
+        self.assertIn('require(FlushFileBuffers(journal.value))',source)
+        self.assertIn('timing_?Clock::now():Clock::time_point{}',source)
     def test_no_environment_identity_anchor(self):
         s=(ROOT/'src/platform/windows/completion_seed.cpp').read_text()
         self.assertIn('build_seed::identity_sha256',s)

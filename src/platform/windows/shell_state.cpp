@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+#include <chrono>
 
 namespace stormtty {
 namespace {
@@ -153,6 +154,7 @@ namespace {
 class Initialization final : public WindowsProcessInitialization {
     std::filesystem::path root_;
     std::function<bool()> adopt_;
+    std::shared_ptr<ManagedShellInitializationTiming> timing_;
     std::unique_ptr<Handle> mutex_, event_;
     std::filesystem::path journal_path_;
     BY_HANDLE_FILE_INFORMATION journal_identity_{};
@@ -181,7 +183,8 @@ class Initialization final : public WindowsProcessInitialization {
         auto text=path.generic_u8string();return {reinterpret_cast<const char*>(text.data()),text.size()};
     }
 public:
-    Initialization(std::filesystem::path root,std::function<bool()> adopt):root_(std::move(root)),adopt_(std::move(adopt)){}
+    Initialization(std::filesystem::path root,std::function<bool()> adopt,std::shared_ptr<ManagedShellInitializationTiming> timing)
+        :root_(std::move(root)),adopt_(std::move(adopt)),timing_(std::move(timing)){}
     // Before prepare, no mutex is owned. Afterwards only the controller owns
     // this object until finished, including child-launch failures.
     ~Initialization() override { release(); }
@@ -220,13 +223,18 @@ public:
             const auto journal_path=state.directory/L"completion-init-in-progress";
             const bool previous=std::filesystem::exists(journal_path) || std::filesystem::exists(uncertain);
             if(!previous) {
+                using Clock=std::chrono::steady_clock;
+                const auto journal_start=timing_?Clock::now():Clock::time_point{};
                 Handle journal(CreateFileW(native(journal_path).c_str(),GENERIC_WRITE,
                     FILE_SHARE_READ,&attributes,CREATE_NEW,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
                 require(journal.value!=INVALID_HANDLE_VALUE);
                 constexpr char active[]="STORMTTY_INITIALIZATION_V1\n";
                 DWORD written{};
                 require(WriteFile(journal.value,active,sizeof(active)-1,&written,nullptr) && written==sizeof(active)-1);
+                const auto flush_start=timing_?Clock::now():Clock::time_point{};
+                if(timing_)timing_->journal_create_write_ms.store(std::chrono::duration<double,std::milli>(flush_start-journal_start).count());
                 require(FlushFileBuffers(journal.value));
+                if(timing_)timing_->journal_flush_ms.store(std::chrono::duration<double,std::milli>(Clock::now()-flush_start).count());
                 require(GetFileInformationByHandle(journal.value,&journal_identity_));
                 journal_path_=journal_path;journal_created_=true;
             }
@@ -237,14 +245,20 @@ public:
             event_=std::make_unique<Handle>(CreateEventW(&attributes,TRUE,FALSE,event_name.c_str()));
             require(event_->value && GetLastError()!=ERROR_ALREADY_EXISTS);
             kernel_security(event_->value,security);
-            bool fresh=!std::filesystem::exists(state.directory/L"config.zsh") &&
-                !std::filesystem::exists(state.directory/L"config.zsh.zwc");
-            for(const auto& entry:std::filesystem::directory_iterator(state.directory))
-                if(entry.path().filename().wstring().starts_with(L"zcompdump-"))fresh=false;
-            const auto completions=state.directory/L"cache/completions";
-            if(std::filesystem::exists(completions) && !std::filesystem::is_empty(completions))fresh=false;
             if(!previous) {
-                if(fresh && adopt_) (void)adopt_(); // Failure remains ordinary secure initialization.
+                // These are adoption-eligibility scans, not security validation.
+                // State ACL/tree validation, lease and flushed journal above are
+                // mandatory even for warm shells: compinit may refresh a dump.
+                if(adopt_) {
+                    bool fresh=!std::filesystem::exists(state.directory/L"config.zsh") &&
+                        !std::filesystem::exists(state.directory/L"config.zsh.zwc");
+                    if(fresh) for(const auto& entry:std::filesystem::directory_iterator(state.directory)) {
+                        if(entry.path().filename().wstring().starts_with(L"zcompdump-")) {fresh=false;break;}
+                    }
+                    const auto completions=state.directory/L"cache/completions";
+                    if(fresh && std::filesystem::exists(completions) && !std::filesystem::is_empty(completions))fresh=false;
+                    if(fresh) (void)adopt_(); // Failure remains ordinary secure initialization.
+                }
                 environment.push_back({"STORMTTY_NATIVE_ZSH_NO_DUMP","0"});
             }
             environment.push_back({"STORMTTY_NATIVE_ZSH_INIT_EVENT",std::string(event_name.begin(),event_name.end())});
@@ -284,8 +298,8 @@ std::function<bool(std::uintptr_t, bool)> managed_runtime_access_check() {
     };
 }
 std::shared_ptr<WindowsProcessInitialization> managed_shell_initialization_at(
-    const std::filesystem::path& root,std::function<bool()> adopt) {
-    return std::make_shared<Initialization>(root,std::move(adopt));
+    const std::filesystem::path& root,std::function<bool()> adopt,std::shared_ptr<ManagedShellInitializationTiming> timing) {
+    return std::make_shared<Initialization>(root,std::move(adopt),std::move(timing));
 }
 
 ManagedShellState prepare_managed_shell_state_at(const std::filesystem::path& local_app_data, bool empty_home) noexcept {
