@@ -1,4 +1,4 @@
-# Portability correction only: preserve locked LF bytes and Windows path test spelling.
+# Harness correction only: native Ninja path parsing and early build-contract gate.
 # Separate uninstrumented real-app phase; root review required before publication.
 # No production/default changes. Unsupported paths remain INCONCLUSIVE.
 name: Private MSYS uninstrumented partial-read real-app qualification
@@ -80,6 +80,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-partial-app --target paste_input_probe bundled_shell_probe stormtty qualification_input_evidence_tests partial_app_managed_probe --parallel 2 2>&1 | Tee-Object "$env:EXPERIMENT_ROOT/evidence/app-build.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/msys-runtime-experiment/partial-app/app-layout.py --verify-build --build build-partial-app --original "$env:EXPERIMENT_ROOT/original" --build-evidence "$env:EXPERIMENT_ROOT/evidence/partial-app-build-contract.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build-partial-app --output-on-failure -R "^qualification_input_evidence_tests$"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/probes/check_input_evidence_isolation.py build-partial-app
@@ -155,7 +157,7 @@ jobs:
             python tools/probes/msys-runtime-experiment/partial-app/stage.py "$env:EXPERIMENT_ROOT/original" "$env:EXPERIMENT_ROOT/$variant-build" "$env:EXPERIMENT_ROOT/$variant"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          python tools/probes/msys-runtime-experiment/partial-app/app-layout.py --build build-partial-app --original "$env:EXPERIMENT_ROOT/original" --stock "$env:EXPERIMENT_ROOT/stock" --copied "$env:EXPERIMENT_ROOT/copied" --destination "$env:EXPERIMENT_ROOT/apps"
+          python tools/probes/msys-runtime-experiment/partial-app/app-layout.py --build build-partial-app --original "$env:EXPERIMENT_ROOT/original" --stock "$env:EXPERIMENT_ROOT/stock" --copied "$env:EXPERIMENT_ROOT/copied" --destination "$env:EXPERIMENT_ROOT/apps" --build-evidence "$env:EXPERIMENT_ROOT/evidence/partial-app-build-contract.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item "$env:EXPERIMENT_ROOT/apps/app-copies.json" "$env:EXPERIMENT_ROOT/evidence/app-copies.json"
       - name: Fixed unchanged raw paste resize matrix (18 launches)

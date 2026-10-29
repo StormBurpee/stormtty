@@ -17,6 +17,13 @@ build is reused identically across all variants. Selected CMake cache fields and
 the actual Windows app-main Ninja compile block are retained and checked for
 STORMTTY_HAS_BUNDLED_SHELL_RUNTIME=1 and official-only configured source, with normal bundled-shell
 support ON, seed feature OFF, normal input-evidence isolation checked.
+The same build contract runs immediately after the native app build, before
+either runtime source build, and again during staging. Ninja object/source paths
+accept native MSVC backslashes and GNU slashes without changing or normalizing
+the hashed raw bytes. Exactly one current-app source/object/compiler rule and
+one enabled discovery define are required; ambiguity and instrumentation fail
+closed. A bounded relevant-rule/selected-cache report is retained on success or
+failure; full Ninja/cache/environment contents are not uploaded.
 
 ## Three runtime variants; two console providers
 

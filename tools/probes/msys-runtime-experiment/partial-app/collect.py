@@ -7,6 +7,7 @@ TOTAL=128*1024*1024;LOG=1024*1024
 PROVENANCE=('variant.txt','compiler-mode.txt','compiler-packages.txt','selected-toolchain.txt','system-toolchain.txt','pacman-before.txt','pacman-after.txt','configured-cxx.txt','cached-toolchain-packages.sha256.txt','hashes.txt','package-hashes.txt','disk-before.txt','disk-after.txt','makeinfo.txt','console-before.cc','console-after.cc','console.cc.before','console.cc.after','termios.cc.before','termios.cc.after','fhandler.h.before','fhandler.h.after','PKGBUILD','makepkg.conf','0007-preserve-copied-on-signal.patch','0000-utils-const-compat.patch','all-packaging-and-experimental.patch','dll-exports.txt','strace-before.cc','strace-after.cc','cygcheck-before.cc','cygcheck-after.cc','dump_setup-before.cc','dump_setup-after.cc')
 def candidates():
  names=[(pathlib.Path('evidence')/n,8*LOG) for n in ('commit.txt','app-plan.json','source-identity.txt','gcc15-preflight.log','stock-build.log','copied-build.log','app-build.log','app-copies.json','upstream-buildinfo.txt')]
+ names.append((pathlib.Path('evidence/partial-app-build-contract.json'),256*1024))
  names += [(pathlib.Path(v+'-build/provenance')/n,8*LOG) for v in ('stock','copied') for n in PROVENANCE]
  for kind in ('raw','managed','settings'):
   names.append((pathlib.Path('evidence')/kind/'results.json',4*LOG))
