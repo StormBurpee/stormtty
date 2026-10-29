@@ -2,6 +2,7 @@
 #include "stormtty/ui_colors.hpp"
 #include "stormtty/pane_context.hpp"
 #include "stormtty/command_watch.hpp"
+#include "stormtty/previous_terminal.hpp"
 #include "stormtty/smoke_commands.hpp"
 #include "stormtty/settings_reload.hpp"
 #include "stormtty/workspace_save_signal.hpp"
@@ -367,6 +368,11 @@ private:
     Session* session_for(PaneId) const;
     SessionId new_session(std::string profile_id = {});
     WatchIdentity watch_identity(SessionId) const;
+    PreviousTerminal previous_terminal_;
+    void commit_terminal_selection();
+    struct PreviousTarget { PreviousTerminalState state{PreviousTerminalState::none}; ProjectWorkspaceId project{}; PaneId pane{}; std::string description; };
+    PreviousTarget previous_terminal_target() const;
+    void return_to_previous_terminal();
     bool watch_unread(SessionId) const;
     std::string watch_label(SessionId) const;
     bool observe_watch(SessionId,const SessionInfo&);
@@ -431,6 +437,8 @@ private:
     bool smoke_palette_evidence(SessionId);
     bool smoke_find_progress();
     bool smoke_navigator_evidence();
+    bool smoke_previous_terminal_evidence();
+    bool smoke_previous_terminal_done_{},smoke_previous_terminal_running_{};
     bool smoke_palette_input_progress();
     bool smoke_context_progress();
     bool smoke_watch_progress();
@@ -596,7 +604,7 @@ private:
     void choose_project_folder();
     void activate_project(ProjectWorkspaceId);
     void close_project(ProjectWorkspaceId, bool approved = false);
-    void reset_project_view();
+    void reset_project_view(bool preserve_palette_motion=false);
     std::string directory_context() const;
     Rect workspace_viewport() const { return navigation_.viewport; }
     bool workspace_chrome_contains(Point p) const {
@@ -1312,6 +1320,42 @@ void NativeWindow::answer_modal(ModalDecision decision) {
 WatchIdentity NativeWindow::watch_identity(SessionId id) const {
     const auto found=watch_actors_.find(id);return {watch_host_,id.value,found==watch_actors_.end()?0:found->second};
 }
+void NativeWindow::commit_terminal_selection() {
+    const auto* pane=workspace().pane(workspace().active_pane());
+    if(pane && sessions_.contains(pane->session))previous_terminal_.commit(watch_identity(pane->session));
+}
+NativeWindow::PreviousTarget NativeWindow::previous_terminal_target() const {
+    const auto target=previous_terminal_.previous();
+    if(!target)return {};
+    const SessionId session{target.session};
+    // Resolve current placement afresh; moving/renaming never replaces identity.
+    for(const auto& project:projects_.entries()) {
+        for(const auto& parked:project.parked_sessions)if(parked.session==session)
+            return {PreviousTerminalState::parked,{},{},{}};
+        for(const auto& [id,pane]:project.workspace.state().panes)if(pane.session==session) {
+            if(!sessions_.contains(session))return {PreviousTerminalState::dormant,{},{},{}};
+            if(watch_identity(session)!=target)return {PreviousTerminalState::stale,{},{},{}};
+            const auto tab=project.workspace.tab_of(id);
+            const auto* item=tab?project.workspace.tab(*tab):nullptr;
+            const auto title=background_session_title(item?item->title:std::string{},sessions_.at(session)->info().title,"Terminal");
+            return {PreviousTerminalState::available,project.id,id,
+                "Return to · "+pane_context_text(agent_display_text(project.metadata.name,256))+" · "+pane_context_text(agent_display_text(title,256))};
+        }
+    }
+    return {PreviousTerminalState::missing,{},{},{}};
+}
+void NativeWindow::return_to_previous_terminal() {
+    const auto target=previous_terminal_target();
+    const auto available=previous_terminal_availability(target.state);
+    if(!available.enabled){show_error(available.reason);return;}
+    auto* project=projects_.workspace(target.project);
+    // No restore, launch, fallback, watch acknowledgment, or terminal input.
+    const auto status=projects_.activate(target.project);
+    if(!status){show_error(status.error);return;}
+    if(const auto tab=project->tab_of(target.pane))project->activate_tab(*tab);
+    project->focus(target.pane);
+    workspace_model_changed();reset_project_view(true);
+}
 bool NativeWindow::watch_unread(SessionId id) const {
     const auto found=watches_.find(id);return found!=watches_.end()&&found->second.identity()==watch_identity(id)&&found->second.unread();
 }
@@ -1645,6 +1689,9 @@ void NativeWindow::load_workspaces() {
     else restored_workspaces_=true;
 }
 void NativeWindow::workspace_model_changed() {
+    // Model commits only: navigation previews and input owners never call this
+    // with a different selection. Metadata/geometry changes deduplicate.
+    commit_terminal_selection();
     if(navigator_open_)refresh_navigator();
     if (options_.smoke_test || !workspace_snapshot_) return;
     workspace_save_signal_.mark_changed();
@@ -1723,6 +1770,7 @@ void NativeWindow::launch_restored_project(bool retry_failed) {
             workspace().bind_session(id,actor);
         } catch (const std::exception& error) { show_error(error.what()); break; }
     }
+    commit_terminal_selection();
 }
 void NativeWindow::edit_workspace_text(std::string hint,std::string value,std::function<Status(std::string)> action) {
     acquire_text_overlay_input();
@@ -1853,11 +1901,11 @@ void NativeWindow::workspace_menu(Point point, ProjectWorkspaceId target) {
     actions["workspace.restore"]=[this]{workspace_library_.restore_on_launch=!workspace_library_.restore_on_launch;workspace_model_changed();changed();};
     open_menu(std::move(items),point,std::move(actions),true);
 }
-void NativeWindow::reset_project_view() {
+void NativeWindow::reset_project_view(bool preserve_palette_motion) {
     // Local Pane/Tab/Node identifiers can collide across projects. Actor IDs are
     // host-global; renderer identity is SessionId and all local view caches reset.
     hover_transitions_.clear(); tab_transitions_.clear(); pane_focus_.clear();
-    closing_palette_primitives_.clear(); closing_palette_texts_.clear(); palette_transition_.finish();
+    if(!preserve_palette_motion) {closing_palette_primitives_.clear(); closing_palette_texts_.clear(); palette_transition_.finish();}
     hover_={-1,-1}; palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false;
     text_input_.reset(); selection_pane_={}; drop_preview_.reset(); force_redraw_=true;
     if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
@@ -2260,6 +2308,9 @@ void NativeWindow::settings_input_changed() {
 }
 CommandContext NativeWindow::command_context() const {
     CommandContext context;
+    context.supports_previous_terminal=true;
+    const auto previous=previous_terminal_availability(previous_terminal_target().state);
+    context.previous_terminal_available=previous.enabled;context.previous_terminal_reason=previous.reason;
     context.supports_settings_reload=true; context.supports_pane_context=true;context.supports_command_watch=true;
     context.supports_agent_panel=ai_enabled_;
     context.supports_background_sessions=true; context.parked_sessions=projects_.active()->parked_sessions.size();
@@ -2459,9 +2510,16 @@ std::vector<NativeWindow::PaletteEntry> NativeWindow::palette_commands() const {
         return result;
     }
 
-    if (!palette_background_only_) for (const auto& command:command_registry())
-        if ((ai_enabled_||command.id!="agent.toggle")) if (const auto score=command_search_score(query_,command.label,command.description))
-            result.push_back({std::string(command.id),std::string(command.label),std::string(command.description),{},*score});
+    if (!palette_background_only_) for (const auto& command:command_registry()) {
+        std::string description(command.description);
+        if(command.id=="terminal.previous") {
+            const auto target=previous_terminal_target();
+            if(target.state==PreviousTerminalState::available)description=target.description;
+        }
+        const auto search_description=command.id=="terminal.previous"?std::string(command.description)+" "+description:description;
+        if ((ai_enabled_||command.id!="agent.toggle")) if (const auto score=command_search_score(query_,command.label,search_description))
+            result.push_back({std::string(command.id),std::string(command.label),description,{},*score});
+    }
     // Only the current workspace: restoration must never silently switch projects.
     // Titles are presentation/search data, never interpreted as commands or IDs.
     for (const auto& parked:projects_.active()->parked_sessions) {
@@ -2539,6 +2597,7 @@ void NativeWindow::dispatch(std::string_view command) {
     if(navigator_open_)close_navigator();
     if (command == "terminal.find") { open_find(); return; }
     if (find_session_) close_find();
+    if (command == "terminal.previous") { return_to_previous_terminal(); return; }
     if (command == "settings.reload") { reload_settings(); return; }
     if (command == "settings.open") { open_settings(); return; }
     if (command == "app.command_palette") { toggle_palette(); return; }
@@ -4180,6 +4239,10 @@ bool NativeWindow::smoke_watch_progress() {
                 SetWindowPos(hwnd_,nullptr,0,0,original.right-original.left,original.bottom-original.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
                 activate(smoke_watch_original_);
                 if(!watch_unread(smoke_watch_session_))return fail("Watch indicator capture acknowledged result.");
+                dispatch("terminal.previous");
+                if(active_session()!=actor.get()||!watch_unread(smoke_watch_session_))return fail("Return acknowledged a real unread watched result or lost its actor.");
+                dispatch("terminal.previous");
+                if(workspace().active_pane()!=smoke_watch_original_||!watch_unread(smoke_watch_session_))return fail("Return from watched result failed to preserve work and unread state.");
             }
             if(smoke_watch_cycle_==1){projects_.activate(smoke_watch_project_);reset_project_view();}
             if(smoke_watch_cycle_==2) {
@@ -4382,6 +4445,98 @@ bool NativeWindow::smoke_navigator_evidence() {
     if(!rejected||active_session()!=original_actor||sessions_.size()!=actors)return fail("Navigator accepted a removed session identity.");
     close_navigator();smoke_navigator_done_=true;
     std::fputs("Native navigator smoke: metadata-only filtering, preview without switching, narrow two-stage lists, empty result, Escape focus, zero frontend input, stable cross-workspace actor commit and stale identity rejection verified.\n",stderr);return true;
+}
+bool NativeWindow::smoke_previous_terminal_evidence() {
+    if(smoke_previous_terminal_done_)return true;
+    // update_sessions deliberately exercises output invariance below, and ends
+    // by calling smoke_progress. Block nested fixture execution, not that update.
+    if(smoke_previous_terminal_running_)return false;
+    smoke_previous_terminal_running_=true;
+    struct Reset {bool& running;~Reset(){running=false;}} reset{smoke_previous_terminal_running_};
+    const auto original_project=projects_.active_id();
+    const auto saved_history=previous_terminal_;
+    const auto original_pane=workspace().active_pane();
+    const auto a=workspace().pane(original_pane)->session;
+    const auto other_project=original_project==smoke_secondary_project_?smoke_primary_project_:smoke_secondary_project_;
+    auto* other=projects_.workspace(other_project);
+    const auto other_pane=other->active_pane();const auto b=other->pane(other_pane)->session;
+    const auto actor_a=sessions_.at(a),actor_b=sessions_.at(b);
+    const auto identity_a=watch_identity(a),identity_b=watch_identity(b);
+    const auto actors=sessions_.size(),keys=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
+    const auto before_a=actor_a->info(),before_b=actor_b->info();
+    const auto fail=[&](std::string_view error){smoke_finish(error);return false;};
+    const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_.reset();};
+    const auto key=[&](WPARAM vk){MSG message{};message.hwnd=hwnd_;message.message=WM_KEYDOWN;message.wParam=vk;key_message(message);message.message=WM_KEYUP;key_message(message);};
+    previous_terminal_=PreviousTerminal{};commit_terminal_selection();
+    activate_project(other_project);
+    if(previous_terminal_.previous()!=identity_a||previous_terminal_.current()!=identity_b)return fail("Return history missed committed cross-workspace selection.");
+    // Overlays, preview/Escape, output refresh, and activation do not navigate.
+    open_navigator();navigator_focus_=1;key(VK_DOWN);key(VK_ESCAPE);
+    toggle_palette();key(VK_ESCAPE);open_find();close_find();
+    const bool was_active=active_;active_=false;changed();active_=was_active;changed();update_sessions();
+    if(previous_terminal_.previous()!=identity_a||previous_terminal_.current()!=identity_b)return fail("Transient focus or preview polluted return history.");
+    toggle_palette();query_="return";palette_index_=0;changed();
+    const auto entries=palette_commands();
+    const auto entry=std::find_if(entries.begin(),entries.end(),[](const auto& item){return item.id=="terminal.previous";});
+    if(entry==entries.end()||!palette_availability(*entry).enabled||entry->description!=previous_terminal_target().description)return fail("Return Commands destination is absent or stale.");
+    palette_index_=static_cast<std::size_t>(entry-entries.begin());capture(L"previous-terminal-normal");
+    RECT bounds{};GetWindowRect(hwnd_,&bounds);SetWindowPos(hwnd_,nullptr,0,0,static_cast<int>(480*scale_),static_cast<int>(480*scale_),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    capture(L"previous-terminal-narrow");
+    SetWindowPos(hwnd_,nullptr,0,0,bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    key(VK_RETURN);
+    if(palette_open_||active_session()!=actor_a.get()||focused_session_!=a||previous_terminal_.previous()!=identity_b)return fail("Return did not immediately focus original actor without overlay input.");
+    dispatch("terminal.previous");
+    if(active_session()!=actor_b.get()||focused_session_!=b||previous_terminal_.previous()!=identity_a)return fail("Repeated Return did not toggle to exact second actor.");
+    // Narrow model-only fixtures preserve all actors and restore placement below.
+    // They never invoke the destructive host close/park/retirement paths.
+    auto* original=projects_.workspace(original_project);
+    const auto original_model=*original,other_model=*other;
+    const auto parked=projects_.park({original_project,original_pane});
+    if(!parked||previous_terminal_target().state!=PreviousTerminalState::parked)return fail("Return failed to reject parked actor.");
+    return_to_previous_terminal();if(active_session()!=actor_b.get())return fail("Return restored a parked actor.");
+    if(!projects_.reattach_to_new_tab({original_project,a}))return fail("Return fixture could not restore its original model.");
+    *original=original_model;
+    original->close_pane(original_pane);
+    if(previous_terminal_target().state!=PreviousTerminalState::missing)return fail("Return failed to reject closed placement.");
+    return_to_previous_terminal();if(active_session()!=actor_b.get())return fail("Return fell back from a closed target.");
+    *original=original_model;
+    sessions_.erase(a);const auto dormant=previous_terminal_target().state;sessions_.emplace(a,actor_a);
+    if(dormant!=PreviousTerminalState::dormant)return fail("Return accepted a dormant target without retained actor.");
+    const auto token=watch_actors_.at(a);watch_actors_.at(a)=token+1;
+    const auto stale=previous_terminal_target().state;return_to_previous_terminal();watch_actors_.at(a)=token;
+    if(stale!=PreviousTerminalState::stale||active_session()!=actor_b.get())return fail("Return accepted a recycled actor incarnation.");
+    notice_.clear();
+    // Move B into A's split with no spawn, then into a new tab. Identity, not
+    // local pane/tab position or renamed metadata, must define the destination.
+    other->close_pane(other_pane);
+    const auto split=original->split(original_pane,Direction::right,b,"default");
+    if(!split)return fail("Return split fixture could not attach retained actor.");
+    projects_.activate(original_project);original->focus(*split.value);workspace_model_changed();reset_project_view();
+    dispatch("terminal.previous");if(active_session()!=actor_a.get())return fail("Return failed across split panes.");
+    dispatch("terminal.previous");if(active_session()!=actor_b.get())return fail("Return failed repeated split toggle.");
+    const auto tab=original->move_pane_to_new_tab(*split.value,"Return destination renamed");
+    if(!tab)return fail("Return tab fixture could not move retained actor.");
+    workspace_model_changed();changed(true);
+    if(previous_terminal_.previous()!=identity_a)return fail("Pane move or rename rewrote history.");
+    dispatch("terminal.previous");dispatch("terminal.previous");
+    if(active_session()!=actor_b.get()||workspace().active_tab()!=*tab.value)return fail("Return failed across moved tab identity.");
+    *original=original_model;*other=other_model;
+    projects_.activate(original_project);previous_terminal_=saved_history;reset_project_view();
+    if(sessions_.size()!=actors||sessions_.at(a)!=actor_a||sessions_.at(b)!=actor_b||watch_identity(a)!=identity_a||watch_identity(b)!=identity_b||
+       smoke_terminal_input_submissions_!=keys||smoke_terminal_mouse_submissions_!=mouse||focused_session_!=a)
+        return fail("Return changed actor ownership, leaked frontend input, or failed immediate focus.");
+    const auto after_a=actor_a->info(),after_b=actor_b->info();
+    for(const auto& [before,after]:{std::pair{before_a,after_a},std::pair{before_b,after_b}}) {
+        const auto frontend=after.sent.frontend()-before.sent.frontend();
+        const auto focus=after.sent.focus_bytes-before.sent.focus_bytes;
+        const auto protocol=after.sent.protocol_bytes-before.sent.protocol_bytes;
+        if(frontend||before.sent.total()!=before.bytes_sent||after.sent.total()!=after.bytes_sent||after.bytes_sent-before.bytes_sent!=frontend+focus+protocol)
+            return fail("Return transport contains frontend or unattributed bytes.");
+        std::fprintf(stderr,"Native previous-terminal write origins: frontend=%llu focus=%llu protocol=%llu\n",
+            static_cast<unsigned long long>(frontend),static_cast<unsigned long long>(focus),static_cast<unsigned long long>(protocol));
+    }
+    std::fputs("Native previous-terminal smoke: committed cross-workspace/split/tab toggles, rename/move identity, preview/Escape focus invariants, parked/closed/dormant/stale rejection; zero frontend key/mouse input; automatic focus/protocol writes separately attributed.\n",stderr);
+    smoke_previous_terminal_done_=true;return true;
 }
 bool NativeWindow::smoke_find_progress() {
     if(smoke_find_stage_==7)return true;
@@ -4707,6 +4862,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if (options_.smoke_layout && !smoke_watch_progress()) return;
     if (options_.smoke_projects && !smoke_find_progress()) return;
     if (options_.smoke_projects && !smoke_navigator_evidence()) return;
+    if (options_.smoke_projects && !smoke_previous_terminal_evidence()) return;
     if (options_.smoke_agent) {
         if (!smoke_agent_stage_) {
             toggle_agent_panel();
@@ -5407,6 +5563,16 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!active_session() || active_session()!=actor.get() || !projects_.active()->parked_sessions.empty() || layout_.panes.empty() || parked_attention_.contains(smoke_parked_session_)) {
                 smoke_finish("Restore did not reattach the same exited actor and latest frame."); return;
             }
+            const auto return_actors=sessions_.size(),return_input=smoke_terminal_input_submissions_;
+            dispatch("terminal.previous");
+            if(projects_.active_id()!=smoke_secondary_project_||!active_session()||!active_session()->process_finished()) {
+                smoke_finish("Return did not accept the retained exited terminal in the other workspace.");return;
+            }
+            dispatch("terminal.previous");
+            if(active_session()!=actor.get()||focused_session_!=smoke_parked_session_||sessions_.size()!=return_actors||smoke_terminal_input_submissions_!=return_input) {
+                smoke_finish("Return replaced or submitted input to a retained exited actor.");return;
+            }
+            std::fputs("Native previous-terminal retained exit: same exited actors navigable in both directions without spawn, input or restore.\n",stderr);
             notice_.clear(); smoke_background_restored_=true; smoke_marker_presented_=false; changed(true); return;
         }
         if (!smoke_frame_ready()) { smoke_finish("Controlled smoke shell exited without its expected output marker."); return; }

@@ -27,6 +27,8 @@ struct CommandContext {
     bool has_selection{}, clipboard_has_text{}, zoomed{}, session_running{};
     std::size_t total_panes{}; // optional exact workspace count; 0 falls back to panes
     bool supports_workspace_navigator{};
+    bool supports_previous_terminal{}, previous_terminal_available{};
+    std::string_view previous_terminal_reason{};
     bool supports_pane_context{};
     bool supports_command_watch{},watch_can_arm{},watch_waiting{},watch_unread{};
     bool supports_project_workspaces{}; // Hosts must opt in, not silently no-op.
