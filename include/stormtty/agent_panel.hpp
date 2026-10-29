@@ -1,8 +1,10 @@
 #pragma once
 #include "stormtty/config.hpp"
 #include "stormtty/agent_service.hpp"
+#include "stormtty/agent_provider_settings.hpp"
 #include "stormtty/renderer.hpp"
 #include <map>
+#include <functional>
 #include <optional>
 
 namespace stormtty {
@@ -20,15 +22,19 @@ struct AgentPanelView {
     std::string execution_scope, connection_scope, error;
     std::vector<AgentPanelMessage> transcript;
     std::vector<AgentPanelApproval> approvals;
+    AgentProviderSettings provider_settings;
+    bool setup_available{}, setup_reload_available{}, setup_busy{}, disconnect_available{};
+    std::string setup_status;
     bool fixture{};
-    std::uint64_t provider_generation{};
+    std::uint64_t provider_generation{}, settings_generation{};
 };
-enum class AgentPanelActionKind { connect, disconnect, start, interrupt, allow, decline };
+enum class AgentPanelActionKind { reload_settings, save_settings, connect, disconnect, start, interrupt, allow, decline };
 struct AgentPanelAction {
     AgentPanelActionKind kind{};
     std::string workspace_id, prompt;
     AgentApprovalKey approval_key;
-    std::uint64_t provider_generation{};
+    AgentProviderSettings provider_settings;
+    std::uint64_t provider_generation{}, settings_generation{};
 };
 struct AgentPanelControl { std::string id, label; Rect bounds; bool enabled{true}; };
 AgentPanelView agent_panel_view(const AgentSnapshot&, std::string workspace_name, std::string directory, bool provider_available);
@@ -39,15 +45,20 @@ public:
     void open(AgentPanelView);
     void update(AgentPanelView);
     void close();
+    void settings_result(bool success,std::string error = {});
+    void settings_reloaded(const AgentProviderSettings&,std::string error = {});
+    bool editing_settings() const {return editing_settings_;}
     bool is_open() const noexcept { return open_; }
     void resize(Size);
     bool key(const KeyEvent&);
     void text(std::string_view);
     void pointer_down(Point);
     void pointer_up(Point);
+    bool pointer_move(Point);
     void pointer_cancel() { pressed_.clear(); }
     void scroll(double);
-    void append_scene(WindowScene&, const Theme&, float scale = 1) const;
+    using TextWrapper=std::function<std::vector<std::string>(const ChromeText&)>;
+    void append_scene(WindowScene&, const Theme&, float scale = 1, const TextWrapper& native_wrap = {}) const;
     std::optional<AgentPanelAction> take_action();
     std::string status_label() const;
     const AgentPanelView& view() const { return view_; }
@@ -64,8 +75,15 @@ private:
     std::map<std::string,std::string> drafts_;
     std::vector<AgentPanelControl> controls_;
     std::optional<AgentPanelAction> pending_;
-    std::string focus_{"composer"}, pressed_;
+    std::string focus_{"composer"}, pressed_, hover_;
+    mutable std::string wrapped_input_;
+    mutable std::vector<std::string> wrapped_lines_;
+    mutable float wrapped_width_{}, wrapped_scale_{};
+    mutable bool wrapped_native_{};
     std::size_t scroll_{};
+    AgentProviderSettings settings_draft_;
+    std::string settings_error_;
+    bool editing_settings_{}, settings_select_all_{}, settings_reload_confirm_{};
     bool open_{}, confirming_{}, connecting_{};
 };
 }

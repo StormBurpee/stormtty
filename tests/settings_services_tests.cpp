@@ -1,6 +1,9 @@
 #include "core_test.hpp"
 #include "stormtty/settings_services.hpp"
 #include "stormtty/settings_panel.hpp"
+#include "stormtty/agent_setup_service.hpp"
+#include <condition_variable>
+#include <chrono>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -287,6 +290,43 @@ int main() { return run_core_tests("settings_services (Windows native)", [] {
     CHECK(has_cmd(discover_windows_shells(distinct)));
     CHECK(defaults==preserved);
     CHECK(defaults.default_profile == "default" && defaults.profiles.size() == 1);
+    CHECK(!has_temporaries(directory.path));
+    const auto agent_path=directory.path/L"agent.local.stormtty";
+    auto agent_loaded=load_agent_provider_settings(agent_path);CHECK(agent_loaded);CHECK(!std::filesystem::exists(agent_path));
+    AgentProviderSettings agent_settings{"C:\\Already Installed\\codex.exe","chatgpt:fixture@example.com"};
+    auto agent_saved=save_agent_provider_settings(agent_path,agent_settings,*agent_loaded.snapshot);CHECK(agent_saved);
+    auto agent_reopened=load_agent_provider_settings(agent_path);CHECK(agent_reopened);CHECK(*agent_reopened.settings==agent_settings);
+    const auto old_agent_bytes=read(agent_path);
+    auto invalid_agent=agent_settings;invalid_agent.executable="relative.exe";
+    CHECK(!save_agent_provider_settings(agent_path,invalid_agent,*agent_reopened.snapshot));CHECK(read(agent_path)==old_agent_bytes);
+    CHECK(save_agent_provider_settings(agent_path,{},*agent_loaded.snapshot).conflict);
+    CHECK(save_agent_provider_settings(agent_path,{},*agent_reopened.snapshot));CHECK(load_agent_provider_settings(agent_path).settings==AgentProviderSettings{});
+    std::mutex worker_mutex;std::condition_variable worker_wake;unsigned notifications=0;
+    auto wake=[&]{std::lock_guard lock(worker_mutex);++notifications;worker_wake.notify_one();};
+    auto await_notification=[&](unsigned expected){std::unique_lock lock(worker_mutex);CHECK(worker_wake.wait_for(lock,std::chrono::seconds(5),[&]{return notifications>=expected;}));};
+    const auto worker_path=directory.path/L"agent-worker.local.stormtty";
+    AgentSetupService worker(worker_path,wake);worker.load();await_notification(1);
+    auto completed=worker.take_completion();CHECK(completed&&completed->error.empty());CHECK(worker.ready()&&!worker.busy());CHECK(!std::filesystem::exists(worker_path));
+    CHECK(worker.save(agent_settings));await_notification(2);completed=worker.take_completion();CHECK(completed&&completed->saved&&completed->error.empty());
+    CHECK(load_agent_provider_settings(worker_path).settings==agent_settings);
+    CHECK(worker.save(invalid_agent));await_notification(3);completed=worker.take_completion();CHECK(completed&&!completed->error.empty());CHECK(load_agent_provider_settings(worker_path).settings==agent_settings);
+    auto external_agent=agent_settings;external_agent.account_reference="chatgpt:external@example.com";
+    {std::ofstream external(worker_path,std::ios::binary|std::ios::trunc);external<<serialize_agent_provider_settings(external_agent);}
+    CHECK(worker.save(agent_settings));await_notification(4);completed=worker.take_completion();CHECK(completed&&completed->error.find("Reload saved")!=std::string::npos);
+    worker.load();await_notification(5);completed=worker.take_completion();CHECK(completed&&completed->settings==external_agent&&worker.ready());
+    CHECK(worker.save(agent_settings));await_notification(6);completed=worker.take_completion();CHECK(completed&&completed->error.empty());
+    {std::ofstream corrupt(worker_path,std::ios::binary|std::ios::trunc);corrupt<<"corrupt";}
+    worker.load();await_notification(7);completed=worker.take_completion();CHECK(completed&&!completed->error.empty()&&!worker.ready());
+    {std::ofstream repaired(worker_path,std::ios::binary|std::ios::trunc);repaired<<serialize_agent_provider_settings(external_agent);}
+    worker.load();await_notification(8);completed=worker.take_completion();CHECK(completed&&completed->error.empty()&&worker.ready());
+    const auto known_agent_path=local_agent_settings_path();CHECK(!known_agent_path.empty());
+    const DWORD local_count=GetEnvironmentVariableW(L"LOCALAPPDATA",nullptr,0);std::wstring old_local(local_count,L'\0');
+    if(local_count){const auto written=GetEnvironmentVariableW(L"LOCALAPPDATA",old_local.data(),local_count);old_local.resize(written);}
+    struct RestoreLocalAppData {std::wstring value;bool existed;~RestoreLocalAppData(){SetEnvironmentVariableW(L"LOCALAPPDATA",existed?value.c_str():nullptr);}} restore_local{old_local,local_count!=0};
+    CHECK(SetEnvironmentVariableW(L"LOCALAPPDATA",directory.path.c_str()));CHECK(local_agent_settings_path()==known_agent_path);
+    {std::ofstream corrupt(agent_path,std::ios::binary|std::ios::trunc);corrupt<<"not agent settings";}
+    CHECK(!load_agent_provider_settings(agent_path));
+
     CHECK(!has_temporaries(directory.path));
 }); }
 #else

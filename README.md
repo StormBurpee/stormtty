@@ -104,8 +104,9 @@ separate app-server adapter owns structured JSONL communication.
 The boundary is deliberate:
 
 - **Unavailable until configured.** StormTTY neither installs Codex nor starts it
-  when the panel opens. Configuration points to an already installed executable
-  and an already signed-in ChatGPT account.
+  when the panel opens. Choose Setup in the panel, enter an already installed executable
+  and signed-in ChatGPT account reference, then Save. Setup is machine-local
+  and inert; normal CLion launches need no flags.
 - **Connect is not Start.** Review connect → Connect authorizes the provider
   process. Review start → Start task separately confirms the workspace and
   execution scope before submitting a prompt.

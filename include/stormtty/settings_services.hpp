@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stormtty/config.hpp"
+#include "stormtty/agent_provider_settings.hpp"
 #include "stormtty/workspace_presets.hpp"
 #include <cstdint>
 #include <optional>
@@ -66,4 +67,13 @@ WorkspaceLibrarySnapshotResult load_workspace_library_snapshot(const std::filesy
 ConfigSaveResult save_workspace_library(const std::filesystem::path&, const WorkspaceLibrary&,
                                        const ConfigFileSnapshot& loaded);
 
+struct AgentSettingsSnapshotResult {
+    std::optional<ConfigFileSnapshot> snapshot;
+    std::optional<AgentProviderSettings> settings;
+    std::string error;
+    explicit operator bool() const noexcept {return snapshot&&settings&&error.empty();}
+};
+// Same guarded, atomic service; dedicated LOCALAPPDATA path, never workspace data.
+AgentSettingsSnapshotResult load_agent_provider_settings(const std::filesystem::path&);
+ConfigSaveResult save_agent_provider_settings(const std::filesystem::path&, const AgentProviderSettings&, const ConfigFileSnapshot&);
 } // namespace stormtty

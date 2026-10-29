@@ -30,6 +30,7 @@
 #include "stormtty/settings_panel.hpp"
 #include "stormtty/agent_panel.hpp"
 #include "stormtty/agent_panel_controller.hpp"
+#include "stormtty/agent_setup_service.hpp"
 #include "stormtty/settings_services.hpp"
 #include "stormtty/context_menu.hpp"
 #include "app_icons.hpp"
@@ -311,6 +312,7 @@ private:
     void agent_input_changed();
     std::string agent_status_label() const;
     void refresh_agent_panel();
+    AgentPanelView current_agent_view() const;
     bool settings_input_blocked() const { return settings_panel_.is_open(); }
     bool settings_loading() const { return settings_job_ && settings_open_requested_ && !settings_input_blocked(); }
     bool overlay_open() const { return agent_panel_.is_open() || settings_input_blocked() || settings_loading() || context_menu_.is_open(); }
@@ -417,6 +419,10 @@ private:
     SettingsPanel settings_panel_{Platform::windows};
     AgentPanel agent_panel_;
     std::unique_ptr<AgentPanelController> agent_controller_;
+    std::unique_ptr<AgentSetupService> agent_setup_;
+    AgentProviderSettings agent_saved_settings_;
+    std::string agent_setup_error_;
+    bool agent_setup_reload_requested_{};
     unsigned smoke_agent_stage_{};
     std::thread settings_worker_;
     bool settings_job_{}, settings_open_requested_{};
@@ -598,6 +604,9 @@ void NativeWindow::create() {
     enforce_custom_frame_style(hwnd_,options_.smoke_test);
     windows::set_app_icons(hwnd_);
     wake_->window.store(hwnd_, std::memory_order_release);
+    if(!options_.smoke_test&&!options_.agent_settings_path.empty()) {
+        agent_setup_=std::make_unique<AgentSetupService>(options_.agent_settings_path,[wake=wake_]{wake->wake();});agent_setup_->load();
+    }
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES};
     if (InitCommonControlsEx(&controls)) {
         tooltip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
@@ -2419,7 +2428,7 @@ WindowScene NativeWindow::scene() {
         };
         paint_button(box.cancel,"Cancel",false); paint_button(box.confirm,modal_->confirm_label,true);
     }
-    agent_panel_.append_scene(result,config_.theme,static_cast<float>(scale_));
+    agent_panel_.append_scene(result,config_.theme,static_cast<float>(scale_),[this](const ChromeText& text){return renderer_->wrap_chrome_text(text);});
     const auto settings_primitive_start=result.primitives.size(), settings_text_start=result.texts.size();
     if (settings_loading()) {
         const Rect panel{std::max(16.0,(width_-420)/2),std::max(16.0,(height_-112)/2),std::max(0.0,std::min(420.0,width_-32)),112};
@@ -2484,7 +2493,7 @@ void NativeWindow::toggle_agent_panel() {
         const auto attention=agent_controller_->attention_workspace();
         if(!attention.empty()) for(const auto& entry:projects_.entries()) if(entry.metadata.persistent_id==attention && entry.id!=projects_.active_id()) {activate_project(entry.id);break;}
         const auto* project=projects_.active(); if (!project) return;
-        auto view=agent_controller_->view(project->metadata.persistent_id,project->metadata.name,project->metadata.working_directory);
+        auto view=current_agent_view();
         agent_panel_.open(std::move(view)); agent_panel_.resize({width_,height_});
         text_input_.reset(); typing_motion_.reset();
     }
@@ -2498,16 +2507,51 @@ std::string NativeWindow::agent_status_label() const {
     AgentPanel status;status.update(view);
     return "Codex · "+status.status_label()+(agent_controller_->attention()?" · !":"");
 }
+AgentPanelView NativeWindow::current_agent_view() const {
+    const auto* project=projects_.active();if(!project)return {};
+    auto view=agent_controller_->view(project->metadata.persistent_id,project->metadata.name,project->metadata.working_directory);
+    const bool overridden=!options_.codex_executable.empty()||!options_.codex_account_reference.empty();
+    view.provider_settings=agent_saved_settings_;view.setup_busy=agent_setup_&&agent_setup_->busy();
+    view.setup_reload_available=agent_setup_&&!overridden&&agent_controller_->can_reconfigure();
+    view.setup_available=view.setup_reload_available&&agent_setup_->ready();
+    if(overridden)view.setup_status="Provider set by launch arguments. Remove those overrides to use Setup.";
+    else if(!agent_setup_)view.setup_status="Machine-local settings location is unavailable.";
+    else if(view.setup_busy)view.setup_status="Reading or saving local provider settings…";
+    else if(!agent_setup_error_.empty())view.setup_status=agent_setup_error_;
+    else if(!agent_controller_->can_reconfigure())view.setup_status="Disconnect the provider before changing Setup.";
+    return view;
+}
 void NativeWindow::refresh_agent_panel() {
     if(!agent_controller_||options_.smoke_agent)return;
+    if(agent_setup_) if(auto completion=agent_setup_->take_completion()) {
+        agent_setup_error_=completion->error;
+        if(completion->error.empty()) {
+            agent_saved_settings_=completion->settings;
+            if(options_.codex_executable.empty()&&options_.codex_account_reference.empty()&&!agent_controller_->reconfigure(agent_saved_settings_))
+                agent_setup_error_="Provider state changed; disconnect before applying local setup.";
+        }
+        if(completion->saved)agent_panel_.settings_result(agent_setup_error_.empty(),agent_setup_error_);
+        else if(agent_setup_reload_requested_){agent_setup_reload_requested_=false;agent_panel_.settings_reloaded(agent_saved_settings_,agent_setup_error_);}
+    }
     if(agent_panel_.is_open()) {
         const auto* project=projects_.active();if(!project)return;
-        agent_panel_.update(agent_controller_->view(project->metadata.persistent_id,project->metadata.name,project->metadata.working_directory));
+        agent_panel_.update(current_agent_view());
     }
     changed();
 }
 void NativeWindow::agent_input_changed() {
     if(auto action=agent_panel_.take_action()) {
+        if(action->kind==AgentPanelActionKind::reload_settings) {
+            if(options_.smoke_test||!agent_setup_||agent_setup_->busy()||!agent_controller_->can_reconfigure()||!options_.codex_executable.empty()||!options_.codex_account_reference.empty())
+                agent_panel_.settings_reloaded(agent_saved_settings_,"Disconnect the provider before reloading local setup.");
+            else {agent_setup_reload_requested_=true;agent_setup_->load();}
+            refresh_agent_panel();sync_focus();caret_schedule(true);changed();return;
+        }
+        if(action->kind==AgentPanelActionKind::save_settings) {
+            if(options_.smoke_test||!agent_setup_||!agent_controller_->can_reconfigure()||!options_.codex_executable.empty()||!options_.codex_account_reference.empty()||!agent_setup_->save(action->provider_settings))
+                agent_panel_.settings_result(false,"Settings are unavailable or the provider is still connected.");
+            refresh_agent_panel();sync_focus();caret_schedule(true);changed();return;
+        }
         const auto* project=projects_.active();
         if(project && project->metadata.persistent_id==action->workspace_id && !options_.smoke_agent)
             agent_controller_->dispatch(*action,project->metadata.working_directory);
@@ -2990,7 +3034,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
     }
 }
 void NativeWindow::pointer_move(Point point) {
-    if (agent_panel_.is_open()) return;
+    if (agent_panel_.is_open()) {if(agent_panel_.pointer_move(point))changed();return;}
     if (settings_loading()) return;
     if (settings_input_blocked()) { settings_panel_.pointer_move(point); settings_input_changed(); return; }
     if (context_menu_.is_open()) { context_menu_.pointer_move(point); menu_input_changed(); return; }
@@ -3499,19 +3543,23 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         options_.capture_path=path.parent_path()/(path.stem().wstring()+L"-agent-"+std::to_wstring(smoke_agent_stage_)+path.extension().wstring());
         try {capture_frame();} catch(const std::exception& error) {options_.capture_path=path;smoke_finish(error.what());return;}
         options_.capture_path=path;
-        if (smoke_agent_stage_==4) {
+        if (smoke_agent_stage_==5) {
+            agent_panel_.key({{"ESCAPE"}}); // Cancel Setup without any save/connect action.
             agent_panel_.key({{"ESCAPE"}});agent_input_changed();
             if(agent_panel_.is_open()) {smoke_finish("Agent Escape failed.");return;}
             toggle_agent_panel();
             if(agent_panel_.draft()!="Review the terminal input path" || agent_panel_.take_action()) {smoke_finish("Agent reopen lost draft or replayed an action.");return;}
-            std::fprintf(stderr,"Native agent UI fixture: unavailable/running/approval/error captures; no Codex server, authentication or model call.\n");
+            std::fprintf(stderr,"Native agent UI fixture: unavailable/running/approval/error/setup captures; no Codex server, authentication or model call.\n");
             smoke_finish();return;
         }
         auto view=agent_panel_.view();view.fixture=true;
         if(smoke_agent_stage_==1) {view.state=AgentPanelState::running;view.transcript={{"user","Review the terminal input path"},{"assistant","Authored fixture: inspecting keyboard routing."}};}
         if(smoke_agent_stage_==2) {view.approvals={{{1,"fixture-thread","fixture-turn","fixture-item","1"},"Read source files","Read-only fixture scope: src/platform/windows/window.cpp",true}};}
         if(smoke_agent_stage_==3) {view.approvals.clear();view.state=AgentPanelState::failed;view.error="Authored fixture: provider disconnected. No task was retried.";}
-        agent_panel_.update(std::move(view));++smoke_agent_stage_;changed();return;
+        if(smoke_agent_stage_==4) {view.state=AgentPanelState::unavailable;view.error.clear();view.setup_available=true;view.provider_settings={"C:\\Fixture\\codex.exe","chatgpt:fixture@example.com"};}
+        agent_panel_.update(std::move(view));
+        if(smoke_agent_stage_==4) for(const auto& control:agent_panel_.controls()) if(control.id=="settings.open") {const Point point{control.bounds.x+1,control.bounds.y+1};agent_panel_.pointer_down(point);agent_panel_.pointer_up(point);break;}
+        ++smoke_agent_stage_;changed();return;
     }
     if (!smoke_chrome_verified_) {
         const auto native_hit=[&](Rect bounds) {

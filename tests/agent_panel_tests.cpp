@@ -53,5 +53,44 @@ int main() {
     std::string rendered;for(const auto& item:scene.texts){rendered+=item.text;CHECK(item.text.find(bidi)==std::string::npos);CHECK(item.text.find(isolate)==std::string::npos);}
     CHECK(rendered.find("[U+202E]")!=std::string::npos);CHECK(rendered.find("[U+2066]")!=std::string::npos);
     CHECK(p.view().approvals[0].scope==ready.approvals[0].scope);CHECK(p.view().approvals[0].key==ready.approvals[0].key);
+    // Setup edits remain drafts until explicit Save; Cancel and reopen restore
+    // the saved metadata, never create a Connect/Start action.
+    AgentPanel setup;auto local=view();local.setup_available=true;local.setup_reload_available=true;
+    local.provider_settings={"C:\\Tools\\codex.exe","chatgpt:saved@example.com"};setup.open(local);
+    click(setup,"settings.open");CHECK(setup.editing_settings());setup.text("relative.exe");click(setup,"settings.save");CHECK(!setup.take_action());
+    click(setup,"settings.cancel");CHECK(!setup.editing_settings());CHECK(!setup.take_action());
+    click(setup,"settings.open");click(setup,"settings.executable");setup.text("C:\\Installed\\codex.exe");
+    click(setup,"settings.account");setup.text("chatgpt:new@example.com");click(setup,"settings.save");
+    auto saved=setup.take_action();CHECK(saved&&saved->kind==AgentPanelActionKind::save_settings);
+    CHECK(saved->provider_settings.executable=="C:\\Installed\\codex.exe");CHECK(saved->provider_settings.account_reference=="chatgpt:new@example.com");
+    local.setup_busy=true;setup.update(local);setup.key({{"ESCAPE"}});CHECK(setup.editing_settings());CHECK(!setup.take_action());
+    local.setup_busy=false;local.provider_settings=saved->provider_settings;setup.update(local);setup.settings_result(true);CHECK(!setup.editing_settings());CHECK(!setup.take_action());
+    setup.close();setup.open(local);click(setup,"settings.open");scene={};setup.append_scene(scene,Theme{});
+    CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](auto& t){return t.text=="chatgpt:new@example.com";}));
+    setup.key({{"ESCAPE"}});CHECK(setup.is_open()&&!setup.editing_settings());
+    setup.resize({480,320});click(setup,"settings.open");for(const auto& c:setup.controls()){CHECK(c.bounds.x>=0&&c.bounds.y>=0);CHECK(c.bounds.x+c.bounds.width<=480);CHECK(c.bounds.y+c.bounds.height<=320);}
+    click(setup,"settings.executable");setup.text("C:\\Unsaved\\codex.exe");click(setup,"settings.reload");CHECK(!setup.take_action());
+    click(setup,"settings.cancel");CHECK(setup.editing_settings());click(setup,"settings.save");
+    auto kept=setup.take_action();CHECK(kept&&kept->provider_settings.executable=="C:\\Unsaved\\codex.exe");
+    setup.settings_result(false,"Local settings changed outside StormTTY.");
+    click(setup,"settings.reload");CHECK(!setup.take_action());click(setup,"settings.reload");auto reload=setup.take_action();CHECK(reload&&reload->kind==AgentPanelActionKind::reload_settings);
+    AgentProviderSettings external{"C:\\External\\codex.exe","chatgpt:external@example.com"};setup.settings_reloaded(external);scene={};setup.append_scene(scene,Theme{});
+    CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](const auto& t){return t.text=="chatgpt:external@example.com";}));CHECK(!setup.take_action());
+    setup.close();local.setup_available=false;local.setup_status="Corrupt local settings";setup.open(local);click(setup,"settings.open");CHECK(setup.editing_settings());
+    click(setup,"settings.save");CHECK(!setup.take_action());click(setup,"settings.reload");CHECK(setup.take_action()->kind==AgentPanelActionKind::reload_settings);
+    const std::string scope_line="Read-only fixture scope: src/platform/windows/window.cpp";
+    const auto fallback=agent_display_word_lines(scope_line,600,12);CHECK(fallback.size()==1);CHECK(fallback.front()==scope_line);
+    const auto words=agent_display_word_lines("alpha beta gamma delta",70,12);
+    std::string word_joined;for(const auto& line:words){word_joined+=line;CHECK(line.ends_with(" ")||line.ends_with("delta"));}CHECK(word_joined=="alpha beta gamma delta");
+    AgentPanel measured;auto measured_view=view();measured_view.approvals={{{1,"t","u","i","1"},"Read source files",scope_line,true}};measured.open(measured_view);
+    unsigned measures=0;AgentPanel::TextWrapper wrap=[&](const ChromeText& text){
+        ++measures;CHECK(text.wrap);CHECK(text.size_dip==12);CHECK(text.rect.width>500);
+        std::vector<std::string> lines;std::size_t start=0;for(std::size_t i=0;i<=text.text.size();++i)if(i==text.text.size()||text.text[i]=='\n'){lines.push_back(text.text.substr(start,i-start));start=i+1;}return lines;
+    };
+    scene={};measured.append_scene(scene,Theme{},1,wrap);CHECK(measures==1);
+    CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[&](const auto& text){return text.text==scope_line&&!text.wrap;}));
+    scene={};measured.append_scene(scene,Theme{},1,wrap);CHECK(measures==1);
+    measured.resize({1100,800});scene={};measured.append_scene(scene,Theme{},1.25f,wrap);CHECK(measures==2);
+    CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](const auto& text){return text.text=="Allow once"&&text.alignment==ChromeTextAlignment::center;}));
     return 0;
 }

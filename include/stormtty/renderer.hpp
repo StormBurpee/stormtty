@@ -151,6 +151,8 @@ public:
 #ifdef _WIN32
     // Actual DirectWrite chrome-font bounds in pixels, using the label's wrapping.
     PixelRect measure_chrome_text(const ChromeText& label) const;
+    // Actual DirectWrite word wrapping; UTF-8 lines retain all text except newlines.
+    std::vector<std::string> wrap_chrome_text(const ChromeText& label) const;
 #endif
     RenderResult render(const WindowScene& scene);
     // Borrowed Win32 HANDLE, invalidated on device recovery/destruction.

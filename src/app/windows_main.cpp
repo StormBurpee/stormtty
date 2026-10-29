@@ -14,6 +14,7 @@
 #include <shellapi.h>
 #include <objbase.h>
 #include "stormtty/native_window.hpp"
+#include "stormtty/agent_setup_service.hpp"
 #include "../platform/windows/startup_notice.hpp"
 #include "../platform/windows/smoke_teardown_trace.hpp"
 #include <fstream>
@@ -170,6 +171,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 if (written && written < count) { directory.resize(written); config_path = std::filesystem::path(directory) / L"StormTTY" / L"config.stormtty"; }
             }
         }
+        if(!smoke) options.agent_settings_path=stormtty::local_agent_settings_path();
         if (!config_path.empty()) { config_path=std::filesystem::absolute(config_path).lexically_normal(); options.config_path=config_path; }
         if (!options.smoke_workspaces.empty()) {
             if (!workspace_fixture.is_absolute() || !workspace_fixture.filename().wstring().starts_with(L"StormTTY.WorkspaceSmoke.") ||

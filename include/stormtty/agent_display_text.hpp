@@ -62,4 +62,28 @@ inline std::vector<std::string> agent_display_lines(std::string_view raw,std::si
     if(!line.empty())lines.push_back(std::move(line));
     return lines;
 }
+// Portable fallback when native text metrics are unavailable. Approximate glyph
+// advances rather than fixed byte columns; prefer spaces/path separators and
+// split only overlong words at complete scalars or whole escape markers.
+inline std::vector<std::string> agent_display_word_lines(std::string_view raw,double width,double size=12) {
+    using agent_display_detail::Token;
+    struct Glyph {Token token;double advance;bool boundary;};
+    std::vector<std::string> lines;std::vector<Glyph> line;double used=0;std::size_t offset=0;
+    width=std::max(1.0,width);
+    auto emit=[&](std::size_t count){std::string text;for(std::size_t i=0;i<count;++i)text+=line[i].token.text;lines.push_back(std::move(text));line.erase(line.begin(),line.begin()+static_cast<std::ptrdiff_t>(count));used=0;for(const auto& g:line)used+=g.advance;};
+    while(offset<raw.size()) {
+        auto token=agent_display_detail::next(raw,offset);
+        if(token.newline){emit(line.size());continue;}
+        const auto lead=static_cast<unsigned char>(token.text.front());double advance=size*.6;
+        if(token.text.starts_with("[U+")||token.text.starts_with("[byte:"))advance=size*.64*token.text.size();
+        else if(lead<128){const char c=static_cast<char>(lead);if(c==' ')advance=size*.3;else if(std::string_view("ilI.,'!:;|").find(c)!=std::string_view::npos)advance=size*.32;else if(std::string_view("WM@#%").find(c)!=std::string_view::npos)advance=size*.95;}
+        else if(lead>=0xf0)advance=size*1.25;else if(lead>=0xe0)advance=size;else if(lead==0xcc||lead==0xcd)advance=0;
+        const bool boundary=token.text==" "||token.text=="/"||token.text=="\\"||token.text=="-"||token.text=="_";
+        line.push_back({std::move(token),advance,boundary});used+=advance;
+        if(used>width&&line.size()>1){std::size_t split=line.size()-1;for(std::size_t i=0;i+1<line.size();++i)if(line[i].boundary)split=i+1;emit(split);}
+    }
+    if(!line.empty())emit(line.size());
+    return lines;
+}
+
 }
