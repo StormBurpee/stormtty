@@ -16,3 +16,7 @@ tests/ink/conpty-width-probe/*.bin -text
 tools/shell-*.json text eol=lf
 
 tools/shell-tools-notices/texts/** -text
+# Preserve exact reviewed experimental patch hash on Windows checkout.
+tools/probes/msys-runtime-experiment/0005-conditional-retirement.patch -text
+# Keep the unchanged PR7 raw probe byte pin stable on Windows checkout.
+tests/paste_input_probe.cpp -text

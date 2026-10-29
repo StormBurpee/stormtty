@@ -1,0 +1,77 @@
+# Strict diagnostic controls, not a new production qualification gate.
+name: Isolated authored paste input diagnostics
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: paste-input-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - name: Initialize native compiler
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Restore pinned terminal engine
+        id: engine
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Build missing pinned engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Build qualification probe and verify production isolation
+        shell: pwsh
+        run: |
+          cmake -S . -B build-paste -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_TEST_SHELL_PROBE=ON -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-paste --target stormtty bundled_shell_probe paste_input_probe qualification_input_evidence_tests --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-paste -R "^qualification_input_evidence_tests$" --no-tests=error --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/check_input_evidence_isolation.py build-paste
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage isolated stock shell and packaged console
+        shell: pwsh
+        run: |
+          python tools/shell-bootstrap.py --destination .deps/stormtty-shell --cache .cache/shell-bootstrap
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./tools/prepare-conpty-probe.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'stormtty-paste-conpty')
+      - name: Run strict authored byte matrix once per provider
+        id: diagnostic
+        shell: python
+        run: |
+          import importlib.util,json,os,pathlib,sys
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
+          artifacts=pathlib.Path('build-paste/artifacts');artifacts.mkdir(parents=True,exist_ok=True)
+          records=[]
+          for name,provider in [('inbox',[]),('packaged',[str(pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-paste-conpty')])]:
+              result=runner.run_owned([str(pathlib.Path('build-paste/paste_input_probe.exe').resolve()),str(pathlib.Path('.deps/stormtty-shell').resolve()),*provider],timeout=180,output_dir=artifacts)
+              (artifacts/('paste-input-'+name+'.log')).write_bytes(result.output_tail)
+              print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+              records.append({'provider':name,**result.metadata()})
+              (artifacts/'owned-processes.json').write_text(json.dumps(records,indent=2),encoding='utf-8')
+          # Keep strict VT-off controls red. No retries, suppression, or promotion.
+          raise SystemExit(int(any(r['returncode']!=0 or r['timed_out'] or not r['reaped'] or r['output_truncated'] or r['cleanup_error'] for r in records)))
+      - name: Preserve every diagnostic result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: isolated-paste-input-${{ github.sha }}
+          path: |
+            build-paste/artifacts/paste-input-*.log
+            build-paste/artifacts/owned-processes.json
+            build-paste/Testing/Temporary/LastTest.log
+            build-paste/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
