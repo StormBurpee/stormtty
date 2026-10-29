@@ -56,9 +56,11 @@ ThemePickerResult exchange_theme_file(const std::filesystem::path& path, bool im
             const auto bytes=export_theme(current,format);if(!bytes)throw std::runtime_error("The current palette contains invalid colors.");
             // Validate an existing destination without truncation. Write a
             // sibling temporary file and replace only after a successful flush.
+            {
             Handle existing{CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr)};
             if(existing.value!=INVALID_HANDLE_VALUE) regular(existing.value);
             else if(GetLastError()!=ERROR_FILE_NOT_FOUND) throw std::runtime_error("The palette destination could not be opened.");
+            } // Close our validation handle before replacing its directory entry.
             GUID guid{};check(CoCreateGuid(&guid));wchar_t identifier[40]{};
             if(!StringFromGUID2(guid,identifier,40))throw std::runtime_error("The palette export could not be prepared.");
             const auto temporary=path.parent_path()/(std::wstring(L".stormtty-theme-")+identifier+L".tmp");
@@ -71,7 +73,7 @@ ThemePickerResult exchange_theme_file(const std::filesystem::path& path, bool im
                     throw std::runtime_error("The palette could not be written; the previous file was kept.");
             }
             if(!MoveFileExW(temporary.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
-                throw std::runtime_error("The palette could not be replaced; the previous file was kept.");
+                throw std::runtime_error("The palette could not be replaced; the previous file was kept (Windows error "+std::to_string(GetLastError())+").");
             result.notice=format==ThemeFormat::ghostty?"Terminal colors exported; chrome and accent omitted.":"Palette exported.";
         }
     } catch(const std::exception& error) {result.error=error.what();}

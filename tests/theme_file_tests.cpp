@@ -30,7 +30,9 @@ int main(){return run_core_tests("native theme files",[]{
     const auto replace_denied=exchange_theme_file(target,false,ThemeFormat::stormtty,seed);CloseHandle(locked);
     CHECK(!replace_denied.error.empty());CHECK(read(target)==initial);
     std::size_t files=0;for(const auto& entry:std::filesystem::directory_iterator(root)){(void)entry;++files;}CHECK(files==1);
-    CHECK(exchange_theme_file(target,false,ThemeFormat::stormtty,seed).error.empty());
+    const auto replaced=exchange_theme_file(target,false,ThemeFormat::stormtty,seed);
+    if(!replaced.error.empty())std::fprintf(stderr,"Existing-file replacement: %s\n",replaced.error.c_str());
+    CHECK(replaced.error.empty());
     auto seeded=seed;seeded.name="custom";CHECK(*exchange_theme_file(target,true,ThemeFormat::stormtty,expected).imported==seeded);
     write(target,"background=#123456\ncursor-color=#FFFFFF\n");
     loaded=exchange_theme_file(target,true,ThemeFormat::ghostty,seed);CHECK(loaded.imported);CHECK(!loaded.notice.empty());
