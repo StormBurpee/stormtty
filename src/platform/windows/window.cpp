@@ -42,6 +42,7 @@
 #include "stormtty/session.hpp"
 #include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
+#include "stormtty/windows_settings_wheel.hpp"
 #include <shellapi.h>
 #include "stormtty/agent_panel.hpp"
 #include "stormtty/agent_panel_controller.hpp"
@@ -483,13 +484,17 @@ private:
     void composition(LPARAM);
     void caret_schedule(bool restart = false);
     void motion_schedule();
+    void settings_wheel(Point, short delta, UINT lines);
     std::uint64_t chrome_now() const { return smoke_chrome_time_.value_or(GetTickCount64()); }
     void smoke_motion_capture(std::wstring_view, std::uint64_t elapsed);
     void smoke_focus_evidence(bool project);
     void smoke_pane_focus_scene(const WindowScene&) const;
+    void smoke_settings_scroll_evidence();
     std::optional<std::uint64_t> smoke_chrome_time_; // Explicit native CI presentation clock only.
     bool smoke_focus_running_{};
     std::optional<bool> smoke_pane_reduced_motion_; // Owned layout fixture: pane wash only, never caret/global policy.
+    std::optional<bool> smoke_settings_scroll_reduced_motion_; // Settings-only authored motion fixture; never changes OS/config policy.
+    bool smoke_settings_scroll_running_{};
 
     void hover_changed(Point);
     void refresh_tooltips();
@@ -2085,6 +2090,10 @@ void NativeWindow::hover_changed(Point point) {
 }
 void NativeWindow::motion_schedule() {
     const auto now=chrome_now(); const auto duration=(reduced_motion_ || !IsWindowVisible(hwnd_))?0:120;
+    // Only presentation geometry changes on ticks. No Settings actions, live
+    // previews, persistence, terminal input or terminal-scroll work is emitted.
+    if (smoke_settings_scroll_reduced_motion_.value_or(reduced_motion_) || minimized_ || !IsWindowVisible(hwnd_)) settings_panel_.finish_scroll();
+    else settings_panel_.tick_scroll(now);
     const bool pane_reduced=options_.smoke_test && options_.smoke_layout && smoke_focus_running_ && smoke_chrome_time_?
         smoke_pane_reduced_motion_.value_or(reduced_motion_):reduced_motion_;
     const auto pane_duration=pane_decoration_duration(pane_reduced,high_contrast_,IsWindowVisible(hwnd_)!=FALSE,minimized_);
@@ -2103,7 +2112,7 @@ void NativeWindow::motion_schedule() {
         if (item.first&(1ull<<62)) return !projects_.find(ProjectWorkspaceId{item.first&~(1ull<<62)});
         return item.first>=16 && !workspace().tab(TabId{(item.first-16)/2});
     });
-    bool running=false;
+    bool running=settings_panel_.scroll_active();
     auto check=[&](ChromeTransition& transition) { if (reduced_motion_ || minimized_) transition.finish(); running=running||transition.active(now); };
     check(palette_transition_); check(settings_transition_); check(menu_transition_); check(navigator_transition_);
     for (auto& [id,t]:workspace_focus_) { (void)id; check(t); }
@@ -2113,6 +2122,7 @@ void NativeWindow::motion_schedule() {
     if (running && !motion_timer_active_) {
         motion_timer_active_=SetTimer(hwnd_,chrome_motion_timer,16,nullptr)!=0;
         if (!motion_timer_active_) { // Resource pressure must never leave chrome half-hidden.
+            settings_panel_.finish_scroll();
             palette_transition_.finish(); settings_transition_.finish(); menu_transition_.finish(); navigator_transition_.finish();
             for (auto& [id,t]:workspace_focus_) { (void)id; t.finish(); }
             for (auto& [id,t]:pane_focus_) { (void)id; t.finish(); }
@@ -2121,6 +2131,12 @@ void NativeWindow::motion_schedule() {
         }
     }
     else if (!running && motion_timer_active_) { KillTimer(hwnd_,chrome_motion_timer); motion_timer_active_=false; }
+}
+void NativeWindow::settings_wheel(Point position, short delta, UINT lines) {
+    const bool discrete=settings_wheel_packet_is_discrete(delta);
+    const bool animate=discrete && !smoke_settings_scroll_reduced_motion_.value_or(reduced_motion_) && !minimized_;
+    settings_panel_.wheel_pixels(position,settings_wheel_distance(delta,lines,lines==WHEEL_PAGESCROLL,settings_panel_.layout().content.height),chrome_now(),animate);
+    settings_input_changed();
 }
 void NativeWindow::reload_settings() {
     if (modal_) { show_error("Finish the current confirmation before reloading settings."); return; }
@@ -4202,6 +4218,10 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
     std::fprintf(stderr,"Native motion values settings=%.6f menu=%.6f selected_workspace=%.6f active_pane=%.6f chrome_timer=%d\n",
         settings_transition_.value(chrome_now()),menu_transition_.value(chrome_now()),
         workspace_focus_[projects_.active_id()].value(chrome_now()),pane_focus_[workspace().active_pane()].value(chrome_now()),motion_timer_active_);
+    if(smoke_settings_scroll_running_)
+        std::fprintf(stderr,"Native Settings scroll sample=%s displayed_dip=%.6f target_dip=%.6f active=%d synthetic_reduced_motion=%d controlled_clock=1 physical_frame_pacing_verified=0\n",
+            narrow(std::wstring(suffix)).c_str(),settings_panel_.scroll_offset(),settings_panel_.scroll_target(),settings_panel_.scroll_active(),
+            smoke_settings_scroll_reduced_motion_.value_or(reduced_motion_));
 }
 bool NativeWindow::smoke_watch_progress() {
     if(smoke_watch_stage_==4)return true;
@@ -4970,6 +4990,98 @@ void NativeWindow::smoke_settings_stage(unsigned stage) {
     if (options_.smoke_settings) std::fprintf(stderr,"Native CI settings stage=%u elapsed_ms=%llu job_pending=%d panel_open=%d saving=%d\n",
         stage,GetTickCount64()-smoke_started_at_,settings_job_,settings_panel_.is_open(),settings_panel_.saving());
 }
+void NativeWindow::smoke_settings_scroll_evidence() {
+    if (!options_.smoke_settings || !settings_panel_.is_open() || settings_panel_.saving() || smoke_settings_scroll_running_)
+        throw std::runtime_error("Settings scroll evidence requires its owned editable smoke panel.");
+    const auto original_panel=settings_panel_; const auto original_config=config_; const auto actors=sessions_;
+    const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
+    const auto old_clock=smoke_chrome_time_; const auto old_policy=smoke_settings_scroll_reduced_motion_;
+    const auto close_value=[](double a,double b){return std::abs(a-b)<.001;};
+    const auto require=[](bool okay,const char* error){if(!okay)throw std::runtime_error(error);};
+    smoke_settings_scroll_running_=true;
+    smoke_chrome_time_=GetTickCount64()+2000;
+    smoke_settings_scroll_reduced_motion_=false;
+    const auto reset=[&] {
+        settings_panel_=original_panel; settings_seen_generation_=settings_panel_.generation();
+        *smoke_chrome_time_+=1000; settings_transition_.finish(); motion_schedule();
+    };
+    const auto restore=[&] {
+        if(GetCapture()==hwnd_)ReleaseCapture();
+        settings_panel_=original_panel; settings_seen_generation_=settings_panel_.generation();
+        smoke_settings_scroll_reduced_motion_=old_policy; smoke_chrome_time_=old_clock;
+        smoke_settings_scroll_running_=false; changed();
+    };
+    try {
+        reset();
+        const auto viewport=settings_panel_.layout().content;
+        const Point inside{viewport.x+viewport.width/2,viewport.y+viewport.height/2};
+        require(close_value(settings_wheel_distance(-120,0,false,viewport.height),0) &&
+                close_value(settings_wheel_distance(-15,3,false,viewport.height),13.5) &&
+                close_value(settings_wheel_distance(-120,0,true,viewport.height),std::max(48.0,viewport.height-48)),
+                "Settings wheel policy lost disabled, fractional or page-scroll behavior.");
+        const auto start=*smoke_chrome_time_;
+        settings_wheel(inside,-120,3);
+        const auto first=settings_panel_.scroll_offset();
+        require(first>0 && first<108 && close_value(settings_panel_.scroll_target(),108) && settings_panel_.scroll_active(),
+                "Settings discrete wheel did not respond immediately with a bounded animated remainder.");
+        smoke_motion_capture(L"settings-scroll-first-000ms",0);
+        *smoke_chrome_time_=start+16;motion_schedule();
+        require(settings_panel_.scroll_offset()>first && settings_panel_.scroll_offset()<108,
+                "Settings scroll skipped its first intermediate presentation.");
+        smoke_motion_capture(L"settings-scroll-intermediate-016ms",16);
+        *smoke_chrome_time_=start+32;settings_wheel(inside,-120,3);
+        require(close_value(settings_panel_.scroll_target(),216),"Settings wheel burst lost accumulated distance.");
+        smoke_motion_capture(L"settings-scroll-burst-032ms",32);
+        *smoke_chrome_time_=start+48;motion_schedule();
+        const auto before_reverse=settings_panel_.scroll_offset();
+        settings_wheel(inside,120,3);
+        require(settings_panel_.scroll_target()<before_reverse && settings_panel_.scroll_offset()<=before_reverse &&
+                settings_panel_.scroll_offset()>=settings_panel_.scroll_target(),
+                "Settings reverse wheel retained old-direction backlog or overshot.");
+        smoke_motion_capture(L"settings-scroll-reversed-048ms",48);
+        *smoke_chrome_time_=start+138;motion_schedule();
+        require(!settings_panel_.scroll_active() && close_value(settings_panel_.scroll_offset(),settings_panel_.scroll_target()) && !motion_timer_active_,
+                "Settings wheel did not settle and stop its timer within 90 ms of final input.");
+        smoke_motion_capture(L"settings-scroll-settled-138ms",138);
+
+        reset();settings_wheel(inside,-120,0);
+        require(close_value(settings_panel_.scroll_offset(),0) && !settings_panel_.scroll_active(),"Windows zero wheel-lines policy still moved Settings.");
+        settings_wheel(inside,-15,3);
+        require(close_value(settings_panel_.scroll_offset(),13.5) && !settings_panel_.scroll_active(),"Fractional Settings wheel packet was quantized or artificially delayed.");
+        POINT screen{static_cast<LONG>(inside.x*scale_),static_cast<LONG>(inside.y*scale_)};
+        require(ClientToScreen(hwnd_,&screen)!=FALSE,"Settings wheel smoke could not resolve its owned pointer.");
+        message(WM_MOUSEHWHEEL,MAKEWPARAM(0,WHEEL_DELTA),MAKELPARAM(screen.x,screen.y));
+        require(close_value(settings_panel_.scroll_offset(),13.5),"Horizontal wheel was converted into vertical Settings movement.");
+        smoke_motion_capture(L"settings-scroll-fractional-direct",0);
+
+        reset();settings_wheel(inside,-120,3);*smoke_chrome_time_+=16;motion_schedule();
+        const auto displayed=settings_panel_.scroll_offset();
+        const auto& controls=settings_panel_.layout().controls;
+        const auto partial=std::find_if(controls.begin(),controls.end(),[&](const auto& control){
+            return control.content && control.enabled && control.visible && control.bounds.y<viewport.y && control.hit_bounds.height>0;
+        });
+        require(partial!=controls.end(),"Settings scroll did not retain a partially exposed control.");
+        const auto id=partial->id;
+        const Point exposed{partial->hit_bounds.x+partial->hit_bounds.width/2,partial->hit_bounds.y+partial->hit_bounds.height/2};
+        pointer_down(exposed,false);
+        require(!settings_panel_.scroll_active() && close_value(settings_panel_.scroll_offset(),displayed) && settings_panel_.focused_control()==id,
+                "Pointer hit geometry followed the scroll target or moved the displayed control during press.");
+        pointer_up({0,0});
+        require(settings_panel_.draft()==original_panel.draft() && GetCapture()!=hwnd_,"Canceled Settings press mutated its draft or retained capture.");
+
+        reset();settings_wheel(inside,-120,3);smoke_settings_scroll_reduced_motion_=true;motion_schedule();
+        require(!settings_panel_.scroll_active() && close_value(settings_panel_.scroll_offset(),108) && !motion_timer_active_,
+                "Reduced motion did not settle active Settings scrolling and remove timer work.");
+        settings_wheel(inside,-120,3);
+        require(!settings_panel_.scroll_active() && close_value(settings_panel_.scroll_offset(),216),"Reduced motion delayed a new Settings wheel event.");
+        smoke_motion_capture(L"settings-scroll-reduced-motion-direct",0);
+        require(config_==original_config && sessions_==actors && !focused_session_ &&
+                smoke_terminal_input_submissions_==input && smoke_terminal_mouse_submissions_==mouse,
+                "Settings scroll evidence changed config, terminal ownership or terminal input.");
+    } catch(...) {restore();throw;}
+    restore();
+    std::fputs("Native Settings scroll: raw wheel conversion, immediate response, finite burst/reversal, partial-control pointer hit, fractional direct input, horizontal consumption, zero/page policy and reduced-motion timer shutdown verified; synthetic_motion_policy=1 controlled_clock=1 native_present=1 physical_frame_pacing_verified=0.\n",stderr);
+}
 bool NativeWindow::smoke_menu_has_theme(const Theme& theme) const {
     // Probe the palette already supplied by the host without opening an overlay
     // over Settings or weakening its exclusive input gate. OS contrast itself
@@ -5030,7 +5142,7 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
     std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
 }
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
-    if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_) return;
+    if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_ || smoke_settings_scroll_running_) return;
     if(!options_.smoke_agent&&projects_.active()) {
         if(ai_enabled_||agent_controller_||agent_setup_||agent_panel_.is_open()||footer_layout().agent.width>0||command_context().supports_agent_panel) {smoke_finish("Disabled AI feature exposed UI or provider ownership.");return;}
         for(const auto& entry:palette_commands())if(entry.id=="agent.toggle"){smoke_finish("Disabled AI feature leaked into Commands.");return;}
@@ -5200,6 +5312,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             settings_changed();
             if(settings_panel_.draft()!=smoke_settings_original_||config_!=smoke_settings_original_||focused_session_){smoke_finish("Theme gallery presentation changed draft or terminal input ownership.");return;}
             std::fputs("Native theme gallery: nine preset cards, normal3/narrow2 columns, authored high-contrast panel palette, unchanged draft and exclusive Settings focus; not OS accessibility qualification.\n",stderr);
+            smoke_settings_scroll_evidence();
             MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam='Q';
             if (!key_message(key)) { smoke_finish("Settings printable key escaped input trapping."); return; }
             terminal_text("SETTINGS_INPUT_MUST_NOT_REACH_SHELL");
@@ -6208,8 +6321,13 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if(agent_panel_.is_open()) {agent_panel_.scroll(static_cast<double>(GET_WHEEL_DELTA_WPARAM(wparam))/WHEEL_DELTA*3);agent_input_changed();return 0;}
         if (settings_loading()) return 0;
         if (settings_input_blocked()) {
-            settings_panel_.wheel(point(lparam,true),static_cast<double>(GET_WHEEL_DELTA_WPARAM(wparam))/WHEEL_DELTA*3);
-            settings_input_changed(); return 0;
+            // A horizontal wheel belongs to this modal too, but is not a
+            // vertical gesture. Do not leak it to the terminal underneath.
+            if (message==WM_MOUSEWHEEL) {
+                UINT lines=3; SystemParametersInfoW(SPI_GETWHEELSCROLLLINES,0,&lines,0);
+                settings_wheel(point(lparam,true),GET_WHEEL_DELTA_WPARAM(wparam),lines);
+            }
+            return 0;
         }
         if (context_menu_.is_open()) { context_menu_.wheel(point(lparam,true),static_cast<double>(GET_WHEEL_DELTA_WPARAM(wparam))/WHEEL_DELTA*3); menu_input_changed(); return 0; }
         if (modal_) return 0;

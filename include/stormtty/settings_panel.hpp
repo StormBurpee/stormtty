@@ -21,6 +21,8 @@ struct SettingsControl {
     std::string id; // Stable semantic identity, including "shell:<profile id>".
     Rect bounds; // DIP, relative to the client window.
     bool visible{}, enabled{true};
+    Rect hit_bounds; // Visible intersection only; bounds retains full layout geometry.
+    bool content{}; // Scrolls with the content viewport, not fixed navigation/footer.
 };
 struct SettingsPanelLayout {
     Rect panel, navigation, content, footer, preview;
@@ -77,7 +79,16 @@ public:
     bool pointer_move(Point);
     bool pointer_up(Point);
     void pointer_cancel() noexcept; // Host capture/focus loss; never commits a click.
-    bool wheel(Point, double lines);
+    bool wheel(Point, double lines); // Direct legacy/precise input; fractional lines retained.
+    // Host passes positive-down DIP and a monotonic timestamp. Only discrete
+    // wheel packets animate; fractional wheel packets remain direct.
+    bool wheel_pixels(Point, double delta_dip, std::uint64_t now_ms, bool animate_discrete);
+    bool tick_scroll(std::uint64_t now_ms); // Cheap geometry translation, no previews/layout rebuild.
+    bool scroll_active() const noexcept { return scroll_animating_; }
+    double scroll_offset() const noexcept { return scroll_; }
+    double scroll_target() const noexcept { return scroll_target_; }
+    void finish_scroll(); // Reduced motion/keyboard: land exactly, then stop scheduling.
+    void cancel_scroll_at_display() noexcept; // Pointer interruption: never jump to target.
     // Coalesced previews keep rapid slider input bounded. A save/cancel action
     // supersedes pending preview. Save remains open and read-only until result.
     std::optional<SettingsAction> take_action();
@@ -94,6 +105,7 @@ private:
     void activate(std::string_view id, int direction = 1);
     void focus_control(std::string id);
     void ensure_focus_visible();
+    bool set_scroll_offset(double);
     void adjust_opacity(Point, bool blur=false);
     std::string& selected_color();
     std::optional<Theme> custom_theme_;
@@ -113,6 +125,9 @@ private:
     SettingsSection section_{SettingsSection::appearance};
     std::string focus_{"nav.appearance"}, hover_, pressed_, error_, theme_notice_, capture_command_, material_status_, console_backend_status_;
     double scroll_{}, document_height_{};
+    double scroll_target_{}, scroll_start_{};
+    std::uint64_t scroll_started_ms_{}, scroll_sampled_ms_{};
+    bool scroll_animating_{};
     bool bundled_console_available_{};
     bool open_{}, saving_{}, dragging_opacity_{}, dragging_blur_{}, high_contrast_{}, loaded_changes_{};
     Color high_background_{0,0,0,255}, high_foreground_{255,255,255,255};

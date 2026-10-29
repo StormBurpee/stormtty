@@ -25,9 +25,15 @@ void click(SettingsPanel& panel,std::string_view id) {
     const Point point{bounds.x+bounds.width/2,bounds.y+bounds.height/2};
     CHECK(panel.pointer_down(point));CHECK(panel.pointer_up(point));
 }
+PixelRect clipped(PixelRect r,const std::optional<PixelRect>& clip) {
+    if (!clip) return r;
+    const auto x=std::max(r.x,clip->x),y=std::max(r.y,clip->y);
+    return {x,y,std::max(0.f,std::min(r.x+r.width,clip->x+clip->width)-x),
+        std::max(0.f,std::min(r.y+r.height,clip->y+clip->height)-y)};
+}
 void validate_scene(const WindowScene& scene,double width,double height,double scale) {
     for (const auto& primitive:scene.primitives) {
-        const auto& r=primitive.rect;
+        const auto r=clipped(primitive.rect,primitive.clip);
         CHECK(std::isfinite(r.x) && std::isfinite(r.y) && std::isfinite(r.width) && std::isfinite(r.height));
         if (primitive.kind==ChromePrimitiveKind::line) {
             CHECK(r.x>=0 && r.y>=0 && r.x<=width*scale && r.y<=height*scale);
@@ -36,7 +42,7 @@ void validate_scene(const WindowScene& scene,double width,double height,double s
         CHECK(r.x+r.width<=width*scale+0.02 && r.y+r.height<=height*scale+0.02);
     }
     for (const auto& text:scene.texts) {
-        const auto& r=text.rect;
+        const auto r=clipped(text.rect,text.clip);
         CHECK(std::isfinite(r.x) && std::isfinite(r.y) && std::isfinite(r.width) && std::isfinite(r.height));
         CHECK(r.x>=0 && r.y>=0 && r.width>0 && r.height>0);
         CHECK(r.x+r.width<=width*scale+0.02 && r.y+r.height<=height*scale+0.02);
@@ -409,6 +415,175 @@ int main() {return run_core_tests("settings panel",[] {
         shortcuts.open(shortcuts.original());CHECK(shortcuts.is_open());CHECK(!shortcuts.dirty());
     }
 
+    // Fractional scrolling retains partially visible cards, original glyph
+    // baselines and real clipped hit areas rather than hiding entire rows.
+    for (const auto size:std::vector<Size>{{1024,768},{480,640},{320,480}}) {
+        SettingsPanel scroll;scroll.resize(size);scroll.open(defaults);
+        const auto viewport=scroll.layout().content;
+        const Point inside{viewport.x+viewport.width/2,viewport.y+viewport.height/2};
+        const auto first_id="appearance.theme."+builtin_themes().front().name;
+        CHECK(scroll.wheel(inside,-.625)); // 22.5 DIP, not a snapped row.
+        const auto card=item(scroll,first_id);
+        CHECK(card.visible && card.content && near(card.bounds.y,viewport.y-22.5));
+        CHECK(near(card.bounds.height,96) && near(card.hit_bounds.y,viewport.y));
+        CHECK(near(card.hit_bounds.height,73.5));
+        for (const float scale:{1.f,1.25f,1.5f,2.f}) {
+            WindowScene scene;scroll.append_scene(scene,scale);validate_scene(scene,size.width,size.height,scale);
+            const auto paint=std::find_if(scene.primitives.begin(),scene.primitives.end(),[&](const auto& p){
+                return near(p.rect.y,card.bounds.y*scale) && near(p.rect.x,card.bounds.x*scale) && near(p.rect.height,96*scale);
+            });
+            CHECK(paint!=scene.primitives.end() && paint->clip);
+            CHECK(near(paint->clip->y,viewport.y*scale) && near(paint->clip->height,viewport.height*scale));
+            const auto title=std::find_if(scene.texts.begin(),scene.texts.end(),[&](const auto& t){return t.text=="Graphite";});
+            CHECK(title!=scene.texts.end() && title->clip);
+            CHECK(near(title->rect.y,(card.bounds.y+4)*scale) && near(title->rect.height,23*scale));
+            CHECK(near(title->clip->y,viewport.y*scale));
+            const auto footer=std::find_if(scene.texts.begin(),scene.texts.end(),[](const auto& t){return t.text=="Save changes";});
+            CHECK(footer!=scene.texts.end() && footer->clip && footer->clip!=title->clip);
+        }
+        const auto original_y=card.bounds.y;
+        const Point exposed{card.hit_bounds.x+card.hit_bounds.width/2,card.hit_bounds.y+1};
+        CHECK(scroll.pointer_down(exposed));CHECK(near(item(scroll,first_id).bounds.y,original_y));
+        CHECK(scroll.pointer_up(exposed));CHECK(near(item(scroll,first_id).bounds.y,original_y));
+        CHECK(scroll.focused_control()==first_id);
+        const auto selected=scroll.draft();(void)scroll.take_action();
+        const Point hidden_edge{card.bounds.x+card.bounds.width/2,viewport.y-.25};
+        CHECK(scroll.pointer_down(hidden_edge));CHECK(scroll.pointer_up(hidden_edge));
+        CHECK(scroll.draft()==selected && !scroll.take_action());
+        // Keyboard activation reveals the focused control; pointer activation didn't.
+        const auto reveal_generation=scroll.generation();
+        CHECK(scroll.key({{"ENTER"}}));CHECK(near(item(scroll,first_id).bounds.y,viewport.y));
+        CHECK(scroll.generation()>reveal_generation); // Re-selecting the same theme still invalidates revealed pixels.
+        const auto settled_generation=scroll.generation();CHECK(scroll.key({{"ENTER"}}));
+        CHECK(scroll.generation()==settled_generation); // No-op activation needs no redraw.
+        (void)scroll.take_action();
+        const auto partly_reveal=[&](std::string_view id) {
+            const auto bounds=item(scroll,id).bounds;
+            const bool lower=id=="appearance.opacity";
+            const auto desired=lower?viewport.y+viewport.height-bounds.height/2:viewport.y-bounds.height/2;
+            CHECK(scroll.wheel(inside,(desired-bounds.y)/36.0));
+            const auto c=item(scroll,id);CHECK(c.visible && c.hit_bounds.height<c.bounds.height);
+            CHECK(near(c.bounds.y,desired));return c;
+        };
+        // Editing and native exchange actions remain usable from the exposed slice.
+        auto value=partly_reveal("appearance.color.value");
+        Point point{value.hit_bounds.x+value.hit_bounds.width/2,value.hit_bounds.y+1};
+        CHECK(scroll.pointer_down(point));CHECK(scroll.pointer_up(point));
+        CHECK(near(item(scroll,value.id).bounds.y,value.bounds.y));
+        for (const char c:std::string("123ABC")) CHECK(scroll.key({{std::string(1,c)}}));
+        CHECK(scroll.key({{"ENTER"}}));CHECK(scroll.draft().theme.background=="#123ABC");
+        (void)scroll.take_action();
+        for (const auto id:{"appearance.import","appearance.export"}) {
+            const auto control=partly_reveal(id);point={control.hit_bounds.x+control.hit_bounds.width/2,control.hit_bounds.y+1};
+            CHECK(scroll.pointer_down(point));CHECK(scroll.pointer_up(point));
+            const auto action=scroll.take_action();CHECK(action);
+            CHECK(action->kind==(std::string_view(id)=="appearance.import"?SettingsActionKind::import_theme:SettingsActionKind::export_theme));
+        }
+        // Captured slider drags may leave the viewport, but a hidden portion can
+        // never start one. Cancellation and wheel input cannot leak to the host.
+        const auto slider=partly_reveal("appearance.opacity");
+        const auto before_hidden=scroll.draft();
+        CHECK(scroll.pointer_down({slider.bounds.x+10,viewport.y+viewport.height+.25}));
+        CHECK(scroll.pointer_move({slider.bounds.x+slider.bounds.width,viewport.y+viewport.height+.25}));
+        CHECK(scroll.pointer_up({slider.bounds.x+slider.bounds.width,viewport.y+viewport.height+.25}));
+        CHECK(scroll.draft()==before_hidden);
+        point={slider.hit_bounds.x+8,slider.hit_bounds.y+1};
+        CHECK(scroll.pointer_down(point));CHECK(near(item(scroll,slider.id).bounds.y,slider.bounds.y));
+        CHECK(scroll.pointer_move({slider.bounds.x+slider.bounds.width*2,viewport.y-20}));
+        CHECK(near(scroll.draft().appearance.background_opacity,1));
+        scroll.pointer_cancel();
+        CHECK(scroll.pointer_up({slider.bounds.x,viewport.y-20}));
+        CHECK(near(scroll.draft().appearance.background_opacity,1));
+        for (int i=0;i<40;++i) {CHECK(scroll.wheel(inside,-.125));CHECK(scroll.wheel(inside,.125));}
+        scroll.cancel();CHECK(!scroll.is_open());(void)scroll.take_action();
+        scroll.open(defaults);CHECK(near(item(scroll,first_id).bounds.y,viewport.y));
+        CHECK(scroll.draft()==defaults && !scroll.take_action());
+    }
+    // Discrete wheel smoothing is a bounded presentation-only animation. The
+    // displayed offset owns painting AND hit geometry; there is no layout/string
+    // rebuild per frame, no target-based hit area, no preview or terminal event.
+    {
+        SettingsPanel smooth;smooth.resize({1024,768});smooth.open(defaults);
+        const auto viewport=smooth.layout().content;
+        const Point inside{viewport.x+100,viewport.y+100};
+        const auto first_id="appearance.theme."+builtin_themes().front().name;
+        const auto* storage=smooth.layout().controls.data();
+        const auto* identity=item(smooth,first_id).id.data();
+        const auto first_bounds=item(smooth,first_id).bounds;
+        const auto fixed=item(smooth,"save").bounds;
+        const auto preview_y=smooth.layout().preview.y;
+        CHECK(smooth.wheel_pixels(inside,108,100,true));
+        CHECK(smooth.scroll_offset()>0 && smooth.scroll_offset()<108 && smooth.scroll_target()==108 && smooth.scroll_active());
+        double previous=smooth.scroll_offset();
+        CHECK(!smooth.tick_scroll(100) && !smooth.tick_scroll(0) && smooth.scroll_offset()==previous);
+        for (const std::uint64_t now:{116,133,149,170,189,190}) {
+            const auto generation=smooth.generation();CHECK(smooth.tick_scroll(now));
+            CHECK(smooth.scroll_offset()>previous && smooth.scroll_offset()<=108);
+            CHECK(smooth.generation()>generation && !smooth.take_action());
+            CHECK(smooth.layout().controls.data()==storage && item(smooth,first_id).id.data()==identity);
+            CHECK(near(item(smooth,first_id).bounds.y,first_bounds.y-smooth.scroll_offset()));
+            CHECK(near(smooth.layout().preview.y,preview_y-smooth.scroll_offset()));
+            CHECK(near(item(smooth,"save").bounds.y,fixed.y));
+            previous=smooth.scroll_offset();
+            CHECK(!smooth.tick_scroll(now-1) && smooth.scroll_offset()==previous);
+        }
+        CHECK(!smooth.scroll_active() && smooth.scroll_offset()==108 && smooth.scroll_target()==108);
+        const auto idle_generation=smooth.generation();CHECK(!smooth.tick_scroll(500));CHECK(smooth.generation()==idle_generation);
+        CHECK(smooth.wheel_pixels(inside,108,600,true));CHECK(smooth.scroll_target()==216);
+        CHECK(smooth.wheel_pixels(inside,108,616,true));CHECK(smooth.scroll_target()==324);
+        const double reversal_start=smooth.scroll_offset();
+        CHECK(smooth.wheel_pixels(inside,-36,632,true));
+        CHECK(smooth.scroll_offset()<reversal_start && near(smooth.scroll_target(),reversal_start-36));
+        CHECK(smooth.tick_scroll(722));CHECK(!smooth.scroll_active() && near(smooth.scroll_offset(),reversal_start-36));
+        CHECK(smooth.wheel_pixels(inside,108,800,true));const double precise_start=smooth.scroll_offset();
+        CHECK(smooth.wheel_pixels(inside,.375,816,false));
+        CHECK(!smooth.scroll_active() && near(smooth.scroll_offset(),precise_start+.375) && smooth.scroll_target()==smooth.scroll_offset());
+        CHECK(smooth.wheel_pixels(inside,108,900,true));const auto reduced_target=smooth.scroll_target();
+        smooth.finish_scroll();CHECK(!smooth.scroll_active() && smooth.scroll_offset()==reduced_target);
+        CHECK(!smooth.tick_scroll(1000));
+        // Pointer presses freeze displayed geometry instead of chasing the target.
+        smooth.wheel_pixels(inside,-10000,1100,false);CHECK(smooth.scroll_offset()==0);
+        smooth.wheel_pixels(inside,108,1200,true);smooth.tick_scroll(1216);
+        const auto partial=item(smooth,first_id);CHECK(partial.visible && partial.hit_bounds.height<partial.bounds.height);
+        const Point exposed{partial.hit_bounds.x+20,partial.hit_bounds.y+2};
+        const auto pointer_offset=smooth.scroll_offset();
+        CHECK(smooth.pointer_down(exposed));CHECK(!smooth.scroll_active() && smooth.scroll_offset()==pointer_offset);
+        CHECK(!smooth.tick_scroll(1300));CHECK(smooth.pointer_up(exposed));CHECK(smooth.scroll_offset()==pointer_offset);
+        CHECK(smooth.focused_control()==first_id);
+        CHECK(smooth.wheel_pixels(inside,108,1400,true));smooth.pointer_cancel();const auto cancelled=smooth.scroll_offset();
+        CHECK(!smooth.tick_scroll(1500) && smooth.scroll_offset()==cancelled);
+        CHECK(smooth.wheel_pixels(inside,108,1600,true));CHECK(smooth.key({{"TAB"}}));CHECK(!smooth.scroll_active());
+        CHECK(smooth.wheel_pixels(inside,108,1700,true));smooth.resize({480,640});CHECK(!smooth.scroll_active());
+        CHECK(smooth.scroll_target()==smooth.scroll_offset());
+        const auto narrow=smooth.layout().content;const Point narrow_inside{narrow.x+20,narrow.y+20};
+        CHECK(smooth.wheel_pixels(narrow_inside,108,1800,true));activate(smooth,"nav.shell");
+        CHECK(!smooth.scroll_active() && smooth.scroll_offset()==0);
+        activate(smooth,"nav.appearance");CHECK(smooth.wheel_pixels(narrow_inside,108,1900,true));
+        smooth.cancel();CHECK(!smooth.scroll_active());(void)smooth.take_action();smooth.open(defaults);
+        CHECK(smooth.scroll_offset()==0 && smooth.scroll_target()==0 && !smooth.scroll_active());
+        const auto before_ignored=smooth.generation();
+        CHECK(smooth.wheel_pixels(narrow_inside,0,2000,true));CHECK(smooth.generation()==before_ignored && !smooth.scroll_active());
+        CHECK(smooth.wheel_pixels({narrow.x,narrow.y-1},108,2000,true));CHECK(smooth.generation()==before_ignored);
+        CHECK(smooth.wheel_pixels(narrow_inside,std::numeric_limits<double>::quiet_NaN(),2000,true));CHECK(smooth.generation()==before_ignored);
+        CHECK(smooth.wheel_pixels(narrow_inside,10000,2100,true));smooth.tick_scroll(100000);
+        CHECK(!smooth.scroll_active());const auto end=smooth.scroll_offset();const auto end_generation=smooth.generation();
+        CHECK(smooth.wheel_pixels(narrow_inside,108,100100,true));CHECK(smooth.scroll_offset()==end && !smooth.scroll_active());
+        CHECK(smooth.generation()==end_generation);
+        smooth.cancel();CHECK(!smooth.wheel_pixels(narrow_inside,108,100200,true));
+        smooth.open(defaults);CHECK(smooth.wheel_pixels(narrow_inside,108,0,true));
+        CHECK(smooth.scroll_active() && smooth.tick_scroll(16));const auto at_sixteen=smooth.scroll_offset();
+        CHECK(!smooth.tick_scroll(0) && smooth.scroll_offset()==at_sixteen);
+        CHECK(smooth.wheel_pixels(narrow_inside,36,8,true));CHECK(smooth.scroll_offset()>at_sixteen);
+        CHECK(smooth.scroll_target()==144);CHECK(smooth.tick_scroll(106));CHECK(!smooth.scroll_active() && smooth.scroll_offset()==144);
+        const auto authored_card_y=item(smooth,first_id).bounds.y+smooth.scroll_offset();
+        const auto authored_preview_y=smooth.layout().preview.y+smooth.scroll_offset();
+        for (unsigned repeat=0;repeat<1000;++repeat) {
+            CHECK(smooth.wheel_pixels(narrow_inside,.375,200+repeat,false));
+            CHECK(smooth.wheel_pixels(narrow_inside,-.375,200+repeat,false));
+        }
+        CHECK(near(item(smooth,first_id).bounds.y,authored_card_y-smooth.scroll_offset()));
+        CHECK(near(smooth.layout().preview.y,authored_preview_y-smooth.scroll_offset()));
+    }
     // Focus trapping, reverse traversal, scrolling to off-screen controls, and
     // clipping across tiny/resized/high-DPI viewports are portable guarantees.
     for (const auto size:std::vector<Size>{{1280,800},{1024,768},{720,620},{480,480},{320,260},{40,40},{0,0}}) {
@@ -420,6 +595,24 @@ int main() {return run_core_tests("settings panel",[] {
             if (responsive.layout().content.height>=52 && responsive.layout().content.width>0) CHECK(item(responsive,"binding:window.fullscreen").visible);
             WindowScene shortcuts;responsive.append_scene(shortcuts,scale);validate_scene(shortcuts,size.width,size.height,scale);
             responsive.cancel();
+        }
+    }
+    // Short wide windows retain a sidebar: partial document controls are fine,
+    // but fixed navigation cannot become paintable/hittable across the footer.
+    for (const double height:{260.,180.,120.,80.}) {
+        SettingsPanel short_wide;short_wide.resize({1024,height});short_wide.open(defaults);
+        WindowScene scene;short_wide.append_scene(scene);validate_scene(scene,1024,height,1);
+        const auto region=short_wide.layout().navigation;
+        for (const auto& c:short_wide.layout().controls) if (c.id.starts_with("nav.")) {
+            if (c.visible) {
+                CHECK(c.bounds.y>=region.y && c.bounds.y+c.bounds.height<=region.y+region.height);
+                CHECK(c.bounds.y+c.bounds.height<=short_wide.layout().footer.y);
+            } else {
+                CHECK(c.hit_bounds.width==0 && c.hit_bounds.height==0);
+                CHECK(std::none_of(scene.texts.begin(),scene.texts.end(),[&](const auto& t){
+                    return t.size_dip==13 && near(t.rect.y,c.bounds.y) && t.rect.x>=region.x && t.rect.x<region.x+region.width;
+                }));
+            }
         }
     }
     // Four compact tabs retain their hit targets and full semantic identities;

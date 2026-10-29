@@ -262,14 +262,23 @@ struct OpacityLayer {
     }
     ~OpacityLayer(){if(active)dc->PopLayer();}
 };
+PixelRect chrome_clip(PixelRect bounds,const std::optional<PixelRect>& viewport) noexcept {
+    if (!viewport) return bounds;
+    if (!nonempty(*viewport)) return {};
+    // Match Metal scissor coverage: fractional viewports cover whole physical
+    // pixels outward, while the original paths and glyph layouts stay intact.
+    const auto x=std::floor(viewport->x),y=std::floor(viewport->y);
+    return intersect(bounds,{x,y,std::ceil(viewport->x+viewport->width)-x,std::ceil(viewport->y+viewport->height)-y});
+}
+PixelRect chrome_bounds(const ChromeText& text) noexcept { return chrome_clip(text.rect,text.clip); }
 PixelRect chrome_bounds(const ChromePrimitive& p) noexcept {
     if(!std::isfinite(p.stroke_width) || !std::isfinite(p.radius)) return {};
     const auto pad=std::max(1.0f,p.stroke_width*.5f+1);
     if(p.kind==ChromePrimitiveKind::line)
-        return {std::min(p.rect.x,p.rect.x+p.rect.width)-pad,std::min(p.rect.y,p.rect.y+p.rect.height)-pad,
-                std::abs(p.rect.width)+pad*2,std::abs(p.rect.height)+pad*2};
+        return chrome_clip({std::min(p.rect.x,p.rect.x+p.rect.width)-pad,std::min(p.rect.y,p.rect.y+p.rect.height)-pad,
+                std::abs(p.rect.width)+pad*2,std::abs(p.rect.height)+pad*2},p.clip);
     if(!nonempty(p.rect))return {};
-    return {p.rect.x-pad,p.rect.y-pad,p.rect.width+pad*2,p.rect.height+pad*2};
+    return chrome_clip({p.rect.x-pad,p.rect.y-pad,p.rect.width+pad*2,p.rect.height+pad*2},p.clip);
 }
 struct CellMap { UINT32 column{}, end{}; };
 struct GlyphCluster {
@@ -1120,6 +1129,7 @@ struct Renderer::Impl {
             if (item.kind==ChromeDrawKind::primitive) {
                 const auto& primitive=scene.primitives[item.index];
                 if(!overlaps(chrome_bounds(primitive),damage))continue;
+                Clip viewport(dc.get(),chrome_clip({0,0,float(width),float(height)},primitive.clip));
                 if (primitive.kind == ChromePrimitiveKind::line) {
                     brush->SetColor(color(primitive.stroke_width>0?primitive.stroke:primitive.fill));
                     dc->DrawLine({primitive.rect.x,primitive.rect.y},{primitive.rect.x+primitive.rect.width,primitive.rect.y+primitive.rect.height},
@@ -1141,7 +1151,7 @@ struct Renderer::Impl {
                 }
             } else {
                 const auto& label=scene.texts[item.index];
-                if (!nonempty(label.rect) || !overlaps(label.rect,damage) || label.text.empty() || !label.color.a) continue;
+                if (!nonempty(label.rect) || !overlaps(chrome_bounds(label),damage) || label.text.empty() || !label.color.a) continue;
                 if (label.text.size()>32768 || label.family.empty() || label.family.size()>256 ||
                     !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256) continue;
                 const auto text = utf16(label.text), family = utf16(label.family);
@@ -1163,7 +1173,7 @@ struct Renderer::Impl {
                                                       label.rect.width,label.rect.height,layout.put()),"Create chrome layout");
                 auto foreground=label.color;foreground.a=255;
                 brush->SetColor(color(foreground));
-                Clip clip(dc.get(),label.rect);
+                Clip clip(dc.get(),chrome_bounds(label));
                 // Layer opacity applies equally to monochrome and color-font layers.
                 // Only deliberate ChromeText alpha is faded; terminal rows never are.
                 OpacityLayer opacity(dc.get(),intersect(label.rect,{0,0,float(width),float(height)}),float(label.color.a)/255);
@@ -1196,8 +1206,8 @@ struct Renderer::Impl {
             const auto texts=std::max(scene.texts.size(),previous.texts.size());
             for(std::size_t i=0;i<texts;++i) {
                 if(i<scene.texts.size() && i<previous.texts.size() && scene.texts[i]==previous.texts[i])continue;
-                if(i<scene.texts.size())add(scene.texts[i].rect);
-                if(i<previous.texts.size())add(previous.texts[i].rect);
+                if(i<scene.texts.size())add(chrome_bounds(scene.texts[i]));
+                if(i<previous.texts.size())add(chrome_bounds(previous.texts[i]));
             }
         }
         for (std::size_t i=0;i<scene.panes.size();++i) {

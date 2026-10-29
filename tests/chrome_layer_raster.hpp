@@ -2,6 +2,9 @@
 
 #include "stormtty/context_menu.hpp"
 #include "stormtty/renderer.hpp"
+#include "stormtty/settings_panel.hpp"
+#include <functional>
+#include <limits>
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -31,6 +34,92 @@ inline unsigned chrome_ink(const std::vector<std::uint8_t>& rgba,unsigned width,
             if (red?c.r>160 && c.g<100 && c.b<100:c.r>180 && c.g>180 && c.b>180) ++count;
         }
     return count;
+}
+// Compare clipped pixels with the identical unmodified paint geometry. This
+// catches resized rounded corners and re-centered/reflowed partial glyphs, as
+// well as a clip leaking into subsequent fixed items or retained dirty regions.
+inline void chrome_viewport_raster_tests(RendererOptions options) {
+    options.background_opacity=1;
+    Renderer renderer(nullptr,options);constexpr unsigned width=384,height=240;
+    std::uint64_t generation=0;
+    for (const float dpi:{96.f,144.f,192.f}) {
+        renderer.resize(width,height,dpi);
+        WindowScene base;base.background={11,17,23,255};
+        ChromePrimitive fixed;fixed.rect={344,24,24,184};fixed.fill={30,180,100,255};base.primitives.push_back(fixed);
+        ChromeText footer;footer.rect={24,180,296,36};footer.text="Fixed footer";footer.family=options.font.family;
+        base.texts.push_back(footer);base.chrome_generation=++generation;
+        renderer.render(base);const auto background=renderer.read_pixels();
+        for (const auto viewport:{PixelRect{32,64,296,80},PixelRect{32.25f,64.5f,295.5f,79.25f}}) {
+        for (const float offset:{0.f,22.5f,61.25f,95.5f}) {
+            WindowScene full=base;
+            ChromePrimitive card;card.rect={16,50-offset,240,96};card.fill={70,90,120,255};card.stroke={240,180,100,255};
+            card.radius=14;card.stroke_width=2;full.primitives.insert(full.primitives.begin(),card);
+            ChromeText title;title.rect={24,53-offset,220,36};title.text="MMMM clipped glyphs";title.family=options.font.family;title.size_dip=20;
+            full.texts.insert(full.texts.begin(),title);
+            full.chrome_generation=++generation;renderer.render(full);const auto reference=renderer.read_pixels();
+            if (offset<=22.5f) chrome_check(chrome_ink(reference,width,{0,0,328,160},false)>8,"Viewport reference contains no real glyph ink");
+            chrome_check(chrome_ink(background,width,footer.rect,false)>8,"Fixed footer reference contains no real glyph ink");
+            auto clipped=full;clipped.primitives.front().clip=viewport;clipped.texts.front().clip=viewport;
+            clipped.chrome_generation=++generation;renderer.render(clipped);const auto actual=renderer.read_pixels();
+            if (offset==0) chrome_check(chrome_ink(actual,width,{33,65,290,78},false)>8,"Clipping dropped the partially visible glyphs");
+            if (offset<=22.5f) chrome_check(chrome_pixel(actual,width,100,90)!=chrome_pixel(background,width,100,90),"Clipping dropped the partially visible card");
+            for (unsigned y=0;y<height;++y) for(unsigned x=0;x<width;++x) {
+                const bool inside=x>=std::floor(viewport.x) && x<std::ceil(viewport.x+viewport.width) &&
+                    y>=std::floor(viewport.y) && y<std::ceil(viewport.y+viewport.height);
+                chrome_check(chrome_pixel(actual,width,x,y)==chrome_pixel(inside?reference:background,width,x,y),
+                             "Chrome viewport changed original paint geometry or leaked outside its clip");
+            }
+            clipped.force_redraw=true;renderer.render(clipped);
+            chrome_check(renderer.read_pixels()==actual,"Clipped chrome incremental damage differs from full redraw");
+            clipped.force_redraw=false;
+            // A clip-only mutation invalidates the previously exposed pixels.
+            const auto nan=std::numeric_limits<float>::quiet_NaN(),infinity=std::numeric_limits<float>::infinity();
+            for (const auto invalid:{PixelRect{32,64,0,80},PixelRect{32,64,-1,80},PixelRect{32,64,80,-1},
+                    PixelRect{nan,64,80,80},PixelRect{32,64,infinity,80},PixelRect{32,64,80,nan}}) {
+                clipped.primitives.front().clip=invalid;clipped.texts.front().clip=invalid;
+                clipped.chrome_generation=++generation;renderer.render(clipped);
+                chrome_check(renderer.read_pixels()==background,"Empty or invalid chrome clip painted or left stale pixels");
+            }
+        }
+        }
+    }
+}
+using SettingsRasterCapture=std::function<void(std::string_view,unsigned,unsigned,const std::vector<std::uint8_t>&)>;
+inline void settings_viewport_raster_tests(RendererOptions options,SettingsRasterCapture capture={}) {
+    Renderer renderer(nullptr,options);
+    for (const bool narrow:{false,true}) for(const float scale:{1.f,1.25f,1.5f}) {
+        const unsigned dip_width=narrow?480:1024,dip_height=narrow?640:768;
+        const unsigned width=unsigned(dip_width*scale),height=unsigned(dip_height*scale);
+        renderer.resize(width,height,96*scale);
+        SettingsPanel panel;panel.resize({double(dip_width),double(dip_height)});panel.open(default_config(Platform::windows));
+        const auto viewport=panel.layout().content;
+        const Point inside{viewport.x+viewport.width/2,viewport.y+viewport.height/2};
+        const auto scene_for=[&] {WindowScene scene;scene.chrome_generation=panel.generation();panel.append_scene(scene,scale);return scene;};
+        auto initial=scene_for();renderer.render(initial);const auto baseline=renderer.read_pixels();
+        double previous_offset=0;
+        for (const double offset:{22.5,63.25,108.5,201.75,63.25,22.5}) {
+            panel.wheel(inside,(previous_offset-offset)/36);previous_offset=offset;
+            auto scene=scene_for();renderer.render(scene);const auto pixels=renderer.read_pixels();
+            chrome_check(chrome_same_patch(pixels,baseline,width,{0,0,float(width),float(std::floor(viewport.y*scale))}),"Scrolling painted over fixed Settings headings");
+            chrome_check(chrome_same_patch(pixels,baseline,width,{0,float(std::ceil((viewport.y+viewport.height)*scale)),float(width),float(height-std::ceil((viewport.y+viewport.height)*scale))}),"Scrolling painted over fixed Settings footer");
+            chrome_check(chrome_same_patch(pixels,baseline,width,{0,float(std::ceil(viewport.y*scale)),float(std::floor(viewport.x*scale)),float(std::floor(viewport.height*scale))}),"Scrolling painted over Settings navigation");
+            scene.force_redraw=true;renderer.render(scene);
+            chrome_check(renderer.read_pixels()==pixels,"Fractional Settings scroll left stale native pixels");
+            if (offset==22.5) chrome_check(chrome_ink(pixels,width,{float((viewport.x+12)*scale),float((viewport.y+15)*scale),100*scale,52*scale},false)>8,
+                "Settings dropped the exposed terminal sample in a partially visible first-row card");
+            if (capture && offset==22.5) {
+                const std::string name=std::string("settings-scroll-")+(narrow?"narrow":"normal")+"-fractional-"+std::to_string(unsigned(scale*100))+"pct.png";
+                capture(name,width,height,pixels);
+            }
+        }
+        for(int repeat=0;repeat<4;++repeat) {
+            for(int tab=0;tab<24;++tab)panel.key({{"TAB"}});
+            auto scene=scene_for();renderer.render(scene);const auto pixels=renderer.read_pixels();
+            scene.force_redraw=true;renderer.render(scene);chrome_check(renderer.read_pixels()==pixels,"Settings keyboard reveal left stale pixels");
+            panel.cancel();(void)panel.take_action();panel.open(default_config(Platform::windows));
+            scene=scene_for();renderer.render(scene);chrome_check(renderer.read_pixels()==baseline,"Settings reopen retained scrolled content");
+        }
+    }
 }
 inline void chrome_layer_raster_tests(RendererOptions options) {
     options.background_opacity=.65f;
