@@ -3,6 +3,7 @@
 #include "stormtty/session.hpp"
 #include "platform.hpp"
 #include "input.hpp"
+#include "menu_shortcuts.hpp"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CATransaction.h>
 #include <algorithm>
@@ -172,7 +173,7 @@ public:
         for(const auto& command:command_registry()) {
             if(!implemented(command.id))continue;
             NSMenuItem* item=[[NSMenuItem alloc] initWithTitle:ns(command.label) action:@selector(executeCommand:) keyEquivalent:@""];
-            item.identifier=ns(command.id);item.target=delegate;[actions addItem:item];
+            item.identifier=ns(command.id);item.target=delegate;apply_menu_shortcut(item,command.id,config.bindings);[actions addItem:item];
         }
         NSMenuItem* window_item=[NSMenuItem new];window_item.title=@"Window";[bar addItem:window_item];
         NSMenu* windows=[NSMenu new];window_item.submenu=windows;
@@ -404,6 +405,7 @@ public:
         }else if(id=="app.command_palette"){
             NSMenu* menu=[NSMenu new];for(const auto& command:command_registry())if(implemented(command.id)&&command.id!="app.command_palette"){
                 NSMenuItem* item=[[NSMenuItem alloc] initWithTitle:ns(command.label) action:@selector(executeCommand:) keyEquivalent:@""];item.target=delegate;item.identifier=ns(command.id);
+                apply_menu_shortcut(item,command.id,config.bindings);
                 item.enabled=command_availability(command.id,context()).enabled;[menu addItem:item];}
             [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(view.bounds.size.width-30,44) inView:view];return;
         }else if(id=="terminal.find"){
@@ -675,7 +677,7 @@ public:
 - (void)windowDidChangeOcclusionState:(NSNotification*)note{(void)note;if(auto h=host.lock())h->wake();}
 - (void)executeCommand:(id)sender{if(auto h=host.lock())h->guard([&]{h->command(stormtty::macos::utf8([sender identifier]));});}
 - (void)selectTab:(id)sender{if(auto h=host.lock())h->guard([&]{h->select_tab(static_cast<std::uint64_t>([sender tag]));});}
-- (BOOL)validateMenuItem:(NSMenuItem*)item{auto h=host.lock();if(!h)return NO;BOOL valid=NO;h->guard([&]{valid=stormtty::command_availability(stormtty::macos::utf8(item.identifier),h->context()).enabled;});return valid;}
+- (BOOL)validateMenuItem:(NSMenuItem*)item{auto h=host.lock();if(!h)return NO;BOOL valid=NO;h->guard([&]{valid=stormtty::macos::menu_commands_available(h->view.hasMarkedText,h->closing,NSApp.modalWindow!=nil)&&stormtty::command_availability(stormtty::macos::utf8(item.identifier),h->context()).enabled;});return valid;}
 - (void)displayPreferencesChanged:(NSNotification*)note{(void)note;if(auto h=host.lock())h->guard([&]{h->appearance();});}
 @end
 

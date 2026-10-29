@@ -1,0 +1,54 @@
+name: macOS configured menu shortcut qualification
+on:
+  push:
+    branches: [feature/macos-menu-shortcuts]
+permissions:
+  contents: read
+concurrency:
+  group: macos-menu-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  appkit:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install supported native C++20 toolchain
+        run: brew install llvm@20
+      - name: Restore pinned terminal engine
+        id: engine_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Bootstrap pinned terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Configure actual AppKit application and native fixtures
+        run: cmake -S . -B build-mac-menu -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/MacOSLLVM.cmake -DSTORMTTY_LLVM_ROOT="$(brew --prefix llvm@20)" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=OFF
+      - name: Build application and keyboard contracts
+        run: cmake --build build-mac-menu --parallel 2 --target stormtty macos_toolchain_probe macos_menu_tests macos_input_tests core_commands_tests core_config_tests
+      - name: Run actual AppKit dispatch and portable command contracts
+        run: ctest --test-dir build-mac-menu -R '^(macos_toolchain_probe|macos_menu_tests|macos_input_tests|core_commands_tests|core_config_tests)$' --no-tests=error --output-on-failure --output-junit macos-menu-tests.xml
+      - name: Preserve exact source and verification limits
+        if: always()
+        shell: python3 {0}
+        run: |
+          import json,os,pathlib
+          p=pathlib.Path('build-mac-menu');p.mkdir(exist_ok=True)
+          (p/'macos-menu-evidence.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'fixture_scope':'Owned NSMenu key equivalents and action dispatch; no global input injection','physical_keyboard_verified':False,'native_ime_verified':False,'macos_settings_editor_available':False,'theme_picker_parity':False,'real_provider_calls':False},indent=2))
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: macos-menu-native-${{ github.sha }}
+          path: |
+            build-mac-menu/macos-menu-tests.xml
+            build-mac-menu/macos-menu-evidence.json
+            build-mac-menu/Testing/Temporary/LastTest.log
+            build-mac-menu/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn

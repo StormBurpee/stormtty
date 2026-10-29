@@ -191,3 +191,31 @@ existing tab, tab drag/overflow menus and rich AX text ranges are not implemente
 - [IME candidate coordinates](https://developer.apple.com/documentation/appkit/nstextinputclient/firstrect(forcharacterrange:actualrange:))
 - [Reduce Transparency](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayshouldreducetransparency)
 - [ImageIO cache control](https://developer.apple.com/documentation/imageio/kcgimagesourceshouldcache)
+
+## Configured native menu shortcuts
+
+The AppKit Terminal menu and command pop-up now show keyboard equivalents from
+`Config::bindings`, rather than a second hard-coded map. Native menu dispatch
+therefore remains available when a tab button, rather than the terminal view,
+has keyboard focus. Missing bindings stay unassigned; custom bindings replace
+rather than supplement defaults. Shared OS-reserved chords remain AppKit-owned.
+Menu validation suppresses terminal commands while marked text, a modal text
+editor/alert, or host shutdown is active. Ctrl+C remains terminal input unless
+an explicitly permitted custom binding overrides it.
+
+The mapping uses Apple's documented lower-case base character plus explicit
+modifier mask; Backspace/Forward Delete use AppKit's menu-specific characters,
+not the event bytes. See [key equivalent documentation](https://developer.apple.com/documentation/appkit/nsmenuitem/keyequivalent)
+and [modifier masks](https://developer.apple.com/documentation/appkit/nsmenuitem/keyequivalentmodifiermask).
+`macos_menu_tests` constructs owned AppKit menus and verifies real dispatch,
+disabled items, custom rebinding and SDK key constants. The exact-branch
+`macos-menu-native.yml` builds the actual app with the official SDK and executes
+those native tests. Portable mapping tests alone do not establish AppKit behavior,
+physical keyboards, layout variants, or IME composition correctness.
+
+**Settings parity limit:** `settings.open` still explains manual configuration;
+the macOS host does not instantiate the shared SettingsPanel or native persistence
+service. The portable theme exchange parser is available but macOS import/export
+pickers are not implemented. Adding direct permanent imports without reversible
+Settings drafts would misrepresent Windows parity, so this change does not do so.
+No Liquid Glass or other material default is enabled by this keyboard change.

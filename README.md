@@ -61,7 +61,7 @@ Tabs, dividers, menus, Settings and the command palette share the native rendere
 The footer ribbon can show directory, Git, session status, background terminals,
 and a clock. Reorder or hide the built-in items in Settings;
 preview is immediate, Cancel restores the old arrangement, and Save persists it.
-Errors and agent attention cannot be hidden by customization. This is a small
+Errors cannot be hidden by customization. This is a small
 closed set of data bindings, not an executable plugin system.
 
 Appearance has eight complete palettes: **Graphite, Instrument, Daylight,
@@ -70,12 +70,26 @@ text, chrome, accent and all sixteen ANSI colors, with a native preview and hex
 editor. Explicit truecolor output and application OSC palette overrides retain
 their meaning; the theme does not recolor everything a TUI draws.
 
+**Import** brings a StormTTY palette or a Ghostty color theme into the Settings
+draft. Try it against your open terminals, then Save or Cancel. **Export** shares
+colors without including your shell, profiles, environment or shortcuts. These
+are bounded, data-only files; importing a theme never executes a script.
+[Palette formats and supported colors →](docs/theme-exchange.md)
+
 Windows materials are equally explicit: solid, Mica or Acrylic where available,
 with opacity applied only to the default terminal background. Text and explicit
-cell backgrounds stay opaque. **Windows controls the blur kernel; there is no
-adjustable blur-radius feature.** The UI reports fallback instead of pretending
-a requested material is active. [Themes](docs/theme-library.md) ·
+cell backgrounds stay opaque. In **Auto** or **Acrylic**, blur **0** selects clear
+composition. Positive values add Gaussian blur to Windows' already-blurred
+backdrop: **1 is not a near-clear blur radius**. Mica remains a fixed wallpaper
+material. The UI reports software and system-policy fallbacks instead of claiming
+an effect is active. [Material behavior and limits](docs/theme-library.md) ·
 [Ribbon](docs/footer-ribbon.md)
+
+The window prepares its first native canvas before appearing. Workspace and tab
+labels are readable immediately; changing focus does not fade the destination's
+name in from nothing. There is no timed splash screen and no artificial wait for
+the shell. Native fixture captures establish frame ordering, not physical
+input-to-display latency.
 
 <p align="center">
   <img src="docs/readme-assets/native-appearance.png" alt="Native Windows Appearance settings with eight palettes, a saved custom ANSI palette and font controls" width="960">
@@ -98,6 +112,9 @@ The AI integration is paused and hidden by default. Normal launches create no
 AI controller or provider-settings worker and show no AI entry in the footer,
 Commands, shortcut editor, or ribbon customization. Existing Codex paths, account metadata,
 and key bindings do **not** opt in.
+
+<details>
+<summary>Experimental implementation and verification limits</summary>
 
 For explicit experimental use, add this to `config.stormtty` and restart:
 
@@ -144,6 +161,8 @@ file; do not expect cross-restart conversation restoration. macOS agent UI and a
 Claude provider are not implemented. Setup and exact verification boundaries are
 in the [native panel guide](docs/verification/native-agent-panel.md) and
 [protocol contract](docs/decisions/codex-app-server-contract.md).
+
+</details>
 
 Compatibility still has to survive the entire terminal stack: input, PTY
 transport, resize, Unicode, synchronized output and graphics. New workspace or
@@ -279,7 +298,7 @@ leaves **New terminal** available. Exit indicators report the terminal process's
 exit code—not command readiness or service health. Background sessions are not
 restored after restarting StormTTY.
 
-**Settings** brings together the eight built-in themes, Custom palette editing,
+**Settings** brings together the eight built-in themes, Custom palette editing, Import/Export,
 font and material controls, ribbon arrangement, shell selection and shortcuts. Cancel restores
 the original palette; Save persists it. Existing terminal applications keep
 their own OSC color overrides and explicit ANSI/RGB colors. The Windows host
@@ -468,8 +487,8 @@ Its work and authorship remain upstream; the
 
 ## Roadmap
 
-The next milestone is a reproducibly tested native application, not a longer
-feature list.
+The next milestone is a native application whose everyday interactions and
+terminal compatibility are both dependable.
 
 | Work | State | What still needs to be established |
 | --- | --- | --- |
@@ -480,7 +499,7 @@ feature list.
 | Text input and accessibility | Incomplete | Full TSF/IME and UI Automation behavior, screen-reader and physical-input testing |
 | Themes, ribbon, shortcuts and owned menus | Windows controls and portable validation implemented; native fixture coverage | Desktop material checks, physical interaction, accessibility and platform parity |
 | Saved workspaces | Windows persistence, named sets and additive restore implemented | Continued restart/recovery regression coverage; macOS host wiring |
-| Native Codex first slice | Windows panel, consent flow and native stdio adapter implemented; offline fixtures | Separately authorized live-provider qualification; conversation-store wiring; macOS UI |
+| Experimental AI | Paused and disabled by default; implementation retained behind explicit opt-in | Product direction, separately authorized live-provider qualification and platform UI |
 | Managed Zsh and modules | Bundled runtime, OMZ/editing modules, private state and fzf/zoxide integration | Module/tool-specific native gates, linked-source review, public packaging and physical interaction |
 | Find and cross-window tear-off | Core search implemented; UI/tear-off pending | User-facing implementation and native tests |
 | Performance and distribution | Pending | Recorded-hardware measurements, ConPTY provider qualification, packaging and complete notices |
