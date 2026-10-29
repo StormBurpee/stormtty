@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "scope": "stock-vs-copied-signal-exit-only",
+  "planned": 12,
+  "orders": [
+    [
+      "stock",
+      "copied"
+    ],
+    [
+      "copied",
+      "stock"
+    ]
+  ],
+  "cases": [
+    "partial-zero",
+    "positive-prefix",
+    "zero-copy"
+  ],
+  "expected_hex": {
+    "partial-zero": "6162",
+    "positive-prefix": "616263",
+    "zero-copy": "62"
+  },
+  "source_sha256": {
+    "reader.c": "503e9bbf40eaafc4ffba16d732c5526177786242e9697cbb326c5ced067cba01",
+    "controller.c": "b3073fde0bd1bc0f840e43394bb710ea2e865cb3ab264ba699a7ea43aa5cdbbd",
+    "recorder.hpp": "ece389f18e7d89f7a7744a16f6255b86c38b70c377132157a0d48ac16b5b3834",
+    "stock.patch": "bb08413f0c34b41116e40a9a36ec06948f1be7c8a6caf8fb234cbe7df57697a4",
+    "copied.patch": "5796f9642d6c41e897dedf5b3b94e9f6d451f0674ea821a187c8718f485106a8"
+  },
+  "timeouts": {
+    "reader_alarm_seconds": 8,
+    "controller_ready_ms": 4000,
+    "queue_hint_ms": 1500,
+    "child_wait_ms": 10000,
+    "reap_ms": 2000,
+    "runner_seconds": 25,
+    "runner_reap_seconds": 5
+  },
+  "production_qualified": false,
+  "stock_positive_failure_not_waived": true
+}

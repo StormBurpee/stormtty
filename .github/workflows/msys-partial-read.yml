@@ -1,0 +1,183 @@
+# Separate stock versus stock+0007 phase; root review required before publication.
+# No production/default changes. Unsupported paths remain INCONCLUSIVE.
+name: Private MSYS partial-read signal-return qualification
+on:
+  # One intentional publication commit only. Do not push workflow edits to
+  # retry failures; preserve failures and stop for review.
+  push:
+    branches: ['experiment/msys-partial-read']
+    paths: ['.github/workflows/msys-partial-read.yml']
+permissions:
+  contents: read
+concurrency:
+  group: msys-partial-read-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compare:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/msys-partial-read'
+    runs-on: windows-2025
+    timeout-minutes: 180
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # Exact intentionally pushed experiment commit; never the PR merge tree.
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - name: Prepare evidence and record fixed candidate
+        shell: pwsh
+        run: |
+          $env:EXPERIMENT_ROOT = Join-Path $env:RUNNER_TEMP "stormtty-runtime-passive-runtime"
+          "EXPERIMENT_ROOT=$env:EXPERIMENT_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Path "$env:EXPERIMENT_ROOT/evidence" | Out-Null
+          git rev-parse HEAD | Set-Content "$env:EXPERIMENT_ROOT/evidence/commit.txt"
+
+      - name: Validate portable linked-gate and fixed runtime contracts
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          foreach ($test in @('qualification-tests.py','resize-predicate-tests.py','stage-tests.py','linked-preflight-tests.py','runner-tests.py','runtime-workflow-tests.py')) {
+            python "tools/probes/msys-runtime-experiment/partial-read/native/$test"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Stage untouched private reference bundle (never launch its shell)
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          python tools/shell-bootstrap.py --destination "$env:EXPERIMENT_ROOT/original" --cache .cache/shell-bootstrap
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Initialize native fixture compiler
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Download exact official complete source archive
+        timeout-minutes: 10
+        shell: python
+        run: |
+          import hashlib,os,pathlib,urllib.request
+          root=pathlib.Path(os.environ['EXPERIMENT_ROOT'])
+          target=root/'msys2-runtime-3.6.11-4.src.tar.zst'
+          url='https://repo.msys2.org/msys/sources/'+target.name
+          expected='4b178dfb5b77bce293706dcfabea673b77d8da061a4725bdf4cd94f17533c204'
+          with urllib.request.urlopen(url,timeout=60) as response, target.open('xb') as out:
+            size=0
+            while chunk:=response.read(1024*1024):
+              size+=len(chunk)
+              if size>128907415: raise RuntimeError('Oversized source archive')
+              out.write(chunk)
+          with target.open('rb') as stream: digest=hashlib.file_digest(stream,'sha256').hexdigest()
+          assert target.stat().st_size==128907415 and digest==expected
+          (root/'evidence/source-identity.txt').write_text(url+'\n'+digest+'\n',encoding='utf-8')
+      - name: Install isolated official native MSYS build environment
+        timeout-minutes: 20
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0, verified official action
+        with:
+          msystem: MSYS
+          location: ${{ runner.temp }}/stormtty-msys-toolchain
+          update: true
+          cache: false
+          path-type: minimal
+          install: >-
+            base-devel autotools cocom docbook-xsl gcc gettext-devel git
+            libzstd-devel libiconv-devel mingw-w64-cross-crt mingw-w64-cross-gcc
+            mingw-w64-cross-zlib perl xmlto zlib-devel zstd texinfo diffutils coreutils gawk grep sed tar binutils curl gnupg python
+      - name: Verify and preflight private GCC15 compiler (no system downgrade)
+        timeout-minutes: 10
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          bash tools/probes/msys-runtime-experiment/toolchain.sh "$root/gcc15" 2>&1 | tee "$root/evidence/gcc15-preflight.log"
+      - name: Build stock diagnostic runtime and verify static evidence
+        id: stock
+        timeout-minutes: 40
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
+          bash tools/probes/msys-runtime-experiment/partial-read/native/build.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/stock-build" stock 2>&1 | tee "$root/evidence/stock-build.log"
+      - name: Build stock plus0007 diagnostic runtime with identical observer and toolchain
+        id: copied
+        if: always() && steps.stock.outcome == 'success'
+        timeout-minutes: 40
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
+          bash tools/probes/msys-runtime-experiment/partial-read/native/build.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/copied-build" copied 2>&1 | tee "$root/evidence/copied-build.log"
+          cmp "$root/stock-build/provenance/pacman-before.txt" "$root/copied-build/provenance/pacman-before.txt"
+      - name: Inspect exact linked recorder and TLS leaf before fixture launch
+        id: linked
+        if: always() && steps.copied.outcome == 'success'
+        timeout-minutes: 5
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          status=0
+          for variant in stock copied; do
+            python3 tools/probes/msys-runtime-experiment/partial-read/native/linked-preflight.py "$root/$variant-build" "$variant" > "$root/evidence/linked-$variant.log" 2>&1 || status=1
+            cat "$root/evidence/linked-$variant.log"
+          done
+          exit "$status"
+      - name: Compile fixed MSYS reader once with strict warnings
+        id: reader
+        if: always() && steps.linked.outcome == 'success'
+        timeout-minutes: 5
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export PATH="$root/gcc15/wrappers:$PATH"
+          mkdir "$root/fixture-build"
+          stormtty-gcc-15 -std=gnu11 -O0 -g -Wall -Wextra -Werror -static-libgcc tools/probes/msys-runtime-experiment/partial-read/native/reader.c -o "$root/fixture-build/reader.exe"
+          objdump -p "$root/fixture-build/reader.exe" > "$root/evidence/reader-pe-imports.txt"
+          sha256sum "$root/fixture-build/reader.exe" > "$root/evidence/fixture-build.txt"
+      - name: Compile owned native controller and verify reader imports
+        id: controller
+        if: always() && steps.reader.outcome == 'success'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/check-reader-imports.py "$env:EXPERIMENT_ROOT/evidence/reader-pe-imports.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /nologo /std:c11 /W4 /WX /D_CRT_SECURE_NO_WARNINGS tools/probes/msys-runtime-experiment/partial-read/native/controller.c /Fo:"$env:EXPERIMENT_ROOT/fixture-build/controller.obj" /Fe:"$env:EXPERIMENT_ROOT/fixture-build/controller.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash "$env:EXPERIMENT_ROOT/fixture-build/controller.exe" | Format-List | Out-File "$env:EXPERIMENT_ROOT/evidence/fixture-build.txt" -Append
+      - name: Stage linked-gated experimental copies without modifying original
+        id: staging
+        if: always() && steps.linked.outcome == 'success'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          foreach ($variant in @('stock','copied')) {
+            python tools/probes/msys-runtime-experiment/partial-read/native/stage.py "$env:EXPERIMENT_ROOT/original" "$env:EXPERIMENT_ROOT/$variant-build" "$env:EXPERIMENT_ROOT/$variant"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Execute twelve fixed owned synthetic trials (inconclusive is not pass)
+        if: always() && steps.staging.outcome == 'success' && steps.controller.outcome == 'success'
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/partial-read/native/run.py --controller "$env:EXPERIMENT_ROOT/fixture-build/controller.exe" --reader "$env:EXPERIMENT_ROOT/fixture-build/reader.exe" --original "$env:EXPERIMENT_ROOT/original" --stock "$env:EXPERIMENT_ROOT/stock" --copied "$env:EXPERIMENT_ROOT/copied" --output "$env:EXPERIMENT_ROOT/evidence/native"
+          # Exit1 is byte/fixture failure; exit2 is incomplete/unsupported coverage.
+          # Current original mouse/master predicates remain unsupported; stock positive loss stays failure.
+          exit $LASTEXITCODE
+      - name: Collect bounded allowlisted source and numeric trial evidence
+        if: always()
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/partial-read/native/collect-runtime-evidence.py "$env:EXPERIMENT_ROOT" "$env:EXPERIMENT_ROOT/review-packet"
+          exit $LASTEXITCODE
+      - name: Preserve all trial outcomes and review evidence (never fixture binaries)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msys-partial-read-${{ github.sha }}
+          if-no-files-found: warn
+          path: ${{ env.EXPERIMENT_ROOT }}/review-packet/

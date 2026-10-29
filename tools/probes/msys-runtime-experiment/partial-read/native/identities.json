@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "scope": "passive-diagnostic-only",
+  "comparison": "stock-vs-positive-signal-return",
+  "header_sha256": "ece389f18e7d89f7a7744a16f6255b86c38b70c377132157a0d48ac16b5b3834",
+  "variants": {
+    "stock": {
+      "source_sha256": "535bd5f650122192e34e9835e33e72efd35aeecb093439716be6b770cd977d33",
+      "instrumented_sha256": "378d6584d510ff9061e50367149e1545e9f3ecad96dede2bc6f901a7075373ff",
+      "patch_sha256": "bb08413f0c34b41116e40a9a36ec06948f1be7c8a6caf8fb234cbe7df57697a4"
+    },
+    "copied": {
+      "source_sha256": "cf4eba2150f2b99dfe7c55c8d73ac0f578d7675e649b8468a364bfb8fe2efdb2",
+      "instrumented_sha256": "65518094c0c99fd54aa350ea1bb4fa284bad3245a89ab436578d363126d287ab",
+      "patch_sha256": "5796f9642d6c41e897dedf5b3b94e9f6d451f0674ea821a187c8718f485106a8"
+    }
+  }
+}
