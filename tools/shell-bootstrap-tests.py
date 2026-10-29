@@ -37,12 +37,22 @@ class ShellBootstrapTests(unittest.TestCase):
 
     def test_lock_exact_official_and_sources(self):
         lock = shell.read_lock(shell.LOCK)
-        self.assertEqual(len(lock["packages"]), 17)
-        self.assertEqual(len(lock["sources"]), 17)
+        self.assertEqual(len(lock["packages"]), 21)
+        self.assertEqual(len(lock["sources"]), 21)
         self.assertTrue(lock["default_activation_allowed"])
         self.assertFalse(lock["public_redistribution_ready"])
         self.assertEqual(lock["native_qualification"]["status"], "passed")
-        self.assertEqual(sum(p["bytes"] for p in lock["packages"]), 15190478)
+        self.assertEqual(sum(p["bytes"] for p in lock["packages"]), 16467938)
+
+    def test_nano_dependency_closure_and_pending_qualification(self):
+        lock = shell.read_lock(shell.LOCK)
+        names = {p["name"] for p in lock["packages"]} | {"sh"}  # bash owns sh.exe
+        for package in lock["packages"]:
+            for dependency in package.get("dependencies", []):
+                self.assertIn(dependency, names)
+        self.assertTrue({"nano", "file", "libbz2", "liblzma"} <= names)
+        self.assertEqual(lock["nano_qualification"]["status"], "pending")
+        self.assertFalse(lock["public_source_availability_verified"])
 
     def test_reject_windows_aliases_and_traversal(self):
         for name in ("../escape", "/absolute", "usr/../escape", "C:/escape", "usr\\bin\\bad",

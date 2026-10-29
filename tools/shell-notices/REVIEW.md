@@ -1,13 +1,13 @@
 # Locked bundled-shell distribution packet
 
-Reviewed against the exact `zsh-msys2-x86_64-20261028-r1` package set on 2026-10-28. This packet preserves upstream terms; it is not a legal opinion or a change to StormTTY's first-party licensing.
+Reviewed against the exact `zsh-msys2-x86_64-20261029-r1` package set on 2026-10-29. This packet preserves upstream terms; it is not a legal opinion or a change to StormTTY's first-party licensing.
 
 ## Completed, concrete work
 
-- `components.json` maps **all 17 binary packages**, exact versions and binary SHA-256 values to the applicable notice directories and source archives. Coarse package tags are not substituted for actual library terms.
-- `assets.json` identifies **79 exact-text notice assets** by hash and provenance: upstream copyright/license/exception files, original authors lists, the GPL-licensed `_darcs` completion, runtime/Newlib notices, and documentation copying statements. Cygwin's supplemental `SOURCE-NOTICES.txt` retains 484 distinct complete copyright/license comment blocks from the pinned source tree, with their source paths. The untouched full sources retain every source notice, including material beyond this supplemental index.
+- `components.json` maps **all 21 binary packages**, exact versions and binary SHA-256 values to the applicable notice directories and source archives. Coarse package tags are not substituted for actual library terms.
+- `assets.json` identifies **94 exact-text notice assets** by hash and provenance: upstream copyright/license/exception files, original authors lists, the GPL-licensed `_darcs` completion, runtime/Newlib notices, and documentation copying statements. Cygwin's supplemental `SOURCE-NOTICES.txt` retains 484 distinct complete copyright/license comment blocks from the pinned source tree, with their source paths. The untouched full sources retain every source notice, including material beyond this supplemental index.
 - The complete original runtime remains intact. Original `usr/share/licenses`, documentation, command copyright output and source headers are not removed or replaced by this packet.
-- The source emitter includes **19 exact source archives**, not just the 17 package-source archives initially identified. Every archive is checked against its fixed byte count and SHA-256. Each original source archive retains its `PKGBUILD`, distribution patches and upstream source material; the runtime's archive contains the actual source repository, not merely a fetch recipe.
+- The source emitter includes **23 exact source archives**, not just the 17 package-source archives initially identified. Every archive is checked against its fixed byte count and SHA-256. Each original source archive retains its `PKGBUILD`, distribution patches and upstream source material; the runtime's archive contains the actual source repository, not merely a fetch recipe.
 - Source delivery also includes the original binary package `.BUILDINFO`, `.PKGINFO`, `.MTREE` and `.INSTALL` as inert build evidence, plus the actual StormTTY staging/preset/notice scripts. Nothing is executed while assembling the packet.
 
 ## Static dependencies that were explicitly closed
@@ -58,3 +58,31 @@ The runtime itself and its qualification/default flags are **not mutated**. `--s
 3. Native Windows/default activation remains a separate evidence gate owned by the parent task. A generated notice/source packet does not assert native correctness or publication.
 
 For this exact locked set, the identified missing license texts and the two concrete static-link source gaps have been supplied. There is no open-ended “find some licenses later” task left in this packet. Future package changes require regenerating/reviewing the mapping and checking static dependencies again.
+
+## Nano addition (2026-10-29)
+
+Official `https://repo.msys2.org/msys/x86_64/msys.db` metadata was fetched over
+HTTPS. Nano 9.2-1 requires file, libintl, ncurses and sh (supplied by existing
+Bash). File 5.48-1 requires gcc-libs, zlib, libbz2, liblzma and libzstd. New
+libbz2 1.0.8-4 requires existing gcc-libs; liblzma 5.8.4-1 declares no additional
+runtime dependencies. Existing package pins were not changed.
+
+The four new binary archives were downloaded from official MSYS2 URLs, matched
+to repository SHA-256/size metadata, and their detached signatures verified with
+MSYS2 development key `5F944B027F7FE2091985AA2EFA11531AA0AA7F57` from the official
+MSYS2 keyring. This records acquisition verification, not a new signature policy
+in the staging downloader. The complete matching source archives were fetched
+from the official `msys/sources` directory and their actual byte sizes and SHA-256
+pinned. Embedded upstream archive hashes match the shipped PKGBUILD records.
+No source or install recipe was executed. Source archive hash pins provide
+reproducibility; independent upstream source-signature verification is not claimed.
+
+Nano COPYING, COPYING.DOC, authors and the manual's actual dual-license statement
+are retained. File COPYING, authors, Python license and complete copyright/license
+comment blocks from src/magic/python accompany the intact package/source. Bzip2's
+full LICENSE is retained. XZ's COPYING explicitly identifies liblzma as 0BSD,
+where MSYS2's binary metadata says LGPL-2.1-or-later: both texts are retained,
+with the distinction explicit rather than silently substituting one for the other.
+
+The new nano native functional gate is pending independently of the historical
+base-Zsh pass. Public release/source-availability gates remain false.

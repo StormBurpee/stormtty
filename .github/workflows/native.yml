@@ -276,6 +276,22 @@ jobs:
             print('MANAGED_CONTEXT_RESULT='+name+':'+str(result.returncode),flush=True)
             if result.returncode: failures.append(name)
           if failures: raise SystemExit(1)
+      - name: Qualify bundled nano edit save and exit
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,subprocess
+          runtime=pathlib.Path('.deps/stormtty-shell').resolve()
+          probe=pathlib.Path('build/managed_nano_probe.exe').resolve()
+          provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
+          # Synthetic Unicode file/home only; no user files or transcript artifacts.
+          failures=[]
+          for name,extra in [('inbox',[]),('packaged',[str(provider)])]:
+            print('MANAGED_NANO_PROVIDER='+name,flush=True)
+            result=subprocess.run([str(probe),str(runtime),*extra],timeout=180)
+            print('MANAGED_NANO_RESULT='+name+':'+str(result.returncode),flush=True)
+            if result.returncode: failures.append(name)
+          if failures: raise SystemExit(1)
       - name: Verify managed shell HOME and drive paths
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         run: python tools/shell-path-tests.py --runtime .deps/stormtty-shell --resolver-probe build/bundled_shell_probe.exe

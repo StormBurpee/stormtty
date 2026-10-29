@@ -19,6 +19,12 @@ int main() { return run_core_tests("commands", [] {
     CHECK(background_session_title({},"/tools/custom.exe",{})=="/tools/custom.exe");
     CHECK(background_session_title({}, {}, "Development")=="Development");
     CHECK(background_session_title({}, {}, {})=="Terminal");
+    CHECK(find_command("settings.reload"));
+    CHECK(search_commands("reload settings").front()->id=="settings.reload");
+    CommandContext reload_context;
+    CHECK(!command_availability("settings.reload",reload_context).enabled);
+    reload_context.supports_settings_reload=true;
+    CHECK(command_availability("settings.reload",reload_context).enabled); // No terminal required.
     CHECK(search_commands("").size()==command_registry().size());
     CHECK(search_commands("  ")==search_commands(""));
     CHECK(search_commands("nwtb").front()->id=="tab.new");

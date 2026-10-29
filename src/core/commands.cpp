@@ -49,6 +49,7 @@ constexpr std::array commands{
     Command{"edit.copy", "Copy selection", "Copy selected terminal text; never replace Ctrl+C interrupt"},
     Command{"edit.paste", "Paste", "Send clipboard text through terminal paste policy and bracketed-paste encoding"},
     Command{"terminal.find", "Find in terminal", "Search retained terminal text"},
+    Command{"settings.reload", "Reload settings", "Read config.toml from disk without restarting terminals; shell choices apply to new sessions"},
     Command{"settings.open", "Open settings", "Edit declarative settings and view configuration errors"},
     Command{"window.fullscreen", "Toggle fullscreen", "Enter or leave native fullscreen"}
 };
@@ -182,6 +183,7 @@ const Command* find_command(std::string_view id) noexcept {
 }
 CommandAvailability command_availability(std::string_view id, const CommandContext& c) noexcept {
     if (!find_command(id)) return {false, "Unknown command"};
+    if (id == "settings.reload") return {c.supports_settings_reload, c.supports_settings_reload ? "" : "Settings reload is not implemented by this host"};
     if (id == "window.focus_mode") return {c.supports_focus_mode, c.supports_focus_mode ? "" : "Focus mode is not implemented by this host"};
     if (id.starts_with("workspace.")) {
         if (!c.supports_project_workspaces) return {false,"Project workspaces are not implemented by this host"};

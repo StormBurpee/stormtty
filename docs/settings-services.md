@@ -111,3 +111,32 @@ retention, Cancel/reopen/retry, and invalid-file repair. Portable panel tests co
 the two independent baselines and fresh file reads; they are not native I/O proof.
 Git Bash launch/ConPTY/cwd behavior still requires a Windows runtime with Git for
 Windows installed; this test intentionally never executes discovered shells.
+
+## Reload settings (Windows)
+
+`Reload settings` is available in the command palette and workspace menu. It
+reads the same global `config.toml` selected at startup (including `--config`),
+on the serialized settings worker, then validates the complete candidate before
+applying it. This is an explicit action, not a file watcher. It does not reload
+workspace layouts, discover/install shells, save files or execute commands.
+
+Theme/ANSI palette, font, appearance/material, Ribbon and shortcuts update live.
+Profiles, default shell, scrollback capacity and console backend affect future
+sessions; existing actor identities and retained terminal output stay intact.
+Command-line runtime overrides continue to win. All workspaces share these global
+settings even when Reload is chosen from a particular workspace's menu.
+
+Missing, malformed, inaccessible and oversized files leave the working settings
+unchanged and report an app-rendered notice. A missing file is deliberately not
+interpreted as a request to reset to defaults. Repeated activations while a read
+or save is pending are refused, and generation checks discard stale/duplicate
+completion results. Reload while Settings is open is refused: explicitly Save
+or Cancel the editor first, so an unsaved draft is never discarded. Opening the
+editor is also blocked during reload, and its next open takes a fresh exact disk
+snapshot for optimistic-concurrency Save.
+
+Portable tests cover admission, missing/invalid data and stale completions. The
+Windows Settings CI smoke additionally edits its isolated saved file, dispatches
+Reload, repeats the action while pending, checks live actor/output preservation,
+and checks malformed/missing-file rejection. Cross-compilation is not native
+runtime or physical UI evidence.

@@ -62,6 +62,21 @@ class StagingTests(unittest.TestCase):
         stager.stage(self.root,target,files,receipt)
         self.assertEqual((target/"notices/THIRD-PARTY-NOTICES.txt").read_text(),"fixture notices preserved")
 
+    def test_nano_and_dependency_files_cannot_be_omitted(self):
+        for name in ("usr/bin/nano.exe", "usr/bin/file.exe", "usr/bin/msys-magic-1.dll",
+                     "usr/bin/msys-bz2-1.dll", "usr/bin/msys-lzma-5.dll", "usr/share/misc/magic.mgc"):
+            with self.subTest(name=name):
+                before = self.manifest["files"]
+                self.manifest["files"] = [r for r in before if r["path"] != name]
+                data = (self.root / name).read_bytes()
+                (self.root / name).unlink()
+                self.write_manifest()
+                with self.assertRaisesRegex(RuntimeError, "Required runtime file"):
+                    self.validate()
+                (self.root / name).write_bytes(data)
+                self.manifest["files"] = before
+                self.write_manifest()
+
     def test_changed_payload(self):
         (self.root/stager.REQUIRED[0]).write_bytes(b"tamper")
         with self.assertRaises(RuntimeError): self.validate()
@@ -212,6 +227,29 @@ class BuildPreparationTests(unittest.TestCase):
             self.prepare.prepare(self.root,self.cache,True);self.assertEqual(len(self.calls),2)
             (self.root/stager.REQUIRED[0]).unlink()
             self.prepare.prepare(self.root,self.cache,True);self.assertEqual(len(self.calls),4)
+
+    def test_nano_payload_deletion_repairs_prepared_source(self):
+        with patch.object(self.prepare, "recipe_digest", return_value="recipe"), patch.object(self.prepare.subprocess, "run", side_effect=self.run_helper):
+            self.prepare.prepare(self.root, self.cache, True)
+            for name in ("usr/bin/nano.exe", "usr/bin/file.exe", "usr/bin/msys-magic-1.dll",
+                         "usr/bin/msys-bz2-1.dll", "usr/bin/msys-lzma-5.dll", "usr/share/misc/magic.mgc"):
+                with self.subTest(name=name):
+                    before = len(self.calls)
+                    (self.root / name).unlink()
+                    self.prepare.prepare(self.root, self.cache, True)
+                    self.assertEqual(len(self.calls), before + 2)
+                    self.assertTrue((self.root / name).is_file())
+
+    def test_changed_recipe_refreshes_owned_runtime(self):
+        with patch.object(self.prepare.subprocess, "run", side_effect=self.run_helper):
+            with patch.object(self.prepare, "recipe_digest", return_value="pre-nano"):
+                self.prepare.prepare(self.root, self.cache, True)
+            with patch.object(self.prepare, "recipe_digest", return_value="nano"):
+                self.prepare.prepare(self.root, self.cache, True)
+            self.assertEqual(len(self.calls), 4)
+            receipt = json.loads(self.root.with_name(self.root.name + ".build-recipe.json").read_text())
+            self.assertEqual(receipt["recipe"], "nano")
+            self.assertTrue((self.root / "usr/bin/nano.exe").is_file())
 
     def test_unowned_runtime_not_replaced(self):
         self.root.mkdir();(self.root/"user.txt").write_text("keep")
