@@ -4475,6 +4475,8 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!edit_ansi_red("D080A0",false) || config_.theme.ansi[1]!="#D080A0") {smoke_finish("Native ANSI custom preview failed.");return;}
             capture_settings(L"appearance-custom-preview");
             for (const auto* id:{"appearance.import","appearance.export"}) {
+                for(unsigned i=0;i<256&&settings_panel_.focused_control()!=id;++i)settings_panel_.key({{"TAB"}});
+                if(settings_panel_.focused_control()!=id){smoke_finish("Theme import/export controls are not keyboard reachable.");return;}
                 const auto& palette_controls=settings_panel_.layout().controls;
                 if(std::none_of(palette_controls.begin(),palette_controls.end(),[&](const auto& control){return control.id==id && control.visible && control.enabled;})) {
                     smoke_finish("Theme import/export controls are not visible and reachable.");return;
