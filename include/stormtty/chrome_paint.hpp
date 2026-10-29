@@ -17,6 +17,21 @@ inline TabSelectionColors tab_selection_colors(const UiColors& ui, bool high_con
     return {ui.selected,border};
 }
 
+struct PaneFocusColors { Color wash, marker, label; bool show_marker; };
+// Ownership is never interpolated: marker and primary ink follow model focus.
+// Only the existing low-alpha header material follows the finite transition.
+inline PaneFocusColors pane_focus_colors(const UiColors& ui, bool selected, double decoration,
+        bool high_contrast=false, Color contrast_label={}, Color contrast_marker={}) noexcept {
+    if(high_contrast) return {{0,0,0,0},contrast_marker,contrast_label,selected};
+    auto wash=ui_mix(ui.surface,ui.selected,decoration);wash.a=89;
+    return {wash,ui.accent,selected?ui.ink:ui.secondary,selected};
+}
+
+inline constexpr std::uint64_t pane_decoration_duration(bool reduced_motion, bool high_contrast,
+        bool visible, bool minimized) noexcept {
+    return reduced_motion || high_contrast || !visible || minimized?0:120;
+}
+
 // The Settings panel's owned cog, shared with its sidebar entry. Lines render
 // with the caller's semantic ink, never font fallback or color-emoji glyphs.
 // radius=11, stroke=1.5 preserves the original panel geometry exactly.

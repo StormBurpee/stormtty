@@ -486,7 +486,10 @@ private:
     std::uint64_t chrome_now() const { return smoke_chrome_time_.value_or(GetTickCount64()); }
     void smoke_motion_capture(std::wstring_view, std::uint64_t elapsed);
     void smoke_focus_evidence(bool project);
+    void smoke_pane_focus_scene(const WindowScene&) const;
     std::optional<std::uint64_t> smoke_chrome_time_; // Explicit native CI presentation clock only.
+    bool smoke_focus_running_{};
+    std::optional<bool> smoke_pane_reduced_motion_; // Owned layout fixture: pane wash only, never caret/global policy.
 
     void hover_changed(Point);
     void refresh_tooltips();
@@ -2082,12 +2085,15 @@ void NativeWindow::hover_changed(Point point) {
 }
 void NativeWindow::motion_schedule() {
     const auto now=chrome_now(); const auto duration=(reduced_motion_ || !IsWindowVisible(hwnd_))?0:120;
+    const bool pane_reduced=options_.smoke_test && options_.smoke_layout && smoke_focus_running_ && smoke_chrome_time_?
+        smoke_pane_reduced_motion_.value_or(reduced_motion_):reduced_motion_;
+    const auto pane_duration=pane_decoration_duration(pane_reduced,high_contrast_,IsWindowVisible(hwnd_)!=FALSE,minimized_);
     palette_transition_.target(palette_open_||rename_open_?1:0,now,reduced_motion_?0:100);
     navigator_transition_.target(navigator_open_?1:0,now,(reduced_motion_||high_contrast_)?0:100);
     settings_transition_.target(settings_loading()||settings_input_blocked()?1:0,now,reduced_motion_?0:100);
     menu_transition_.target(context_menu_.is_open()?1:0,now,reduced_motion_?0:100);
     for (const auto& project:projects_.entries()) target_chrome_selection(workspace_focus_,project.id,project.id==projects_.active_id()?1:0,now,duration);
-    for (const auto& pane:layout_.panes) target_chrome_selection(pane_focus_,pane.pane,pane.pane==workspace().active_pane()?1:0,now,duration);
+    for (const auto& pane:layout_.panes) target_chrome_selection(pane_focus_,pane.pane,pane.pane==workspace().active_pane()?1:0,now,pane_duration);
     std::erase_if(workspace_focus_,[&](const auto& item){return !projects_.find(item.first);});
     std::erase_if(pane_focus_,[&](const auto& item){return !workspace().pane(item.first);});
     for (const auto& tab:chrome_.tabs) target_chrome_selection(tab_transitions_,tab.tab,tab.tab==workspace().active_tab()?1:0,now,duration);
@@ -2101,7 +2107,7 @@ void NativeWindow::motion_schedule() {
     auto check=[&](ChromeTransition& transition) { if (reduced_motion_ || minimized_) transition.finish(); running=running||transition.active(now); };
     check(palette_transition_); check(settings_transition_); check(menu_transition_); check(navigator_transition_);
     for (auto& [id,t]:workspace_focus_) { (void)id; check(t); }
-    for (auto& [id,t]:pane_focus_) { (void)id; check(t); }
+    for (auto& [id,t]:pane_focus_) { (void)id; if(!pane_duration)t.finish(); running=running||t.active(now); }
     for (auto& [id,t]:hover_transitions_) { (void)id; check(t); }
     for (auto& [id,t]:tab_transitions_) { (void)id; check(t); }
     if (running && !motion_timer_active_) {
@@ -2826,12 +2832,13 @@ WindowScene NativeWindow::scene() {
         }
         if (layout_.panes.size() > 1) {
             const Rect header{placement.bounds.x, placement.bounds.y, placement.bounds.width, 28};
+            const auto focus=pane_focus_colors(ui,placement.pane==workspace().active_pane(),
+                pane_focus_[placement.pane].value(now),high_contrast_,text,accent);
             if (!high_contrast_) {
-                Color wash=chrome; wash.a=89; rectangle(header,wash);
+                rectangle(header,focus.wash);
                 rectangle({header.x,header.y+header.height-1/scale_,header.width,1/scale_},daylight?Color{130,142,155,100}:Color{43,50,61,140});
             }
-            const double focus=pane_focus_[placement.pane].value(now);
-            if (focus>0) rectangle({header.x + 12,header.y + 10,2,8},opacity(accent,focus));
+            if (focus.show_marker) rectangle({header.x + 12,header.y + 10,2,8},focus.marker);
             const auto context=pane_context(placement.pane);
             const double available=std::max(0.0,header.width-56);
             const auto measure=[&](const std::string& value,double size){ChromeText item;item.text=value;item.size_dip=static_cast<float>(size);item.rect={0,0,100000,28*static_cast<float>(scale_)};return renderer_->measure_chrome_text(item).width/scale_;};
@@ -2840,7 +2847,7 @@ WindowScene NativeWindow::scene() {
             if(primary_width+16+measure(detail,11)>available)detail=pane_context_secondary(context,PaneContextDensity::directory);
             if(primary_width+16+48>available || detail.size()>32768)detail.clear();
             const double title_width=detail.empty()?available:std::min(primary_width,available);
-            label({header.x+20,header.y+6,title_width,18},context.primary,blend(secondary,text,focus),13);
+            label({header.x+20,header.y+6,title_width,18},context.primary,focus.label,13);
             if(!detail.empty())label({header.x+20+title_width+16,header.y+7,std::max(0.0,available-title_width-16),17},detail,secondary,11);
             label({header.x + header.width - 28,header.y + 3,24,22}, "···", secondary, 16,false,ChromeTextAlignment::center);
         }
@@ -4156,6 +4163,11 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
     const auto original=options_.capture_path;
     ++chrome_generation_; force_redraw_=true;
     const auto actual=scene();
+    if(smoke_focus_running_ && options_.smoke_layout && smoke_pane_reduced_motion_.has_value()) {
+        smoke_pane_focus_scene(actual);
+        std::fprintf(stderr,"Native pane decoration sample=%s policy=%s host_reduced_motion=%d controlled_clock=1 physical_frame_pacing_verified=0\n",
+            narrow(std::wstring(suffix)).c_str(),smoke_pane_reduced_motion_.value_or(reduced_motion_)?"synthetic_reduced_motion":"synthetic_normal_motion",reduced_motion_);
+    }
     if(options_.smoke_settings && suffix.starts_with(L"appearance-menu-")) {
         // Reuse these existing normal/narrow captures: no extra Settings
         // stages, input, scene evaluations or resize cycles for chrome evidence.
@@ -4685,32 +4697,132 @@ bool NativeWindow::smoke_palette_evidence(SessionId parked) {
     std::fputs("Native palette smoke: fuzzy rank, empty results, keyboard background restore, stale identity rejection and same session actor verified; real framebuffer captures emitted.\n",stderr);
     return true;
 }
+void NativeWindow::smoke_pane_focus_scene(const WindowScene& actual) const {
+    const auto ui=resolve_ui_colors(config_.theme);
+    const auto* active=workspace().pane(workspace().active_pane());
+    if(!active || focused_session_!=active->session || actual.panes.size()!=layout_.panes.size() ||
+       std::count_if(actual.panes.begin(),actual.panes.end(),[](const auto& pane){return pane.focused;})!=1)
+        throw std::runtime_error("Pane focus paint delayed the actual input owner.");
+    for(const auto& placement:layout_.panes) {
+        const bool selected=placement.pane==workspace().active_pane();
+        const auto paint=pane_focus_colors(ui,selected,pane_focus_.at(placement.pane).value(chrome_now()),
+            high_contrast_,system_color(COLOR_BTNTEXT),system_color(COLOR_WINDOWTEXT));
+        const auto marker=pixels({placement.bounds.x+12,placement.bounds.y+10,2,8});
+        const auto markers=std::count_if(actual.primitives.begin(),actual.primitives.end(),[&](const auto& p){return p.rect==marker;});
+        if(markers!=(selected?1:0) || (selected && std::none_of(actual.primitives.begin(),actual.primitives.end(),[&](const auto& p){return p.rect==marker&&p.fill==paint.marker;})))
+            throw std::runtime_error("Pane marker did not follow selected ownership immediately and opaquely.");
+        const auto label=pixels({placement.bounds.x+20,placement.bounds.y+6,0,18});
+        const auto primary=pane_context(placement.pane).primary;
+        if(std::none_of(actual.texts.begin(),actual.texts.end(),[&](const auto& t){return t.rect.x==label.x&&t.rect.y==label.y&&t.rect.height==label.height&&t.text==primary&&t.color==paint.label&&t.size_dip==13&&!t.semibold;}))
+            throw std::runtime_error("Pane primary label changed weight/geometry or interpolated its active ink.");
+        const auto header=pixels({placement.bounds.x,placement.bounds.y,placement.bounds.width,28});
+        if(!high_contrast_ && std::none_of(actual.primitives.begin(),actual.primitives.end(),[&](const auto& p){return p.rect==header&&p.fill==paint.wash;}))
+            throw std::runtime_error("Pane decoration lost the semantic low-alpha wash.");
+        if(std::none_of(actual.panes.begin(),actual.panes.end(),[&](const auto& p){return p.id==placement.session.value&&p.content==pixels(content_bounds(placement))&&p.focused==selected;}))
+            throw std::runtime_error("Pane focus changed terminal bounds or renderer focus ownership.");
+    }
+}
 void NativeWindow::smoke_focus_evidence(bool project) {
-    smoke_chrome_time_=GetTickCount64()+1000; motion_schedule();
-    const auto start=*smoke_chrome_time_;
+    if(!options_.smoke_test || (!project&&!options_.smoke_layout) || smoke_focus_running_ ||
+       (!project && (layout_.panes.size()<2 || !active_ || !focused_session_ || minimized_ || !IsWindowVisible(hwnd_) || GetCapture()==hwnd_)))
+        throw std::runtime_error("Focus evidence requires its owned, focused native smoke fixture.");
+    if(!project && high_contrast_)
+        throw std::runtime_error("Synthetic normal-motion pane qualification unavailable under actual OS high contrast; OS policy retained.");
+    const auto old_clock=smoke_chrome_time_;const auto old_policy=smoke_pane_reduced_motion_;
     const auto original_project=projects_.active_id();
     const auto original_pane=workspace().active_pane();
+    const auto original_tab=workspace().active_tab();
+    struct Restore {
+        NativeWindow& window;PaneId original_pane;bool pane_fixture,restored{};
+        std::optional<std::uint64_t>& clock;std::optional<std::uint64_t> old_clock;
+        std::optional<bool>& policy;std::optional<bool> old_policy;bool& running;
+        void restore(){clock=old_clock;policy=old_policy;running=false;restored=true;}
+        ~Restore(){
+            if(restored)return;
+            // Failure cleanup must not mask the capture error or escape a callback.
+            try {if(pane_fixture)window.cancel_drag();}catch(...){}
+            try {if(pane_fixture)window.activate(original_pane);}catch(...){}
+            if(pane_fixture)for(auto& [id,t]:window.pane_focus_){(void)id;t.finish();}
+            restore();try{window.motion_schedule();}catch(...){}
+        }
+    } restore{*this,original_pane,!project,false,smoke_chrome_time_,old_clock,smoke_pane_reduced_motion_,old_policy,smoke_focus_running_};
+    smoke_focus_running_=true;
+    smoke_pane_reduced_motion_=project?std::nullopt:std::optional<bool>{false}; // Pane wash only, never global/caret/OS policy.
+    const auto actors=sessions_;const auto sizes=sizes_;const auto original_layout=layout_;
+    const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
+    const auto original_config=config_;const bool original_reduced=reduced_motion_,original_contrast=high_contrast_;
+    smoke_chrome_time_=GetTickCount64()+1000; motion_schedule();
+    const auto start=*smoke_chrome_time_;
     const auto target_pane=project?PaneId{}:layout_.panes.back().pane;
-    if (project) activate_project(smoke_secondary_project_); else activate(target_pane);
+    if(!project && target_pane==original_pane)throw std::runtime_error("Pane focus fixture requires distinct existing panes.");
+    const auto select_pane=[&](PaneId pane) {
+        activate(pane);
+        const auto* selected=workspace().pane(pane);
+        if(!selected || workspace().active_pane()!=pane || focused_session_!=selected->session)
+            throw std::runtime_error("Pane switch did not commit the requested keyboard owner immediately.");
+    };
+    const auto pane_motion_ended=[&] {
+        const auto now=chrome_now();
+        const auto active=[&](const auto& transitions){return std::any_of(transitions.begin(),transitions.end(),[&](const auto& item){return item.second.active(now);});};
+        const bool other=palette_transition_.active(now)||settings_transition_.active(now)||menu_transition_.active(now)||navigator_transition_.active(now)||
+            active(workspace_focus_)||active(hover_transitions_)||active(tab_transitions_);
+        // The timer is shared: unrelated legitimate chrome motion may retain it.
+        return !active(pane_focus_) && (other || !motion_timer_active_);
+    };
+    const auto invariant=[&] {
+        if(project)return;
+        if(sessions_!=actors || sizes_!=sizes || projects_.active_id()!=original_project || workspace().active_tab()!=original_tab ||
+           config_!=original_config || reduced_motion_!=original_reduced || high_contrast_!=original_contrast ||
+           smoke_terminal_input_submissions_!=input || smoke_terminal_mouse_submissions_!=mouse ||
+           layout_.panes.size()!=original_layout.panes.size() || layout_.dividers.size()!=original_layout.dividers.size())
+            throw std::runtime_error("Pane decoration changed actors, grids, policy or frontend input.");
+        for(std::size_t i=0;i<layout_.panes.size();++i) {
+            const auto& a=layout_.panes[i];const auto& b=original_layout.panes[i];
+            if(a.pane!=b.pane || a.session!=b.session || a.bounds!=b.bounds)
+                throw std::runtime_error("Pane decoration changed pane identity or bounds.");
+        }
+        for(std::size_t i=0;i<layout_.dividers.size();++i) {
+            const auto& a=layout_.dividers[i];const auto& b=original_layout.dividers[i];
+            if(a.node!=b.node || a.axis!=b.axis || a.bounds!=b.bounds || a.hit_bounds!=b.hit_bounds || a.split_bounds!=b.split_bounds || a.applied_ratio!=b.applied_ratio)
+                throw std::runtime_error("Pane decoration changed split geometry.");
+        }
+        const auto* selected=workspace().pane(workspace().active_pane());
+        if(!selected || focused_session_!=selected->session)
+            throw std::runtime_error("Pane switch delayed the real keyboard input target.");
+    };
+    const auto capture=[&](std::wstring_view name,std::uint64_t elapsed){invariant();smoke_motion_capture(name,elapsed);invariant();};
+    if (project) activate_project(smoke_secondary_project_); else select_pane(target_pane);
     if (project) {
         if (focused_session_!=workspace().pane(workspace().active_pane())->session)
             throw std::runtime_error("Workspace switch delayed the real keyboard input target.");
         for (const auto& tab:chrome_.tabs) if (tab.tab==workspace().active_tab() && tab_transitions_.at(tab.tab).value(start)!=1)
             throw std::runtime_error("Workspace switch faded its new active tab from zero.");
     }
-    smoke_motion_capture(project?L"workspace-focus-000ms":L"pane-focus-000ms",0);
+    capture(project?L"workspace-focus-000ms":L"pane-focus-000ms",0);
     *smoke_chrome_time_=start+40;
     auto& incoming=project?workspace_focus_[smoke_secondary_project_]:pane_focus_[target_pane];
     const auto midway=incoming.value(chrome_now());
-    if (!reduced_motion_ && !(midway>0 && midway<1)) throw std::runtime_error("Focus handoff skipped its intermediate value.");
-    smoke_motion_capture(project?L"workspace-focus-040ms":L"pane-focus-040ms",40);
-    if (project) activate_project(original_project); else activate(original_pane);
-    if (!reduced_motion_ && std::abs(incoming.value(chrome_now())-midway)>1e-9) throw std::runtime_error("Reversed focus handoff jumped.");
-    smoke_motion_capture(project?L"workspace-focus-reversed-040ms":L"pane-focus-reversed-040ms",40);
+    if ((!project || !reduced_motion_) && !(midway>0 && midway<1)) throw std::runtime_error("Focus handoff skipped its intermediate value.");
+    capture(project?L"workspace-focus-040ms":L"pane-focus-040ms",40);
+    if (project) activate_project(original_project); else select_pane(original_pane);
+    if ((!project || !reduced_motion_) && std::abs(incoming.value(chrome_now())-midway)>1e-9) throw std::runtime_error("Reversed focus handoff jumped.");
+    capture(project?L"workspace-focus-reversed-040ms":L"pane-focus-reversed-040ms",40);
     *smoke_chrome_time_=start+160; motion_schedule();
-    if (incoming.value(chrome_now())!=0 || motion_timer_active_) throw std::runtime_error("Focus handoff did not settle and stop its timer.");
-    smoke_motion_capture(project?L"workspace-focus-settled-160ms":L"pane-focus-settled-160ms",160);
+    if (incoming.value(chrome_now())!=0 || (project?motion_timer_active_:!pane_motion_ended())) throw std::runtime_error("Focus handoff did not settle and release its timer work.");
+    capture(project?L"workspace-focus-settled-160ms":L"pane-focus-settled-160ms",160);
     if (!project) {
+        *smoke_chrome_time_=start+200;select_pane(target_pane);
+        *smoke_chrome_time_=start+320;motion_schedule();
+        if(incoming.value(chrome_now())!=1 || !pane_motion_ended())throw std::runtime_error("Pane wash did not settle at 120 ms.");
+        capture(L"pane-focus-settled-120ms",120);
+        *smoke_chrome_time_=start+400;select_pane(original_pane);
+        *smoke_chrome_time_=start+440;
+        if(!(incoming.value(chrome_now())>0 && incoming.value(chrome_now())<1))throw std::runtime_error("Pane reduced-motion probe did not begin mid-transition.");
+        smoke_pane_reduced_motion_=true;motion_schedule();
+        if(incoming.value(chrome_now())!=0 || pane_focus_[original_pane].value(chrome_now())!=1 || !pane_motion_ended())
+            throw std::runtime_error("Pane reduced-motion policy did not cancel only its wash immediately.");
+        capture(L"pane-focus-reduced-040ms",40);
+        std::fprintf(stderr,"Native pane focus: identity_immediate=1 synthetic_normal_motion_interpolation=1 samples_ms=0,40,120 rapid_reversal=1 reduced_motion_cancellation=1 actors_bounds_grids_unchanged=1 frontend_input_unchanged=1 focus_protocol_writes_allowed=1 pane_motion_ended=1 shared_timer_accounted=1 host_reduced_motion=%d global_policy_unchanged=1 physical_frame_pacing_verified=0\n",reduced_motion_);
         const auto divider=layout_.dividers.front();
         const auto before=divider.applied_ratio;
         const Point edge=divider.axis==Axis::horizontal?Point{divider.hit_bounds.x+.25,divider.bounds.y+divider.bounds.height/2}:
@@ -4721,8 +4833,9 @@ void NativeWindow::smoke_focus_evidence(bool project) {
         pointer_up(edge);
         std::fputs("Native motion divider edge-grab: zero pointer travel preserves applied split ratio; capture released.\n",stderr);
     }
-    smoke_chrome_time_.reset(); changed();
+    restore.restore();changed();
 }
+
 bool frame_has_smoke_marker(const FramePtr& frame) {
     if (!frame) return false;
     for (const auto& row:frame->lines) if (row) {
@@ -4917,7 +5030,7 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
     std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
 }
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
-    if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_) return;
+    if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_) return;
     if(!options_.smoke_agent&&projects_.active()) {
         if(ai_enabled_||agent_controller_||agent_setup_||agent_panel_.is_open()||footer_layout().agent.width>0||command_context().supports_agent_panel) {smoke_finish("Disabled AI feature exposed UI or provider ownership.");return;}
         for(const auto& entry:palette_commands())if(entry.id=="agent.toggle"){smoke_finish("Disabled AI feature leaked into Commands.");return;}

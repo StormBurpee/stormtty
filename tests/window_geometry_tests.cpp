@@ -364,6 +364,32 @@ int main() {
     incoming.target(1,1200,100); incoming.finish();
     require(incoming.value(1201)==1 && !incoming.active(1201),
             "OS reduced motion during reveal settles the owned surface immediately");
+    const auto ui=resolve_ui_colors(default_config(Platform::windows).theme);
+    for(bool reduced:{false,true})for(bool contrast:{false,true})for(bool visible:{false,true})for(bool minimized:{false,true})
+        require(pane_decoration_duration(reduced,contrast,visible,minimized)==(!reduced&&!contrast&&visible&&!minimized?120u:0u),
+                "Pane wash obeys reduced motion, high contrast, visibility and minimization");
+    ChromeTransition pane_out(1),pane_in;
+    pane_out.target(0,2000,120);pane_in.target(1,2000,120);
+    for(const auto elapsed:{0u,40u,120u}) {
+        const auto selected=pane_focus_colors(ui,true,pane_in.value(2000+elapsed));
+        const auto previous=pane_focus_colors(ui,false,pane_out.value(2000+elapsed));
+        require(selected.show_marker && selected.marker==ui.accent && selected.label==ui.ink &&
+            !previous.show_marker && previous.label==ui.secondary,"Pane marker and primary ink follow input ownership immediately at 0/40/120 ms");
+        require(selected.wash.a==89 && previous.wash.a==89,"Pane motion affects only existing low-alpha header wash");
+    }
+    require(!pane_in.active(2120)&&!pane_out.active(2120),"Pane wash stops after 120 ms");
+    pane_in.target(0,2200,120);pane_out.target(1,2200,120);
+    const auto reverse_wash=pane_focus_colors(ui,false,pane_in.value(2240)).wash;
+    pane_in.target(1,2240,120);pane_out.target(0,2240,120);
+    const auto reversed=pane_focus_colors(ui,true,pane_in.value(2240));
+    require(reversed.wash==reverse_wash && reversed.show_marker && reversed.label==ui.ink,"Rapid pane reversal keeps wash continuous but commits marker/ink immediately");
+    require(pane_in.value(2360)==1 && !pane_in.active(2360) && !pane_out.active(2360),"Reversed pane wash ends without idle timer work");
+    pane_in.target(0,2400,120);pane_out.target(1,2400,120);
+    require(pane_in.active(2440)&&pane_out.active(2440),"Reduced-motion cancellation begins with actual pane interpolation");
+    pane_in.target(0,2440,0);pane_out.target(1,2440,0); // Same targets: host must explicitly finish on a policy change.
+    pane_in.finish();pane_out.finish();
+    require(pane_in.value(2440)==0&&pane_out.value(2440)==1&&!pane_in.active(2440)&&!pane_out.active(2440),
+            "Reduced motion cancels an unchanged-target pane wash immediately with no timer work");
     CursorBlinkClock blink;
     blink.configure(true,500,1000);
     require(blink.visible() && !blink.tick(1499),"caret starts with a complete visible interval");
