@@ -488,6 +488,8 @@ private:
     std::uint64_t chrome_now() const { return smoke_chrome_time_.value_or(GetTickCount64()); }
     void smoke_motion_capture(std::wstring_view, std::uint64_t elapsed);
     void smoke_focus_evidence(bool project);
+    void smoke_workspace_frame_evidence();
+    bool smoke_workspace_frame_running_{};
     void smoke_pane_focus_scene(const WindowScene&) const;
     void smoke_settings_scroll_evidence();
     std::optional<std::uint64_t> smoke_chrome_time_; // Explicit native CI presentation clock only.
@@ -1140,8 +1142,8 @@ void NativeWindow::refresh_layout() {
     for (const auto& project:projects_.entries()) projects.push_back(project.id);
     context_label_=directory_context();
     const double caption=fullscreen_?0:std::min(32.0,height_);
-    navigation_=layout_project_navigation(width_,height_,caption,projects,navigation_first_,navigation_expanded_,focus_mode_||fullscreen_,true);
-    chrome_=layout_chrome(width_,height_,tabs,workspace().active_tab(),caption_width,caption,navigation_.rail.width,navigation_.tabs.height);
+    navigation_=layout_project_navigation(width_,height_,caption,projects,navigation_first_,navigation_expanded_,focus_mode_||fullscreen_,false);
+    chrome_=layout_chrome(width_,height_,tabs,workspace().active_tab(),caption_width,caption,navigation_.rail.width,navigation_.tabs.height,workspace_action_lane(navigation_));
     navigation_first_=navigation_.first;
     zoom_return_={};
     if (const auto* tab=workspace().tab(workspace().active_tab()); tab && tab->zoomed_pane && chrome_.drag.width>=260 && !fullscreen_)
@@ -2053,14 +2055,19 @@ void NativeWindow::refresh_tooltips() {
         const auto r=pixels(bounds); info.rect={static_cast<LONG>(r.x),static_cast<LONG>(r.y),static_cast<LONG>(r.x+r.width),static_cast<LONG>(r.y+r.height)};
         info.lpszText=owned.data(); SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
     };
-    for (const auto& tab:chrome_.tabs) add(tab.bounds,tab_title(tab.tab,true));
+    for (const auto& tab:chrome_.tabs) {
+        auto detail="Task: "+pane_context_text(tab_title(tab.tab,true));
+        if(const auto* model=workspace().tab(tab.tab))detail+="\n"+pane_context(model->active_pane).detail;
+        add(tab.bounds,detail+"\nCommands → Inspect pane context");
+    }
     if (layout_.panes.size()>1) for (const auto& pane:layout_.panes) add({pane.bounds.x,pane.bounds.y,pane.bounds.width,28},pane_context(pane.pane).detail);
     for (const auto& row:navigation_.projects) if (const auto* project=projects_.find(row.project)) add(row.bounds,project->metadata.name+"\n"+project->metadata.working_directory);
     add(navigation_.toggle,navigation_.expanded?"Collapse workspaces":width_<640?"Navigation stays compact in narrow windows":"Expand workspaces");
     if(ai_enabled_)add(footer_layout().agent,agent_status_label()+"\nOpen agent · Ctrl+Shift+J");
-    add(navigation_.settings,"Settings · Ctrl+,"); add(navigation_.new_project,"New workspace… Choose a folder"); add(navigation_.context,context_label_); add(navigation_.focus,"Focus mode: hide navigation, directory context and footer");
+    add(navigation_.settings,"Settings · Ctrl+,"); add(navigation_.new_project,"New workspace… Choose a folder");
+    add(navigation_.focus,focus_mode_?"Exit focus mode · Restore workspaces and footer":"Focus mode · Hide workspaces and footer");
     const auto context=footer_presentation(); const auto placement=footer_layout();
-    add(placement.directory,context.directory+"\nSwitch workspace or terminal · Ctrl+Shift+O"); add(placement.git,context.head); add(placement.status,context.status);
+    add(placement.directory,pane_context(workspace().active_pane()).detail+"\nSwitch workspace or terminal · Ctrl+Shift+O\nCommands → Inspect pane context"); add(placement.git,context.head); add(placement.status,context.status);
     const auto footer=placement.background;
     for (std::size_t i=0;i<footer.chips.size();++i) add(footer.chips[i],background_title(projects_.active()->parked_sessions[i])+"\nClick to restore · Right-click for actions");
     add(footer.overflow,background_summary().accessible_label()+"\nOpen background terminals · Ctrl+Shift+O opens all terminals");
@@ -2777,7 +2784,7 @@ WindowScene NativeWindow::scene() {
             const bool selected=row.project==projects_.active_id();
             const double amount=hover_amount((1ull<<62)|row.project.value);
             const double focus=workspace_focus_[row.project].value(now);
-            if (focus>0||amount>0) rectangle(row.bounds,opacity(raised,std::max(focus,amount*.65)),5);
+            if (focus>0||amount>0) rectangle(row.bounds,opacity(high_contrast_?raised:blend(raised,ui.selected,focus*.25),std::max(focus,amount*.65)),4);
             const auto icon=color_hex(project->metadata.accent,blend(secondary,accent,focus));
             const double x=row.bounds.x+10,y=row.bounds.y+10;
             if (project->metadata.icon=="folder") {
@@ -2810,7 +2817,7 @@ WindowScene NativeWindow::scene() {
                 if (project->metadata.icon=="book") {line(x+8,y,x+8,y+15,icon);line(x+3,y+4,x+6,y+4,icon);line(x+10,y+4,x+13,y+4,icon);}
                 else {line(x,y+5,x+16,y+5,icon);line(x,y+10,x+16,y+10,icon);}
             }
-            if (selected && !project->metadata.accent.empty()) rectangle({row.bounds.x+1,row.bounds.y+8,2,row.bounds.height-16},icon,1);
+            if (selected) rectangle({row.bounds.x+1,row.bounds.y+7,2,row.bounds.height-14},icon,1);
             if(!selected&&!navigation_.expanded&&project_watch_unread(project->id))rectangle({row.bounds.x+row.bounds.width-7,row.bounds.y+6,4,4},accent,2);
             if (navigation_.expanded) label({row.bounds.x+38,row.bounds.y+7,row.bounds.width-44,20},project->metadata.name+(!selected&&project_watch_unread(project->id)?" · result":""),blend(secondary,text,focus),13,selected);
         }
@@ -2825,15 +2832,6 @@ WindowScene NativeWindow::scene() {
             append_settings_icon(result,{navigation_.settings.x+18,navigation_.settings.y+18},8,secondary,static_cast<float>(scale_),1.2,z);
             if (navigation_.expanded) label({navigation_.settings.x+38,navigation_.settings.y+8,navigation_.settings.width-44,20},"Settings",secondary,12);
         }
-    }
-    if (navigation_.context.height>0) {
-        Color context=chrome; context.a=high_contrast_?255:90;
-        rectangle(navigation_.context,context);
-        label({navigation_.context.x+20,navigation_.context.y+7,std::max(0.0,navigation_.context.width-60),18},context_label_,secondary,12);
-        rectangle({navigation_.context.x,navigation_.context.y+navigation_.context.height-1/scale_,navigation_.context.width,1/scale_},seam);
-        if (const auto amount=hover_amount(10); amount>0) rectangle(navigation_.focus,opacity(raised,amount),4);
-        const double x=navigation_.focus.x+12,y=navigation_.focus.y+10;
-        for (const int sign:{-1,1}) { line(x+sign*7,y+sign*3,x+sign*7,y+sign*6,secondary); line(x+sign*7,y+sign*6,x+sign*3,y+sign*6,secondary); }
     }
     for (const auto& placement : layout_.panes) {
         if (auto* session = session_for(placement.pane)) {
@@ -2921,9 +2919,9 @@ WindowScene NativeWindow::scene() {
         for (const auto& tab : chrome_.tabs) {
             const bool selected = tab.tab == workspace().active_tab();
             const double settle=tab_transitions_[tab.tab].value(now), hovered=hover_amount(16+tab.tab.value*2);
-            if (settle>0 || hovered>0) rectangle(tab.bounds, opacity(blend(raised,tab_colors.surface,settle),std::max(settle,hovered*.65)),6,
-                opacity(tab_colors.border,settle),1/scale_);
-            if (selected) rectangle({tab.bounds.x+3,tab.bounds.y, std::max(0.0,tab.bounds.width-6),2/scale_},accent,1/scale_);
+            if (settle>0 || hovered>0) rectangle(tab.bounds, opacity(blend(raised,tab_colors.surface,settle),std::max(settle,hovered*.65)),4,
+                high_contrast_?opacity(tab_colors.border,settle):Color{0,0,0,0},high_contrast_?1/scale_:0);
+            if (selected) rectangle({tab.bounds.x+3,tab.bounds.y+tab.bounds.height-2/scale_,std::max(0.0,tab.bounds.width-6),2/scale_},accent,1/scale_);
             const auto watch=tab_watch_indicator(tab.tab);
             const auto caption=layout_tab_label(tab.bounds,watch);
             if(caption.indicator.width>0) {
@@ -2945,6 +2943,17 @@ WindowScene NativeWindow::scene() {
         if (chrome_.new_tab.width>0) { line(nx-5,ny,nx+5,ny,secondary,1.3); line(nx,ny-5,nx,ny+5,secondary,1.3); }
         const double px = chrome_.palette.x + 8, py = chrome_.palette.y + 10;
         for (int y=0;y<2;++y) for (int x=0;x<2;++x) rectangle({px+x*7,py+y*7,4,4},secondary,1);
+        if(navigation_.focus.width>0 && navigation_.focus.height>0) {
+            button(navigation_.focus,10);
+            const auto ink=focus_mode_?accent:secondary;
+            const double x=navigation_.focus.x+navigation_.focus.width/2,y=navigation_.focus.y+navigation_.focus.height/2;
+            // Outward corners enter focus mode; inward corners restore navigation.
+            for(const int sx:{-1,1})for(const int sy:{-1,1}) {
+                const double corner=focus_mode_?3:6,end=focus_mode_?6:3;
+                line(x+sx*corner,y+sy*end,x+sx*corner,y+sy*corner,ink);
+                line(x+sx*corner,y+sy*corner,x+sx*end,y+sy*corner,ink);
+            }
+        }
         button(chrome_.minimize,4); button(chrome_.maximize,5); button(chrome_.close,6,true);
         const double cy = chrome_.band.height / 2;
         auto center = [](Rect r) { return r.x+r.width/2; };
@@ -2959,7 +2968,7 @@ WindowScene NativeWindow::scene() {
     if (navigation_.footer.height>0) {
         Color footer=chrome; if (backdrop_) footer.a=230;
         rectangle(navigation_.footer,footer,0,{},0,true);
-        rectangle({0,navigation_.footer.y,width_,1/scale_},seam);
+        rectangle({navigation_.footer.x,navigation_.footer.y,navigation_.footer.width,1/scale_},seam);
         const auto placement=footer_layout();
         const auto context=footer_presentation();
         if(placement.agent.width>0) {rectangle(placement.agent,raised,4);label(placement.agent,agent_status_label(),agent_controller_&&agent_controller_->attention()?accent:secondary,11);}
@@ -3763,7 +3772,7 @@ void NativeWindow::popup_menu(Point point,bool pane_actions) {
     };
     std::vector<ContextMenuItem> items;
     if (pane_actions) {
-        for (auto command:{"edit.copy","edit.paste","pane.split_right","pane.split_down","pane.zoom","pane.new_tab","pane.background","pane.swap","pane.move_to_tab"}) items.push_back(command_item(command));
+        for (auto command:{"edit.copy","edit.paste","pane.inspect","pane.split_right","pane.split_down","pane.zoom","pane.new_tab","pane.background","pane.swap","pane.move_to_tab"}) items.push_back(command_item(command));
         items.push_back(ContextMenuItem::separator()); items.push_back(command_item("pane.close"));
     } else {
         items.push_back(command_item("tab.new"));
@@ -3771,7 +3780,7 @@ void NativeWindow::popup_menu(Point point,bool pane_actions) {
         actions["workspace.customize"]=[this,point]{workspace_menu(point);};
         items.push_back(group("group.workspace","Workspaces",{"workspace.new","workspace.next","workspace.previous","workspace.toggle_navigation","workspace.close"}));
         items.push_back(group("group.tab","Task tabs",{"tab.rename","tab.next","tab.previous","tab.move_left","tab.move_right","tab.close"}));
-        items.push_back(group("group.pane","Panes",{"pane.split_right","pane.split_down","pane.zoom","pane.new_tab","pane.background","pane.swap","pane.move_to_tab","pane.close"}));
+        items.push_back(group("group.pane","Panes",{"pane.inspect","pane.split_right","pane.split_down","pane.zoom","pane.new_tab","pane.background","pane.swap","pane.move_to_tab","pane.close"}));
         items.push_back(ContextMenuItem::separator());
         for (auto command:{"app.command_palette","settings.open","window.focus_mode","window.fullscreen"}) items.push_back(command_item(command));
     }
@@ -4198,7 +4207,7 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
             throw std::runtime_error("Native sidebar Settings lost its owned monochrome cog.");
         if(icon.primitives.size()!=56 || std::any_of(actual.texts.begin(),actual.texts.end(),[](const auto& text){return text.text=="⚙";}))
             throw std::runtime_error("Native sidebar Settings fell back to a font/emoji icon.");
-        std::fprintf(stderr,"Native chrome consistency sample=%s selected_tab=semantic settings_icon=owned_monochrome geometry_unchanged=1\n",narrow(std::wstring(suffix)).c_str());
+        std::fprintf(stderr,"Native chrome consistency sample=%s selected_tab=semantic settings_icon=owned_monochrome shared_paint_hit_geometry=1\n",narrow(std::wstring(suffix)).c_str());
     }
     RenderResult result=RenderResult::busy;
     const auto deadline=GetTickCount64()+2000;
@@ -4405,6 +4414,7 @@ bool NativeWindow::smoke_context_progress() {
         capture(L"context-narrow");const bool contrast=high_contrast_;high_contrast_=true;capture(L"context-high-contrast-fixture");high_contrast_=contrast;
         SetWindowPos(hwnd_,nullptr,0,0,original_window.right-original_window.left,original_window.bottom-original_window.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
         key(VK_ESCAPE);activate(original);
+        smoke_workspace_frame_evidence();
         if(smoke_terminal_input_submissions_!=baseline||smoke_terminal_mouse_submissions_!=mouse_baseline)return fail("Context keyboard inspection leaked frontend input.");
         for(const auto& [pane,actor]:smoke_context_actors_){(void)pane;if(actor->text("q")!=SessionSendResult::accepted)return fail("Context fixture stop was rejected.");}
         smoke_context_stage_=2;return false;
@@ -4741,6 +4751,102 @@ void NativeWindow::smoke_pane_focus_scene(const WindowScene& actual) const {
         if(std::none_of(actual.panes.begin(),actual.panes.end(),[&](const auto& p){return p.id==placement.session.value&&p.content==pixels(content_bounds(placement))&&p.focused==selected;}))
             throw std::runtime_error("Pane focus changed terminal bounds or renderer focus ownership.");
     }
+}
+// Geometry changes here deliberately resize existing actors; unlike the pane
+// decoration fixture, this tests layout/input ownership, not invariant grids.
+void NativeWindow::smoke_workspace_frame_evidence() {
+    if(!options_.smoke_test || !options_.smoke_layout || layout_.panes.size()!=3 || focus_mode_ || fullscreen_ || smoke_workspace_frame_running_)
+        throw std::runtime_error("Workspace frame evidence requires the owned three-pane fixture.");
+    const auto actors=sessions_;const auto original_config=config_;
+    const auto project=projects_.active_id();const auto tab=workspace().active_tab();const auto pane=workspace().active_pane();
+    const auto original_sizes=sizes_;const auto expanded=navigation_expanded_;const auto contrast=high_contrast_;
+    const auto first=navigation_first_;const auto zoom=workspace().tab(tab)->zoomed_pane;
+    const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
+    const auto clock=smoke_chrome_time_;
+    RECT bounds{};
+    if(!GetWindowRect(hwnd_,&bounds))throw std::runtime_error("Workspace frame fixture could not read its original window bounds.");
+    const auto rollback=[&] {
+        // Independent best-effort steps: a failed native/renderer operation must
+        // not strand another fixture policy or replace the original exception.
+        smoke_chrome_time_=clock;high_contrast_=contrast;focus_mode_=false;
+        navigation_expanded_=expanded;navigation_first_=first;config_.ribbon=original_config.ribbon;
+        try {cancel_drag();} catch(...) {}
+        palette_open_=rename_open_=palette_background_only_=false;inspected_context_.reset();query_.clear();
+        palette_transition_=ChromeTransition{};closing_palette_primitives_.clear();closing_palette_texts_.clear();
+        text_input_.reset();composing_=false;preedit_.clear();
+        try {
+            if(auto* model=projects_.workspace(project);model && model->tab(tab) && model->pane(pane)) {
+                projects_.activate(project);model->activate_tab(tab);model->focus(pane);
+                if(model->tab(tab)->zoomed_pane!=zoom)model->toggle_zoom();
+            }
+        } catch(...) {}
+        if(!SetWindowPos(hwnd_,nullptr,0,0,bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE))
+            std::fputs("Workspace frame rollback could not restore native window bounds; original fixture failure retained.\n",stderr);
+        try {refresh_clock();changed(true);} catch(...) {}
+        try {refresh_tooltips();} catch(...) {}
+    };
+    struct Restore {
+        bool& running;const std::function<void()> rollback;bool restored{};
+        ~Restore(){if(!restored)try{rollback();}catch(...){}running=false;}
+    } restore{smoke_workspace_frame_running_,rollback};
+    smoke_workspace_frame_running_=true;
+    const auto resize=[&](int width,int height) {
+        if(!SetWindowPos(hwnd_,nullptr,0,0,width,height,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE))
+            throw std::runtime_error("Workspace frame fixture could not set native window bounds.");
+        refresh_layout();
+    };
+    const auto key=[&](WPARAM vk){MSG m{};m.hwnd=hwnd_;m.message=WM_KEYDOWN;m.wParam=vk;key_message(m);m.message=WM_KEYUP;key_message(m);};
+    const auto invariant=[&] {
+        if(sessions_!=actors || projects_.active_id()!=project || workspace().active_tab()!=tab || workspace().active_pane()!=pane ||
+           smoke_terminal_input_submissions_!=input || smoke_terminal_mouse_submissions_!=mouse ||
+           navigation_.context.height!=0 || navigation_.viewport.y!=chrome_.tabs_band.y+chrome_.tabs_band.height ||
+           navigation_.footer.x!=navigation_.viewport.x || chrome_.new_tab.x+chrome_.new_tab.width>navigation_.focus.x ||
+           navigation_.focus.width<=0 || navigation_.focus.height<=0)
+            throw std::runtime_error("Workspace frame changed actor/input ownership or overlapped its action lane.");
+        if(!inspecting_context() && focused_session_!=workspace().pane(pane)->session)
+            throw std::runtime_error("Workspace frame changed real keyboard focus ownership.");
+    };
+    const auto capture=[&](std::wstring_view name){invariant();smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_=clock;invariant();};
+    const auto click_focus=[&]{const auto r=navigation_.focus;const Point p{r.x+r.width/2,r.y+r.height/2};pointer_down(p,false);pointer_up(p);};
+    const auto tooltip_has_context=[&]{const auto detail=widen(pane_context(pane).detail);return std::any_of(tooltip_texts_.begin(),tooltip_texts_.end(),[&](const auto& item){return item.second.find(detail)!=std::wstring::npos;});};
+    capture(L"workspace-frame-normal");
+    // Both transitions use the real pointer route and the action's new bounds.
+    click_focus();
+    if(!focus_mode_ || navigation_.rail.width!=0 || navigation_.footer.height!=0)throw std::runtime_error("Focus action did not hide navigation/footer.");
+    capture(L"workspace-frame-focus");click_focus();
+    if(focus_mode_ || navigation_expanded_!=expanded)throw std::runtime_error("Focus action could not restore the prior workspace frame.");
+    dispatch("workspace.toggle_navigation");
+    if(navigation_.expanded || !tooltip_has_context())throw std::runtime_error("Collapsed workspace lost complete task context tooltip.");
+    capture(L"workspace-frame-collapsed");
+    dispatch("pane.zoom");
+    if(layout_.panes.size()!=1 || !tooltip_has_context())throw std::runtime_error("Single pane lost full context without its split header.");
+    // Even hidden directory/footer bindings cannot remove the task tooltip or
+    // keyboard Inspector. Restore the exact declarative preferences afterward.
+    config_.ribbon.hidden.fill(true);refresh_tooltips();
+    if(!tooltip_has_context())throw std::runtime_error("Hidden ribbon bindings removed single-pane context access.");
+    toggle_palette();query_="Inspect pane context";const auto commands=palette_commands();
+    if(commands.empty() || commands.front().id!="pane.inspect")throw std::runtime_error("Single-pane context is not discoverable in Commands.");
+    key(VK_RETURN);
+    if(!inspecting_context() || inspected_context_->detail!=pane_context(pane).detail || focused_session_)
+        throw std::runtime_error("Single-pane Inspector lost complete context or exclusive input ownership.");
+    capture(L"workspace-frame-single-inspect");key(VK_ESCAPE);
+    config_.ribbon=original_config.ribbon;refresh_tooltips();
+    capture(L"workspace-frame-single");dispatch("pane.zoom");dispatch("workspace.toggle_navigation");
+    resize(static_cast<int>(480*scale_),static_cast<int>(360*scale_));capture(L"workspace-frame-narrow");
+    high_contrast_=true;capture(L"workspace-frame-high-contrast-fixture");high_contrast_=contrast;
+    click_focus();click_focus();invariant();
+    resize(static_cast<int>(330*scale_),static_cast<int>(180*scale_));capture(L"workspace-frame-minimum");click_focus();click_focus();invariant();
+    navigation_first_=first;resize(bounds.right-bounds.left,bounds.bottom-bounds.top);invariant();
+    RECT restored_bounds{};
+    if(!GetWindowRect(hwnd_,&restored_bounds) || restored_bounds.right-restored_bounds.left!=bounds.right-bounds.left ||
+       restored_bounds.bottom-restored_bounds.top!=bounds.bottom-bounds.top)
+        throw std::runtime_error("Workspace frame fixture could not verify restored native window bounds.");
+    if(config_!=original_config || navigation_expanded_!=expanded || high_contrast_!=contrast || focus_mode_ ||
+       navigation_first_!=first || workspace().tab(tab)->zoomed_pane!=zoom || smoke_chrome_time_!=clock ||
+       inspecting_context() || palette_open_ || layout_.panes.size()!=3 || sizes_!=original_sizes || GetCapture()==hwnd_)
+        throw std::runtime_error("Workspace frame fixture failed to restore its original configuration, geometry or pointer owner.");
+    restore.restored=true;
+    std::fputs("Native workspace frame: context band removed, reserved client Focus action enters/exits, workspace-local footer, collapsed/single-pane full context tooltip and keyboard Inspector with hidden ribbon bindings, narrow/high-contrast captures; same actors and zero frontend input. Not physical Snap, IME, blur or accessibility verification.\n",stderr);
 }
 void NativeWindow::smoke_focus_evidence(bool project) {
     if(!options_.smoke_test || (!project&&!options_.smoke_layout) || smoke_focus_running_ ||
@@ -5142,7 +5248,7 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
     std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
 }
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
-    if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_ || smoke_settings_scroll_running_) return;
+    if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_ || smoke_settings_scroll_running_ || smoke_workspace_frame_running_) return;
     if(!options_.smoke_agent&&projects_.active()) {
         if(ai_enabled_||agent_controller_||agent_setup_||agent_panel_.is_open()||footer_layout().agent.width>0||command_context().supports_agent_panel) {smoke_finish("Disabled AI feature exposed UI or provider ownership.");return;}
         for(const auto& entry:palette_commands())if(entry.id=="agent.toggle"){smoke_finish("Disabled AI feature leaked into Commands.");return;}
@@ -5214,8 +5320,11 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             ClientToScreen(hwnd_,&p);
             return SendMessageW(hwnd_,WM_NCHITTEST,0,MAKELPARAM(p.x,p.y));
         };
-        if (chrome_.band.height!=32 || chrome_.tabs_band.x!=navigation_.rail.width ||
+        if (chrome_.band.height!=32 || chrome_.tabs_band.x!=navigation_.rail.width || navigation_.context.height!=0 ||
             chrome_.tabs_band.y!=chrome_.band.height || navigation_.viewport.y+navigation_.viewport.height!=navigation_.footer.y ||
+            navigation_.viewport.y!=chrome_.tabs_band.y+chrome_.tabs_band.height || navigation_.footer.x!=navigation_.viewport.x ||
+            navigation_.focus.width<=0 || native_hit(navigation_.focus)!=HTCLIENT ||
+            chrome_.new_tab.x+chrome_.new_tab.width>navigation_.focus.x ||
             native_hit(chrome_.maximize)!=HTMAXBUTTON || native_hit(chrome_.drag)!=HTCAPTION ||
             chrome_.tabs.empty() || native_hit(chrome_.tabs.front().bounds)!=HTCLIENT || native_hit(navigation_.footer)!=HTCLIENT) {
             smoke_finish("Workspace hierarchy or native caption/task/footer hit-test invariant failed."); return;

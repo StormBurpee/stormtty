@@ -110,7 +110,8 @@ inline NoticeLayout layout_notice(Rect viewport, double text_width, double text_
 inline ChromeLayout layout_chrome(double width, double height,
                                  const std::vector<TabId>& tabs, TabId active,
                                  double caption_width = 46.0, double caption_height = 32.0,
-                                 double content_left = 0.0, double tab_height = 40.0) {
+                                 double content_left = 0.0, double tab_height = 40.0,
+                                 double trailing_actions_width = 0.0) {
     ChromeLayout result;
     width=std::max(0.0,width); height=std::max(0.0,height);
     caption_height=std::clamp(caption_height,0.0,height);
@@ -132,7 +133,10 @@ inline ChromeLayout layout_chrome(double width, double height,
     if (tab_height<=0 || result.tabs_band.width<=0) return result;
     constexpr double gap=4,new_button=32;
     const double start=content_left+std::min(6.0,result.tabs_band.width);
-    const double end=width-std::min(6.0,result.tabs_band.width);
+    // Workspace actions have a dedicated lane, shared with navigation geometry.
+    // Tabs, close controls and the new-tab button must never occupy that lane.
+    trailing_actions_width=std::clamp(trailing_actions_width,0.0,result.tabs_band.width);
+    const double end=std::max(start,width-trailing_actions_width-std::min(6.0,result.tabs_band.width));
     const double space=std::max(0.0,end-start-new_button);
     result.compact=!tabs.empty() && space<96*tabs.size()+gap*(tabs.size()-1);
     std::vector<TabId> visible=tabs;
@@ -195,28 +199,34 @@ inline ProjectNavigationLayout layout_project_navigation(double width, double he
     result.expanded=expanded && width>=640 && !focus_mode;
     const double rail=focus_mode?0:std::min(width,result.expanded?184.0:44.0);
     const double footer=focus_mode?0:std::min(26.0,height-caption);
-    result.footer={0,height-footer,width,footer};
-    result.rail={0,caption,rail,std::max(0.0,result.footer.y-caption)};
-    const double tab_h=caption>0?std::min(40.0,result.rail.height):0;
+    result.footer={rail,height-footer,std::max(0.0,width-rail),footer};
+    result.rail={0,caption,rail,std::max(0.0,height-caption)};
+    const double tab_h=caption>0?std::min(40.0,std::max(0.0,result.footer.y-caption)):0;
     result.tabs={rail,caption,std::max(0.0,width-rail),tab_h};
-    const double context=focus_mode||!show_context?0:std::min(32.0,std::max(0.0,result.rail.height-tab_h));
+    const double context=focus_mode||!show_context?0:std::min(32.0,std::max(0.0,result.footer.y-caption-tab_h));
     result.context={rail,caption+tab_h,std::max(0.0,width-rail),context};
-    result.focus={std::max(rail,width-32),result.context.y+(context-std::min(24.0,context))/2,
-        std::min(24.0,std::max(0.0,width-rail)),std::min(24.0,context)};
+    // Keep the return action visible in focus mode too. Fullscreen has no tabs.
+    const double focus_w=tab_h>0?std::min(28.0,std::max(0.0,result.tabs.width-18)):0;
+    const double focus_h=focus_w>0?std::min(28.0,tab_h):0;
+    result.focus={width-std::min(12.0,result.tabs.width)-focus_w,caption+(tab_h-focus_h)/2,focus_w,focus_h};
     result.viewport={rail,caption+tab_h+context,std::max(0.0,width-rail),std::max(0.0,result.footer.y-caption-tab_h-context)};
     if (rail==0) return result;
     result.toggle={std::min(6.0,rail),caption+4,std::min(32.0,std::max(0.0,rail-12)),std::min(28.0,std::max(0.0,result.rail.height-4))};
     const double settings_h=result.rail.height>=76?36:0;
-    result.settings={4,result.footer.y-4-settings_h,std::max(0.0,rail-8),settings_h};
+    result.settings={4,std::max(caption,height-12-settings_h),std::max(0.0,rail-8),settings_h};
     const double new_h=result.rail.height>=156?36:0;
     result.new_project={4,result.settings.y-4-new_h,std::max(0.0,rail-8),new_h};
-    const double bottom=new_h?result.new_project.y:settings_h?result.settings.y:result.footer.y;
+    const double bottom=new_h?result.new_project.y:settings_h?result.settings.y:height;
     result.capacity=static_cast<std::size_t>(std::max(0.0,std::floor((bottom-(caption+40))/36)));
     const auto maximum_first=projects.size()>result.capacity?projects.size()-result.capacity:0;
     result.first=std::min(first,maximum_first);
     for (std::size_t row=0;row<result.capacity && result.first+row<projects.size();++row)
         result.projects.push_back({projects[result.first+row],{4,caption+40+row*36,std::max(0.0,rail-8),34}});
     return result;
+}
+
+inline double workspace_action_lane(const ProjectNavigationLayout& navigation) noexcept {
+    return navigation.focus.width>0?navigation.focus.width+18:0;
 }
 
 // Compact, bounded footer placements. Overflow always remains reachable; the

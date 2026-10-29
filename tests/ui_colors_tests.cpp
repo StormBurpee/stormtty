@@ -23,8 +23,7 @@ void check_palette(const Theme& theme) {
     CHECK(c.raised==c.hover);
     CHECK(c.divider==ui_mix(c.surface,c.ink,.18));
     const auto tab=tab_selection_colors(c);
-    auto tab_border=c.selected_border;tab_border.a=180;
-    CHECK(tab.surface==c.selected);CHECK(tab.border==tab_border);
+    CHECK(tab.surface==ui_mix(c.raised,c.selected,.45));CHECK(tab.border==Color{0,0,0,0});
     const Color os_background{251,241,231,255},os_foreground{11,21,31,255};
     const auto contrast_tab=tab_selection_colors(c,true,os_background,os_foreground);
     CHECK(contrast_tab.surface==os_background && contrast_tab.border==os_foreground);

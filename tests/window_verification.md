@@ -72,7 +72,7 @@ The parent CI owner records whether this entry point actually ran and passed.
   animation timers stop at their deadline and are disabled by reduced motion.
   Their visual quality still requires physical Windows verification.
 
-## Graphite refinement (source/cross-build evidence, not desktop visual proof)
+## Historical Graphite refinement (crown layout superseded below)
 
 - 48-DIP single integrated crown; fixed 32-DIP tabs at y8 with 4-DIP gaps,
   188-DIP preferred width, compact overflow and at least 48 DIP for dragging.
@@ -91,6 +91,34 @@ The parent CI owner records whether this entry point actually ran and passed.
   then a settled WARP framebuffer capture. Existing `--smoke` stays one-pane.
   Neither framebuffer proves desktop blur, outer corners, Snap, IME, or physical
   text quality. Normal launch never runs this test or its commands.
+
+## Workspace frame refinement
+
+- The Windows frame is a 32-DIP global caption, a 40-DIP workspace task row,
+  then the terminal/split headers. The duplicated 32-DIP directory band is
+  removed; existing 28-DIP split headers and terminal content insets are unchanged.
+- Focus mode owns a reserved 28-DIP trailing task-row action, separate from
+  task/close/new-tab targets. Its return action remains visible in focus mode.
+  The menu and Commands retain the same action; fullscreen retains its existing
+  command paths. Caption drag, resize and `HTMAXBUTTON` ownership are unchanged.
+- The existing 26-DIP footer belongs to the workspace column; the sidebar reaches
+  the window bottom. Ribbon order, visibility, essential attention, actual Watch
+  results and retained-actor semantics are unchanged. No illustrative task counts,
+  inferred servers or additional activity bar are introduced.
+- A single pane, collapsed sidebar or hidden footer bindings still has a complete
+  labeled context tooltip on its task tab and **Inspect pane context** in Commands
+  and the pane/menu actions. Full accepted titles, remote clues, configured versus
+  observed folders, and custom workspace icon/accent metadata are preserved.
+- Quiet selected task surfaces and bottom markers use semantic theme colors,
+  not a replacement palette. High contrast retains the explicit selection rim.
+- `--smoke-layout` requires normal, focus, collapsed, single-pane, single-pane
+  Inspector, narrow, minimum-window, and authored high-contrast framebuffer captures. The fixture
+  exercises both pointer Focus transitions and keyboard Inspector access with all
+  footer bindings hidden, then restores config, viewport size and original actors.
+  Existing Watch, previous-terminal and input-origin checks remain required.
+  Capture requirements are not a claim that a particular commit has passed:
+  inspect its exact-SHA native-craft manifest and images. These are native fixture
+  checks, not physical Snap, IME, blur, accessibility or frame-pacing qualification.
 
 ## Styled modal and caption ownership regression
 
