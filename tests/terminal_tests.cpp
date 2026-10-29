@@ -461,6 +461,18 @@ void finished_output_document() {
     CHECK(frozen->images[0].pixels->bytes==later->images[0].pixels->bytes);
 }
 void command_lifecycle() {
+    // Native Watch advances after D-C as well as after D. Duplicate C is not
+    // a new command; the fixture must terminate its synthetic leftover first.
+    TerminalCore fixture(small());
+    fixture.feed("\x1b]133;C\a\x1b]133;D;0\a\x1b]133;C\a");
+    const auto baseline = fixture.command_snapshot().command_generation;
+    fixture.feed("\x1b]133;C\a");
+    CHECK(fixture.command_snapshot().command_generation == baseline);
+    fixture.feed("\x1b]133;D\a\x1b]133;C\a");
+    CHECK(fixture.command_snapshot().phase == CommandPhase::running);
+    CHECK(fixture.command_snapshot().command_generation == baseline + 1);
+    CHECK(fixture.command_snapshot().completed_generation == baseline);
+    CHECK(!fixture.command_snapshot().last_exit_code);
     TerminalCore t(small());
     const CommandSnapshot empty;
     t.feed("\x1b]133;A\a\x1b]133;B\a\x1b]133;D;9\a");

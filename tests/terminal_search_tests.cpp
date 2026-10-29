@@ -97,7 +97,9 @@ int native_watch_child() {
         if(byte==0x9d||byte==0x90||byte==0x9f||byte==0x9e){state=Input::string;continue;}
         std::string_view packet;
         switch(value) {
-        case 'a':packet="\x1b]133;C\x07\r\nWATCH_READY\r\n";break;
+        // A prior coalesced D-C case deliberately leaves C running. Finish
+        // that synthetic command before starting a genuinely newer generation.
+        case 'a':packet="\x1b]133;D\x07\x1b]133;C\x07\r\nWATCH_READY\r\n";break;
         case '0':packet="\x1b]133;D;0\x07\r\nWATCH_RESULT_0\r\n";break;
         case '7':packet="\x1b]133;D;7\x07\r\nWATCH_RESULT_7\r\n";break;
         case 'u':packet="\x1b]133;D\x07\r\nWATCH_RESULT_UNKNOWN\r\n";break;
