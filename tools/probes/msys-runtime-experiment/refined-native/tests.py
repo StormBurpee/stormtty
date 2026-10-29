@@ -14,6 +14,17 @@ class Contract(unittest.TestCase):
   source=(HERE/'run.py').read_text()
   self.assertIn('reap_timeout=5',source);self.assertIn('timeout=20',source)
   self.assertNotIn('subprocess.run',source)
+ def test_windows_environment_copy_casing(self):
+  for key in ('SYSTEMROOT','SystemRoot','systemroot'):
+   inherited={key:'C:/Windows','Path':'untrusted-search','OTHER':'keep'}
+   original=dict(inherited)
+   env=runner.fixture_environment(inherited,Path('private-fixture'))
+   self.assertEqual(env['PATH'],'private-fixture'+runner.os.pathsep+str(Path('C:/Windows')/'System32'))
+   self.assertNotIn('Path',env);self.assertEqual(env['OTHER'],'keep')
+   self.assertEqual(inherited,original)
+ def test_missing_or_conflicting_system_root_fails_closed(self):
+  for inherited in ({},{'SYSTEMROOT':''},{'SYSTEMROOT':'C:/Windows','SystemRoot':'D:/Other'}):
+   with self.assertRaises(ValueError):runner.fixture_environment(inherited,Path('fixture'))
  def good(self,scenario='raw-vmin2'):
   return ([{'final_hex':runner.EXPECTED[scenario].hex(),'signals':1}],
           [{'width_before':120,'width_after':119},{'reader_exit':0,'timeout':False,'remaining_native_records':0}])

@@ -1,5 +1,6 @@
 # Isolated source-build experiment; never replaces a shipped runtime.
 # Source correction: brace reviewed mouse return; retain GCC15 -Werror.
+# Fixture correction: handle uppercase SYSTEMROOT in copied Windows environment.
 name: Private MSYS stock versus refined prefix retirement qualification
 on:
   # One intentional publication commit only. Do not push workflow edits to

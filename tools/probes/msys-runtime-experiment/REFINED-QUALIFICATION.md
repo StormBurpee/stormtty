@@ -113,9 +113,9 @@ supports its observed cases; production promotion remains a separate decision.
 
 Windows-GNU cross-link passed for the actual managed Session target, unchanged
 raw paste probe, external injector and native console fixture. Reader passes
-Linux C syntax and config passes Zsh syntax. Seventy portable tests pass: 10 fixed
+Linux C syntax and config passes Zsh syntax. Seventy-two portable tests pass: 10 fixed
 raw/settings orchestration, 2 identity, 20 staging, 13 control-flow model,
-11 external-log/owned-completion checks, 7 workflow/managed negative-outcome/import
+13 external-log/owned-completion/environment checks, 7 workflow/managed negative-outcome/import
 tests and 7 owned-process tests.
 Workflow YAML and embedded Bash parse, and git diff whitespace checks pass.
 No native MSYS runtime source build, MSVC fixture execution or Windows matrix
@@ -158,3 +158,50 @@ before the correction and compiles with `-Wall -Wextra -Werror` after it. This i
 not a substitute for the still-required full native GCC15 source build and fixed
 runtime matrix. Root must publish the changed source explicitly; no workflow
 rerun, automatic retry or default activation is performed here.
+
+### Native result: braced candidate, with external fixture launch blocker
+
+Run40881120249, source6f0df509ea433cd4c4dc3a5fc5964270fea669b4,
+completed both native GCC15 source builds with strict warnings and preserved all
+independent workload outcomes. Artifact12903300924 ZIP SHA-256 independently
+verified: `12d57f062da56955f4489ddb3ed930bad69d30391f502c2c430d643cc79df37a`.
+
+- Target MSYS raw resize-only (`kind=2 mode=2`): stock loses exactly the leading
+  ESC in all6 trials (first failing rounds4,2,4,4,2,10); refined completes20/20
+  rounds in every trial,120 target rounds total, with no byte mismatch. Each
+  completed target round observes4 successful resize calls; refined reaches
+  requested=applied=calls=80 in each trial. Stock stops its case at the first
+  strict mismatch, not an equal completed-round count. Writer-completion and
+  child-byte evidence are retained; raw probe bytes are unchanged.
+- VT-off controls retain4 failures in every invocation for BOTH variants. The
+  raw workflow step therefore remains failed; no success waiver or filtering.
+- Managed Session matrix:8/8 invocations pass,16/16 fresh/warm samples complete
+  all10 phases, exit37 and warm cache timestamp reuse. Each outer outcome is
+  exit0, reaped, not timed out/truncated, empty cleanup error. This includes
+  actual managed module/prompt/helper, Unicode/4096 paste, resize/edit, native
+  console child and Ctrl-C checks, not arbitrary app or internal-path proof.
+- Actual settings-close application:12/12 launches pass with clean ownership
+  metadata. As before, this is no improvement claim because stock also passes.
+- External native edge cases: **zero launches**. The driver raises
+  `KeyError: 'SystemRoot'` before starting its first injector. Windows os.environ
+  lookup is case-insensitive, but os.environ.copy() is an ordinary dictionary
+  whose system-root key is normally `SYSTEMROOT`. This is fixture orchestration
+  failure, not an executed runtime failure and not a passing/inconclusive test
+  trace. The step failed and later independent matrices still ran.
+
+Observed source-built DLL hashes:
+stock `3d6dbf3772924fb7f55ce5a4b0335705a8ba6928d204ac8f6c64933f7de014a8`;
+refined `ebf0d797aff9f97a5455a98286dc2f56fab03bc0a0357ed01718b92b0823fa8b`.
+These identify this run, not a bit-reproducibility guarantee. No native typing
+latency improvement, broad interoperability, internal mouse path, partial-discard
+safety or default-readiness conclusion follows.
+
+The local fixture-only correction resolves the inherited environment key
+case-insensitively, rejects missing/conflicting roots, replaces any PATH casing
+with the same scoped fixture+System32 path, and does not mutate the parent
+environment. Initial results.json now records planned24/executed-empty before
+any launch so future pre-launch errors cannot look like completed coverage.
+Two regression tests cover uppercase/mixed/lowercase, ambiguity and no parent
+mutation. Runtime patch, source pins, matrix order/count, timeouts and strict
+outcome predicates are unchanged. Any further native run requires root's
+explicit changed-source publication; no unchanged retry is requested or issued.

@@ -1,0 +1,194 @@
+# Isolated source-build experiment; never replaces a shipped runtime.
+# Source correction: brace reviewed mouse return; retain GCC15 -Werror.
+# Fixture correction: handle uppercase SYSTEMROOT in copied Windows environment.
+name: Private MSYS refined external-edge qualification
+on:
+  # One intentional publication commit only. Do not push workflow edits to
+  # retry failures; preserve the fixed matrix and stop for review.
+  push:
+    branches: ['experiment/msys-refined-edges']
+    paths: ['.github/workflows/msys-refined-edges.yml']
+permissions:
+  contents: read
+concurrency:
+  group: msys-refined-edges-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compare:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/msys-refined-edges'
+    runs-on: windows-2025
+    timeout-minutes: 180
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # Exact intentionally pushed experiment commit; never the PR merge tree.
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - name: Prepare evidence and record fixed candidate
+        shell: pwsh
+        run: |
+          $env:EXPERIMENT_ROOT = Join-Path $env:RUNNER_TEMP "stormtty-runtime-refined-edges"
+          "EXPERIMENT_ROOT=$env:EXPERIMENT_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Path "$env:EXPERIMENT_ROOT/evidence" | Out-Null
+          git rev-parse HEAD | Set-Content "$env:EXPERIMENT_ROOT/evidence/commit.txt"
+          Copy-Item tools/probes/msys-runtime-experiment/REFINED-EDGES.md "$env:EXPERIMENT_ROOT/evidence/experiment-recipe.md"
+      - name: Initialize native compiler
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Verify tooling and stage untouched private bundle
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/stage-refined-tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/msys-runtime-experiment/refined-tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/msys-runtime-experiment/refined-identity-tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/run-owned-process-tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/msys-runtime-experiment/refined-edges-workflow-tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/msys-runtime-experiment/refined-workflow-tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/msys-runtime-experiment/refined-model-tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/msys-runtime-experiment/refined-native/tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/shell-bootstrap.py --destination "$env:EXPERIMENT_ROOT/original" --cache .cache/shell-bootstrap
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:EXPERIMENT_ROOT/original/.stormtty-packages/msys2-runtime/.BUILDINFO" "$env:EXPERIMENT_ROOT/evidence/upstream-buildinfo.txt"
+      - name: Download exact official complete source archive
+        timeout-minutes: 10
+        shell: python
+        run: |
+          import hashlib,os,pathlib,urllib.request
+          root=pathlib.Path(os.environ['EXPERIMENT_ROOT'])
+          target=root/'msys2-runtime-3.6.11-4.src.tar.zst'
+          url='https://repo.msys2.org/msys/sources/'+target.name
+          expected='4b178dfb5b77bce293706dcfabea673b77d8da061a4725bdf4cd94f17533c204'
+          with urllib.request.urlopen(url,timeout=60) as response, target.open('xb') as out:
+            size=0
+            while chunk:=response.read(1024*1024):
+              size+=len(chunk)
+              if size>128907415: raise RuntimeError('Oversized source archive')
+              out.write(chunk)
+          with target.open('rb') as stream: digest=hashlib.file_digest(stream,'sha256').hexdigest()
+          assert target.stat().st_size==128907415 and digest==expected
+          (root/'evidence/source-identity.txt').write_text(url+'\n'+digest+'\n',encoding='utf-8')
+      - name: Install isolated official native MSYS build environment
+        timeout-minutes: 20
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0, verified official action
+        with:
+          msystem: MSYS
+          location: ${{ runner.temp }}/stormtty-msys-toolchain
+          update: true
+          cache: false
+          path-type: minimal
+          install: >-
+            base-devel autotools cocom docbook-xsl gcc gettext-devel git
+            libzstd-devel libiconv-devel mingw-w64-cross-crt mingw-w64-cross-gcc
+            mingw-w64-cross-zlib perl xmlto zlib-devel zstd texinfo diffutils coreutils gawk grep sed tar binutils curl gnupg
+      - name: Verify and preflight private GCC15 compiler (no system downgrade)
+        timeout-minutes: 10
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          bash tools/probes/msys-runtime-experiment/toolchain.sh "$root/gcc15" 2>&1 | tee "$root/evidence/gcc15-preflight.log"
+      - name: Build stock runtime from official source and all packaging patches
+        id: stock
+        timeout-minutes: 40
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
+          bash tools/probes/msys-runtime-experiment/build-refined.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/stock-build" stock 2>&1 | tee "$root/evidence/stock-build.log"
+      - name: Build refined retirement runtime with identical toolchain
+        id: refined
+        if: always() && steps.stock.outcome == 'success'
+        timeout-minutes: 40
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
+          bash tools/probes/msys-runtime-experiment/build-refined.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/refined-build" refined 2>&1 | tee "$root/evidence/refined-build.log"
+          cmp "$root/stock-build/provenance/pacman-before.txt" "$root/refined-build/provenance/pacman-before.txt"
+      - name: Build fixed native diagnostic fixtures once
+        id: fixtures
+        if: always() && steps.refined.outcome == 'success'
+        timeout-minutes: 5
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export PATH="$root/gcc15/wrappers:$PATH"
+          mkdir "$root/native-fixture-build"
+          stormtty-gcc-15 -std=gnu11 -O0 -g -Wall -Wextra -Werror -static-libgcc tools/probes/msys-runtime-experiment/refined-native/reader.c -o "$root/native-fixture-build/reader.exe"
+          objdump -p "$root/native-fixture-build/reader.exe" > "$root/evidence/reader-pe-imports.txt"
+          grep -qi 'DLL Name: msys-2.0.dll' "$root/evidence/reader-pe-imports.txt"
+      - name: Compile fixed native injector
+        id: native
+        if: always() && steps.fixtures.outcome == 'success'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/check-reader-imports.py "$env:EXPERIMENT_ROOT/evidence/reader-pe-imports.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /nologo /std:c11 /W4 /WX /D_CRT_SECURE_NO_WARNINGS tools/probes/msys-runtime-experiment/refined-native/injector.c /Fo:"$env:EXPERIMENT_ROOT/native-fixture-build/injector.obj" /Fe:"$env:EXPERIMENT_ROOT/native-fixture-build/injector.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage experimental copies without touching active runtime
+        id: staging
+        if: always() && steps.refined.outcome == 'success'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/stage-refined.py "$env:EXPERIMENT_ROOT/original" "$env:EXPERIMENT_ROOT/stock-build" "$env:EXPERIMENT_ROOT/stock"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/msys-runtime-experiment/stage-refined.py "$env:EXPERIMENT_ROOT/original" "$env:EXPERIMENT_ROOT/refined-build" "$env:EXPERIMENT_ROOT/refined"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Fixed external native edge cases (exact paths remain inconclusive)
+        if: always() && steps.staging.outcome == 'success' && steps.native.outcome == 'success'
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/refined-native/run.py --injector "$env:EXPERIMENT_ROOT/native-fixture-build/injector.exe" --reader "$env:EXPERIMENT_ROOT/native-fixture-build/reader.exe" --original "$env:EXPERIMENT_ROOT/original" --stock "$env:EXPERIMENT_ROOT/stock" --refined "$env:EXPERIMENT_ROOT/refined" --output "$env:EXPERIMENT_ROOT/evidence/native"
+          exit $LASTEXITCODE
+      - name: Preserve all fixed trials and source provenance (no DLL distribution)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msys-refined-edges-${{ github.sha }}
+          if-no-files-found: warn
+          # Fixed synthetic native reader/injector diagnostics and source provenance only.
+          # Never upload DLLs/packages, scratch HOME/history, captures or keyrings.
+          path: |
+            ${{ env.EXPERIMENT_ROOT }}/evidence/*.txt
+            ${{ env.EXPERIMENT_ROOT }}/evidence/*.md
+            ${{ env.EXPERIMENT_ROOT }}/evidence/*-build.log
+            ${{ env.EXPERIMENT_ROOT }}/evidence/gcc15-preflight.log
+            ${{ env.EXPERIMENT_ROOT }}/evidence/native/results.json
+            ${{ env.EXPERIMENT_ROOT }}/evidence/native/*/reader.jsonl
+            ${{ env.EXPERIMENT_ROOT }}/evidence/native/*/injector.jsonl
+            ${{ env.EXPERIMENT_ROOT }}/evidence/native/*/launcher.log
+            ${{ env.EXPERIMENT_ROOT }}/gcc15/provenance/*.txt
+            ${{ env.EXPERIMENT_ROOT }}/stock-build/provenance/*.txt
+            ${{ env.EXPERIMENT_ROOT }}/stock-build/provenance/*.patch
+            ${{ env.EXPERIMENT_ROOT }}/stock-build/provenance/*.cc
+            ${{ env.EXPERIMENT_ROOT }}/stock-build/provenance/*.before
+            ${{ env.EXPERIMENT_ROOT }}/stock-build/provenance/*.after
+            ${{ env.EXPERIMENT_ROOT }}/stock-build/provenance/makepkg.conf
+            ${{ env.EXPERIMENT_ROOT }}/stock-build/provenance/PKGBUILD
+            ${{ env.EXPERIMENT_ROOT }}/refined-build/provenance/*.txt
+            ${{ env.EXPERIMENT_ROOT }}/refined-build/provenance/*.patch
+            ${{ env.EXPERIMENT_ROOT }}/refined-build/provenance/*.cc
+            ${{ env.EXPERIMENT_ROOT }}/refined-build/provenance/*.before
+            ${{ env.EXPERIMENT_ROOT }}/refined-build/provenance/*.after
+            ${{ env.EXPERIMENT_ROOT }}/refined-build/provenance/makepkg.conf
+            ${{ env.EXPERIMENT_ROOT }}/refined-build/provenance/PKGBUILD

@@ -33,6 +33,17 @@ def assess(scenario,reader,injector,returncode):
             'observed_hex':final.get('final_hex'), 'expected_hex':EXPECTED[scenario].hex(),
             'signals':final.get('signals'),
             'longjmp_observed':any(row.get('longjmp') is True for row in reader)}
+def fixture_environment(inherited, fixture):
+    # os.environ is case-insensitive on Windows; its copy is an ordinary dict
+    # whose keys are normally uppercase. Do not index that copy as SystemRoot.
+    roots={value for name,value in inherited.items() if name.casefold()=='systemroot'}
+    if len(roots)!=1 or not next(iter(roots)):
+        raise ValueError('missing or ambiguous Windows system root')
+    system_root=next(iter(roots))
+    env={name:value for name,value in inherited.items() if name.casefold()!='path'}
+    env['PATH']=str(fixture)+os.pathsep+str(Path(system_root)/'System32')
+    return env
+
 def complete(result):
     return (result.reaped and not result.timed_out and
             not result.output_truncated and not result.cleanup_error)
@@ -57,7 +68,8 @@ def main():
         assert sha(dst/'reader.exe')==sha(a.reader)
         assert sha(dst/'msys-2.0.dll')==identities[variant]['dll_sha256']
     result={'qualification':'inconclusive-no-runtime-hooks','identities':identities,
-            'fixture_sha256':{'reader':sha(a.reader),'injector':sha(a.injector)},'trials':[]}
+            'fixture_sha256':{'reader':sha(a.reader),'injector':sha(a.injector)},'planned':24,'trials':[]}
+    (a.output/'results.json').write_text(json.dumps(result,indent=2)+'\n')
     for trial,order in enumerate(ORDERS,1):
         for scenario in SCENARIOS:
             for variant in order:
@@ -65,7 +77,7 @@ def main():
                 reader_log=run/'reader.jsonl'; injector_log=run/'injector.jsonl'
                 cmd=[str(a.injector.resolve()),str(fixture/variant/'reader.exe'),scenario,
                      str(reader_log),str(run/'ready.txt'),str(injector_log)]
-                env=os.environ.copy();env['PATH']=str(fixture/variant)+os.pathsep+str(Path(env['SystemRoot'])/'System32')
+                env=fixture_environment(os.environ.copy(),fixture/variant)
                 # Injector owns a job and its child; watchdog kills only its private reader.
                 record={'trial':trial,'variant':variant,'scenario':scenario,'returncode':125}
                 finished=False
