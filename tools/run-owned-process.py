@@ -37,7 +37,7 @@ class Result:
 
 
 def run_owned(command: Sequence[str], *, timeout: float = 90, tail_bytes: int = 65536,
-              reap_timeout: float = 10, cwd=None, output_dir=None) -> Result:
+              reap_timeout: float = 10, cwd=None, output_dir=None, env=None) -> Result:
     """Run one child without a shell; kill/wait only its retained Popen handle.
 
     Descendants are neither enumerated nor terminated. A descendant retaining
@@ -54,7 +54,7 @@ def run_owned(command: Sequence[str], *, timeout: float = 90, tail_bytes: int = 
     started = time.monotonic()
     with tempfile.TemporaryFile(mode="w+b", dir=output_dir) as capture:
         child = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL,
-                                 stdout=capture, stderr=subprocess.STDOUT, close_fds=True)
+                                 stdout=capture, stderr=subprocess.STDOUT, close_fds=True, env=env)
         timed_out = False
         alive_at_timeout = None
         cleanup_error = ""

@@ -3,6 +3,7 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import os
 import sys
 import tempfile
 import time
@@ -15,6 +16,15 @@ spec.loader.exec_module(runner)
 
 
 class OwnedProcessTests(unittest.TestCase):
+    def test_scoped_child_environment(self):
+        name='STORMTTY_OWNED_ENV_TEST'
+        original=os.environ.get(name)
+        env=dict(os.environ);env[name]='fixed-child-value'
+        result=runner.run_owned([sys.executable,'-c',"import os; print(os.environ['STORMTTY_OWNED_ENV_TEST'])"],env=env)
+        self.assertEqual(result.exit_code,0)
+        self.assertEqual(result.output_tail.strip(),b'fixed-child-value')
+        self.assertEqual(os.environ.get(name),original)
+
     def test_exit_code_and_merged_output(self):
         result = runner.run_owned([sys.executable, "-c", "import sys; print('out',flush=True); print('err',file=sys.stderr,flush=True); sys.exit(37)"])
         self.assertEqual(result.returncode, 37)
