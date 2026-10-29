@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <mutex>
 #include <thread>
@@ -204,12 +205,21 @@ struct AgentStdioTransport::Impl {
         std::lock_guard lock(stop_mutex); stopping=true;
 #ifdef _WIN32
         if(job.value!=INVALID_HANDLE_VALUE && job.value) TerminateJobObject(job.value,1);
+        // Also cover a launch failure between CreateProcess and job assignment.
+        if(process.value!=INVALID_HANDLE_VALUE && process.value && WaitForSingleObject(process.value,0)!=WAIT_OBJECT_0)
+            TerminateProcess(process.value,1);
 #else
         { std::lock_guard lock(process_mutex); if(pid>0) kill(-pid,SIGKILL); }
 #endif
         if(worker.joinable()) worker.join();
 #ifdef _WIN32
         if(writer.joinable()) writer.join();
+        // TerminateJobObject/TerminateProcess initiate asynchronous termination.
+        // Joining our pipe workers is NOT evidence the child released its CWD,
+        // files or other process-owned resources. Observe the owned process exit
+        // before stop/destruction returns, as the POSIX waitpid path already does.
+        if(process.value!=INVALID_HANDLE_VALUE && process.value && WaitForSingleObject(process.value,5000)!=WAIT_OBJECT_0)
+            std::fputs("StormTTY provider teardown: child exit was not observed after termination.\n",stderr);
 #endif
 #ifndef _WIN32
         if(pid>0) { while(waitpid(pid,nullptr,0)<0 && errno==EINTR) {} pid=-1; }
