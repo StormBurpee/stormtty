@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "app_base_local": "aaec0c4ec6357b9395b6b8c478ce8585f21b32f7",
+  "app_base_remote": "4d65a9fa1af839fa5ac5e878700a7557850a74b2",
+  "app_base_tree": "8cb97c9fdec7adc1aa60e99d3b2329515089a35b",
+  "source_trees": {
+    "src": "c1d06f51d2b7967170409548e586c8ab93445d45",
+    "include": "c2cca4f400423a9a2faca4c826d84a503552e085",
+    "assets": "d3f11b8c8bd0937dc73cf6ba79955f12ccb1103b",
+    "cmake": "9f256797e563153c1fce9cfb8d2a307b415a417a",
+    "tests": "ee2137bad30c4c431412d98069cf6b0157a1eea3"
+  },
+  "source_files": {
+    "CMakeLists.txt": "4104f1e60f291e5b7ac2dbc45513e470d5530ff3ba51d8e75e8618ef9c7a48ec",
+    "tests/paste_input_probe.cpp": "251477c3587c25b498bf1bf099e355d47a2cf3e1b8f1dcd7649e406aca39beae",
+    "src/platform/windows/window.cpp": "f17aacee57459aa1c407f38df99d2bb52460ba3cf003f8d64d70b9e24d1126b1",
+    "src/app/windows_main.cpp": "76e8f8a5297de9e822dd95cc1e6f143e9363f7d81c93d7bdd896b4e4fcadf620",
+    "tools/run-owned-process.py": "87c3143caba409934a4f5096b0124a79ac5fd3436fff8171f6703ca22373de34",
+    "tools/shell-bootstrap.lock.json": "daae3caafb286c97e23554c91a1308e971d05f7253557c21264b44508db88771",
+    "tools/prepare-conpty-probe.ps1": "4c982fdb428c8a691a740dbb7a5ca906993c9c5d36584d4bc00383ed69af633c"
+  },
+  "managed_fixture_files": {
+    "host.cpp": "96d6c7d908e2e752b6d7f0e1c110b8afcd07fe3c994ab36fe1fed2beeda89498",
+    "native.c": "5a273043ee06a6c6cad0137f46f52fb17e1fedc99c3ab6773c37ea6d29517039",
+    "config.zsh": "2f53408f46d17c1329029572c5e0e47cefe6e3b50c4c3b8d7afa819342845b18"
+  },
+  "runtime_variants": [
+    "original",
+    "stock",
+    "copied"
+  ],
+  "providers": [
+    "inbox",
+    "packaged"
+  ],
+  "counts": {
+    "raw": 18,
+    "managed": 12,
+    "managed_samples": 24,
+    "settings": 78
+  },
+  "no_runtime_observer": true,
+  "production_qualified": false,
+  "packaged_provider_sha256": {
+    "conpty.dll": "feeef341d891643c62d30b6b07800bc70f0bc148f44cb8c3bee84aa557ae805a",
+    "OpenConsole.exe": "3d66b23d0a71bb8eed2b77edc8b9df9bf54ce6c8fb74c863a30e760997f80586"
+  }
+}

@@ -1,0 +1,194 @@
+# Separate uninstrumented real-app phase; root review required before publication.
+# No production/default changes. Unsupported paths remain INCONCLUSIVE.
+name: Private MSYS uninstrumented partial-read real-app qualification
+on:
+  # One intentional publication commit only. Do not push workflow edits to
+  # retry failures; preserve failures and stop for review.
+  push:
+    branches: ['experiment/msys-partial-app']
+    paths: ['.github/workflows/msys-partial-app.yml']
+permissions:
+  contents: read
+concurrency:
+  group: msys-partial-app-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compare:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/msys-partial-app'
+    runs-on: windows-2025
+    timeout-minutes: 330
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # Exact intentionally pushed experiment commit; never the PR merge tree.
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - name: Prepare evidence and record fixed candidate
+        shell: pwsh
+        run: |
+          $env:EXPERIMENT_ROOT = Join-Path $env:RUNNER_TEMP "stormtty-runtime-partial-app"
+          "EXPERIMENT_ROOT=$env:EXPERIMENT_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Path "$env:EXPERIMENT_ROOT/evidence" | Out-Null
+          git rev-parse HEAD | Set-Content "$env:EXPERIMENT_ROOT/evidence/commit.txt"
+          Copy-Item tools/probes/msys-runtime-experiment/partial-app/app-plan.json "$env:EXPERIMENT_ROOT/evidence/app-plan.json"
+
+      - name: Validate isolated runtime and fixed app matrix contracts
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          foreach ($test in @('runtime-tests.py','tests.py')) {
+            python "tools/probes/msys-runtime-experiment/partial-app/$test"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Stage untouched official runtime reference
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          python tools/shell-bootstrap.py --destination "$env:EXPERIMENT_ROOT/original" --cache .cache/shell-bootstrap
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:EXPERIMENT_ROOT/original/.stormtty-packages/msys2-runtime/.BUILDINFO" "$env:EXPERIMENT_ROOT/evidence/upstream-buildinfo.txt"
+      - name: Initialize native fixture compiler
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Prepare pinned packaged console provider
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./tools/prepare-conpty-probe.ps1 -Destination "$env:EXPERIMENT_ROOT/conpty"
+      - name: Restore pinned terminal engine
+        id: engine
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Build missing pinned engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        timeout-minutes: 25
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Build unchanged current app and fixed raw managed fixtures once
+        id: app
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/partial-app/app-layout.py --verify-source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake -S . -B build-partial-app -G Ninja -DCMAKE_CXX_COMPILER=cl -DSTORMTTY_TEST_SHELL_PROBE=ON -DSTORMTTY_TEST_PARTIAL_APP=ON -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=ON -DSTORMTTY_EXPERIMENTAL_COMPLETION_SEED=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DSTORMTTY_GHOSTTY_ROOT=$env:GITHUB_WORKSPACE/.deps/ghostty-native" "-DSTORMTTY_DEVELOPER_SHELL_RUNTIME=$env:EXPERIMENT_ROOT/original"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-partial-app --target paste_input_probe bundled_shell_probe stormtty qualification_input_evidence_tests partial_app_managed_probe --parallel 2 2>&1 | Tee-Object "$env:EXPERIMENT_ROOT/evidence/app-build.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-partial-app --output-on-failure -R "^qualification_input_evidence_tests$"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/check_input_evidence_isolation.py build-partial-app
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory "$env:EXPERIMENT_ROOT/fixture-build" | Out-Null
+          cl /nologo /std:c11 /W4 /WX /utf-8 /D_CRT_SECURE_NO_WARNINGS tools/probes/msys-runtime-experiment/partial-app/managed-native/native.c /Fo:"$env:EXPERIMENT_ROOT/fixture-build/native.obj" /Fe:"$env:EXPERIMENT_ROOT/fixture-build/native.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Download exact official complete source archive
+        timeout-minutes: 10
+        shell: python
+        run: |
+          import hashlib,os,pathlib,urllib.request
+          root=pathlib.Path(os.environ['EXPERIMENT_ROOT'])
+          target=root/'msys2-runtime-3.6.11-4.src.tar.zst'
+          url='https://repo.msys2.org/msys/sources/'+target.name
+          expected='4b178dfb5b77bce293706dcfabea673b77d8da061a4725bdf4cd94f17533c204'
+          with urllib.request.urlopen(url,timeout=60) as response, target.open('xb') as out:
+            size=0
+            while chunk:=response.read(1024*1024):
+              size+=len(chunk)
+              if size>128907415: raise RuntimeError('Oversized source archive')
+              out.write(chunk)
+          with target.open('rb') as stream: digest=hashlib.file_digest(stream,'sha256').hexdigest()
+          assert target.stat().st_size==128907415 and digest==expected
+          (root/'evidence/source-identity.txt').write_text(url+'\n'+digest+'\n',encoding='utf-8')
+      - name: Install isolated official native MSYS build environment
+        timeout-minutes: 20
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0, verified official action
+        with:
+          msystem: MSYS
+          location: ${{ runner.temp }}/stormtty-msys-toolchain
+          update: true
+          cache: false
+          path-type: minimal
+          install: >-
+            base-devel autotools cocom docbook-xsl gcc gettext-devel git
+            libzstd-devel libiconv-devel mingw-w64-cross-crt mingw-w64-cross-gcc
+            mingw-w64-cross-zlib perl xmlto zlib-devel zstd texinfo diffutils coreutils gawk grep sed tar binutils curl gnupg python
+      - name: Verify and preflight private GCC15 compiler (no system downgrade)
+        timeout-minutes: 10
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          bash tools/probes/msys-runtime-experiment/toolchain.sh "$root/gcc15" 2>&1 | tee "$root/evidence/gcc15-preflight.log"
+      - name: Build uninstrumented stock runtime control
+        id: stock
+        timeout-minutes: 40
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
+          bash tools/probes/msys-runtime-experiment/partial-app/build.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/stock-build" stock 2>&1 | tee "$root/evidence/stock-build.log"
+      - name: Build uninstrumented stock plus0007 with identical toolchain
+        id: copied
+        if: always() && steps.stock.outcome == 'success'
+        timeout-minutes: 40
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
+          bash tools/probes/msys-runtime-experiment/partial-app/build.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/copied-build" copied 2>&1 | tee "$root/evidence/copied-build.log"
+          cmp "$root/stock-build/provenance/pacman-before.txt" "$root/copied-build/provenance/pacman-before.txt"
+      - name: Stage separate experimental runtimes and immutable app copies
+        id: staging
+        if: always() && steps.copied.outcome == 'success' && steps.app.outcome == 'success'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          foreach ($variant in @('stock','copied')) {
+            python tools/probes/msys-runtime-experiment/partial-app/stage.py "$env:EXPERIMENT_ROOT/original" "$env:EXPERIMENT_ROOT/$variant-build" "$env:EXPERIMENT_ROOT/$variant"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          python tools/probes/msys-runtime-experiment/partial-app/app-layout.py --build build-partial-app --original "$env:EXPERIMENT_ROOT/original" --stock "$env:EXPERIMENT_ROOT/stock" --copied "$env:EXPERIMENT_ROOT/copied" --destination "$env:EXPERIMENT_ROOT/apps"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:EXPERIMENT_ROOT/apps/app-copies.json" "$env:EXPERIMENT_ROOT/evidence/app-copies.json"
+      - name: Fixed unchanged raw paste resize matrix (18 launches)
+        if: always() && steps.staging.outcome == 'success'
+        timeout-minutes: 60
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/partial-app/compare.py --original "$env:EXPERIMENT_ROOT/original" --stock "$env:EXPERIMENT_ROOT/stock" --copied "$env:EXPERIMENT_ROOT/copied" --apps "$env:EXPERIMENT_ROOT/apps" --provider "$env:EXPERIMENT_ROOT/conpty" --probe build-partial-app/paste_input_probe.exe --host build-partial-app/partial_app_managed_probe.exe --native "$env:EXPERIMENT_ROOT/fixture-build/native.exe" --output "$env:EXPERIMENT_ROOT/evidence/raw" --workload raw
+          exit $LASTEXITCODE
+      - name: Fixed managed-shell native-child matrix (12 launches, 24 samples)
+        if: always() && steps.staging.outcome == 'success'
+        timeout-minutes: 24
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/partial-app/compare.py --original "$env:EXPERIMENT_ROOT/original" --stock "$env:EXPERIMENT_ROOT/stock" --copied "$env:EXPERIMENT_ROOT/copied" --apps "$env:EXPERIMENT_ROOT/apps" --provider "$env:EXPERIMENT_ROOT/conpty" --probe build-partial-app/paste_input_probe.exe --host build-partial-app/partial_app_managed_probe.exe --native "$env:EXPERIMENT_ROOT/fixture-build/native.exe" --output "$env:EXPERIMENT_ROOT/evidence/managed" --workload managed
+          exit $LASTEXITCODE
+      - name: Current Settings lifecycle matrix (78 launches, explicit10 default3)
+        if: always() && steps.staging.outcome == 'success'
+        timeout-minutes: 55
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/partial-app/compare.py --original "$env:EXPERIMENT_ROOT/original" --stock "$env:EXPERIMENT_ROOT/stock" --copied "$env:EXPERIMENT_ROOT/copied" --apps "$env:EXPERIMENT_ROOT/apps" --provider "$env:EXPERIMENT_ROOT/conpty" --probe build-partial-app/paste_input_probe.exe --host build-partial-app/partial_app_managed_probe.exe --native "$env:EXPERIMENT_ROOT/fixture-build/native.exe" --output "$env:EXPERIMENT_ROOT/evidence/settings" --workload settings
+          exit $LASTEXITCODE
+      - name: Collect bounded allowlisted evidence even on failure
+        if: always()
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          python tools/probes/msys-runtime-experiment/partial-app/collect.py "$env:EXPERIMENT_ROOT" "$env:EXPERIMENT_ROOT/review-packet"
+          exit $LASTEXITCODE
+      - name: Preserve every fixed outcome and provenance (no binaries or HOME)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msys-partial-app-${{ github.sha }}
+          if-no-files-found: warn
+          path: ${{ env.EXPERIMENT_ROOT }}/review-packet/
