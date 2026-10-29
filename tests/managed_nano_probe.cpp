@@ -153,7 +153,10 @@ int main() {
         probe.expect("GNU nano"); probe.expect("original");
         phase = 3;
         probe.key(Key::a, true); probe.key(Key::k, true);
-        probe.text("edited caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84"); probe.key(Key::enter);
+        // nano 9.2 src/nano.c adds a trailing magic line when text fills
+        // the last empty line. Do not press Enter here: do_enter() would
+        // insert another newline before that existing terminator.
+        probe.text("edited caf\xc3\xa9 \xe8\xb7\xaf\xe5\xbe\x84");
         probe.expect("edited caf");
         phase = 4;
         // Pinned nano 9.2 src/files.c uses msg = _("Write to File").

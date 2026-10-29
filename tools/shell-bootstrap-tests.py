@@ -71,6 +71,15 @@ class ShellBootstrapTests(unittest.TestCase):
         self.assertIn('MANAGED_NANO_DIAGNOSTIC phase=', fixture)
         self.assertIn('probe.expect("QNANO_EXIT_0")', fixture)
 
+    def test_nano_edit_keeps_one_automatic_final_newline(self):
+        fixture = (shell.LOCK.parent.parent / "tests/managed_nano_probe.cpp").read_text()
+        edit = fixture.split('        phase = 3;', 1)[1].split('        phase = 4;', 1)[0]
+        self.assertIn('probe.key(Key::a, true); probe.key(Key::k, true);', edit)
+        self.assertIn('probe.text("edited caf', edit)
+        self.assertNotIn('probe.key(Key::enter)', edit)
+        self.assertIn('diagnostic.file_exact = value == expected', fixture)
+        self.assertIn('phase = 43; check(probe.exact_file())', fixture)
+
     def test_reject_windows_aliases_and_traversal(self):
         for name in ("../escape", "/absolute", "usr/../escape", "C:/escape", "usr\\bin\\bad",
                      "usr/file:ads", "usr/nul", "usr/COM1.txt", "usr/file.", "usr/file ",
