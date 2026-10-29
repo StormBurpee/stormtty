@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
 """Portable packaging tests, NOT Windows trust/runtime qualification."""
+# Emit a complete line before the heavier imports: CTest can discard an
+# unterminated unittest progress line when its unchanged 30s deadline expires.
+import sys
+print("conpty-packaging bootstrap", file=sys.stderr, flush=True)
+import faulthandler
+import time
+faulthandler.dump_traceback_later(20, repeat=False)
+import atexit
+atexit.register(faulthandler.cancel_dump_traceback_later)
 import base64
 import copy
 import contextlib
@@ -24,6 +33,8 @@ spec.loader.exec_module(bootstrap)
 
 class PackagingTests(unittest.TestCase):
     def setUp(self):
+        self.started = time.monotonic()
+        print(f"conpty-packaging test-start {self._testMethodName}", file=sys.stderr, flush=True)
         self.temp = tempfile.TemporaryDirectory(prefix="conpty-unit-", dir=Path(__file__).resolve().parent.parent / ".cache" if (Path(__file__).resolve().parent.parent / ".cache").is_dir() else Path(__file__).resolve().parent.parent)
         self.root = Path(self.temp.name)
         self.archive = self.root / "test.nupkg"
@@ -34,7 +45,10 @@ class PackagingTests(unittest.TestCase):
         self.lock = {"files": {"runtimes/win-x64/native/conpty.dll": self.file}}
 
     def tearDown(self):
+        print("conpty-packaging cleanup-start", file=sys.stderr, flush=True)
         self.temp.cleanup()
+        print(f"conpty-packaging test-end elapsed={time.monotonic() - self.started:.3f}s",
+              file=sys.stderr, flush=True)
 
     def write_archive(self, extras=(), data=None):
         with warnings.catch_warnings():
@@ -226,9 +240,16 @@ endfunction()
 ]====])
 """
         (source / "CMakeLists.txt").write_text(fixture + "\n".join(install_lines) + "\n")
-        for args in (["-S", str(source), "-B", str(build)], ["--install", str(build)]):
-            result = bootstrap.subprocess.run([shutil.which("cmake"), *args], capture_output=True, text=True, timeout=30)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for phase, args in (("configure", ["-S", str(source), "-B", str(build)]),
+                            ("install", ["--install", str(build)])):
+            started = time.monotonic()
+            print(f"conpty-packaging cmake-{phase}-start", file=sys.stderr, flush=True)
+            # Attach child output rather than holding it in Python until exit:
+            # it must survive an outer CTest timeout as well as normal failures.
+            result = bootstrap.subprocess.run([shutil.which("cmake"), *args], text=True, timeout=30)
+            print(f"conpty-packaging cmake-{phase}-end returncode={result.returncode} "
+                  f"elapsed={time.monotonic() - started:.3f}s", file=sys.stderr, flush=True)
+            self.assertEqual(result.returncode, 0)
 
     def publication_fixture(self, repair):
         transaction = self.root / "transaction"
