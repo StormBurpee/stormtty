@@ -1,9 +1,31 @@
 #include "core_test.hpp"
 #include "stormtty/config.hpp"
+#include "stormtty/settings_reload.hpp"
 #include <random>
 
 using namespace stormtty;
 int main() { return run_core_tests("config", [] {
+    SettingsReload reload;
+    auto current=default_config(Platform::windows);
+    SettingsSnapshotResult loaded{ConfigFileSnapshot{},current,{}};
+    loaded.snapshot->existed=true;
+    CHECK(!reload.begin(true,false)); CHECK(!reload.pending()); // Draft never discarded.
+    CHECK(!reload.begin(false,true)); CHECK(!reload.pending()); // Save/load serialize.
+    CHECK(reload.begin(false,false)); const auto first=reload.generation();
+    CHECK(!reload.begin(false,false)); CHECK(reload.generation()==first);
+    CHECK(reload.complete(first+1,loaded).ignored); CHECK(reload.pending());
+    auto accepted=reload.complete(first,loaded); CHECK(accepted.config==current); CHECK(!reload.pending());
+    CHECK(reload.complete(first,loaded).ignored); // Duplicate completion cannot replay.
+    CHECK(reload.begin(false,false)); reload.cancel();
+    CHECK(reload.complete(reload.generation()-1,loaded).ignored);
+    CHECK(reload.begin(false,false)); loaded.snapshot->existed=false;
+    auto missing=reload.complete(reload.generation(),loaded); CHECK(!missing.config); CHECK(!missing.error.empty());
+    CHECK(reload.begin(false,false)); loaded.snapshot->existed=true; loaded.config->font.size_dip=-1;
+    CHECK(!reload.complete(reload.generation(),loaded).config);
+    CHECK(reload.begin(false,false)); loaded.error="Corrupt file";
+    CHECK(reload.complete(reload.generation(),loaded).error=="Corrupt file");
+    CHECK(reload.begin(false,false)); loaded={}; loaded.error="Access denied";
+    CHECK(reload.complete(reload.generation(),loaded).error=="Access denied");
     for (const auto platform : {Platform::windows, Platform::macos}) {
         auto defaults = default_config(platform); CHECK(validate_config(defaults, platform));
         CHECK(defaults.windows_console_backend == WindowsConsoleBackend::system);

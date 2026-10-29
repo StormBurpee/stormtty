@@ -1,6 +1,7 @@
 #include "core_test.hpp"
 #include "stormtty/settings_services.hpp"
 #include "stormtty/settings_panel.hpp"
+#include "stormtty/settings_reload.hpp"
 #include "stormtty/agent_setup_service.hpp"
 #include <condition_variable>
 #include <chrono>
@@ -94,6 +95,18 @@ int main() { return run_core_tests("settings_services (Windows native)", [] {
     CHECK(loaded.config->default_profile == "git-bash");
     CHECK(loaded.config->font.size_dip == 17.5);
     const auto original = read(path);
+    SettingsReload reload;
+    CHECK(reload.begin(false,false));
+    auto reloaded=reload.complete(reload.generation(),load_settings_snapshot(path));
+    CHECK(reloaded.config==loaded.config); CHECK(read(path)==original);
+    CHECK(reload.begin(false,false));
+    CHECK(!reload.complete(reload.generation(),load_settings_snapshot(directory.path / "absent.toml")).config);
+    write(path,"version = 1\n[font]\nsize_dip = broken\n");
+    CHECK(reload.begin(false,false));
+    CHECK(!reload.complete(reload.generation(),load_settings_snapshot(path)).config);
+    CHECK(read(path)!=""); // The failure never writes defaults over the user's bytes.
+    write(path,original);
+
 
     // Invalid drafts must never overwrite the existing file or create a temp.
     auto invalid = config; invalid.font.size_dip = 999;

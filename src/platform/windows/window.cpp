@@ -1,3 +1,4 @@
+#include "stormtty/settings_reload.hpp"
 #include "stormtty/workspace_save_signal.hpp"
 #ifndef UNICODE
 #define UNICODE
@@ -43,6 +44,7 @@
 #include <functional>
 #include <deque>
 #include <mutex>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -149,7 +151,8 @@ std::string chord_key(WPARAM key) {
     }
 }
 struct SettingsCompletion {
-    enum class Kind { load, save } kind{};
+    enum class Kind { load, save, reload } kind{};
+    std::uint64_t generation{};
     SettingsSnapshotResult loaded;
     ShellDiscoveryResult shells;
     ConfigSaveResult saved;
@@ -304,6 +307,7 @@ private:
     void poll_material_probe();
     void publish_material_status();
     void open_settings(std::string binding = {});
+    void reload_settings();
     void settings_actions();
     void settings_completed();
     void preview_settings(const Config&);
@@ -417,6 +421,7 @@ private:
     NativeRunOptions options_;
     std::optional<Profile> managed_shell_profile_; // Resolved launch profile; only a stable marker is ever saved.
     SettingsPanel settings_panel_{Platform::windows};
+    SettingsReload settings_reload_;
     AgentPanel agent_panel_;
     std::unique_ptr<AgentPanelController> agent_controller_;
     std::unique_ptr<AgentSetupService> agent_setup_;
@@ -452,6 +457,10 @@ private:
     SmokeDeadline smoke_deadline_;
     void smoke_phase(SmokeDeadline::Phase phase);
     bool smoke_settings_file_owned_{};
+    unsigned smoke_reload_stage_{};
+    Config smoke_reload_expected_;
+    std::map<SessionId,std::shared_ptr<Session>> smoke_reload_actors_;
+    std::uint64_t smoke_reload_received_{};
     Config smoke_settings_original_;
     std::shared_ptr<Session> smoke_settings_actor_;
     bool smoke_projects_live_verified_{}, smoke_background_restored_{}, smoke_chrome_verified_{}, smoke_tab_drag_verified_{};
@@ -1493,6 +1502,9 @@ void NativeWindow::workspace_menu(Point point, ProjectWorkspaceId target) {
         if (!status) { show_error(status.error); return; }
         refresh_tooltips(); changed(); workspace_model_changed();
     };
+    items.push_back({"settings.reload","Reload settings",{},"Global config.toml · existing terminals stay running",true,false,{}});
+    actions["settings.reload"]=[this] { reload_settings(); };
+    items.push_back(ContextMenuItem::separator());
     items.push_back({"workspace.name","Rename workspace…",{},{},true,false,{}});
     actions["workspace.name"]=[this,id,metadata] {
         edit_workspace_text("Workspace name",metadata.name,[this,id](std::string value) {return projects_.rename(id,std::move(value));});
@@ -1770,6 +1782,25 @@ void NativeWindow::motion_schedule() {
     }
     else if (!running && motion_timer_active_) { KillTimer(hwnd_,chrome_motion_timer); motion_timer_active_=false; }
 }
+void NativeWindow::reload_settings() {
+    if (modal_) { show_error("Finish the current confirmation before reloading settings."); return; }
+    if (options_.config_path.empty()) { show_error("No settings file path is available."); return; }
+    const auto allowed=settings_reload_.begin(settings_panel_.is_open(),settings_job_);
+    if (!allowed) { show_error(allowed.error); return; }
+    if (settings_worker_.joinable()) settings_worker_.join(); // Completed jobs only.
+    settings_job_=true;
+    try {
+        settings_worker_=std::thread([shared=wake_,path=options_.config_path,generation=settings_reload_.generation()] {
+            SettingsCompletion result; result.kind=SettingsCompletion::Kind::reload; result.generation=generation;
+            try { result.loaded=load_settings_snapshot(path); }
+            catch (const std::exception& e) { result.loaded.error=e.what(); }
+            catch (...) { result.loaded.error="Settings could not be reloaded."; }
+            { std::lock_guard lock(shared->mutex); shared->settings=std::move(result); }
+            shared->wake();
+        });
+    } catch (...) { settings_job_=false; settings_reload_.cancel(); show_error("Could not start settings reload; current settings were kept."); return; }
+    notice_="Reloading settings…"; changed();
+}
 void NativeWindow::open_settings(std::string binding) {
     if (modal_ || settings_input_blocked() || settings_job_) return;
     if (options_.config_path.empty()) { show_error("No settings file path is available. Start with --config and an absolute local path."); return; }
@@ -1806,6 +1837,27 @@ void NativeWindow::settings_completed() {
     if (!completion) return;
     if (settings_worker_.joinable()) settings_worker_.join(); // I/O ended before result publication.
     settings_job_=false;
+    if (completion->kind==SettingsCompletion::Kind::reload) {
+        auto result=settings_reload_.complete(completion->generation,std::move(completion->loaded));
+        if (result.ignored) return;
+        if (!result.config) { show_error(result.error); return; }
+        // No editor can open/save during this serialized read. Keep the old
+        // value on a presentation failure; no session lifecycle calls here.
+        const auto previous=config_;
+        try { preview_settings(*result.config); }
+        catch (const std::exception& e) {
+            // A renderer may have installed its font before measurement failed.
+            // Force the rollback path to restore it even if Config was not yet updated.
+            config_.font=result.config->font;
+            try { preview_settings(previous); } catch (...) {}
+            config_=previous; show_error(std::string("Reload failed; previous settings retained. Presentation may need a restart: ")+e.what()); return;
+        }
+        config_=std::move(*result.config);
+        settings_snapshot_.reset(); // The next editor obtains its own exact baseline.
+        notice_="Settings reloaded. Existing terminals kept; shell, scrollback and console choices apply to new sessions (CLI overrides still apply).";
+        caret_schedule(true); changed(true);
+        return;
+    }
     if (completion->kind==SettingsCompletion::Kind::load) {
         if (!settings_open_requested_) return;
         settings_open_requested_=false;
@@ -1906,7 +1958,9 @@ void NativeWindow::settings_input_changed() {
     }
 }
 CommandContext NativeWindow::command_context() const {
-    CommandContext context;context.supports_agent_panel=true;
+    CommandContext context;
+    context.supports_settings_reload=true;
+    context.supports_agent_panel=true;
     context.supports_background_sessions=true; context.parked_sessions=projects_.active()->parked_sessions.size();
     context.supports_project_workspaces=true; context.project_workspaces=projects_.entries().size(); context.supports_focus_mode=true;
     context.tabs = workspace().state().tabs.size();
@@ -2006,6 +2060,7 @@ void NativeWindow::dispatch(std::string_view command) {
     const auto tab = workspace().active_tab();
     const Rect viewport=workspace_viewport();
     auto report = [this](Status status) { if (!status) show_error(status.error); else workspace_model_changed(); };
+    if (command == "settings.reload") { reload_settings(); return; }
     if (command == "settings.open") { open_settings(); return; }
     if (command == "app.command_palette") { toggle_palette(); return; }
     if (command == "workspace.settings") { workspace_menu({navigation_.rail.x+16,chrome_.band.height+44}); return; }
@@ -3837,6 +3892,11 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!activate_setting("appearance.theme.aubergine") || !edit_ansi_red("B090E0",false)) {
                 smoke_finish("Second-cycle custom preview was unreachable.");return;
             }
+            const auto unsaved=settings_panel_.draft(); const auto preview=config_;
+            reload_settings();
+            if (settings_job_ || settings_panel_.draft()!=unsaved || config_!=preview || notice_.empty()) {
+                smoke_finish("Reload did not preserve/refuse the unsaved Settings draft."); return;
+            }
             settings_panel_.cancel(); settings_input_changed();
             if (config_!=saved_baseline) {smoke_finish("Second-cycle Cancel did not restore saved ANSI/Ribbon configuration.");return;}
             if (settings_panel_.is_open() || !focused_session_) { smoke_finish("Reopened Settings did not restore terminal focus on Cancel."); return; }
@@ -3851,6 +3911,54 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!PostMessageW(hwnd_,smoke_settings_input_message,0,0)) smoke_finish("Could not post the settings-close paste input event.");
         }
         return;
+    }
+    if (options_.smoke_settings && smoke_reload_stage_<4) {
+        const auto write_fixture=[&](std::string_view bytes) {
+            // Only the smoke-owned, isolated config created by the earlier Save.
+            if (!smoke_settings_file_owned_) throw std::runtime_error("Reload smoke has no owned settings fixture.");
+            std::ofstream output(options_.config_path,std::ios::binary|std::ios::trunc);
+            output.write(bytes.data(),static_cast<std::streamsize>(bytes.size())); output.close();
+            if (!output) throw std::runtime_error("Could not write reload smoke fixture.");
+        };
+        if (!smoke_reload_stage_) {
+            smoke_reload_actors_=sessions_;
+            smoke_reload_expected_=config_;
+            smoke_reload_expected_.theme=*find_builtin_theme("ember");
+            smoke_reload_expected_.font.size_dip=17;
+            smoke_reload_expected_.ribbon.hidden[ribbon_index(RibbonBinding::git)]=!config_.ribbon.hidden[ribbon_index(RibbonBinding::git)];
+            if (smoke_reload_expected_.bindings.size()>1)
+                std::swap(smoke_reload_expected_.bindings[0].chord,smoke_reload_expected_.bindings[1].chord);
+            ++smoke_reload_expected_.scrollback_lines;
+            smoke_reload_expected_.profiles.front().label="Reloaded profile";
+            smoke_reload_expected_.appearance.show_clock=!config_.appearance.show_clock;
+            smoke_reload_received_=smoke_settings_actor_->info().bytes_received;
+            const auto bytes=serialize_config(smoke_reload_expected_,Platform::windows);
+            const auto canonical=parse_config(bytes,Platform::windows);
+            if (!canonical) { smoke_finish("Reload smoke fixture failed validation."); return; }
+            smoke_reload_expected_=*canonical.config;
+            write_fixture(bytes);
+            dispatch("settings.reload");
+            const auto generation=settings_reload_.generation();
+            reload_settings(); // Repeated activation must not enqueue or supersede.
+            if (!settings_job_ || generation!=settings_reload_.generation()) { smoke_finish("Repeated reload was not serialized."); return; }
+            smoke_reload_stage_=1; return;
+        }
+        if (settings_job_) return;
+        if (sessions_!=smoke_reload_actors_ ||
+            smoke_settings_actor_->info().bytes_received<smoke_reload_received_ || !smoke_settings_actor_->frame()) {
+            smoke_finish("Reload replaced the live actor or lost retained output."); return;
+        }
+        if (config_!=smoke_reload_expected_) { smoke_finish("Reload did not apply valid settings or replaced settings on failure."); return; }
+        if (smoke_reload_stage_==1) {
+            write_fixture("[not valid TOML"); reload_settings(); smoke_reload_stage_=2; return;
+        }
+        if (smoke_reload_stage_==2) {
+            if (notice_.empty()) { smoke_finish("Invalid reload had no native error notice."); return; }
+            std::filesystem::remove(options_.config_path); reload_settings(); smoke_reload_stage_=3; return;
+        }
+        if (notice_.empty()) { smoke_finish("Missing reload had no native error notice."); return; }
+        write_fixture(serialize_config(smoke_reload_expected_,Platform::windows));
+        smoke_reload_stage_=4;
     }
     if (options_.smoke_modal && smoke_modal_stage_<2) {
         const auto verify_activation_routing=[&] {
@@ -4162,7 +4270,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
         if (using_managed_shell()) std::fprintf(stderr,"Managed shell CI smoke: actual upstream Zsh 5.9.2 plus managed preset sentinel, builtin output and exit 0; HOME/CWD retained and child-only environment. Not a StormTTY Zsh fork or completed redistribution qualification.\n");
-        if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, midnight/custom ANSI hex and font preview rollback, Ribbon visibility/order Save/reopen, native Appearance/Ribbon captures, custom system menu/outside-click routing, confirmed Alt+], 25% opacity, two atomic Save/reopen cycles, original live actor retained. Not physical UI/accessibility QA.\n",stderr);
+        if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, midnight/custom ANSI hex and font preview rollback, Ribbon visibility/order Save/reopen, native Appearance/Ribbon captures, custom system menu/outside-click routing, confirmed Alt+], 25% opacity, two atomic Save/reopen cycles, original live actor retained, explicit hot reload / repeat / draft refusal / invalid and missing file preservation. Not physical UI/accessibility QA.\n",stderr);
         if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts; final-pane parking, canceled background close, cross-project isolation, live parked output and same retained actor restored after exit; scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
         if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());

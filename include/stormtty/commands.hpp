@@ -29,6 +29,7 @@ struct CommandContext {
     bool supports_project_workspaces{}; // Hosts must opt in, not silently no-op.
     std::size_t project_workspaces{};
     bool supports_focus_mode{};
+    bool supports_settings_reload{};
     bool supports_agent_panel{};
     bool supports_background_sessions{};
     std::size_t parked_sessions{};
