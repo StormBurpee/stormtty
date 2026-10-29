@@ -31,6 +31,31 @@ bootstrap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bootstrap)
 
 
+def install_fixture_generator_args(build_guard):
+    # Even project(... NONE) lets the default Windows generator discover a
+    # Visual Studio installation. This fixture only needs generated install
+    # code, not an IDE, SDK, compiler, or build.
+    ninja = shutil.which("ninja")
+    if ninja:
+        return ["-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM:FILEPATH={Path(ninja).as_posix()}"]
+    # Unix Makefiles can generate this language-free project without invoking
+    # a build tool. A fail-fast guard occupies the required make-program slot
+    # so CMake-only developer environments retain the same install coverage.
+    # Do not run cmake --build here: cmake --install executes the real script.
+    return ["-G", "Unix Makefiles", f"-DCMAKE_MAKE_PROGRAM:FILEPATH={Path(build_guard).as_posix()}"]
+
+
+def write_install_fixture_build_guard(root):
+    guard = root / ("must not build.cmd" if os.name == "nt" else "must not build.sh")
+    if os.name == "nt":
+        script = '@echo off\necho Unexpected install-fixture build-tool invocation 1>&2\ntype nul > "%~f0.invoked"\nexit /b 1\n'
+    else:
+        script = '#!/bin/sh\necho "Unexpected install-fixture build-tool invocation" >&2\n: > "$0.invoked"\nexit 1\n'
+    guard.write_text(script)
+    guard.chmod(guard.stat().st_mode | stat.S_IXUSR)
+    return guard
+
+
 class PackagingTests(unittest.TestCase):
     def setUp(self):
         self.started = time.monotonic()
@@ -206,8 +231,45 @@ class PackagingTests(unittest.TestCase):
              self.assertRaises(bootstrap.subprocess.CalledProcessError):
             bootstrap.verify_authenticode(self.output, self.root / "powershell.exe")
 
+    def test_install_fixture_selects_ninja_explicitly(self):
+        with mock.patch.object(shutil, "which", return_value="C:/build tools/ninja.exe") as which:
+            args = install_fixture_generator_args("C:/fixture/must not build.cmd")
+        which.assert_called_once_with("ninja")
+        self.assertEqual(args, ["-G", "Ninja", "-DCMAKE_MAKE_PROGRAM:FILEPATH=C:/build tools/ninja.exe"])
+
+    def test_install_fixture_fallback_needs_no_build_tool(self):
+        with mock.patch.object(shutil, "which", return_value=None) as which:
+            args = install_fixture_generator_args("C:/fixture/must not build.cmd")
+        which.assert_called_once_with("ninja")
+        self.assertEqual(args, ["-G", "Unix Makefiles", "-DCMAKE_MAKE_PROGRAM:FILEPATH=C:/fixture/must not build.cmd"])
+
+    def test_install_fixture_build_guard_rejects_and_records_invocation(self):
+        guard = write_install_fixture_build_guard(self.root)
+        invocation = [str(guard)]
+        if os.name == "nt":
+            invocation = [os.environ["COMSPEC"], "/d", "/c", str(guard)]
+        result = bootstrap.subprocess.run(invocation, text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unexpected install-fixture build-tool invocation", result.stderr)
+        self.assertTrue(Path(str(guard) + ".invoked").is_file())
+
     @unittest.skipUnless(shutil.which("cmake"), "CMake not installed; native install lane also checks this")
     def test_generated_install_scripts_preserve_windows_path_bytes(self):
+        self.check_generated_install_scripts()
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake not installed; native install lane also checks this")
+    def test_generated_install_scripts_without_ninja_or_ide(self):
+        which = shutil.which
+        # Exercise real configure and install, including a developer's inherited
+        # IDE selection, without allowing Ninja or make discovery as a crutch.
+        with mock.patch.object(shutil, "which", side_effect=lambda name: which(name) if name == "cmake" else None), \
+             mock.patch.dict(os.environ, {"CMAKE_GENERATOR": "Visual Studio 18 2026",
+                                          "CMAKE_GENERATOR_PLATFORM": "x64",
+                                          "CMAKE_GENERATOR_TOOLSET": "v145",
+                                          "CMAKE_GENERATOR_INSTANCE": "missing IDE"}):
+            self.check_generated_install_scripts()
+
+    def check_generated_install_scripts(self):
         source = self.root / "cmake source"
         build = self.root / "cmake build"
         source.mkdir()
@@ -216,6 +278,7 @@ class PackagingTests(unittest.TestCase):
         for module in ("StormTTYDeveloperShell.cmake", "StormTTYConsoleRuntime.cmake"):
             install_lines += [line.strip() for line in (repo / "cmake" / module).read_text().splitlines()
                               if line.strip().startswith("install(CODE ")]
+        self.assertEqual(len(install_lines), 2, "Both real runtime install checks must execute")
         # Execute the real generated install code with only the subprocess
         # primitive mocked. No downloaded runtime or Windows trust is involved.
         fixture = r"""cmake_minimum_required(VERSION 3.24)
@@ -240,16 +303,30 @@ endfunction()
 ]====])
 """
         (source / "CMakeLists.txt").write_text(fixture + "\n".join(install_lines) + "\n")
-        for phase, args in (("configure", ["-S", str(source), "-B", str(build)]),
+        cmake = shutil.which("cmake")
+        build_guard = write_install_fixture_build_guard(self.root)
+        generator_args = install_fixture_generator_args(build_guard)
+        # -G alone does not override a developer's platform/toolset/instance.
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("CMAKE_GENERATOR", "CMAKE_GENERATOR_PLATFORM",
+                              "CMAKE_GENERATOR_TOOLSET", "CMAKE_GENERATOR_INSTANCE")}
+        for phase, args in (("configure", ["-S", str(source), "-B", str(build), *generator_args]),
                             ("install", ["--install", str(build)])):
             started = time.monotonic()
             print(f"conpty-packaging cmake-{phase}-start", file=sys.stderr, flush=True)
             # Attach child output rather than holding it in Python until exit:
             # it must survive an outer CTest timeout as well as normal failures.
-            result = bootstrap.subprocess.run([shutil.which("cmake"), *args], text=True, timeout=30)
+            result = bootstrap.subprocess.run([cmake, *args], text=True, timeout=30, env=env)
             print(f"conpty-packaging cmake-{phase}-end returncode={result.returncode} "
                   f"elapsed={time.monotonic() - started:.3f}s", file=sys.stderr, flush=True)
             self.assertEqual(result.returncode, 0)
+            self.assertFalse(Path(str(build_guard) + ".invoked").exists(),
+                             "Install-only fixture must not invoke a build tool")
+        cache = (build / "CMakeCache.txt").read_text()
+        self.assertIn(f"CMAKE_GENERATOR:INTERNAL={generator_args[1]}\n", cache)
+        self.assertIn(generator_args[2].removeprefix("-D") + "\n", cache)
+        self.assertNotIn("CMAKE_C_COMPILER:", cache)
+        self.assertNotIn("CMAKE_CXX_COMPILER:", cache)
 
     def publication_fixture(self, repair):
         transaction = self.root / "transaction"
