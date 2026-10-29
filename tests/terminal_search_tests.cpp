@@ -1,3 +1,4 @@
+#include "stormtty/smoke_commands.hpp"
 #include "stormtty/session.hpp"
 #include <atomic>
 #include <chrono>
@@ -41,6 +42,21 @@ std::string frame_text(const FramePtr& frame) {
         text += '\n';
     }
     return text;
+}
+void safe_native_fixture() {
+    TerminalCore core(make_search_terminal_options());
+    for(bool managed : {false,true}) {
+        const auto command=native_find_fixture_command(managed);
+        check(TerminalCore::paste_is_safe(command),"Find fixture must use ordinary safe paste");
+        check(core.encode_paste(command)==command,"Find fixture encoding changed printable command");
+        check(!native_find_fixture_output(command),"command echo must not satisfy output gate");
+    }
+    const std::string unsafe="printf 'alpha\nbeta\n'";
+    check(!TerminalCore::paste_is_safe(unsafe),"multiline paste must remain unsafe");
+    bool rejected=false;try{core.encode_paste(unsafe);}catch(const std::invalid_argument&){rejected=true;}
+    check(rejected,"ordinary paste encoding must reject multiline fixture");
+    check(native_find_fixture_output("STORMTTY_FIND_NEEDLE beta   "),"actual output row not recognized");
+    check(!native_find_fixture_output("prompt STORMTTY_FIND_NEEDLE beta"),"prompt echo accepted as output");
 }
 void visible_selection_publication() {
     TerminalCore t(make_search_terminal_options(100,30));
@@ -243,6 +259,7 @@ void session_coalescing_and_fairness(const std::string& executable) {
 int main(int argc,char** argv) {
     if(argc==2&&std::string_view(argv[1])=="--search-child")return child();
     const std::vector<std::pair<const char*,std::function<void()>>> tests{
+        {"safe native Find fixture",safe_native_fixture},
         {"visible selection publication",visible_selection_publication},
         {"real scrollback and bidirectional wrap",real_history_navigation},
         {"UTF-8/graphemes/literal ASCII-only folding",utf8_and_literal_semantics},

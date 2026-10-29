@@ -1,3 +1,4 @@
+#include "stormtty/smoke_commands.hpp"
 #include "stormtty/settings_reload.hpp"
 #include "stormtty/workspace_save_signal.hpp"
 #ifndef UNICODE
@@ -3696,15 +3697,17 @@ bool NativeWindow::smoke_find_progress() {
     const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_.reset();};
     const auto key=[&](WPARAM vk){MSG message{};message.hwnd=hwnd_;message.message=WM_KEYDOWN;message.wParam=vk;key_message(message);message.message=WM_KEYUP;key_message(message);};
     if(smoke_find_stage_==0) {
-        const std::string command=smoke_managed_sessions_.contains(workspace().pane(workspace().active_pane())->session)?
-            "printf 'STORMTTY_FIND_NEEDLE alpha\nSTORMTTY_FIND_NEEDLE beta\n'":"echo STORMTTY_FIND_NEEDLE alpha & echo STORMTTY_FIND_NEEDLE beta";
+        const std::string command(native_find_fixture_command(smoke_managed_sessions_.contains(workspace().pane(workspace().active_pane())->session)));
+        if(!TerminalCore::paste_is_safe(command)){smoke_finish("Find fixture violates ordinary paste safety.");return false;}
         auto owned=sessions_.at(workspace().pane(workspace().active_pane())->session);
-        submit([owned,command]{return owned->paste(command);},command.size());KeyInput enter;enter.key=Key::enter;submit([owned,enter]{return owned->key(enter);});
+        if(owned->paste(command)!=SessionSendResult::accepted){smoke_finish("Find fixture paste was not accepted.");return false;}
+        KeyInput enter;enter.key=Key::enter;
+        if(owned->key(enter)!=SessionSendResult::accepted){smoke_finish("Find fixture Enter was not accepted.");return false;}
         smoke_find_stage_=1;return false;
     }
     if(smoke_find_stage_==1) {
         const auto frame=actor->frame();if(!frame)return false;
-        bool marker=false;for(const auto& row:frame->lines){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;marker=marker||text.find("STORMTTY_FIND_NEEDLE beta")!=std::string::npos;}
+        bool marker=false;for(const auto& row:frame->lines){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;marker=marker||native_find_fixture_output(text);}
         if(!marker)return false;
         dispatch("terminal.find");if(!find_session_||focused_session_){smoke_finish("Find did not take exclusive query focus.");return false;}
         smoke_find_input_baseline_=smoke_terminal_input_submissions_;smoke_find_bytes_=actor->info().bytes_sent;
