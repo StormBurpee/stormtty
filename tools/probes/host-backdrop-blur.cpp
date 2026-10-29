@@ -229,8 +229,8 @@ struct Probe {
         initialization_stage="owned-effect-graph";
         auto descriptor=winrt::make_self<Gaussian>();
         descriptor->source=wc::CompositionEffectSourceParameter(L"OwnedSurface");
-        auto factory=compositor.CreateEffectFactory(*descriptor,{L"Blur.BlurAmount"});
-        validation_effect=factory.CreateBrush();
+        auto effect_factory=compositor.CreateEffectFactory(*descriptor,{L"Blur.BlurAmount"});
+        validation_effect=effect_factory.CreateBrush();
         validation_effect.SetSourceParameter(L"OwnedSurface",surface_brush);
         for (const float value:{0.f,8.f,24.f,48.f}) validation_effect.Properties().InsertScalar(L"Blur.BlurAmount",value);
         graph_validated=true; initialization_stage="drawing";
