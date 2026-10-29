@@ -3,6 +3,9 @@
 #include "stormtty/session.hpp"
 #include "stormtty/windows_shell_state.hpp"
 #include "stormtty/windows_managed_shell.hpp"
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+#include "stormtty/qualification_typing_evidence.hpp"
+#endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -22,6 +25,9 @@ using namespace stormtty;
 using namespace std::chrono_literals;
 namespace {
 unsigned phase{}, checks{};
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+std::shared_ptr<qualification::TypingEvidence> typing_trace;
+#endif
 struct TypingEvidence {
     unsigned characters{}, frames{}, retreats{};
     long long echo_total_us{}, echo_max_us{};
@@ -72,12 +78,19 @@ struct ManagedSessionProbe {
     std::shared_ptr<Session> session;
     unsigned sequence{};
     long long startup_ms{};
-    ManagedSessionProbe(const fs::path& runtime, const fs::path& provider, const Fixture& fixture) {
+    ManagedSessionProbe(const fs::path& runtime, const fs::path& provider, const Fixture& fixture, bool trace=false) {
         // Every fresh launch calls the real native validator. No spoofed trust
         // assertion, ambient path, PowerShell subprocess, or POSIX mode bypass.
         const auto state = prepare_managed_shell_state_at(fixture.root, false);
         check(static_cast<bool>(state));
         ProcessOptions process;
+        (void)trace;
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if (trace) {
+            typing_trace=std::make_shared<qualification::TypingEvidence>();
+            process.qualification_typing_evidence=typing_trace;
+        }
+#endif
         process.executable = utf8(runtime / L"usr" / L"bin" / L"zsh.exe");
         process.arguments = {"-d", "-i"}; process.working_directory = utf8(fixture.cwd); process.grid = {160, 40};
         process.provider = provider.empty() ? ProcessProvider::windows_inbox_basic : ProcessProvider::windows_packaged_experimental;
@@ -158,6 +171,9 @@ struct ManagedSessionProbe {
         };
         // An authored, unique colon command cannot match earlier fixture
         // history. Normal per-character input, not paste or injected frames.
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if (typing_trace) typing_trace->event(qualification::TypingEvidence::Kind::marker,1,0,0);
+#endif
         for (const char character:std::string(": \"QTYPING quoted sample\"")) {
             const auto start=std::chrono::steady_clock::now();
             entered+=character; text(std::string(1,character)); wait_echo();
@@ -173,6 +189,9 @@ struct ManagedSessionProbe {
             // failures. Require eventual authoritative text/cursor only.
             wait_echo();
         }
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if (typing_trace) typing_trace->event(qualification::TypingEvidence::Kind::marker,2,0,0);
+#endif
         entered+='x'; text("x"); wait_echo();
         entered.pop_back(); last_column=origin.column+static_cast<unsigned>(entered.size());
         key(Key::backspace); wait_echo(); // Deliberate erase is not a repaint retreat.
@@ -258,7 +277,7 @@ int main() {
         check(!dump.empty()); dump_time = fs::last_write_time(dump);
         phase = 8;
         {
-            ManagedSessionProbe shell(runtime, provider, fixture); warm_ms = shell.startup_ms;
+            ManagedSessionProbe shell(runtime, provider, fixture, true); warm_ms = shell.startup_ms;
             phase = 9;
             shell.command("[[ $_qual_config == 73 && $STORMTTY_EPHEMERAL == 0 ]] && print -r -- QWARM$((20+3))");
             shell.expect("QWARM23"); shell.ready(0);
@@ -276,10 +295,17 @@ int main() {
         std::ifstream input(state.directory / L"config.zsh", std::ios::binary);
         const std::string persisted{std::istreambuf_iterator<char>(input), {}};
         check(persisted == config);
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        const auto trace=typing_trace->snapshot(); qualification::TypingEvidence::dump(std::cout,trace);
+        if (trace.overflow) { std::cout<<"TYPING_TRACE_RESULT inconclusive=1 reason=capacity\n"; return 2; }
+#endif
         std::cout << "MANAGED_TYPING_RESULT code=0 characters=" << typing.characters << " frames=" << typing.frames << " retreats=" << typing.retreats << " echo_total_us=" << typing.echo_total_us << " echo_max_us=" << typing.echo_max_us << '\n';
         std::cout << "MANAGED_STATE_RESULT code=0 phase=11 cold_samples=1 warm_samples=1 checks=" << checks << " cold_ms=" << cold_ms << " warm_ms=" << warm_ms << '\n';
         return 0;
     } catch (...) {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if (typing_trace) qualification::TypingEvidence::dump(std::cout,typing_trace->snapshot());
+#endif
         std::cout << "MANAGED_TYPING_RESULT code=1 characters=" << typing.characters << " frames=" << typing.frames << " retreats=" << typing.retreats << " echo_total_us=" << typing.echo_total_us << " echo_max_us=" << typing.echo_max_us << '\n';
         std::cout << "MANAGED_STATE_RESULT code=1 phase=" << phase << " checks=" << checks << " cold_ms=" << cold_ms << " warm_ms=" << warm_ms << '\n';
         return 1;

@@ -2,6 +2,7 @@
 #include "process_control.hpp"
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
 #include "stormtty/qualification_input_evidence.hpp"
+#include "stormtty/qualification_typing_evidence.hpp"
 #endif
 
 #if defined(_WIN32)
@@ -365,6 +366,9 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
                 break;
             }
             if (!count) break;
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+            if (options.qualification_typing_evidence) options.qualification_typing_evidence->read({buffer.data(),count});
+#endif
             if (!discard_after_callback_failure) {
                 try { if (callbacks.output) callbacks.output({buffer.data(), count}, output_stop.get_token()); }
                 catch (...) {
@@ -401,6 +405,8 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
                     const BOOL succeeded = WriteFile(input_write.value, bytes.data() + offset, amount, &count, nullptr);
                     const DWORD write_error = succeeded ? ERROR_SUCCESS : GetLastError();
+                    if (options.qualification_typing_evidence)
+                        options.qualification_typing_evidence->write(message_sequence,offset,{bytes.data()+offset,amount},succeeded!=FALSE,count,write_error);
                     if (options.qualification_input_evidence)
                         options.qualification_input_evidence->completed_write(message_sequence, offset,
                             {bytes.data() + offset, amount}, succeeded != FALSE, count, write_error);

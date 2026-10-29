@@ -13,7 +13,7 @@
 
 namespace stormtty {
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
-namespace qualification { class InputEvidence; }
+namespace qualification { class InputEvidence; class TypingEvidence; }
 #endif
 
 struct ProcessGridSize {
@@ -36,6 +36,7 @@ struct ProcessOptions {
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
     // Isolated synthetic-fixture build only; absent from the shipped ABI.
     std::shared_ptr<qualification::InputEvidence> qualification_input_evidence;
+    std::shared_ptr<qualification::TypingEvidence> qualification_typing_evidence;
 #endif
     // UTF-8. executable must be an absolute path. arguments excludes argv[0].
     // No shell interpolation is performed. For a shell command, launch that shell

@@ -1,4 +1,7 @@
 #include "stormtty/session.hpp"
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+#include "stormtty/qualification_typing_evidence.hpp"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -67,10 +70,20 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     SessionInfo information;
     std::shared_ptr<Process> process;
     ProcessDiagnostics final_diagnostics;
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+    std::uint64_t trace_fed_sequence{}, trace_fed_bytes{}, trace_command_sequence{};
+#endif
 
     Impl(ProcessOptions p, TerminalOptions t, Wake w, SessionRetentionPolicy policy)
         : process_options(std::move(p)), terminal_options(t), wake(std::move(w)), retention(policy) {}
     void publish(FramePtr frame) {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if (frame && process_options.qualification_typing_evidence) {
+            std::uint64_t next{},next_command{}; std::size_t queued{};
+            { std::lock_guard lock(mutex); queued=output.size(); if (!output.empty()) next=output.front().sequence; if (!commands.empty()) next_command=commands.front().sequence; }
+            process_options.qualification_typing_evidence->publication(*frame,trace_fed_sequence,trace_fed_bytes,trace_command_sequence,next,queued,next_command);
+        }
+#endif
         FramePtr retired;
         { std::lock_guard lock(frame_mutex); retired = std::exchange(latest, std::move(frame)); }
         // Release potentially large rows/images outside the short mailbox lock.
@@ -149,6 +162,10 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                     return done.load() || close_requested || count <= output_budget - output_bytes;
                 }) || done.load() || close_requested) return;
             output.push_back({++next_sequence, std::string(bytes.substr(offset, count))});
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+            if (process_options.qualification_typing_evidence)
+                process_options.qualification_typing_evidence->event(qualification::TypingEvidence::Kind::enqueue,next_sequence,information.bytes_received,count);
+#endif
             output_bytes += count;
             information.bytes_received += count;
             offset += count;
@@ -379,6 +396,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                 core.cancel_search(requested);
             std::deque<Command> batch;
             std::string bytes;
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+            std::uint64_t trace_output_sequence{};
+#endif
             std::optional<ProcessExit> child_exit;
             bool request_close_now = false;
             {
@@ -390,6 +410,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                     batch.push_back(std::move(commands.front())); commands.pop_front();
                 }
                 if (!output.empty() && (commands.empty() || output.front().sequence < commands.front().sequence)) {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                    trace_output_sequence=output.front().sequence;
+#endif
                     output_bytes -= output.front().bytes.size();
                     bytes = std::move(output.front().bytes); output.pop_front();
                 }
@@ -408,6 +431,11 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             }
             if (!closing) {
                 for (auto& c : batch) {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                    trace_command_sequence=c.sequence;
+                    if (process_options.qualification_typing_evidence)
+                        process_options.qualification_typing_evidence->event(qualification::TypingEvidence::Kind::command,c.sequence,0,static_cast<unsigned>(c.op));
+#endif
                     try {
                         if (!input_operation(c.op)) {
                             apply_document_command(core, c, dirty, next_search_step);
@@ -424,6 +452,13 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                 }
             }
             if (!bytes.empty() && !closing) { core.feed(bytes); dirty = true; }
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+            if (!bytes.empty() && !closing) {
+                if (process_options.qualification_typing_evidence)
+                    process_options.qualification_typing_evidence->event(qualification::TypingEvidence::Kind::feed,trace_output_sequence,trace_fed_bytes,bytes.size());
+                trace_fed_sequence=trace_output_sequence; trace_fed_bytes+=bytes.size();
+            }
+#endif
             effects();
             bool progress = false;
             while (!closing && !writes.empty()) {

@@ -13,6 +13,9 @@
 #include <memory>
 #include <stdexcept>
 #include <thread>
+#include <regex>
+#include <set>
+#include <vector>
 namespace fs = std::filesystem;
 using namespace stormtty;
 using Clock = std::chrono::steady_clock;
@@ -68,7 +71,38 @@ constexpr char config[] = R"ZSH(autoload -Uz add-zle-hook-widget
 _stormtty_measure_ready() { zle -M 'STORMTTY_STARTUP_READY'; }
 add-zle-hook-widget line-init _stormtty_measure_ready
 )ZSH";
-void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture, bool fresh) {
+void source_profile(const fs::path& state) {
+    // Parse only a fixed numeric/name whitelist. Never print raw zprof, paths,
+    // configuration, history, exceptions or terminal content.
+    const std::vector<std::string> stages{"bootstrap", "private_state", "fpath", "omz", "defaults_config", "tools", "autosuggestions", "context_hooks", "highlighting"};
+    const std::set<std::string> names{"compinit", "compaudit", "compdump", "compdef", "zrecompile", "_omz_compdump_has_metadata", "_stormtty_private_state", "_zsh_highlight_load_highlighters", "_omz_source"};
+    const std::string number=R"([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)";
+    const std::regex stage_line("([a-z_]+) ("+number+")");
+    require(fs::file_size(state / L"startup-source-stages") <= 8192);
+    std::ifstream intervals(state / L"startup-source-stages");
+    std::string line; std::smatch match; std::size_t index{};
+    while (std::getline(intervals,line)) {
+        require(index<stages.size() && std::regex_match(line,match,stage_line) && match[1].str()==stages[index]);
+        std::cout << "SOURCE_STAGE sample=" << sample << " name=" << stages[index++] << " elapsed_ms=" << match[2].str() << '\n';
+    }
+    require(index==stages.size());
+    require(fs::file_size(state / L"startup-source-functions") <= 1024*1024);
+    std::ifstream functions(state / L"startup-source-functions");
+    const std::regex row(" *[0-9]+[)] +([0-9]+) +("+number+") +"+number+" +"+number+"% +("+number+") +"+number+" +"+number+"% +([A-Za-z_][A-Za-z_0-9]*) *");
+    bool table{}; std::set<std::string> seen;
+    while (std::getline(functions,line)) {
+        if (table && line.empty()) break; // Header table only; not repeated call graph rows.
+        if (!std::regex_match(line,match,row)) continue;
+        table=true;
+        const auto name=match[4].str();
+        if (!names.contains(name)) continue;
+        require(seen.insert(name).second);
+        std::cout << "SOURCE_FUNCTION sample=" << sample << " name=" << name << " calls=" << match[1].str()
+                  << " total_ms=" << match[2].str() << " self_ms=" << match[3].str() << '\n';
+    }
+    require(seen.contains("compinit") && seen.contains("compaudit"));
+}
+void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture, bool fresh, bool profiling) {
     stage = 2;
     const auto prepared = Clock::now();
     const auto state = prepare_managed_shell_state_at(fixture.root, false);
@@ -85,6 +119,11 @@ void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture
         }
         require(!existing_dump.empty());
         dump_time = fs::last_write_time(existing_dump);
+    }
+    if (profiling) {
+        // Require fresh diagnostics even on reused state; never accept a stale file.
+        fs::remove(state.directory / L"startup-source-stages");
+        fs::remove(state.directory / L"startup-source-functions");
     }
     // Fixture setup/config I/O are deliberately outside the two measured stages.
     ProcessOptions process;
@@ -111,8 +150,9 @@ void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture
     until([&] { return screen(owned.value).find("STORMTTY_STARTUP_READY") != std::string::npos; });
     const auto ready_ms = milliseconds(started);
     stage = 4;
+    if (profiling) source_profile(state.directory);
     // A quick prompt with missing modules is not an acceptable sample.
-    require(owned.value->text("[[ $STORMTTY_CONSOLE_UTF8 == 1 && ${+functions[fzf-file-widget]} == 1 && ${+functions[z]} == 1 && ${+functions[zi]} == 1 && $STORMTTY_OMZ_LOADED == 1 && $STORMTTY_EPHEMERAL == 0 && ${+functions[_zsh_autosuggest_start]} == 1 && ${+functions[_zsh_highlight]} == 1 ]] && print -r -- STARTUP_VALID$((60+4))") == SessionSendResult::accepted);
+    require(owned.value->text("[[ ${+_comps[ls]} == 1 && $STORMTTY_CONSOLE_UTF8 == 1 && ${+functions[fzf-file-widget]} == 1 && ${+functions[z]} == 1 && ${+functions[zi]} == 1 && $STORMTTY_OMZ_LOADED == 1 && $STORMTTY_EPHEMERAL == 0 && ${+functions[_zsh_autosuggest_start]} == 1 && ${+functions[_zsh_highlight]} == 1 ]] && print -r -- STARTUP_VALID$((60+4))") == SessionSendResult::accepted);
     KeyInput enter; enter.key = Key::enter;
     require(owned.value->key(enter) == SessionSendResult::accepted);
     until([&] { return screen(owned.value).find("STARTUP_VALID64") != std::string::npos; });
@@ -135,18 +175,22 @@ int main() {
         stage = 1;
         int count{}; LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
         struct Arguments { LPWSTR* p; ~Arguments() { if (p) LocalFree(p); } } owned{args};
-        require(args && (count == 2 || count == 3));
-        const fs::path runtime = fs::absolute(args[1]);
-        const fs::path provider = count == 3 ? fs::absolute(args[2]) : fs::path{};
+        require(args && count>=2);
+        const bool profiling=std::wstring_view(args[1])==L"--source-profile";
+        const int first=profiling?2:1;
+        require(count==first+1 || count==first+2);
+        const fs::path runtime = fs::absolute(args[first]);
+        const fs::path provider = count==first+2 ? fs::absolute(args[first+1]) : fs::path{};
+        require(fs::is_regular_file(runtime / L"stormtty-source-profile.json")==profiling);
         require(fs::is_regular_file(runtime / L"usr/bin/zsh.exe"));
         require(fs::is_regular_file(runtime / L"stormtty/vendor/oh-my-zsh/oh-my-zsh.sh"));
         std::unique_ptr<Fixture> fixture;
-        for (sample = 1; sample <= 10; ++sample) {
+        for (sample = 1; sample <= (profiling?6u:10u); ++sample) {
             const bool fresh = sample <= 3;
             if (fresh) fixture = std::make_unique<Fixture>();
-            measure(runtime, provider, *fixture, fresh);
+            measure(runtime, provider, *fixture, fresh, profiling);
         }
-        std::cout << "STARTUP_RESULT code=0 fresh_samples=3 warm_samples=7\n";
+        std::cout << "STARTUP_RESULT code=0 fresh_samples=3 warm_samples=" << (profiling?3:7) << '\n';
         return 0;
     } catch (...) {
         std::cout << "STARTUP_RESULT code=1 sample=" << sample << " stage=" << stage << '\n';

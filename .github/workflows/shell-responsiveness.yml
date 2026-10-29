@@ -1,0 +1,133 @@
+# Explicit synthetic-only diagnostic. Not a production/default qualification gate.
+name: Isolated shell responsiveness evidence
+on:
+  push:
+    branches: [diagnostic/shell-responsiveness]
+permissions:
+  contents: read
+concurrency:
+  group: shell-responsiveness-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  observe:
+    if: github.ref == 'refs/heads/diagnostic/shell-responsiveness'
+    runs-on: windows-2025
+    timeout-minutes: 80
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - name: Initialize native compiler
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Restore exact pinned terminal engine
+        id: engine
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Bootstrap missing pinned engine
+        timeout-minutes: 15
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Cache successfully built pinned engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ${{ steps.engine.outputs.cache-primary-key }}
+      - name: Configure isolated probe targets only
+        id: configure
+        run: cmake -S . -B build-responsiveness -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_BUILD_APP=OFF -DSTORMTTY_TEST_SHELL_PROBE=ON -DSTORMTTY_TEST_INK=OFF "-DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native"
+      - name: Build each needed target independently without retry
+        id: build
+        if: always() && steps.configure.outcome == 'success'
+        timeout-minutes: 16
+        shell: python
+        run: |
+          import json,pathlib,subprocess
+          root=pathlib.Path('build-responsiveness/artifacts');root.mkdir(parents=True,exist_ok=True)
+          results={}
+          for target in ['managed_shell_state_probe','managed_shell_typing_trace','qualification_typing_evidence_tests','qualification_input_evidence_tests','managed_shell_startup_probe']:
+            try: code=subprocess.run(['cmake','--build','build-responsiveness','--target',target,'--parallel','2'],timeout=180).returncode
+            except subprocess.TimeoutExpired: code=124
+            results[target]=code
+          (root/'build-status.json').write_text(json.dumps(results,sort_keys=True)+'\n')
+          raise SystemExit(int(any(results.values())))
+      - name: Verify portable evidence validators on native toolchain
+        if: always() && steps.configure.outcome == 'success'
+        timeout-minutes: 3
+        shell: python
+        run: |
+          import pathlib,subprocess,json
+          results={};root=pathlib.Path('build-responsiveness/artifacts');root.mkdir(parents=True,exist_ok=True)
+          commands={
+            'typing-evidence':['build-responsiveness/qualification_typing_evidence_tests.exe'],
+            'input-evidence':['build-responsiveness/qualification_input_evidence_tests.exe'],
+            'driver-tests':['python','tools/probes/shell-responsiveness-tests.py'],
+            'source-profile-tests':['python','tools/probes/managed-source-profile-tests.py']}
+          for name,args in commands.items():
+            try: code=subprocess.run(args,timeout=45).returncode
+            except (OSError,subprocess.TimeoutExpired): code=125
+            results[name]=code
+          (root/'validator-status.json').write_text(json.dumps(results,sort_keys=True)+'\n')
+          raise SystemExit(int(any(results.values())))
+      - name: Stage exact pinned authored shell bundle
+        id: shell
+        if: always() && steps.configure.outcome == 'success'
+        timeout-minutes: 8
+        run: python tools/shell-bootstrap.py --destination .deps/responsiveness-shell --cache .cache/shell-bootstrap
+      - name: Verify exact packaged console hashes and signatures
+        id: provider
+        if: always() && steps.configure.outcome == 'success'
+        timeout-minutes: 5
+        shell: pwsh
+        run: ./tools/prepare-conpty-probe.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'stormtty-responsiveness-provider')
+      - name: Record diagnostic identity without user state
+        if: always() && steps.configure.outcome == 'success'
+        shell: python
+        run: |
+          import hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path('build-responsiveness/artifacts');root.mkdir(parents=True,exist_ok=True)
+          files=['tools/bootstrap.lock.json','tools/shell-bootstrap.lock.json','tools/shell-addons.lock.json','tools/shell-tools.lock.json','tools/shell-preset.zsh','tests/managed_shell_state_probe.cpp']
+          hashes={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in files if pathlib.Path(p).is_file()}
+          runtime=pathlib.Path('.deps/responsiveness-shell');provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-responsiveness-provider'
+          actual={'runtime.zsh':runtime/'usr/bin/zsh.exe','runtime.msys':runtime/'usr/bin/msys-2.0.dll','runtime.loader':runtime/'stormtty/zsh/.zshrc','provider.dll':provider/'conpty.dll','provider.host':provider/'OpenConsole.exe'}
+          hashes.update({name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in actual.items() if path.is_file()})
+          (root/'identity.json').write_text(json.dumps({'commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'runner_os':os.name,'input_fixture':'authored only','instrumentation_perturbs_timing':True,'physical_display_verified':False,'hashes':hashes},indent=2,sort_keys=True)+'\n')
+      - name: One uninstrumented control and one trace plus exact replay per provider
+        id: typing
+        if: always() && steps.configure.outcome == 'success' && steps.shell.outcome == 'success' && steps.provider.outcome == 'success'
+        timeout-minutes: 12
+        shell: pwsh
+        run: python tools/probes/run-shell-responsiveness.py --build build-responsiveness --runtime .deps/responsiveness-shell --provider (Join-Path $env:RUNNER_TEMP 'stormtty-responsiveness-provider') --output build-responsiveness/artifacts/typing
+      - name: Separate attributed startup three fresh and three warm per provider
+        id: profile
+        if: always() && steps.configure.outcome == 'success' && steps.shell.outcome == 'success' && steps.provider.outcome == 'success'
+        timeout-minutes: 12
+        shell: python
+        run: |
+          import os,pathlib,subprocess,sys
+          # Independent of typing/control/replay outcome; no retry. The driver
+          # creates a verified disposable runtime and sanitizes all profiler data.
+          command=[sys.executable,'tools/probes/run-managed-source-profile.py',
+            '--runtime',str(pathlib.Path('.deps/responsiveness-shell').resolve()),
+            '--probe',str(pathlib.Path('build-responsiveness/managed_shell_startup_probe.exe').resolve()),
+            '--provider',str(pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-responsiveness-provider'),
+            '--scratch',os.environ['RUNNER_TEMP'],
+            '--output','build-responsiveness/artifacts/source-profile']
+          raise SystemExit(subprocess.run(command,timeout=660).returncode)
+      - name: Preserve independent synthetic-only evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: shell-responsiveness-${{ github.run_id }}
+          path: |
+            build-responsiveness/artifacts/**/*.log
+            build-responsiveness/artifacts/**/*.json
+            build-responsiveness/artifacts/*.json
+          if-no-files-found: warn
+          retention-days: 7
