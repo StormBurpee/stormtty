@@ -191,3 +191,53 @@ files. `qualification-tests.py` adds eight portable integrity/isolation checks.
 Native execution remains unrun until the authorized isolated branch is published
 and its Windows result is inspected. A passing stage 1 is still not a passing
 Zsh/latency/native-child-interoperability gate.
+
+## Stage-1 observed evidence; stage-2 candidate
+
+Read-only GitHub verification of run **40836000051**, job **123320810299**, commit
+`dda9204328f340ea3877ba9c9bd71397d2e9c77f`, confirms six native Windows passes.
+Downloaded artifact **12880707653** matched SHA-256
+`94b089c98b2dae498bc6cce71186e56e3be88eb6d0e5fc10a08ae1ff38921dd6`.
+Its six results have `exit_code=0`, `reaped=true`, no timeout or cleanup error.
+Inner fixture statuses include signal=42 and flood=0 (clean write-error return);
+all six host assertions passed. Runtime DLL identity was
+`d3b5324eef7fe377c3412bd8d9f5c526ba1136940e34105436b15e5f1ae90717`.
+This establishes only the stage-1 fixture contract, not interactive shell feel.
+
+The same isolated push-only workflow now proposes a subsequent **stage 2**:
+
+* Separate subdirectory CMake project links the unchanged pinned real
+  `TerminalCore`/Ghostty adapter, not the app, Process factory, or agent code.
+* Native host starts the broker with the actual pinned bundled Zsh executable,
+  `-d -i`, and private `/bridge-home/.zshrc`. This is controlled configuration,
+  **not** qualification of the full production addon/prompt configuration.
+* Every terminal byte is fed to `TerminalCore`; every `write_pty` effect is sent
+  back unchanged through a bounded writer queue. Native-phase actual cursor
+  reports are counted and **required**. No hard-coded DSR response exists.
+* ZLE-ready sequence/status markers guard TTY checks, Unicode bracketed paste,
+  a 4096-character paste, left/backspace editing concurrent with a resize,
+  ten fixed resize requests and shell size observation.
+* A synthetic native Windows child must actually pass `GetConsoleMode`,
+  `GetConsoleScreenBufferInfo`, `ReadConsoleW` with fixed input, and Unicode
+  `WriteConsoleW`. Host checks 132x43 before native input and 148x47 after resize,
+  then verifies Zsh restoration and its observed size.
+* A foreground fixed Zsh-child-to-sleep exec tests Ctrl-C/status130 without the
+  pre-foreground readiness race. Explicit shell exit37 and zero-active-process
+  owned Job cleanup are required. Host writer cancellation is finite; host
+  lifetime is 25 seconds, broker 30 seconds, outer owner deadline 40 seconds.
+* No retry, actual user command, real AI program, network listener, or default
+  switch is introduced. Only fixed synthetic fixture screen/stderr is saved on
+  failure, bounded to help diagnose the first failed phase.
+
+The 200-ms resize settling schedule is **not** an OS ACK: subsequent real shell
+and native API observations must independently match. A PASS reports actual VT
+response counts and completed phases; a FAIL retains its first phase and native
+outer ownership record. Runtime mutation is checked before/after.
+
+Local evidence: complete Windows GNU cross-link of standalone host against the
+pinned engine; native C cross-compile; ten portable staging/isolation tests;
+Linux real-Zsh fixture smoke 10/10 for TTY, Unicode, resize, bracketed paste,
+Ctrl-C/status and exit. These do not substitute for Windows stage-2 execution.
+Native Ctrl-C handlers, Windows-to-MSYS-to-Windows nesting, full managed addons,
+physical UI, sustained performance, 15-ms output-gap causality, and broader
+resize/input stress remain subsequent gates even if this fixed stage 2 passes.

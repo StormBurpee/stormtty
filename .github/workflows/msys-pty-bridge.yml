@@ -1,5 +1,5 @@
-# Stage 1 only: private synthetic MSYS PTY bridge, never an app/default switch.
-name: Private MSYS PTY bridge stage 1
+# Isolated stages 1/2: synthetic + real bundled Zsh, never an app/default switch.
+name: Private MSYS PTY bridge qualification
 on:
   push:
     branches: [prototype/msys-pty-bridge]
@@ -106,11 +106,37 @@ jobs:
         run: |
           python tools/probes/msys-pty-bridge/qualify-windows.py --original "$env:BRIDGE_ROOT/original" --build "$env:BRIDGE_ROOT/compiled" --destination "$env:BRIDGE_ROOT/private-runtime" --host "$env:BRIDGE_ROOT/host.exe" --output "$env:BRIDGE_ROOT/evidence/cases"
           exit $LASTEXITCODE
+      - name: Restore pinned engine for real VT feedback (stage 2 only)
+        id: engine
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Build missing pinned terminal engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        timeout-minutes: 25
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Build standalone real-VT stage 2 and native console fixture
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          cmake -S tools/probes/msys-pty-bridge -B build-bridge-stage2 -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DSTORMTTY_GHOSTTY_ROOT=$env:GITHUB_WORKSPACE/.deps/ghostty-native"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-bridge-stage2 --target bridge_stage2 --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /nologo /TC /std:c11 /W4 /WX /D_CRT_SECURE_NO_WARNINGS tools/probes/msys-pty-bridge/stage2-native.c "/Fe:$env:BRIDGE_ROOT/native-fixture.exe" "/Fo:$env:BRIDGE_ROOT/native-fixture.obj" /link /SUBSYSTEM:CONSOLE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real bundled Zsh plus native console child through actual VT adapter
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          python tools/probes/msys-pty-bridge/qualify-stage2.py --original "$env:BRIDGE_ROOT/original" --build "$env:BRIDGE_ROOT/compiled" --destination "$env:BRIDGE_ROOT/stage2-runtime" --host build-bridge-stage2/bridge_stage2.exe --native "$env:BRIDGE_ROOT/native-fixture.exe" --engine .deps/ghostty-native --output "$env:BRIDGE_ROOT/evidence/stage2"
+          exit $LASTEXITCODE
       - name: Preserve failures and source provenance, not binaries or HOME
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: msys-pty-bridge-stage1-${{ github.sha }}
+          name: msys-pty-bridge-evidence-${{ github.sha }}
           if-no-files-found: warn
           path: |
             ${{ env.BRIDGE_ROOT }}/evidence/*.txt
@@ -118,7 +144,11 @@ jobs:
             ${{ env.BRIDGE_ROOT }}/evidence/*.md
             ${{ env.BRIDGE_ROOT }}/evidence/cases/*.json
             ${{ env.BRIDGE_ROOT }}/evidence/cases/*.log
+            ${{ env.BRIDGE_ROOT }}/evidence/stage2/*.json
+            ${{ env.BRIDGE_ROOT }}/evidence/stage2/*.log
             ${{ env.BRIDGE_ROOT }}/compiled/*.txt
             ${{ env.BRIDGE_ROOT }}/gcc15/provenance/*.txt
             tools/probes/msys-pty-bridge/*.c
+            tools/probes/msys-pty-bridge/*.cpp
+            tools/probes/msys-pty-bridge/stage2.zshrc
             tools/probes/msys-pty-bridge/*.sh
