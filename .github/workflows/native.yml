@@ -144,6 +144,27 @@ jobs:
         id: staged_shell
         if: always() && runner.os == 'Windows' && steps.shell_safety.outcome == 'success'
         run: python tools/shell-bootstrap.py --destination .deps/stormtty-shell --cache .cache/shell-bootstrap
+      - name: Qualify authored paste input bytes across Windows transports
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,importlib.util,sys
+          spec=importlib.util.spec_from_file_location('owned_runner',pathlib.Path('tools/run-owned-process.py'))
+          runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
+          failures=[]
+          for name,provider in [('inbox',[]),('packaged',[str(pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified')])]:
+            result=runner.run_owned([str(pathlib.Path('build/paste_input_probe.exe').resolve()),str(pathlib.Path('.deps/stormtty-shell').resolve()),*provider],timeout=180,output_dir=pathlib.Path('build/artifacts'))
+            output=result.output_tail
+            (pathlib.Path('build/artifacts')/('paste-input-'+name+'.log')).write_bytes(output)
+            print(output.decode('utf-8',errors='replace'),flush=True)
+            if result.exit_code: failures.append(name)
+          raise SystemExit(bool(failures))
+      - name: Preserve authored paste input evidence immediately
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: paste-input-windows
+          path: build/artifacts/paste-input-*.log
       - name: Qualify real managed OMZ state and interactive editing
         id: managed_omz
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
@@ -219,6 +240,7 @@ jobs:
           name: bundled-app-windows
           path: |
             build/artifacts/bundled-*.log
+            build/artifacts/paste-input-*.log
             build/artifacts/native-zsh-*.png
       - name: Build with app-owned developer Zsh runtime
         id: developer_shell_build
@@ -302,6 +324,7 @@ jobs:
             build/CMakeFiles/CMakeConfigureLog.yaml
             build/artifacts/*.png
             build/artifacts/bundled-*.log
+            build/artifacts/paste-input-*.log
             build/artifacts/macos-debugger.log
             build/artifacts/stormtty-crash.*
             build/artifacts/ink-transport/*.bin
