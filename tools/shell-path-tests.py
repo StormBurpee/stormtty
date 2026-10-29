@@ -18,6 +18,35 @@ def decode_output(result):
         ) from error
 
 
+RESERVED=('STORMTTY_NATIVE_ZSH_NO_DUMP', 'STORMTTY_NATIVE_ZSH_INIT_EVENT')
+
+def resolver_overrides(result):
+    if result.returncode:
+        raise AssertionError('Native home resolver failed: '
+            f'exit={result.returncode} exit_u32={result.returncode & 0xffffffff} '
+            f'stdout_bytes={len(result.stdout)} stderr_bytes={len(result.stderr)}')
+    overrides={}
+    for line in result.stdout.decode('ascii').splitlines():
+        name,value=line.split('=',1)
+        if name not in ('HOME','STORMTTY_EMPTY_HOME',*RESERVED) or name in overrides:
+            raise AssertionError('Unexpected or duplicate resolver override')
+        if name in RESERVED:
+            if value!='-': raise AssertionError('Reserved launch variable was not removed')
+            overrides[name]=None
+        else:
+            overrides[name]=bytes.fromhex(value).decode('utf-8')
+    if 'STORMTTY_EMPTY_HOME' not in overrides or any(name not in overrides for name in RESERVED):
+        raise AssertionError('Missing required resolver override')
+    return overrides
+
+def apply_overrides(environment, overrides):
+    # Windows environment names are case-insensitive; a plain dict is not.
+    for name,value in overrides.items():
+        for existing in list(environment):
+            if existing.upper()==name.upper(): del environment[existing]
+        if value is not None: environment[name]=value
+
+
 def qualify(runtime, resolver_probe):
     runtime = runtime.resolve(strict=True)
     shell = runtime / 'usr/bin/zsh.exe'
@@ -40,6 +69,8 @@ def qualify(runtime, resolver_probe):
                     ZDOTDIR=str(runtime / 'stormtty/zsh'), STORMTTY_SESSION_ID='path-test',
                     TERM='xterm-256color', MSYSTEM='MSYS', LANG='C.UTF-8', LC_ALL='C.UTF-8',
                     USERPROFILE=str(home), TMP=str(temp), TEMP=str(temp))
+        # Host must clear inherited launch-control values, including default OFF.
+        base.update({name.lower():'untrusted-inherited-value' for name in RESERVED})
         # Run the exact C++ wide-API helper used by the app, not a Python substitute.
         def run(changes, command="print -r -- HOME=$HOME CWD=$PWD; print -r -- PRESET=$STORMTTY_MANAGED_ZSH"):
             env = dict(base)
@@ -48,18 +79,11 @@ def qualify(runtime, resolver_probe):
                 else: env[name] = value
             resolved = subprocess.run([str(resolver_probe), '--managed-home-environment'],
                                       cwd=project, env=env, capture_output=True, timeout=30)
-            if resolved.returncode:
-                raise AssertionError(f'Native home resolver failed: {resolved.stdout!r} {resolved.stderr!r}')
-            overrides = {}
-            for line in resolved.stdout.decode('ascii').splitlines():
-                name, value = line.split('=', 1)
-                if name not in ('HOME', 'STORMTTY_EMPTY_HOME') or name in overrides:
-                    raise AssertionError(f'Unexpected resolver override: {line!r}')
-                overrides[name] = bytes.fromhex(value).decode('utf-8')
-            assert 'STORMTTY_EMPTY_HOME' in overrides, overrides
+            overrides = resolver_overrides(resolved)
             if 'HOME' in env:
                 assert 'HOME' not in overrides, 'Resolver overwrote explicit HOME'
-            env.update(overrides)
+            apply_overrides(env,overrides)
+            assert all(name.upper() not in RESERVED for name in env)
             diagnostic = 'print -r -- "LOCALE=$LANG|$LC_ALL"; /usr/bin/locale charmap; '
             result = subprocess.run([str(shell), '-d', '-i', '-c', diagnostic + command], cwd=project,
                                     env=env, capture_output=True, timeout=30)

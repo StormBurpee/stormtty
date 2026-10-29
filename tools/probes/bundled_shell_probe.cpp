@@ -1,5 +1,6 @@
 // Real Zsh -> StormTTY Process -> Session/libghostty qualification; no fake shell.
 #include "stormtty/session.hpp"
+#include "environment_protocol.hpp"
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
 #include "stormtty/qualification_input_evidence.hpp"
 #endif
@@ -309,12 +310,8 @@ int main(int argc, char** argv) {
         try {
             // ASCII hex protocol keeps Python/console codepages out of the
             // resolver test. These are real host-helper UTF-8 child overrides.
-            constexpr char hex[]="0123456789abcdef";
-            for (const auto& entry:managed_shell_home_environment()) {
-                std::cout << entry.name << '=';
-                for (const unsigned char byte:*entry.value) std::cout << hex[byte>>4] << hex[byte&15];
-                std::cout << '\n';
-            }
+            for (const auto& entry:managed_shell_home_environment())
+                qualification::write_environment_override(std::cout,entry);
             return 0;
         } catch (const std::exception& error) {
             std::cerr << "managed home resolver: " << error.what() << '\n';

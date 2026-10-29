@@ -298,7 +298,12 @@ jobs:
           path: build/artifacts/nano/nano-*.log
       - name: Verify managed shell HOME and drive paths
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
-        run: python tools/shell-path-tests.py --runtime .deps/stormtty-shell --resolver-probe build/bundled_shell_probe.exe
+        shell: python
+        run: |
+          import subprocess,sys
+          subprocess.run([sys.executable,'tools/shell-path-protocol-tests.py'],check=True)
+          subprocess.run([sys.executable,'tools/shell-path-tests.py','--runtime','.deps/stormtty-shell',
+                          '--resolver-probe','build/bundled_shell_probe.exe'],check=True)
       - name: Verify application with bundled Zsh
         id: bundled_application
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
