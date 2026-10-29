@@ -44,18 +44,32 @@ int main(){return run_core_tests("agent_panel_controller",[]{
             const auto outbound=service->take_outbound();accepted=accepted&&!outbound.empty()&&outbound.front().find("initialize")!=std::string::npos;
             error="Authored transport fixture: no process was launched";return {};
         });
-    auto click=[](AgentPanel& panel,std::string_view id){for(const auto& c:panel.controls())if(c.id==id){Point p{c.bounds.x+1,c.bounds.y+1};panel.pointer_down(p);panel.pointer_up(p);return;}CHECK(false);};
-    const std::string workspace_id(32,'c');AgentPanel panel;
-    auto setup_view=setup_controller.view(workspace_id,"Fixture","C:/fixture");setup_view.setup_available=true;panel.open(setup_view);
-    click(panel,"settings.open");panel.text("C:\\Fixture\\codex.exe");click(panel,"settings.account");panel.text("chatgpt:fixture@example.com");click(panel,"settings.save");
-    auto save=panel.take_action();CHECK(save&&save->kind==AgentPanelActionKind::save_settings);CHECK(launch_calls==0);
-    CHECK(setup_controller.reconfigure(save->provider_settings));CHECK(launch_calls==0);
-    panel.settings_result(true);panel.update(setup_controller.view(workspace_id,"Fixture","C:/fixture"));
-    panel.close();panel.open(setup_controller.view(workspace_id,"Fixture","C:/fixture"));CHECK(launch_calls==0);CHECK(!panel.take_action());
-    click(panel,"connect");CHECK(!panel.take_action());CHECK(launch_calls==0);
-    click(panel,"connect");auto connect=panel.take_action();CHECK(connect&&connect->kind==AgentPanelActionKind::connect);
-    CHECK(setup_controller.dispatch(*connect,"C:/fixture"));
+    const std::string workspace_id(32,'c');
+    CHECK(setup_controller.reconfigure({"C:\\Fixture\\codex.exe",{}}));CHECK(launch_calls==0);
+    CHECK(!setup_controller.opened(workspace_id,"C:/fixture"));CHECK(launch_calls==0); // override is never auto-launched
+    const auto v=setup_controller.view(workspace_id,"Fixture","C:/fixture");
+    AgentPanelAction connect;connect.kind=AgentPanelActionKind::connect;connect.workspace_id=workspace_id;connect.provider_generation=v.provider_generation;connect.settings_generation=v.settings_generation;
+    CHECK(setup_controller.dispatch(connect,"C:/fixture"));
     {std::unique_lock lock(mutex);CHECK(cv.wait_for(lock,std::chrono::seconds(5),[&]{return complete;}));}
     CHECK(launch_calls==1);CHECK(accepted);CHECK(confirmed);CHECK(runtime_label=="not-probed");
     CHECK(setup_controller.view(workspace_id,"Fixture","C:/fixture").state==AgentPanelState::disconnected);
+    // Panel opening may discover/status-check known binaries, never a model task.
+    complete=false;launch_calls=0;unsigned discoveries=0;
+    AgentPanelController automatic({},[&]{std::lock_guard lock(mutex);complete=true;cv.notify_one();},{},
+        [&](const AgentStdioOptions& launch,std::shared_ptr<AgentService> service,std::string& error)->std::unique_ptr<AgentStdioTransport>{
+            ++launch_calls;CHECK(launch.executable=="/fixture/installed/codex");CHECK(launch.working_directory=="/fixture/installed");CHECK(launch.account_reference.empty());
+            CHECK(service->connect(launch.runtime_version,launch.account_reference));const auto frames=service->take_outbound();CHECK(frames.size()==1);CHECK(frames[0].find("initialize")!=std::string::npos);CHECK(frames[0].find("turn/start")==std::string::npos);
+            error="Fixture status-only launch";return {};
+        },[&]{++discoveries;return AgentDiscoveryResult{"/fixture/installed/codex","fixture","/fixture/installed"};});
+    CHECK(automatic.opened(workspace_id,"/untrusted/repository"));
+    {std::unique_lock lock(mutex);CHECK(cv.wait_for(lock,std::chrono::seconds(5),[&]{return complete;}));}
+    CHECK(discoveries==1);CHECK(launch_calls==1);CHECK(!automatic.opened(workspace_id,"/untrusted/repository"));
+    complete=false;launch_calls=0;
+    AgentPanelController missing({},[&]{std::lock_guard lock(mutex);complete=true;cv.notify_one();},{},
+        [&](const AgentStdioOptions&,std::shared_ptr<AgentService>,std::string&)->std::unique_ptr<AgentStdioTransport>{++launch_calls;return {};},
+        []{return AgentDiscoveryResult{{},"Install Codex, then retry.",{}};});
+    CHECK(missing.opened(workspace_id,"/untrusted/repository"));
+    {std::unique_lock lock(mutex);CHECK(cv.wait_for(lock,std::chrono::seconds(5),[&]{return complete;}));}
+    CHECK(launch_calls==0);CHECK(missing.view(workspace_id,"Fixture","/fixture").error.find("Install Codex")!=std::string::npos);
+
 });}

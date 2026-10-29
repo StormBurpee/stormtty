@@ -20,6 +20,8 @@ struct AgentPanelView {
     std::string workspace_id, workspace_name, directory, provider{"Codex"};
     AgentPanelState state{AgentPanelState::unavailable};
     std::string execution_scope, connection_scope, error;
+    AgentAuth auth{AgentAuth::unknown};
+    std::string account_label, login_id, auth_url; // Transient; never render full URL or log it.
     std::vector<AgentPanelMessage> transcript;
     std::vector<AgentPanelApproval> approvals;
     AgentProviderSettings provider_settings;
@@ -28,10 +30,10 @@ struct AgentPanelView {
     bool fixture{};
     std::uint64_t provider_generation{}, settings_generation{};
 };
-enum class AgentPanelActionKind { reload_settings, save_settings, connect, disconnect, start, interrupt, allow, decline };
+enum class AgentPanelActionKind { reload_settings, save_settings, connect, disconnect, start, interrupt, allow, decline, sign_in, cancel_sign_in, refresh_account, open_sign_in, install_codex };
 struct AgentPanelAction {
     AgentPanelActionKind kind{};
-    std::string workspace_id, prompt;
+    std::string workspace_id, prompt, login_id;
     AgentApprovalKey approval_key;
     AgentProviderSettings provider_settings;
     std::uint64_t provider_generation{}, settings_generation{};

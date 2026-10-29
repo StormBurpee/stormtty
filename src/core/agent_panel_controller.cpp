@@ -1,4 +1,5 @@
 #include "stormtty/agent_panel_controller.hpp"
+#include "stormtty/agent_discovery.hpp"
 #include <mutex>
 #include <thread>
 namespace stormtty {
@@ -7,19 +8,21 @@ struct AgentPanelController::Entry {
     mutable std::mutex mutex;
     std::unique_ptr<AgentStdioTransport> transport;
     bool launching{};
+    std::string executable;
     std::jthread worker; // Joined before any field the worker references is destroyed.
 };
-AgentPanelController::AgentPanelController(AgentStdioOptions o,std::function<void()> w,std::vector<WorkspaceAgentAssociation> restored,LaunchFactory launch):options_(std::move(o)),launch_(std::move(launch)),wake_(std::move(w)){
+AgentPanelController::AgentPanelController(AgentStdioOptions o,std::function<void()> w,std::vector<WorkspaceAgentAssociation> restored,LaunchFactory launch,DiscoveryFactory discover):options_(std::move(o)),launch_(std::move(launch)),discover_(std::move(discover)),wake_(std::move(w)){
     if(options_.runtime_version.empty())options_.runtime_version="not-probed";
     if(!launch_)launch_=AgentStdioTransport::launch;
+    if(!discover_)discover_=[] {return discover_codex();};
     // Metadata restore is inert and never silently changes account identity.
-    for(auto& association:restored) if(association.account_reference==options_.account_reference) {
+    for(auto& association:restored) if(options_.account_reference.empty() || association.account_reference==options_.account_reference) {
         auto entry=std::make_unique<Entry>();entry->service=std::make_shared<AgentService>(association);
         entries_.try_emplace(association.workspace_persistent_id,std::move(entry));
     }
 }
 std::vector<WorkspaceAgentAssociation> AgentPanelController::associations() const {
-    std::vector<WorkspaceAgentAssociation> result;for(const auto& [id,e]:entries_){(void)id;result.push_back(e->service->snapshot().association);}return result;
+    std::vector<WorkspaceAgentAssociation> result;for(const auto& [id,e]:entries_){(void)id;auto a=e->service->snapshot().association;if(!a.account_reference.empty())result.push_back(std::move(a));}return result;
 }
 AgentPanelController::~AgentPanelController()=default;
 bool AgentPanelController::can_reconfigure() const {
@@ -35,29 +38,47 @@ bool AgentPanelController::reconfigure(const AgentProviderSettings& settings) {
     entries_.clear();options_.executable=settings.executable;options_.account_reference=settings.account_reference;options_.runtime_version="not-probed";return true;
 }
 AgentPanelView AgentPanelController::view(std::string id,std::string name,std::string directory) const {
-    const bool configured=!options_.executable.empty()&&!options_.account_reference.empty();
+    const bool configured=!options_.executable.empty() || entries_.contains(id);
     AgentSnapshot snapshot;snapshot.association.workspace_persistent_id=id;
     if(auto i=entries_.find(id);i!=entries_.end())snapshot=i->second->service->snapshot();
     auto result=agent_panel_view(snapshot,std::move(name),std::move(directory),configured);
     if(auto i=entries_.find(id);i!=entries_.end()){std::lock_guard lock(i->second->mutex);result.disconnect_available=!i->second->launching&&static_cast<bool>(i->second->transport);}
+    result.auth=snapshot.auth; result.account_label=snapshot.account_label; result.login_id=snapshot.login_id; result.auth_url=snapshot.auth_url;
+    if(auto i=entries_.find(id);i!=entries_.end()){std::lock_guard lock(i->second->mutex);if(i->second->launching)result.state=AgentPanelState::connecting;}
     result.settings_generation=settings_generation_;
     result.connection_scope=options_.executable+"\nAccount reference: "+options_.account_reference+"\nLaunch app-server only; no task or sign-in is authorized.";
     return result;
 }
+bool AgentPanelController::opened(std::string id,std::string directory) {
+    if(!options_.executable.empty()) return false; // Unknown override needs explicit consent.
+    auto i=entries_.find(id);
+    if(i!=entries_.end() && i->second->service->snapshot().generation!=0) return false;
+    AgentPanelAction action; action.kind=AgentPanelActionKind::connect; action.workspace_id=std::move(id); action.settings_generation=settings_generation_;
+    return dispatch(action,std::move(directory));
+}
 bool AgentPanelController::dispatch(const AgentPanelAction& a,std::string directory) {
     if(a.workspace_id.empty()||a.settings_generation!=settings_generation_)return false;
     if(a.kind==AgentPanelActionKind::connect) {
-        if(options_.executable.empty()||options_.account_reference.empty())return false;
         auto& entry=entries_[a.workspace_id];
         if(!entry) {entry=std::make_unique<Entry>();entry->service=std::make_shared<AgentService>(WorkspaceAgentAssociation{a.workspace_id,"codex",options_.account_reference,{}});}
         auto* e=entry.get();const auto snapshot=e->service->snapshot();
         if(snapshot.generation!=a.provider_generation||snapshot.connection==AgentConnection::ready||snapshot.connection==AgentConnection::connecting)return false;
         {std::lock_guard lock(e->mutex);if(e->launching)return false;e->launching=true;}
-        auto options=options_;options.working_directory=std::move(directory);options.user_confirmed_launch=true;options.state_changed=wake_;
-        e->worker=std::jthread([e,options=std::move(options),wake=wake_,launch=launch_] {
+        auto options=options_;options.account_reference=snapshot.association.account_reference;options.working_directory=std::move(directory);options.user_confirmed_launch=true;options.state_changed=wake_;
+        e->worker=std::jthread([e,options=std::move(options),wake=wake_,launch=launch_,discover=discover_] {
             try {
-                e->transport.reset();std::string error;
-                auto transport=launch(options,e->service,error);
+                std::unique_ptr<AgentStdioTransport> old_transport;
+                {std::lock_guard lock(e->mutex);old_transport=std::move(e->transport);}
+                old_transport.reset();std::string error;
+                auto resolved=options;
+                if(resolved.executable.empty()) {
+                    const auto discovered=discover();
+                    if(discovered.executable.empty()) { e->service->disconnect(discovered.detail); {std::lock_guard lock(e->mutex);e->launching=false;}if(wake){try{wake();}catch(...){}}return; }
+                    resolved.executable=discovered.executable;
+                    resolved.working_directory=discovered.working_directory;
+                }
+                {std::lock_guard lock(e->mutex);e->executable=resolved.executable;}
+                auto transport=launch(resolved,e->service,error);
                 if(!transport)e->service->disconnect(error.empty()?"Provider launch failed.":error);
                 {std::lock_guard lock(e->mutex);e->transport=std::move(transport);e->launching=false;}
             } catch(const std::exception& error) {e->service->disconnect(error.what());std::lock_guard lock(e->mutex);e->launching=false;}
@@ -75,11 +96,17 @@ bool AgentPanelController::dispatch(const AgentPanelAction& a,std::string direct
         auto* e=i->second.get();
         {std::lock_guard lock(e->mutex);if(e->launching)return false;e->launching=true;}
         e->worker=std::jthread([e,wake=wake_] {
-            e->transport.reset();e->service->disconnect();
+            std::unique_ptr<AgentStdioTransport> old_transport;
+            {std::lock_guard lock(e->mutex);old_transport=std::move(e->transport);}
+            old_transport.reset();e->service->disconnect();
             {std::lock_guard lock(e->mutex);e->launching=false;}
             if(wake){try{wake();}catch(...){}}
         });return true;
     }
+    case AgentPanelActionKind::sign_in:return service.login();
+    case AgentPanelActionKind::cancel_sign_in:if(a.login_id!=snapshot.login_id)return false;return service.cancel_login();
+    case AgentPanelActionKind::refresh_account:return service.refresh_account();
+    case AgentPanelActionKind::open_sign_in:case AgentPanelActionKind::install_codex:return false; // Host-only explicit links.
     case AgentPanelActionKind::start:return service.start({a.prompt,std::move(directory),true});
     case AgentPanelActionKind::interrupt:return service.interrupt();
     case AgentPanelActionKind::allow:return service.resolve(a.approval_key,AgentApprovalDecision::accept_once);

@@ -29,6 +29,7 @@
 #include "stormtty/session.hpp"
 #include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
+#include <shellapi.h>
 #include "stormtty/agent_panel.hpp"
 #include "stormtty/agent_panel_controller.hpp"
 #include "stormtty/agent_setup_service.hpp"
@@ -2548,6 +2549,7 @@ void NativeWindow::toggle_agent_panel() {
         const auto attention=agent_controller_->attention_workspace();
         if(!attention.empty()) for(const auto& entry:projects_.entries()) if(entry.metadata.persistent_id==attention && entry.id!=projects_.active_id()) {activate_project(entry.id);break;}
         const auto* project=projects_.active(); if (!project) return;
+        if(!options_.smoke_test&&!options_.smoke_agent) agent_controller_->opened(project->metadata.persistent_id,project->metadata.working_directory);
         auto view=current_agent_view();
         agent_panel_.open(std::move(view)); agent_panel_.resize({width_,height_});
         text_input_.reset(); typing_motion_.reset();
@@ -2555,6 +2557,7 @@ void NativeWindow::toggle_agent_panel() {
     agent_input_changed();
 }
 std::string NativeWindow::agent_status_label() const {
+    if(options_.smoke_agent&&agent_panel_.is_open())return "Codex · "+agent_panel_.status_label();
     const auto* project=projects_.active();if(!project||!agent_controller_)return "Codex · Unavailable";
     const auto attention=agent_controller_->attention_workspace();
     if(!attention.empty()&&attention!=project->metadata.persistent_id) for(const auto& entry:projects_.entries()) if(entry.metadata.persistent_id==attention) return "Codex · Approval: "+entry.metadata.name;
@@ -2596,6 +2599,17 @@ void NativeWindow::refresh_agent_panel() {
 }
 void NativeWindow::agent_input_changed() {
     if(auto action=agent_panel_.take_action()) {
+        if(action->kind==AgentPanelActionKind::open_sign_in||action->kind==AgentPanelActionKind::install_codex) {
+            const auto current=current_agent_view();
+            const bool matching=current.workspace_id==action->workspace_id&&current.provider_generation==action->provider_generation&&current.settings_generation==action->settings_generation;
+            if(!options_.smoke_test&&!options_.smoke_agent&&matching&&!agent_panel_.view().fixture) {
+                std::string url;
+                if(action->kind==AgentPanelActionKind::install_codex)url="https://developers.openai.com/codex/cli";
+                else if(current.auth==AgentAuth::signing_in&&current.login_id==action->login_id&&valid_agent_auth_url(current.auth_url))url=current.auth_url;
+                if(!url.empty()&&reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd_,L"open",widen(url).c_str(),nullptr,nullptr,SW_SHOWNORMAL))<=32)notice_="Could not open your browser. Try Continue in browser again.";
+            }
+            sync_focus();changed();return;
+        }
         if(action->kind==AgentPanelActionKind::reload_settings) {
             if(options_.smoke_test||!agent_setup_||agent_setup_->busy()||!agent_controller_->can_reconfigure()||!options_.codex_executable.empty()||!options_.codex_account_reference.empty())
                 agent_panel_.settings_reloaded(agent_saved_settings_,"Disconnect the provider before reloading local setup.");
@@ -3589,7 +3603,10 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     }
     if (options_.smoke_agent) {
         if (!smoke_agent_stage_) {
-            toggle_agent_panel(); agent_panel_.text("Review the terminal input path");
+            toggle_agent_panel();
+            auto initial=agent_panel_.view();initial.fixture=true;initial.state=AgentPanelState::ready;initial.auth=AgentAuth::signed_in;initial.setup_status.clear();
+            agent_panel_.open(initial);agent_panel_.text("Review the terminal input path");
+            initial.state=AgentPanelState::unavailable;initial.auth=AgentAuth::unknown;agent_panel_.update(initial);
             if (!agent_panel_.is_open() || focused_session_) {smoke_finish("Agent panel did not isolate terminal focus.");return;}
             ++smoke_agent_stage_; changed(); return;
         }
@@ -3598,22 +3615,26 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         options_.capture_path=path.parent_path()/(path.stem().wstring()+L"-agent-"+std::to_wstring(smoke_agent_stage_)+path.extension().wstring());
         try {capture_frame();} catch(const std::exception& error) {options_.capture_path=path;smoke_finish(error.what());return;}
         options_.capture_path=path;
-        if (smoke_agent_stage_==5) {
+        if (smoke_agent_stage_==9) {
             agent_panel_.key({{"ESCAPE"}}); // Cancel Setup without any save/connect action.
             agent_panel_.key({{"ESCAPE"}});agent_input_changed();
             if(agent_panel_.is_open()) {smoke_finish("Agent Escape failed.");return;}
             toggle_agent_panel();
             if(agent_panel_.draft()!="Review the terminal input path" || agent_panel_.take_action()) {smoke_finish("Agent reopen lost draft or replayed an action.");return;}
-            std::fprintf(stderr,"Native agent UI fixture: unavailable/running/approval/error/setup captures; no Codex server, authentication or model call.\n");
+            std::fprintf(stderr,"Native agent UI fixture: missing/detecting/sign-in/browser/ready/running/approval/error/advanced captures; no Codex server, authentication or model call.\n");
             smoke_finish();return;
         }
-        auto view=agent_panel_.view();view.fixture=true;
-        if(smoke_agent_stage_==1) {view.state=AgentPanelState::running;view.transcript={{"user","Review the terminal input path"},{"assistant","Authored fixture: inspecting keyboard routing."}};}
-        if(smoke_agent_stage_==2) {view.approvals={{{1,"fixture-thread","fixture-turn","fixture-item","1"},"Read source files","Read-only fixture scope: src/platform/windows/window.cpp",true}};}
-        if(smoke_agent_stage_==3) {view.approvals.clear();view.state=AgentPanelState::failed;view.error="Authored fixture: provider disconnected. No task was retried.";}
-        if(smoke_agent_stage_==4) {view.state=AgentPanelState::unavailable;view.error.clear();view.setup_available=true;view.provider_settings={"C:\\Fixture\\codex.exe","chatgpt:fixture@example.com"};}
+        auto view=agent_panel_.view();view.fixture=true;view.setup_status.clear();
+        if(smoke_agent_stage_==1) {view.state=AgentPanelState::connecting;}
+        if(smoke_agent_stage_==2) {view.state=AgentPanelState::ready;view.auth=AgentAuth::signed_out;}
+        if(smoke_agent_stage_==3) {view.auth=AgentAuth::signing_in;view.login_id="fixture-login";view.auth_url="https://auth.openai.com/fixture";}
+        if(smoke_agent_stage_==4) {view.auth=AgentAuth::signed_in;view.account_label="fixture@example.com";view.auth_url.clear();view.login_id.clear();}
+        if(smoke_agent_stage_==5) {view.state=AgentPanelState::running;view.transcript={{"user","Review the terminal input path"},{"assistant","Authored fixture: inspecting keyboard routing and checking that composed text reaches the active terminal only once."}};}
+        if(smoke_agent_stage_==6) {view.approvals={{{1,"fixture-thread","fixture-turn","fixture-item","1"},"Read source files","Read-only fixture scope: src/platform/windows/window.cpp\n\nThis request can inspect source files. It cannot write files or access the network.",true}};}
+        if(smoke_agent_stage_==7) {view.approvals.clear();view.state=AgentPanelState::failed;view.error="Authored fixture: provider disconnected. No task was retried.";}
+        if(smoke_agent_stage_==8) {view.state=AgentPanelState::unavailable;view.error.clear();view.setup_available=true;view.provider_settings={"C:\\Fixture\\codex.exe",""};}
         agent_panel_.update(std::move(view));
-        if(smoke_agent_stage_==4) for(const auto& control:agent_panel_.controls()) if(control.id=="settings.open") {const Point point{control.bounds.x+1,control.bounds.y+1};agent_panel_.pointer_down(point);agent_panel_.pointer_up(point);break;}
+        if(smoke_agent_stage_==8) for(const auto& control:agent_panel_.controls()) if(control.id=="settings.open") {const Point point{control.bounds.x+1,control.bounds.y+1};agent_panel_.pointer_down(point);agent_panel_.pointer_up(point);break;}
         ++smoke_agent_stage_;changed();return;
     }
     if (!smoke_chrome_verified_) {

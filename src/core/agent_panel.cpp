@@ -18,6 +18,7 @@ Color color(std::string_view s) {
 }
 AgentPanelView agent_panel_view(const AgentSnapshot& snapshot,std::string name,std::string directory,bool available) {
     AgentPanelView v;v.workspace_id=snapshot.association.workspace_persistent_id;v.workspace_name=std::move(name);v.directory=std::move(directory);
+    v.auth=snapshot.auth;v.account_label=snapshot.account_label;v.login_id=snapshot.login_id;v.auth_url=snapshot.auth_url;
     v.provider=snapshot.association.provider;v.provider_generation=snapshot.generation;v.error=snapshot.error;
     v.execution_scope="Read-only sandbox; network disabled; untrusted commands require approval; user reviews";
     if(!available) v.state=AgentPanelState::unavailable;
@@ -41,6 +42,7 @@ void AgentPanel::open(AgentPanelView v) { update(std::move(v)); open_=true; focu
 void AgentPanel::update(AgentPanelView v) {
     const bool approval_changed=v.approvals.size()!=view_.approvals.size() || (!v.approvals.empty()&&!view_.approvals.empty()&&(v.approvals.front().key!=view_.approvals.front().key || v.approvals.front().scope!=view_.approvals.front().scope || v.approvals.front().title!=view_.approvals.front().title || v.approvals.front().allow_supported!=view_.approvals.front().allow_supported));
     if(approval_changed) {pressed_.clear();pending_.reset();scroll_=0;}
+    if(v.auth!=view_.auth||v.login_id!=view_.login_id){pressed_.clear();pending_.reset();}
     if(v.directory!=view_.directory||v.execution_scope!=view_.execution_scope||v.connection_scope!=view_.connection_scope) {confirming_=false;connecting_=false;pressed_.clear();}
     if(v.workspace_id!=view_.workspace_id||v.provider_generation!=view_.provider_generation||v.settings_generation!=view_.settings_generation) { confirming_=false; connecting_=false; pending_.reset(); scroll_=0; }
     view_=std::move(v); if(!can_start()&&!connecting_) confirming_=false; layout();
@@ -53,9 +55,11 @@ void AgentPanel::settings_reloaded(const AgentProviderSettings& settings,std::st
 }
 void AgentPanel::resize(Size v) { viewport_=v; layout(); }
 const std::string& AgentPanel::draft() const { static const std::string empty; auto i=drafts_.find(view_.workspace_id); return i==drafts_.end()?empty:i->second; }
-bool AgentPanel::can_start() const { return !view_.workspace_id.empty() && !view_.execution_scope.empty() && view_.approvals.empty() && (view_.state==AgentPanelState::ready||view_.state==AgentPanelState::completed||view_.state==AgentPanelState::interrupted) && !draft().empty(); }
+bool AgentPanel::can_start() const { return view_.auth!=AgentAuth::signed_out && view_.auth!=AgentAuth::signing_in && view_.auth!=AgentAuth::failed && !view_.workspace_id.empty() && !view_.execution_scope.empty() && view_.approvals.empty() && (view_.state==AgentPanelState::ready||view_.state==AgentPanelState::completed||view_.state==AgentPanelState::interrupted) && !draft().empty(); }
 std::string AgentPanel::status_label() const {
     if(!view_.approvals.empty()) return "Needs approval";
+    if(view_.auth==AgentAuth::signed_out)return "Sign in needed";
+    if(view_.auth==AgentAuth::signing_in)return "Signing in";
     switch(view_.state) {
     case AgentPanelState::unavailable:return "Unavailable"; case AgentPanelState::disconnected:return "Disconnected";
     case AgentPanelState::connecting:return "Connecting"; case AgentPanelState::ready:return "Ready";
@@ -64,26 +68,44 @@ std::string AgentPanel::status_label() const {
     } return "Unavailable";
 }
 void AgentPanel::layout() {
-    const auto w=std::max(0.0,std::min(640.0,viewport_.width-32)), h=std::max(0.0,viewport_.height-64);
-    panel_={std::max(0.0,viewport_.width-w-16),32,w,h};
-    composer_={panel_.x+20,panel_.y+std::max(120.0,h-146),std::max(0.0,w-40),64};
-    transcript_={panel_.x+20,panel_.y+108,std::max(0.0,w-40),std::max(0.0,composer_.y-panel_.y-126)};
+    const bool onboarding=view_.transcript.empty() && view_.approvals.empty() && view_.state!=AgentPanelState::running && !confirming_;
+    const auto w=std::max(0.0,std::min(640.0,viewport_.width-32));
+    const auto h=std::max(0.0,std::min(onboarding||editing_settings_?500.0:!view_.approvals.empty()||confirming_?540.0:640.0,viewport_.height-(viewport_.height<440?32:80)));
+    panel_={std::max(0.0,viewport_.width-w-24),std::max(16.0,(viewport_.height-h)/2),w,h};
+    composer_={panel_.x+20,panel_.y+std::max(120.0,h-132),std::max(0.0,w-40),64};
+    transcript_={panel_.x+20,panel_.y+132,std::max(0.0,w-40),std::max(0.0,composer_.y-panel_.y-152)};
     controls_.clear();
     auto add=[&](std::string id,std::string title,Rect r,bool enabled=true){controls_.push_back({std::move(id),std::move(title),r,enabled});};
     add("close","Close",{panel_.x+w-82,panel_.y+16,62,28});
     if(editing_settings_) {
-        add("settings.executable","Executable",{transcript_.x,panel_.y+100,transcript_.width,36},!view_.setup_busy);
-        add("settings.account","Account reference",{transcript_.x,panel_.y+166,transcript_.width,36},!view_.setup_busy);
+        add("settings.executable","Executable",{transcript_.x,panel_.y+130,transcript_.width,36},!view_.setup_busy);
         add("settings.save",view_.setup_busy?"Saving…":"Save",{panel_.x+w-142,panel_.y+h-42,122,30},!view_.setup_busy&&view_.setup_available);
         if(view_.setup_reload_available) add("settings.reload",settings_reload_confirm_?"Discard & reload":"Reload saved",{panel_.x+132,panel_.y+h-42,160,30},!view_.setup_busy);
         add("settings.cancel","Cancel",{panel_.x+20,panel_.y+h-42,100,30},!view_.setup_busy);
         return;
     }
-    add("settings.open","Setup",{panel_.x+w-158,panel_.y+16,68,28},(view_.setup_available||view_.setup_reload_available)&&!view_.setup_busy);
+    add("settings.open","Advanced",{panel_.x+w-182,panel_.y+16,92,28},(view_.setup_available||view_.setup_reload_available)&&!view_.setup_busy);
+    const bool needs_onboarding=view_.transcript.empty() && view_.approvals.empty() && !confirming_ &&
+        (view_.state==AgentPanelState::unavailable || view_.state==AgentPanelState::connecting || view_.state==AgentPanelState::disconnected || view_.auth==AgentAuth::signed_out || view_.auth==AgentAuth::signing_in || view_.auth==AgentAuth::failed);
+    if(needs_onboarding) {
+        const auto y=panel_.y+panel_.height-78;
+        if(view_.auth==AgentAuth::signing_in) {
+            add("open_sign_in","Continue in browser",{panel_.x+20,y,180,34},!view_.auth_url.empty()&&!pending_);
+            add("cancel_sign_in","Cancel sign-in",{panel_.x+w-154,y,134,34},!pending_);
+        } else if(view_.auth==AgentAuth::signed_out || view_.auth==AgentAuth::failed) {
+            add("sign_in","Sign in to ChatGPT",{panel_.x+20,y,180,34},!pending_);
+            add("refresh_account","Check again",{panel_.x+w-142,y,122,34},!pending_);
+        } else if(view_.state==AgentPanelState::unavailable) {
+            add("install_codex","Install Codex",{panel_.x+20,y,144,34},!pending_);
+            add("connect","Check again",{panel_.x+w-142,y,122,34},!pending_);
+        } else if(view_.state==AgentPanelState::disconnected) add("connect","Connect Codex",{panel_.x+20,y,144,34},!pending_);
+        if(std::none_of(controls_.begin(),controls_.end(),[&](auto& c){return c.id==focus_&&c.enabled;})) focus_="close";
+        return;
+    }
     add("composer","Task",composer_);
-    const auto y=composer_.y+76;
+    const auto y=composer_.y+72;
     if(view_.state==AgentPanelState::disconnected||view_.state==AgentPanelState::failed) add("connect",connecting_?"Connect":"Review connect",{panel_.x+w-142,y,122,30},!view_.connection_scope.empty()&&!pending_&&!view_.setup_busy);
-    else add("start",confirming_?"Start task":"Review start",{panel_.x+w-142,y,122,30},can_start()&&!pending_&&!view_.setup_busy);
+    else add("start",confirming_?"Start task":"Review task",{panel_.x+w-142,y,122,30},can_start()&&!pending_&&!view_.setup_busy);
     if(!confirming_ && view_.disconnect_available && (view_.state==AgentPanelState::ready||view_.state==AgentPanelState::completed||view_.state==AgentPanelState::interrupted||view_.state==AgentPanelState::failed||view_.state==AgentPanelState::disconnected)) add("disconnect","Disconnect",{panel_.x+20,y,100,30},!pending_);
     if(view_.state==AgentPanelState::running) add("interrupt","Interrupt",{panel_.x+20,y,100,30},!pending_);
     if(confirming_) add("cancel","Cancel",{panel_.x+20,y,100,30});
@@ -121,15 +143,21 @@ void AgentPanel::activate(std::string_view id) {
         }
         if(id=="settings.save") {
             settings_reload_confirm_=false;
-            settings_error_=validate_agent_provider_settings(settings_draft_);if(!settings_error_.empty()||!view_.setup_available)return;
+            settings_draft_.account_reference.clear();settings_error_=validate_agent_provider_settings(settings_draft_);if(!settings_error_.empty()||!view_.setup_available)return;
             AgentPanelAction action;action.kind=AgentPanelActionKind::save_settings;action.workspace_id=view_.workspace_id;action.provider_settings=settings_draft_;pending_=std::move(action);
         }
         return;
     }
     if(id=="close") {close();return;} if(id=="cancel") {confirming_=false;connecting_=false;layout();return;} if(pending_||view_.setup_busy) return;
     AgentPanelAction a; a.workspace_id=view_.workspace_id; a.provider_generation=view_.provider_generation;a.settings_generation=view_.settings_generation;
-    if(id=="connect"&&!view_.connection_scope.empty()&&(view_.state==AgentPanelState::disconnected||view_.state==AgentPanelState::failed)) {if(!connecting_){confirming_=true;connecting_=true;scroll_=0;layout();return;}a.kind=AgentPanelActionKind::connect;confirming_=false;connecting_=false;}
-    else if(id=="start"&&can_start()) { if(!confirming_) {confirming_=true;scroll_=0;layout();return;} a.kind=AgentPanelActionKind::start;a.prompt=draft(); confirming_=false; }
+    if(id=="sign_in" && (view_.auth==AgentAuth::signed_out||view_.auth==AgentAuth::failed)) a.kind=AgentPanelActionKind::sign_in;
+    else if(id=="cancel_sign_in"&&view_.auth==AgentAuth::signing_in){a.kind=AgentPanelActionKind::cancel_sign_in;a.login_id=view_.login_id;}
+    else if(id=="open_sign_in"&&view_.auth==AgentAuth::signing_in&&!view_.auth_url.empty()){a.kind=AgentPanelActionKind::open_sign_in;a.login_id=view_.login_id;}
+    else if(id=="refresh_account")a.kind=AgentPanelActionKind::refresh_account;
+    else if(id=="install_codex")a.kind=AgentPanelActionKind::install_codex;
+    else if(id=="connect"&&view_.state==AgentPanelState::unavailable)a.kind=AgentPanelActionKind::connect;
+    else if(id=="connect"&&!view_.connection_scope.empty()&&(view_.state==AgentPanelState::disconnected||view_.state==AgentPanelState::failed)) {if(!connecting_){confirming_=true;connecting_=true;focus_="cancel";scroll_=0;layout();return;}a.kind=AgentPanelActionKind::connect;confirming_=false;connecting_=false;}
+    else if(id=="start"&&can_start()) { if(!confirming_) {confirming_=true;focus_="cancel";scroll_=0;layout();return;} a.kind=AgentPanelActionKind::start;a.prompt=draft(); confirming_=false; }
     else if(id=="disconnect"&&(view_.state==AgentPanelState::ready||view_.state==AgentPanelState::completed||view_.state==AgentPanelState::interrupted||view_.state==AgentPanelState::failed||view_.state==AgentPanelState::disconnected)) a.kind=AgentPanelActionKind::disconnect;
     else if(id=="interrupt"&&view_.state==AgentPanelState::running) a.kind=AgentPanelActionKind::interrupt;
     else if((id=="allow"||id=="decline")&&!view_.approvals.empty()) {if(id=="allow"&&!view_.approvals.front().allow_supported)return; a.kind=id=="allow"?AgentPanelActionKind::allow:AgentPanelActionKind::decline;a.approval_key=view_.approvals.front().key;}
@@ -147,8 +175,17 @@ bool AgentPanel::key(const KeyEvent& e) {
         if(field){if(settings_select_all_)field->clear();else if(!field->empty()){auto n=field->size()-1;while(n>0&&(static_cast<unsigned char>((*field)[n])&0xc0)==0x80)--n;field->resize(n);}settings_select_all_=false;settings_reload_confirm_=false;settings_error_.clear();layout();}return true;
     }
     if(k=="ESCAPE") {if(editing_settings_){activate("settings.cancel");return true;}if(confirming_) {confirming_=false;connecting_=false;layout();} else close();return true;}
-    if(k=="TAB") { auto i=std::find_if(controls_.begin(),controls_.end(),[&](auto& c){return c.id==focus_;}); auto n=i==controls_.end()?0:std::distance(controls_.begin(),i); const auto count=static_cast<int>(controls_.size()); n=(n+(has_modifier(e.chord.modifiers,CommandModifier::shift)?count-1:1))%count; focus_=controls_[n].id;settings_select_all_=editing_settings_; }
-    else if(k=="ENTER") {if(editing_settings_&&(focus_=="settings.executable"||focus_=="settings.account")){focus_=focus_=="settings.executable"?"settings.account":"settings.save";settings_select_all_=true;}else if(focus_!="composer") activate(focus_); else if(has_modifier(e.chord.modifiers,CommandModifier::shift)) text("\n");else {focus_="start";activate("start");}}
+    if(k=="TAB") {
+        auto i=std::find_if(controls_.begin(),controls_.end(),[&](auto& c){return c.id==focus_;});
+        auto n=i==controls_.end()?0:std::distance(controls_.begin(),i);
+        const auto count=static_cast<int>(controls_.size());
+        for(int step=0;step<count;++step) {
+            n=(n+(has_modifier(e.chord.modifiers,CommandModifier::shift)?count-1:1))%count;
+            if(controls_[n].enabled){focus_=controls_[n].id;break;}
+        }
+        settings_select_all_=editing_settings_;
+    }
+    else if(k=="ENTER") {if(editing_settings_&&(focus_=="settings.executable"||focus_=="settings.account")){focus_="settings.save";settings_select_all_=true;}else if(focus_!="composer") activate(focus_); else if(has_modifier(e.chord.modifiers,CommandModifier::shift)) text("\n");else {focus_="start";activate("start");}}
     else if(k=="BACKSPACE"&&focus_=="composer"&&!confirming_&&!pending_) {auto& d=drafts_[view_.workspace_id];if(!d.empty()){auto n=d.size()-1;while(n>0&&(static_cast<unsigned char>(d[n])&0xc0)==0x80)--n;d.resize(n);}layout();}
     else if(k=="PAGEUP") scroll((view_.approvals.empty()&&!confirming_)?5:-5); else if(k=="PAGEDOWN") scroll((view_.approvals.empty()&&!confirming_)?-5:5);
     return true;
@@ -173,7 +210,7 @@ void AgentPanel::append_scene(WindowScene& s,const Theme& t,float scale,const Te
     auto box=[&](Rect r,Color fill,Color stroke=Color{}){ChromePrimitive p;p.rect=px(r);p.fill=fill;p.stroke=stroke;p.stroke_width=scale;p.radius=6*scale;p.z=z;s.primitives.push_back(p);};
     auto label=[&](Rect r,std::string text,float size=13,bool bold=false){ChromeText x;x.rect=px(r);x.text=agent_display_text(text);x.color=fg;x.size_dip=size;x.semibold=bold;x.z=z;x.wrap=true;s.texts.push_back(std::move(x));};
     auto button=[&](const AgentPanelControl& c) {
-        const bool primary=c.enabled&&(c.id=="start"||c.id=="connect"||c.id=="settings.save");
+        const bool primary=c.enabled&&(c.id=="start"||c.id=="connect"||c.id=="settings.save"||c.id=="sign_in"||c.id=="open_sign_in"||c.id=="install_codex");
         auto fill=primary?accent:control;
         if(c.enabled&&c.id==pressed_)fill=blend(fill,primary?chrome:fg,.12);
         else if(c.enabled&&c.id==hover_)fill=blend(fill,fg,.075);
@@ -183,9 +220,15 @@ void AgentPanel::append_scene(WindowScene& s,const Theme& t,float scale,const Te
     };
     box(panel_,chrome,border);s.primitives.back().radius=11*scale;
     box({panel_.x+20,panel_.y,64,2},accent);
-    label({panel_.x+20,panel_.y+18,panel_.width-180,28},view_.fixture?"Codex · UI fixture":"Codex",19,true);
-    if(!editing_settings_) label({panel_.x+20,panel_.y+54,panel_.width-40,22},view_.workspace_name+" · "+status_label(),13,true);
-    if(!editing_settings_) label({panel_.x+20,panel_.y+78,panel_.width-40,22},view_.directory,11);
+    label({panel_.x+24,panel_.y+16,panel_.width-220,30},editing_settings_?"Codex settings":"Codex",21,true);
+    box({panel_.x+24,panel_.y+62,panel_.width-48,1},border);
+    if(!editing_settings_) {
+        label({panel_.x+24,panel_.y+76,panel_.width-200,22},view_.workspace_name,14,true);
+        label({panel_.x+24,panel_.y+100,panel_.width-48,20},view_.directory,11);s.texts.back().color=subdued;s.texts.back().wrap=false;
+        const Rect badge{panel_.x+panel_.width-160,panel_.y+76,136,24};
+        box(badge,blend(chrome,accent,.10));
+        label(badge,status_label(),11,true);s.texts.back().color=accent;s.texts.back().alignment=ChromeTextAlignment::center;s.texts.back().wrap=false;
+    }
     auto document=[&](std::string text,Rect area,bool from_end) {
         // Bound each draw, not the underlying evidence: all scope/transcript text
         // remains reachable with PageUp/PageDown, including long provider scopes.
@@ -218,29 +261,51 @@ void AgentPanel::append_scene(WindowScene& s,const Theme& t,float scale,const Te
         const auto rows=static_cast<std::size_t>(std::max(0.0,area.height/19));
         const auto maximum=lines.size()>rows?lines.size()-rows:0;
         const auto offset=std::min(scroll_,maximum);const auto begin=from_end?maximum-offset:offset;
-        for(std::size_t i=0;i<rows&&begin+i<lines.size();++i) {label({area.x,area.y+i*19,area.width,19},lines[begin+i],12);s.texts.back().wrap=false;}
+        for(std::size_t i=0;i<rows&&begin+i<lines.size();++i) {label({area.x,area.y+i*19,area.width,19},lines[begin+i],12,lines[begin+i]=="You"||lines[begin+i]=="Codex");s.texts.back().wrap=false;if(lines[begin+i]=="You"||lines[begin+i]=="Codex")s.texts.back().color=accent;}
     };
     if(editing_settings_) {
-        label({transcript_.x,panel_.y+54,transcript_.width,28},settings_error_.empty()?"This computer only · Save never connects or starts a task.":settings_error_,12,true);
+        label({transcript_.x,panel_.y+70,transcript_.width,28},settings_error_.empty()?"Local overrides · Auto-detection is used by default.":settings_error_,12,true);
         for(const auto& c:controls_) {
             if(c.id=="settings.executable"||c.id=="settings.account") {
                 label({c.bounds.x,c.bounds.y-20,c.bounds.width,20},c.label,12,true);
                 box(c.bounds,bg,c.id==focus_?accent:chrome);
                 const auto& value=c.id=="settings.executable"?settings_draft_.executable:settings_draft_.account_reference;
-                label({c.bounds.x+8,c.bounds.y+6,c.bounds.width-16,c.bounds.height-12},value.empty()?(c.id=="settings.executable"?"C:\\Tools\\codex.exe":"chatgpt:you@example.com"):value,12);
+                label({c.bounds.x+8,c.bounds.y+6,c.bounds.width-16,c.bounds.height-12},value.empty()?(c.id=="settings.executable"?"C:\\Tools\\codex.exe":"Optional account label"):value,12);
             } else button(c);
         }
-        if(panel_.height>350) label({transcript_.x,panel_.y+220,transcript_.width,panel_.height-274},"Already installed native executable; absolute path only.\nUse the signed-in account email, never a token or password.\nClear both fields to remove setup.",12);
+        if(panel_.height>350) label({transcript_.x,panel_.y+190,transcript_.width,panel_.height-244},"Use an absolute path only if automatic discovery misses Codex.\nLeave it empty to use automatic discovery.\n\nSign-in is managed by Codex, not by these settings.",12);
         return;
     }
-    if(connecting_) document("Connect Codex? · PageDown for full scope\nWorkspace: "+view_.workspace_name+"\n"+view_.connection_scope,transcript_,false);
+    if(!view_.approvals.empty()||confirming_) {
+        box({transcript_.x-4,transcript_.y-4,transcript_.width+8,transcript_.height+8},blend(chrome,accent,.055),border);
+    }
+    const bool has_composer=std::any_of(controls_.begin(),controls_.end(),[](const auto& c){return c.id=="composer";});
+    if(!has_composer) {
+        const bool compact=panel_.height<380;
+        const auto x=panel_.x+24, y=panel_.y+(compact?120:156), w=panel_.width-48;
+        std::string title, body;
+        if(view_.auth==AgentAuth::signing_in){title="Finish signing in";body="Continue in your browser to connect your ChatGPT account. This panel updates when sign-in is complete.";}
+        else if(view_.auth==AgentAuth::signed_out||view_.auth==AgentAuth::failed){title="Connect your account";body="Codex is installed. Sign in to ChatGPT to use it in this workspace. Your password stays in the browser.";}
+        else if(view_.state==AgentPanelState::connecting){title="Getting Codex ready";body="Looking for the installed CLI and checking your sign-in. No task is started.";}
+        else if(view_.state==AgentPanelState::disconnected){title="Codex is available";body="Connect the local Codex provider to check your account. You will review the connection before continuing.";}
+        else {title="Install Codex to get started";body="StormTTY could not find the Codex CLI on this computer. Install it, then choose Check again. Already installed elsewhere? Set an executable override in Advanced.";}
+        if(compact)body=view_.auth==AgentAuth::signing_in?"Continue in your browser to finish sign-in.":view_.auth==AgentAuth::signed_out?"Sign in with your ChatGPT account.":view_.state==AgentPanelState::connecting?"Checking the installed CLI and your account…":"Install Codex, or set its location in Advanced.";
+        box({x,y-10,w,compact?90.0:156.0},blend(chrome,fg,.025),border);
+        label({x+20,y+8,w-40,compact?24.0:32.0},title,compact?16:20,true);
+        label({x+20,y+(compact?36:52),w-40,compact?40.0:86.0},body,13);s.texts.back().color=subdued;
+        if(!view_.error.empty()) document(view_.error,{x,y+162,w,std::max(0.0,panel_.height-400)},false);
+    }
+    else if(connecting_) document("Connect Codex? · PageDown for full scope\nWorkspace: "+view_.workspace_name+"\n"+view_.connection_scope,transcript_,false);
     else if(confirming_) document("Start a Codex task?\nWorkspace: "+view_.workspace_name+"\nProvider: "+view_.provider+"\nScope: "+view_.execution_scope+"\n\nOnly Start task authorizes this prompt.",transcript_,false);
-    else if(!view_.approvals.empty()) {const auto& a=view_.approvals.front();document("Approval required · "+std::to_string(view_.approvals.size())+" pending · PageDown for scope\n"+a.title+"\n"+a.scope,{transcript_.x,transcript_.y,transcript_.width,std::max(0.0,transcript_.height-44)},false);}
+    else if(!view_.approvals.empty()) {const auto& a=view_.approvals.front();document("Permission request · "+std::to_string(view_.approvals.size())+" pending\nPageUp / PageDown to inspect the full scope\n\n"+a.title+"\n"+a.scope,{transcript_.x,transcript_.y,transcript_.width,std::max(0.0,transcript_.height-44)},false);}
     else if(!view_.error.empty()) document(view_.error,transcript_,false);
-    else if(view_.transcript.empty()) document(view_.state==AgentPanelState::unavailable?"No configured provider.\n\nChoose Setup to select an installed executable and account reference for this computer. Then review Connect here.\n\nYour terminal remains available. Drafts never start automatically.":"No messages in this workspace.",transcript_,false);
-    else {std::string text;for(const auto& m:view_.transcript) text+=m.role+"\n"+m.text+"\n\n";document(std::move(text),transcript_,true);}
-    if(!view_.setup_status.empty()) label({panel_.x+20,composer_.y-36,panel_.width-40,32},view_.setup_status,11);
-    box(composer_,bg,focus_=="composer"?accent:chrome);label({composer_.x+10,composer_.y+8,composer_.width-20,composer_.height-16},draft().empty()?"Describe a task…":draft());
+    else if(view_.transcript.empty()&&!view_.account_label.empty()) document("Signed in as "+view_.account_label+"\n\nWhat would you like to work on?\n\nAsk about this workspace, investigate an issue, or review a change.",transcript_,false);
+    else if(view_.transcript.empty()) document(view_.state==AgentPanelState::unavailable?"Codex was not found\n\nInstall the Codex CLI, then try again. If it is already installed in a custom location, choose Advanced.":view_.state==AgentPanelState::connecting?"Finding Codex and checking your account…\n\nThis does not start a task.":"What would you like to work on?\n\nAsk about this workspace, investigate an issue, or review a change. You will review the scope before a task starts.",transcript_,false);
+    else {std::string text;for(const auto& m:view_.transcript) text+=(m.role=="user"?"You":m.role=="assistant"?"Codex":m.role)+"\n"+m.text+"\n\n";document(std::move(text),transcript_,true);}
+
+    if(has_composer) {box(composer_,bg,focus_=="composer"?accent:chrome);label({composer_.x+10,composer_.y+8,composer_.width-20,composer_.height-16},draft().empty()?"Ask Codex about this workspace…":draft());}
+    label({panel_.x+20,panel_.y+panel_.height-26,panel_.width-40,18},view_.fixture?"Authored UI fixture · no provider or model calls":has_composer?"Enter to review · Shift+Enter for a new line · Esc to close":"No task starts until you review and confirm it",10);
+    s.texts.back().color=subdued;s.texts.back().wrap=false;
     for(const auto& c:controls_)if(c.id!="composer")button(c);
 }
 }

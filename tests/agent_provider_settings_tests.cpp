@@ -5,6 +5,8 @@ int main(){return run_core_tests("agent_provider_settings",[]{
     AgentProviderSettings valid{"C:\\Program Files\\Codex\\codex.exe","chatgpt:person@example.com"};
     CHECK(validate_agent_provider_settings(valid).empty());std::string error;
     CHECK(parse_agent_provider_settings(serialize_agent_provider_settings(valid),error)==valid);
+    AgentProviderSettings override_only{valid.executable,{}};CHECK(validate_agent_provider_settings(override_only).empty());
+    CHECK(parse_agent_provider_settings(serialize_agent_provider_settings(override_only),error)==override_only);
     CHECK(parse_agent_provider_settings(serialize_agent_provider_settings({}),error)==AgentProviderSettings{});
     for(const auto* path:{"codex.exe","C:codex.exe","\\\\host\\share\\codex.exe","C:\\..\\codex.exe","C:\\Tools\\codex.cmd","C:\\Tools\\codex.exe --login","C:\\Tools\\codex.exe:stream","C:\\Tools\\\\codex.exe"}) {
         auto candidate=valid;candidate.executable=path;CHECK(!validate_agent_provider_settings(candidate).empty());

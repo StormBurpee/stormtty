@@ -7,6 +7,9 @@
 
 namespace stormtty {
 enum class AgentConnection { disconnected, connecting, ready, failed };
+enum class AgentAuth { unknown, signed_out, signing_in, signed_in, failed };
+// Exact HTTPS origins only; URLs are transient secrets and must never be logged.
+bool valid_agent_auth_url(std::string_view);
 enum class AgentConversation { idle, starting, running, interrupting, completed, interrupted, failed };
 struct AgentApprovalKey {
     std::uint64_t generation{};
@@ -31,6 +34,8 @@ struct AgentSnapshot {
     AgentConversation conversation{AgentConversation::idle};
     std::uint64_t generation{}, revision{};
     std::string turn_id, error, diff;
+    AgentAuth auth{AgentAuth::unknown};
+    std::string account_label, login_id, auth_url; // Never persisted or logged.
     std::vector<AgentTranscriptItem> transcript;
     std::vector<AgentApproval> approvals;
     bool transcript_truncated{};
@@ -43,7 +48,8 @@ struct AgentStartRequest {
 };
 enum class AgentApprovalDecision { accept_once, decline, cancel };
 // One workspace/provider instance. Thread-safe; no process, account or network
-// operation occurs here. The host owns a separately authorized stdio transport.
+// operation occurs here. The host owns a status-only stdio transport; a model
+// turn and managed sign-in require their own explicit user actions.
 // feed_stdout must run off the UI thread; snapshot() returns an owned copy.
 class AgentService {
 public:
@@ -56,6 +62,9 @@ public:
     // Version is descriptive; stable response/policy/account checks gate readiness.
     bool connect(std::string_view runtime_version, std::string_view account_reference);
     bool start(const AgentStartRequest& request);
+    bool login(); // Explicit user Sign in action only; official managed browser flow.
+    bool cancel_login();
+    bool refresh_account();
     bool interrupt();
     bool resolve(const AgentApprovalKey& key, AgentApprovalDecision decision);
     void feed_stdout(std::string_view bytes);
