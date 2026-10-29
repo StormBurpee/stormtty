@@ -84,6 +84,7 @@ jobs:
           path: |
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
+            build/artifacts/workspace-*.png
       - name: Verify bundled console cached repair and portable install
         if: always() && runner.os == 'Windows' && steps.build.outcome == 'success'
         shell: python

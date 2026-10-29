@@ -28,6 +28,12 @@ struct ProjectWorkspaceMetadata {
     std::string working_directory;
     // Descriptive only. This does not establish SSH/WSL/container connectivity.
     std::string environment_label;
+    // Stable built-in icon key (not a path), optional #RRGGBB accent.
+    std::string icon{"terminal"};
+    std::string accent{};
+    std::string preferred_profile{"@default"};
+    // Opaque durable identity; generated at create, never an authorization token.
+    std::string persistent_id{};
     auto operator<=>(const ProjectWorkspaceMetadata&) const = default;
 };
 
@@ -117,6 +123,9 @@ public:
     [[nodiscard]] Result<ParkedSession> discard_parked(ProjectSessionReference);
 
     Status validate() const;
+    // Atomic replacement only when neither catalog owns live sessions.
+    // Identity changes deliberately; hosts must rebuild qualified references.
+    Status replace_unbound(ProjectWorkspaceCatalog& prepared);
 
 private:
     ProjectWorkspace* mutable_project(ProjectWorkspaceId) noexcept;

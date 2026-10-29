@@ -208,7 +208,9 @@ void bounds_and_unbound_workspaces() {
         std::string(ProjectWorkspaceCatalog::maximum_name_bytes, 'n'),
         std::string(ProjectWorkspaceCatalog::maximum_directory_bytes, 'd'),
         std::string(ProjectWorkspaceCatalog::maximum_environment_bytes, 'e')};
-    auto first = catalog.create(maximum); CHECK(first); CHECK(catalog.find(*first.value)->metadata == maximum);
+    auto first = catalog.create(maximum); CHECK(first);
+    maximum.persistent_id = catalog.find(*first.value)->metadata.persistent_id;
+    CHECK(maximum.persistent_id.size() == 32); CHECK(catalog.find(*first.value)->metadata == maximum);
     CHECK(catalog.update_metadata(*first.value, {"开发 — Native", "/Users/dev/项目", "macOS — Local"}));
     CHECK(catalog.update_metadata(*first.value, {"Default directory", {}, {}}));
     Workspace unbound; CHECK(unbound.create_tab()); CHECK(unbound.split(unbound.active_pane(), Direction::down));

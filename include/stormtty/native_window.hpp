@@ -135,6 +135,7 @@ private:
 // Windows is implemented; other platforms provide their own native shell.
 struct NativeRunOptions {
     bool smoke_test{}; // Explicit CI mode; never enabled on a normal launch.
+    std::string smoke_workspaces; // Dedicated isolated restart qualification: seed/restore/corrupt.
     bool smoke_settings{}; // Styled Settings/menu routing, reversible preview and isolated explicit Save.
     bool smoke_modal{}; // Styled modal + routing/close smoke, not desktop activation QA.
     bool smoke_projects{}; // Two actual folder contexts, actor retention and scoped close.

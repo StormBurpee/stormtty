@@ -326,14 +326,10 @@ SettingsSnapshotResult load_settings_snapshot(const std::filesystem::path& input
     return result;
 }
 
-ConfigSaveResult save_settings_config(const std::filesystem::path& input, const Config& config, const ConfigFileSnapshot& loaded) {
+static ConfigSaveResult save_document_bytes(const std::filesystem::path& input, const std::string& bytes, const ConfigFileSnapshot& loaded) {
     ConfigSaveResult result;
     try {
-        if (auto status = validate_config(config, Platform::windows); !status) { result.error = std::move(status.error); return result; }
-        const auto bytes = serialize_config(config, Platform::windows);
-        const auto roundtrip = parse_config(bytes, Platform::windows);
-        if (bytes.size() > max_config_bytes || !roundtrip || serialize_config(*roundtrip.config, Platform::windows) != bytes)
-            throw std::runtime_error("Settings could not be encoded as valid bounded UTF-8 configuration.");
+        if (bytes.size() > max_config_bytes) throw std::runtime_error("Saved document exceeds 1 MiB.");
         const auto path = checked_path(input);
         if (loaded.path != path || (!loaded.existed && (!loaded.bytes.empty() || loaded.file_id || loaded.volume_id || loaded.modified_time)))
             throw std::runtime_error("Settings snapshot does not match the selected configuration path. Reload settings.");
@@ -412,6 +408,41 @@ ConfigSaveResult save_settings_config(const std::filesystem::path& input, const 
     } catch (const std::exception& error) { result.error = error.what(); }
     return result;
 }
+ConfigSaveResult save_settings_config(const std::filesystem::path& input, const Config& config, const ConfigFileSnapshot& loaded) {
+    try {
+        if (auto status = validate_config(config, Platform::windows); !status) return {{}, status.error, false};
+        const auto bytes = serialize_config(config, Platform::windows);
+        const auto roundtrip = parse_config(bytes, Platform::windows);
+        if (!roundtrip || serialize_config(*roundtrip.config, Platform::windows) != bytes)
+            return {{}, "Settings could not be encoded as valid configuration.", false};
+        return save_document_bytes(input, bytes, loaded);
+    } catch (const std::exception& error) { return {{}, error.what(), false}; }
+}
+
+WorkspaceLibrarySnapshotResult load_workspace_library_snapshot(const std::filesystem::path& input) {
+    WorkspaceLibrarySnapshotResult result;
+    try {
+        const auto path = checked_path(input);
+        const auto directories = guard_directories(path, false);
+        OpenSnapshot opened;
+        opened.token.path = path;
+        if (directories.complete) opened = read_snapshot(path);
+        if (opened.token.existed) {
+            auto parsed = deserialize_workspace_library(opened.token.bytes);
+            if (!parsed) { result.error = parsed.error; return result; }
+            result.library = std::move(parsed.value);
+        } else result.library.emplace();
+        result.snapshot = std::move(opened.token);
+    } catch (const std::exception& error) { result.error = error.what(); }
+    return result;
+}
+ConfigSaveResult save_workspace_library(const std::filesystem::path& input, const WorkspaceLibrary& library, const ConfigFileSnapshot& loaded) {
+    try {
+        auto bytes = serialize_workspace_library(library);
+        if (!bytes) return {{}, bytes.error, false};
+        return save_document_bytes(input, *bytes.value, loaded);
+    } catch (const std::exception& error) { return {{}, error.what(), false}; }
+}
 } // namespace stormtty
 
 #else
@@ -420,6 +451,12 @@ ShellDiscoveryResult discover_windows_shells(std::span<const Profile> configured
 SettingsSnapshotResult load_settings_snapshot(const std::filesystem::path&) { return {{}, {}, "Windows settings persistence is unavailable on this platform."}; }
 ConfigSaveResult save_settings_config(const std::filesystem::path&, const Config&, const ConfigFileSnapshot&) {
     return {{}, "Windows settings persistence is unavailable on this platform.", false};
+}
+WorkspaceLibrarySnapshotResult load_workspace_library_snapshot(const std::filesystem::path&) {
+    return {{}, {}, "Windows workspace persistence is unavailable on this platform."};
+}
+ConfigSaveResult save_workspace_library(const std::filesystem::path&, const WorkspaceLibrary&, const ConfigFileSnapshot&) {
+    return {{}, "Windows workspace persistence is unavailable on this platform.", false};
 }
 } // namespace stormtty
 #endif
