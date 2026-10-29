@@ -159,3 +159,21 @@ collision ACL preservation. Diagnostic preflight now invokes the staging suite.
 Local Linux results: 25 staging tests passed, native ACL test skipped; all 23
 seed packaging/parser/workflow tests passed. The correction has **not run on
 Windows** until a separately reviewed root publication qualifies it.
+
+## Staging regression run 40876888614: reader error, no adoption result
+
+Remote `75cb25c6c54baaf8c2be65664f7205623450f7db` / tree
+`7efce9564f3caac5f7a3d12660d07194ad2af6a1` stopped in staging preflight.
+The 25 existing/collision/cleanup tests passed. New private runtime creation and
+rename succeeded, but its Windows ACL reader (`powershell.exe`) exited 1 before
+returning JSON. Captured stderr was not printed by unittest's CalledProcessError
+or retained in the artifact; its precise failure cause is unknown. This is a
+reader failure, **not evidence that the resulting ACL passed or failed**.
+Native compiler/build, lifecycle and startup were never run.
+
+The regression reader now uses Windows security APIs directly to check token-user
+identity, owners, exact allowed SID/mask sets, protected root DACL, inherited child
+ACEs, and unchanged ACLs on creation collision. Native API failures report their
+Win32 errors. The runtime implementation and strict verifier are unchanged by
+this reader correction. Local staging suite still passes 25 tests with the single
+Windows test skipped; native policy qualification remains pending.

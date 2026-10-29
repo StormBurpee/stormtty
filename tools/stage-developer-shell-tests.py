@@ -3,7 +3,6 @@
 import importlib.util
 import json
 import os
-import subprocess
 from pathlib import Path
 import shutil
 import tempfile
@@ -94,36 +93,80 @@ class StagingTests(unittest.TestCase):
         files, receipt = self.validate()
         target = self.base / "app/runtimes/zsh"
         stager.stage(self.root, target, files, receipt)
-        # Read only authored fixtures. Ask Windows for concrete ACE identities;
-        # this detects inherited OWNER RIGHTS as well as broad mutation grants.
-        script = r"""
-        $ErrorActionPreference = 'Stop'
-        $root = $env:STORMTTY_ACL_TEST_PATH
-        $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $rows = @($root, (Join-Path $root 'usr'), (Join-Path $root 'usr/bin/zsh.exe')) | ForEach-Object {
-          $acl = Get-Acl -LiteralPath $_
-          $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object {
-            @{sid=$_.IdentityReference.Value; allow=($_.AccessControlType -eq 'Allow'); inherited=$_.IsInherited}
-          })
-          @{owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; protected=$acl.AreAccessRulesProtected; rules=$rules}
-        }
-        @{user=$user; rows=@($rows)} | ConvertTo-Json -Depth 6 -Compress
-        """
-        environment = dict(os.environ, STORMTTY_ACL_TEST_PATH=str(target.resolve()))
-        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                                env=environment, capture_output=True, text=True, check=True, timeout=30)
-        data = json.loads(result.stdout)
+        # Read the authored fixtures through native ACL APIs; no PowerShell
+        # parser/module/runtime dependency can obscure this security assertion.
+        import ctypes
+        from ctypes import wintypes as w
+        pointer = ctypes.c_void_p
+        security = ctypes.WinDLL('advapi32', use_last_error=True)
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.LocalFree.argtypes = [pointer]; kernel.LocalFree.restype = pointer
+        kernel.GetCurrentProcess.argtypes = []; kernel.GetCurrentProcess.restype = w.HANDLE
+        kernel.CloseHandle.argtypes = [w.HANDLE]; kernel.CloseHandle.restype = w.BOOL
+        security.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+        security.OpenProcessToken.restype = w.BOOL
+        security.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, pointer, w.DWORD, ctypes.POINTER(w.DWORD)]
+        security.GetTokenInformation.restype = w.BOOL
+        security.ConvertSidToStringSidW.argtypes = [pointer, ctypes.POINTER(pointer)]
+        security.ConvertSidToStringSidW.restype = w.BOOL
+        security.GetNamedSecurityInfoW.argtypes = [w.LPWSTR, ctypes.c_int, w.DWORD,
+            ctypes.POINTER(pointer), pointer, ctypes.POINTER(pointer), pointer, ctypes.POINTER(pointer)]
+        security.GetNamedSecurityInfoW.restype = w.DWORD
+        security.GetSecurityDescriptorControl.argtypes = [pointer, ctypes.POINTER(w.WORD), ctypes.POINTER(w.DWORD)]
+        security.GetSecurityDescriptorControl.restype = w.BOOL
+        security.GetAce.argtypes = [pointer, w.DWORD, ctypes.POINTER(pointer)]
+        security.GetAce.restype = w.BOOL
+        class ACL(ctypes.Structure):
+            _fields_ = [('revision', w.BYTE), ('sbz1', w.BYTE), ('size', w.WORD),
+                        ('count', w.WORD), ('sbz2', w.WORD)]
+        class ACE(ctypes.Structure):
+            _fields_ = [('type', w.BYTE), ('flags', w.BYTE), ('size', w.WORD), ('mask', w.DWORD)]
+        def require(ok):
+            if not ok: raise ctypes.WinError(ctypes.get_last_error())
+        def sid_text(sid):
+            text = pointer()
+            require(security.ConvertSidToStringSidW(sid, ctypes.byref(text)))
+            try: return ctypes.wstring_at(text)
+            finally: kernel.LocalFree(text)
+        token = w.HANDLE()
+        require(security.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)))
+        try:
+            size = w.DWORD()
+            security.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+            self.assertGreater(size.value, 0)
+            buffer = ctypes.create_string_buffer(size.value)
+            require(security.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)))
+            user = sid_text(ctypes.cast(buffer, ctypes.POINTER(pointer)).contents.value)
+        finally: kernel.CloseHandle(token)
+        def snapshot(path):
+            owner = pointer(); acl = pointer(); descriptor = pointer()
+            error = security.GetNamedSecurityInfoW(str(path), 1, 5, ctypes.byref(owner), None,
+                                                   ctypes.byref(acl), None, ctypes.byref(descriptor))
+            if error: raise ctypes.WinError(error)
+            try:
+                self.assertTrue(acl.value)
+                control = w.WORD(); revision = w.DWORD()
+                require(security.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision)))
+                rules = []
+                for index in range(ctypes.cast(acl, ctypes.POINTER(ACL)).contents.count):
+                    raw = pointer(); require(security.GetAce(acl, index, ctypes.byref(raw)))
+                    ace = ctypes.cast(raw, ctypes.POINTER(ACE)).contents
+                    self.assertEqual(ace.type, 0)  # ACCESS_ALLOWED_ACE_TYPE only
+                    self.assertGreaterEqual(ace.size, ctypes.sizeof(ACE) + 8)
+                    rules.append((sid_text(raw.value + ctypes.sizeof(ACE)), ace.mask, ace.flags))
+                return sid_text(owner), bool(control.value & 0x1000), rules
+            finally: kernel.LocalFree(descriptor)
+        paths = [target, target / 'usr', target / 'usr/bin/zsh.exe']
+        before = [snapshot(path) for path in paths]
         with self.assertRaises(OSError): stager.create_private_runtime_directory(target)
-        after = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                               env=environment, capture_output=True, text=True, check=True, timeout=30)
-        self.assertEqual(json.loads(after.stdout), data)
-        allowed = {data['user'], 'S-1-5-18', 'S-1-5-32-544'}
-        self.assertTrue(data['rows'][0]['protected'])
-        for index, row in enumerate(data['rows']):
-            self.assertIn(row['owner'], allowed)
-            self.assertEqual({r['sid'] for r in row['rules']}, allowed)
-            self.assertTrue(all(r['allow'] for r in row['rules']))
-            if index: self.assertTrue(all(r['inherited'] for r in row['rules']))
+        self.assertEqual([snapshot(path) for path in paths], before)
+        allowed = {user, 'S-1-5-18', 'S-1-5-32-544'}
+        self.assertTrue(before[0][1])  # protected root DACL
+        for index, (owner, protected, rules) in enumerate(before):
+            self.assertIn(owner, allowed)
+            self.assertEqual({r[0] for r in rules}, allowed)
+            self.assertTrue(all(r[1] == 0x1f01ff for r in rules))  # FILE_ALL_ACCESS
+            if index: self.assertTrue(all(r[2] & 0x10 for r in rules))  # inherited
         self.assertEqual(list(target.parent.glob('.stormtty-runtime-*')), [])
 
     def test_nano_and_dependency_files_cannot_be_omitted(self):
