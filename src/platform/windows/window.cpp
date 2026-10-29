@@ -389,7 +389,7 @@ private:
     bool smoke_palette_evidence(SessionId);
     bool smoke_find_progress();
     unsigned smoke_find_stage_{};
-    std::uint64_t smoke_find_bytes_{}, smoke_find_revision_{};
+    std::uint64_t smoke_find_bytes_{}, smoke_find_revision_{}, smoke_find_input_baseline_{}, smoke_terminal_input_submissions_{};
     std::size_t smoke_find_selection_{};
     RECT smoke_find_window_{};
     struct PaletteEntry {
@@ -2101,6 +2101,7 @@ void NativeWindow::submit_find() {
     if(!find_session_||!sessions_.contains(find_session_))return;
     find_error_.clear();find_result_.reset();
     auto actor=sessions_.at(find_session_);
+    (void)actor->clear_selection(); // A replaced/no-match query must not leave an old match highlighted.
     const auto request=find_query_.text().empty()?actor->cancel_search():actor->search({find_query_.text()});
     find_request_=request.request_id;find_auto_select_=find_query_.text().empty()?0:request.request_id;
     if(request.result!=SessionSendResult::accepted)find_error_="Search unavailable";
@@ -2864,6 +2865,7 @@ void NativeWindow::terminal_text(std::string text, Key key, std::uint16_t modifi
     if (!pane || !sessions_.contains(pane->session)) return;
     auto session = sessions_.at(pane->session);
     const auto bytes = text.size();
+    if(options_.smoke_test)++smoke_terminal_input_submissions_;
     const bool animate=!composing_ && !reduced_motion_ && text.size()<=4 && static_cast<unsigned char>(text[0])>=0x20 && text[0]!=0x7f;
     if (!animate) typing_motion_.reset();
     if (key == Key::unidentified && !modifiers) submit([this,session,animate,text = std::move(text)] {
@@ -3056,6 +3058,7 @@ bool NativeWindow::key_message(MSG& message) {
         KeyInput input;
         input.key = key; input.modifiers = modifiers;
         input.action = up ? KeyAction::release : (message.lParam & (1LL << 30) ? KeyAction::repeat : KeyAction::press);
+        if(options_.smoke_test)++smoke_terminal_input_submissions_;
         submit([this,session,input] { const auto result=session->key(input);
             if (options_.smoke_test && smoke_typing_stage_>0 && smoke_typing_stage_<6) smoke_typing_input_result_=static_cast<int>(result);
             return result; });
@@ -3124,6 +3127,7 @@ void NativeWindow::paste() {
     auto session=sessions_.at(pane->session); const auto size=text.size();
     auto send=[this,session,text=std::move(text),unsafe,size] {
         if (session->process_finished()) { show_error("The paste destination has closed; nothing was sent."); return; }
+        if(options_.smoke_test)++smoke_terminal_input_submissions_;
         submit([session,text,unsafe] { return session->paste(text,unsafe); },size);
     };
     if (unsafe) show_modal("Review paste",{"This paste contains multiple lines","or terminal control characters.","It may execute shell commands."},"Paste anyway",std::move(send),false);
@@ -3667,13 +3671,17 @@ bool NativeWindow::smoke_find_progress() {
         bool marker=false;for(const auto& row:frame->lines){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;marker=marker||text.find("STORMTTY_FIND_NEEDLE beta")!=std::string::npos;}
         if(!marker)return false;
         dispatch("terminal.find");if(!find_session_||focused_session_){smoke_finish("Find did not take exclusive query focus.");return false;}
-        find_query_.select_all();terminal_text("STORMTTY_FIND_NEEDLE");smoke_find_bytes_=actor->info().bytes_sent;smoke_find_stage_=2;return false;
+        smoke_find_input_baseline_=smoke_terminal_input_submissions_;smoke_find_bytes_=actor->info().bytes_sent;
+        find_query_.select_all();terminal_text("STORMTTY_FIND_NEEDLE");smoke_find_stage_=2;return false;
     }
     refresh_find();
     const auto result=find_result_;
     if(!result||!current_find_result(*result,find_request_,find_query_.text())||result->status!=SearchStatus::complete)return false;
     if(smoke_find_stage_==2) {
         if(result->matches.size()<2||!result->selected_index)return false;
+        const auto frame=actor->frame();if(!frame)return false;
+        bool selected=false;for(const auto& row:frame->lines)for(const auto& cell:row->cells)selected=selected||cell.selected;
+        if(!selected)return false; // The search mailbox can precede its rendered selection frame.
         capture(L"find-results");smoke_find_selection_=*result->selected_index;key(VK_RETURN);smoke_find_stage_=3;return false;
     }
     if(smoke_find_stage_==3) {
@@ -3690,8 +3698,11 @@ bool NativeWindow::smoke_find_progress() {
     }
     if(smoke_find_stage_==5) {
         if(!result->matches.empty()){smoke_finish("Find no-match query retained old result positions.");return false;}
+        const auto frame=actor->frame();if(!frame)return false;
+        for(const auto& row:frame->lines)for(const auto& cell:row->cells)if(cell.selected)return false;
         capture(L"find-empty");key(VK_ESCAPE);
-        if(find_session_||!focused_session_||actor->info().bytes_sent!=smoke_find_bytes_){smoke_finish("Find dismissal lost focus or leaked query/navigation to PTY.");return false;}
+        std::fprintf(stderr,"Native Find isolation: open=%u focused=%llu frontend_input_delta=%llu transport_bytes_delta=%llu (transport includes automatic protocol replies during resize).\n",unsigned(bool(find_session_)),static_cast<unsigned long long>(focused_session_.value),static_cast<unsigned long long>(smoke_terminal_input_submissions_-smoke_find_input_baseline_),static_cast<unsigned long long>(actor->info().bytes_sent-smoke_find_bytes_));
+        if(find_session_||!focused_session_||smoke_terminal_input_submissions_!=smoke_find_input_baseline_){smoke_finish("Find dismissal lost focus or leaked query/navigation to PTY.");return false;}
         dispatch("terminal.find");find_query_.select_all();terminal_text("STORMTTY_FIND_NEEDLE");
         find_query_.select_all();terminal_text("transient-absent");find_query_.select_all();terminal_text("STORMTTY_FIND_NEEDLE");smoke_find_stage_=6;return false;
     }
@@ -3701,7 +3712,7 @@ bool NativeWindow::smoke_find_progress() {
         if(find_session_||active_session()==actor){smoke_finish("Find crossed workspace/session ownership.");return false;}
         activate_project(smoke_primary_project_);
         if(active_session()!=actor||!sessions_.contains(target)){smoke_finish("Find changed the terminal actor.");return false;}
-        smoke_find_stage_=7;std::fputs("Native Find smoke: real retained output, asynchronous match selection/navigation, narrow strip, no-match replacement, rapid query coalescing, Escape focus, zero query PTY bytes and workspace isolation verified.\n",stderr);return true;
+        smoke_find_stage_=7;std::fputs("Native Find smoke: real retained output, asynchronous match selection/navigation, narrow strip, no-match replacement, rapid query coalescing, Escape focus, zero frontend query/key/paste submissions and workspace isolation verified.\n",stderr);return true;
     }
     return false;
 }

@@ -47,7 +47,8 @@ selection scrolling and retained-exit behavior.
 The native project smoke prints an authored marker through its owned shell,
 then exercises asynchronous Find, navigation, narrow resize, no-match and rapid
 query replacement, Escape and workspace isolation. It checks that query and
-navigation did not write PTY input and emits `find-results`, `find-next`,
+navigation never enter the frontend PTY text/key/paste submission paths (total
+transport bytes also include legitimate automatic replies during resize) and emits `find-results`, `find-next`,
 `find-narrow` and `find-empty` actual framebuffer captures. These are synthetic
 native checks, not a substitute for physical keyboard/IME/accessibility QA.
 
