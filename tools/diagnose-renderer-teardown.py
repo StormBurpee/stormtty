@@ -29,7 +29,7 @@ def diagnose(build):
             except subprocess.TimeoutExpired:
                 # PID is from our retained live handle, never a process-name lookup.
                 # Noninvasive attach reads stacks; no injected code or memory edits.
-                debug = subprocess.Popen([str(debugger), '-pv', '-p', str(child.pid), '-y', str(build), '-c', '.reload; ~* k; lm; qd'], stdin=subprocess.DEVNULL, stdout=stack_log, stderr=subprocess.STDOUT, close_fds=True)
+                debug = subprocess.Popen([str(debugger), '-pv', '-p', str(child.pid), '-y', str(build), '-c', '.reload; ~* knL; lm; qd'], stdin=subprocess.DEVNULL, stdout=stack_log, stderr=subprocess.STDOUT, close_fds=True)
                 try:
                     debug.wait(timeout=20)
                     metadata['sampled'] = debug.returncode == 0
@@ -44,7 +44,7 @@ def diagnose(build):
         metadata['error'] = str(error)
     finally:
         # Never publish raw debugger output, process memory, arguments or paths.
-        # Retain only frame indices/symbols and module names from plain `k`/`lm`.
+        # Retain only frame indices/symbols and module names from numbered, source-hidden `knL`/`lm`.
         if raw_stacks.exists():
             try:
                 lines = raw_stacks.read_text(encoding='utf-8', errors='replace').splitlines()
@@ -52,7 +52,7 @@ def diagnose(build):
                 for line in lines:
                     frame = re.match(r'^\s*([0-9a-f]{2})\s+[0-9a-f`]+\s+[0-9a-f`]+\s+([A-Za-z0-9_.!+<>~?:\-]+)', line, re.I)
                     module = re.match(r'^([0-9a-f`]{8,})\s+([0-9a-f`]{8,})\s+([A-Za-z0-9_]+)\s', line, re.I)
-                    thread = re.match(r'^\s*([0-9]+)\s+Id:', line)
+                    thread = re.match(r'^\s*\.?\s*([0-9]+)\s+Id:', line)
                     if frame:
                         safe.append('frame ' + frame[1] + ' ' + frame[2])
                     elif module:
