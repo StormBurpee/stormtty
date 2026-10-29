@@ -37,6 +37,7 @@
 #include "stormtty/context_menu.hpp"
 #include "app_icons.hpp"
 #include "smoke_teardown_trace.hpp"
+#include "theme_picker.hpp"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -1964,7 +1965,18 @@ void NativeWindow::preview_settings(const Config& candidate) {
 }
 void NativeWindow::settings_actions() {
     while (auto action=settings_panel_.take_action()) {
-        if (action->kind==SettingsActionKind::preview || action->kind==SettingsActionKind::cancel) {
+        if (action->kind==SettingsActionKind::import_theme || action->kind==SettingsActionKind::export_theme) {
+            const auto generation=settings_panel_.generation();
+            const auto picked=pick_theme(hwnd_,action->kind==SettingsActionKind::import_theme,action->config.theme);
+            // Native dialogs pump messages. Never apply to a closed/reopened or
+            // otherwise changed Settings draft after returning from that loop.
+            if (!hwnd_ || !settings_panel_.is_open() || settings_panel_.generation()!=generation) continue;
+            if (!picked.error.empty()) settings_panel_.theme_exchange_error(picked.error);
+            else {
+                if (picked.imported) settings_panel_.import_palette(*picked.imported);
+                if (!picked.notice.empty()) settings_panel_.theme_exchange_notice(picked.notice);
+            }
+        } else if (action->kind==SettingsActionKind::preview || action->kind==SettingsActionKind::cancel) {
             preview_settings(action->config);
             if (action->kind==SettingsActionKind::cancel) { text_input_.reset(); caret_schedule(true); }
         } else {
@@ -3821,6 +3833,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!settings_panel_.is_open() || config_.theme!=*find_builtin_theme("midnight")) {smoke_finish("Partial hex Escape changed the theme or closed Settings.");return;}
             if (!edit_ansi_red("D080A0",false) || config_.theme.ansi[1]!="#D080A0") {smoke_finish("Native ANSI custom preview failed.");return;}
             capture_settings(L"appearance-custom-preview");
+            for (const auto* id:{"appearance.import","appearance.export"}) {
+                const auto& palette_controls=settings_panel_.layout().controls;
+                if(std::none_of(palette_controls.begin(),palette_controls.end(),[&](const auto& control){return control.id==id && control.visible && control.enabled;})) {
+                    smoke_finish("Theme import/export controls are not visible and reachable.");return;
+                }
+            }
+            capture_settings(L"appearance-theme-exchange");
+            std::fputs("Theme exchange buttons: visible=1 enabled=1 picker_selection_automated=0\n",stderr);
             if(smoke_settings_original_.appearance.additional_blur!=0 || !set_blur(24)) {
                 smoke_finish("Additional blur default/preview or WARP fallback failed.");return;
             }

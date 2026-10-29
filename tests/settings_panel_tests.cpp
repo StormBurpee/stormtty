@@ -46,6 +46,36 @@ void validate_scene(const WindowScene& scene,double width,double height,double s
 }
 int main() {return run_core_tests("settings panel",[] {
     const auto defaults=default_config(Platform::windows);
+    {
+    // Import/export are explicit native host actions, not persistence requests.
+    SettingsPanel exchange;exchange.open(defaults);
+    activate(exchange,"appearance.import");auto import_action=exchange.take_action();
+    CHECK(import_action && import_action->kind==SettingsActionKind::import_theme);
+    CHECK(!exchange.dirty());CHECK(!exchange.saving());
+    auto imported=*find_builtin_theme("ember");imported.name="custom";
+    CHECK(exchange.import_palette(imported));CHECK(exchange.dirty());
+    CHECK(exchange.draft().theme==imported);CHECK(exchange.original()==defaults);
+    auto preview=exchange.take_action();CHECK(preview && preview->kind==SettingsActionKind::preview);
+    activate(exchange,"appearance.theme.graphite");(void)exchange.take_action();
+    activate(exchange,"appearance.theme.custom");CHECK(exchange.draft().theme==imported);(void)exchange.take_action();
+    activate(exchange,"appearance.export");auto export_action=exchange.take_action();
+    CHECK(export_action && export_action->kind==SettingsActionKind::export_theme);
+    CHECK(export_action->config.theme==imported);CHECK(!exchange.saving());
+    exchange.theme_exchange_notice("Cursor and selection colors weren’t imported.");
+    CHECK(exchange.error().empty());WindowScene notice_scene;exchange.append_scene(notice_scene);
+    CHECK(std::any_of(notice_scene.texts.begin(),notice_scene.texts.end(),[](const auto& t){return t.text=="Cursor and selection colors weren’t imported.";}));
+    auto broken=imported;broken.background="invalid";
+    CHECK(!exchange.import_palette(broken));CHECK(exchange.draft().theme==imported);
+    exchange.theme_exchange_error("Bad theme");CHECK(exchange.error()=="Bad theme");CHECK(exchange.draft().theme==imported);
+    exchange.theme_exchange_notice("Palette exported.");CHECK(exchange.error().empty());CHECK(exchange.draft().theme==imported);
+    exchange.cancel();auto rollback=exchange.take_action();CHECK(rollback && rollback->kind==SettingsActionKind::cancel);
+    CHECK(rollback->config==defaults);CHECK(!exchange.import_palette(imported));
+    exchange.open(defaults);CHECK(exchange.import_palette(imported));(void)exchange.take_action();
+    activate(exchange,"save");CHECK(exchange.saving());CHECK(!exchange.import_palette(Theme{}));
+    CHECK(exchange.draft().theme==imported);
+    SettingsPanel mac_exchange(Platform::macos);mac_exchange.open(default_config(Platform::macos));
+    for(const auto& c:mac_exchange.layout().controls)CHECK(c.id!="appearance.import" && c.id!="appearance.export");
+    }
     // Backend is a stable draft preference, not a process launch or live preview.
     SettingsPanel backend;
     backend.set_console_backend_status(true,"Diagnostic CLI override active; saved choice applies without the override.");

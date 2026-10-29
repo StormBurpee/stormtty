@@ -64,7 +64,7 @@ void SettingsPanel::open(const Config& running, const Config& config, std::span<
     // Repeated open requests must not erase an unsaved or in-flight draft.
     if (open_) return;
     original_=running; initial_draft_=config; draft_=config; profiles_.clear(); families_.clear(); pending_.reset();
-    error_.clear(); capture_command_.clear(); terminal_override_.reset(); hover_.clear(); pressed_.clear();
+    error_.clear(); theme_notice_.clear(); capture_command_.clear(); terminal_override_.reset(); hover_.clear(); pressed_.clear();
     custom_theme_=has_custom_theme(config)?std::optional<Theme>(config.theme):std::nullopt;
     editing_color_=false; color_index_=0; color_input_.clear();
     open_=true; saving_=false; dragging_opacity_=false;dragging_blur_=false; scroll_=0;
@@ -174,6 +174,10 @@ void SettingsPanel::rebuild_layout() {
         const double edit_width=std::max(0.0,(content_w-8)/2);
         add("appearance.color.field",{content_x,top+188,edit_width,32},true);
         add("appearance.color.value",{content_x+edit_width+8,top+188,edit_width,32},true);
+        if (platform_==Platform::windows) {
+            add("appearance.import",{content_x,top+228,edit_width,30},true);
+            add("appearance.export",{content_x+edit_width+8,top+228,edit_width,30},true);
+        }
         const double cw=std::min(content_w*0.49,230.0);
         add("font.family",{right-cw,top+274,cw,34},true);
         add("font.decrease",{right-118,top+330,32,32},true,draft_.font.size_dip>6);
@@ -237,7 +241,7 @@ const SettingsControl* SettingsPanel::hit(Point point) const noexcept {
     return nullptr;
 }
 void SettingsPanel::changed() {
-    error_.clear(); ++generation_; rebuild_layout();
+    error_.clear(); theme_notice_.clear(); ++generation_; rebuild_layout();
     const auto status=validate_config(draft_,platform_);
     if (!status) {error_=bounded_message(status.error); return;}
     pending_=SettingsAction{SettingsActionKind::preview,draft_};
@@ -254,6 +258,10 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     }
     if (id.starts_with("binding:")) {
         capture_command_=std::string(id.substr(8)); terminal_override_.reset(); error_.clear(); ++generation_; return;
+    }
+    if (platform_==Platform::windows && (id=="appearance.import" || id=="appearance.export")) {
+        pending_=SettingsAction{id=="appearance.import"?SettingsActionKind::import_theme:SettingsActionKind::export_theme,draft_};
+        return;
     }
     const auto before=draft_;
     if (id.starts_with("ribbon.")) {
@@ -504,6 +512,21 @@ void SettingsPanel::cancel() {
     pending_=SettingsAction{SettingsActionKind::cancel,original_};
     draft_=original_;initial_draft_=original_;loaded_changes_=false;open_=false;capture_command_.clear();terminal_override_.reset();dragging_opacity_=false;dragging_blur_=false;pressed_.clear();++generation_;
 }
+bool SettingsPanel::import_palette(const Theme& theme) {
+    if (!open_ || saving_) return false;
+    auto candidate=draft_; candidate.theme=theme; candidate.theme.name="custom";
+    if (!validate_config(candidate,platform_)) return false;
+    draft_=std::move(candidate);custom_theme_=draft_.theme;editing_color_=false;
+    error_.clear();changed();return true;
+}
+void SettingsPanel::theme_exchange_error(std::string message) {
+    if (!open_ || saving_) return;
+    error_=bounded_message(std::move(message));++generation_;
+}
+void SettingsPanel::theme_exchange_notice(std::string message) {
+    if (!open_ || saving_) return;
+    error_.clear();theme_notice_=bounded_message(std::move(message));++generation_;
+}
 std::optional<SettingsAction> SettingsPanel::take_action() {return std::exchange(pending_,std::nullopt);}
 void SettingsPanel::persistence_result(bool success,std::string error) {
     if (!open_ || !saving_) return;
@@ -634,6 +657,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             }
         }
         button("appearance.theme.custom","Custom",has_custom_theme(draft_));
+        if (platform_==Platform::windows) {button("appearance.import","Import…");button("appearance.export","Export…");}
         constexpr std::array color_names{"Background","Foreground","Chrome","Accent"};
         const auto color_name=color_index_<4?std::string(color_names[color_index_]):"ANSI "+std::to_string(color_index_-4);
         const auto color_value=color_index_==0?draft_.theme.background:color_index_==1?draft_.theme.foreground:color_index_==2?draft_.theme.chrome:color_index_==3?draft_.theme.accent:draft_.theme.ansi[color_index_-4];
@@ -757,10 +781,12 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             const std::string status=terminal_override_?format_key_chord(*terminal_override_,platform_)+" replaces terminal input":saving_?"Saving settings…":capturing_shortcut()?"Press a shortcut…":dirty()?"Unsaved changes":loaded_changes_?"Loaded changes from disk":"No unsaved changes";
             box({p.x+pad,layout_.footer.y+28,5,5},dirty()?accent:green,transparent,2.5);
             label({p.x+pad+14,layout_.footer.y+17,std::max(0.0,available-14),25},status,muted,12);
-            label({p.x+pad+14,layout_.footer.y+42,std::max(0.0,available-14),18},terminal_override_?"Use shortcut to confirm · Esc cancels":capturing_shortcut()?"Esc to stop · Backspace to clear":platform_==Platform::macos?"Esc to cancel · Cmd+Enter to save":"Esc to cancel · Ctrl+Enter to save",subdued,10);
+            label({p.x+pad+14,layout_.footer.y+42,std::max(0.0,available-14),18},!theme_notice_.empty()?theme_notice_:terminal_override_?"Use shortcut to confirm · Esc cancels":capturing_shortcut()?"Esc to stop · Backspace to clear":platform_==Platform::macos?"Esc to cancel · Cmd+Enter to save":"Esc to cancel · Ctrl+Enter to save",subdued,10);
         }
     } else if (!error_.empty()) {
         label({p.x+pad,layout_.footer.y+2,std::max(0.0,p.width-2*pad),18},error_,{244,164,164,255},10);
+    } else if (!theme_notice_.empty()) {
+        label({p.x+pad,layout_.footer.y+2,std::max(0.0,p.width-2*pad),18},theme_notice_,muted,10);
     } else if (terminal_override_) {
         label({p.x+pad,layout_.footer.y+2,std::max(0.0,p.width-2*pad),18},format_key_chord(*terminal_override_,platform_)+" replaces terminal input",muted,10);
     } else if (loaded_changes_ && !dirty()) {

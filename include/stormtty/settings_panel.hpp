@@ -10,7 +10,7 @@
 namespace stormtty {
 
 enum class SettingsSection { appearance, shell, shortcuts, ribbon };
-enum class SettingsActionKind { preview, save, cancel };
+enum class SettingsActionKind { preview, save, cancel, import_theme, export_theme };
 struct SettingsAction {
     SettingsActionKind kind{};
     // Owned. Preview only reversible theme/font/appearance; commit profiles/bindings
@@ -83,6 +83,10 @@ public:
     std::optional<SettingsAction> take_action();
     void persistence_result(bool success, std::string error = {});
     void cancel();
+    // Host-selected palette applies only to the open draft, never persistence.
+    bool import_palette(const Theme&);
+    void theme_exchange_error(std::string message);
+    void theme_exchange_notice(std::string message);
 private:
     bool agent_available_{}; // Effective host capability, not the saved/reloaded flag.
     void rebuild_layout();
@@ -107,7 +111,7 @@ private:
     Size viewport_{1024,768};
     SettingsPanelLayout layout_;
     SettingsSection section_{SettingsSection::appearance};
-    std::string focus_{"nav.appearance"}, hover_, pressed_, error_, capture_command_, material_status_, console_backend_status_;
+    std::string focus_{"nav.appearance"}, hover_, pressed_, error_, theme_notice_, capture_command_, material_status_, console_backend_status_;
     double scroll_{}, document_height_{};
     bool bundled_console_available_{};
     bool open_{}, saving_{}, dragging_opacity_{}, dragging_blur_{}, high_contrast_{}, loaded_changes_{};
