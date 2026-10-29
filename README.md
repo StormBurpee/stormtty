@@ -55,6 +55,19 @@ starts its restored panes first; hidden workspaces wait until selected. Missing
 profiles or folders leave a visible problem rather than silently substituting a
 shell or directory. [Persistence and recovery details →](docs/workspace-presets.md)
 
+**Ctrl+Shift+O** opens the Workspace Navigator. Search workspace names, terminal
+titles or directories, and preview another workspace without switching to it.
+Enter commits the selection; Escape leaves your current terminal in place.
+Background terminals return as the same retained actors, rather than new shells.
+[Keyboard navigation and identity checks →](docs/workspace-navigator.md)
+
+<details>
+<summary>Switch workspace or terminal</summary>
+
+<img src="docs/readme-assets/native-workspace-navigator.png" alt="Native Workspace Navigator with workspace and terminal columns, search and keyboard controls" width="960">
+
+</details>
+
 ### A quieter frame, with controls that belong to it
 
 Tabs, dividers, menus, Settings and the command palette share the native renderer.
@@ -64,11 +77,21 @@ preview is immediate, Cancel restores the old arrangement, and Save persists it.
 Errors cannot be hidden by customization. This is a small
 closed set of data bindings, not an executable plugin system.
 
+Parked terminals share one **Background N** entry instead of filling the ribbon
+with individual chips. It opens their Navigator view. Unread command completions
+remain marked through preview and cancellation, and clear only after a successful
+restore. An open shell is labelled separately from an observed running command.
+[Background terminal behavior →](docs/workspace-ribbon.md)
+
 Appearance has eight complete palettes: **Graphite, Instrument, Daylight,
 Midnight, Evergreen, Aubergine, Ember and Ink**. A Custom palette edits the canvas,
 text, chrome, accent and all sixteen ANSI colors, with a native preview and hex
 editor. Explicit truecolor output and application OSC palette overrides retain
 their meaning; the theme does not recolor everything a TUI draws.
+
+The gallery previews each palette's canvas, chrome and ANSI colors before you
+choose it. Cards adapt to the available width; arrow keys move through the grid,
+and keyboard focus scrolls the rest of Appearance into view.
 
 **Import** brings a StormTTY palette or a Ghostty color theme into the Settings
 draft. Try it against your open terminals, then Save or Cancel. **Export** shares
@@ -92,7 +115,7 @@ the shell. Native fixture captures establish frame ordering, not physical
 input-to-display latency.
 
 <p align="center">
-  <img src="docs/readme-assets/native-appearance.png" alt="Native Windows Appearance settings with eight palettes, a saved custom ANSI palette and font controls" width="960">
+  <img src="docs/readme-assets/native-theme-gallery.png" alt="Native Windows theme gallery with eight built-in palette previews and a Custom palette" width="960">
 </p>
 
 <details>
@@ -275,6 +298,8 @@ StormTTY hosts the shell; its terminal engine does not interpret shell commands.
 | Action | Default shortcut |
 | --- | --- |
 | Show commands | `Ctrl+Shift+P` |
+| Switch workspace or terminal | `Ctrl+Shift+O` |
+| Find in the active terminal | `Ctrl+Shift+F` |
 | Open Codex panel (experimental opt-in only) | `Ctrl+Shift+J` |
 | New tab | `Ctrl+Shift+T` |
 | Close active pane | `Ctrl+Shift+W` |
