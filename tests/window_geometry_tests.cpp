@@ -14,6 +14,21 @@ namespace { void require(bool condition, const char* message) {
 } }
 int main() {
     using namespace stormtty;
+    for(double width:{0.0,30.0,45.0,46.0,52.0,96.0,188.0}) {
+        const Rect bounds{10,32,width,32};
+        const auto idle=layout_tab_label(bounds,TabWatchIndicator::none);
+        require(idle.indicator.width==0&&idle.text.width==std::max(0.0,width-40),"Idle tabs preserve label geometry");
+        for(auto state:{TabWatchIndicator::watching,TabWatchIndicator::unread}) {
+            const auto caption=layout_tab_label(bounds,state);
+            require(caption.text.width>=0,"Watch caption never has negative extent");
+            if(width>=46) {
+                require(caption.indicator.width==6&&caption.indicator.height==6,"Watch state reserves a title-independent slot");
+                require(caption.indicator.x+caption.indicator.width<=bounds.x+width-28,"Watch indicator stays out of close/dropdown lane");
+                require(caption.text.x>=caption.indicator.x+caption.indicator.width+6,"Watch marker never overlaps text");
+                require(caption.indicator.y>=bounds.y&&caption.indicator.y+6<=bounds.y+bounds.height,"Watch marker remains in tab bounds");
+            } else require(caption.indicator.width==0,"Unsupported tiny tab clips indicator rather than controls");
+        }
+    }
     require(terminal_find_fits({0,0,180,112},false)&&!terminal_find_fits({0,0,179,112},false),"Find rejects squeezed width");
     require(terminal_find_fits({0,0,180,140},true)&&!terminal_find_fits({0,0,180,139},true),"Find reserves terminal space in split panes");
     WorkspaceNavigator navigator;

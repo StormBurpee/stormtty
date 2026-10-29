@@ -84,6 +84,8 @@ jobs:
           path: |
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
+            build/pane-context-light.png
+            build/pane-context-dark.png
             build/artifacts/workspace-*.png
             build/artifacts/native-agent*.png
             build/artifacts/native-settings*appearance*.png
@@ -414,6 +416,8 @@ jobs:
           path: |
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
+            build/pane-context-light.png
+            build/pane-context-dark.png
             build/CMakeFiles/CMakeConfigureLog.yaml
             build/artifacts/*.png
             build/artifacts/shell-tools-zoxide-init.zsh

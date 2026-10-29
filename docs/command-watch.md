@@ -152,3 +152,16 @@ EOF/failure/two-host identity/saturation remain portable policy coverage; this
 candidate does not claim corresponding native physical/process qualification.
 Native runtime and screenshot qualification are pending until the exact workflow
 run passes; cross-compilation alone is not that evidence.
+
+## Long-title tab indicator candidate
+
+The existing tab has a reserved 6-DIP status mark before its label: hollow for
+an armed watch, filled for an unread result. Shape—not success color—distinguishes
+the states, including high contrast. Result takes priority if split panes in one
+tab contain both states. Text/tooltip and Commands retain explicit wording.
+No tab bounds, close/dropdown hit targets, terminal grids, timers or input paths
+change. At unsupported widths below 46 DIP the mark is omitted rather than
+covering controls. Portable geometry tests cover that boundary and fixed text
+separation. Native qualification must retain the seven-cycle Watch gates and
+capture a deliberately long Unicode tab title plus narrow/high-contrast unread
+states; these are controlled native fixtures, not physical display evidence.

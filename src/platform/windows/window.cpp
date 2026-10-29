@@ -441,6 +441,7 @@ private:
     std::uint64_t smoke_watch_generation_{},smoke_watch_input_{},smoke_watch_mouse_{};
     std::size_t smoke_watch_actor_count_{};
     WatchIdentity smoke_watch_identity_{};
+    std::string smoke_watch_tab_title_;
     unsigned smoke_context_stage_{};
     std::vector<std::pair<PaneId,std::shared_ptr<Session>>> smoke_context_actors_;
     unsigned smoke_palette_input_stage_{};
@@ -488,6 +489,7 @@ private:
     bool inspecting_context() const {return palette_open_ && inspected_context_.has_value();}
     std::optional<PaneContextPresentation> inspected_context_;
     mutable PaneContextLineCache inspected_lines_;
+    TabWatchIndicator tab_watch_indicator(TabId) const;
     std::string tab_title(TabId, bool full = false) const;
     PixelRect pixels(Rect r) const { return {static_cast<float>(r.x * scale_), static_cast<float>(r.y * scale_), static_cast<float>(r.width * scale_), static_cast<float>(r.height * scale_)}; }
     Point point(LPARAM lparam, bool screen = false) const {
@@ -1957,14 +1959,21 @@ PaneContextPresentation NativeWindow::pane_context(PaneId id) const {
     const SessionInfo unavailable;
     return context_for(*pane,projects_.active()->metadata.working_directory,found==pane_infos_.end()?unavailable:found->second);
 }
+TabWatchIndicator NativeWindow::tab_watch_indicator(TabId id) const {
+    bool waiting=false;
+    for(const auto pane:workspace().pane_order(id))if(const auto* item=workspace().pane(pane)) {
+        if(watch_unread(item->session))return TabWatchIndicator::unread;
+        const auto found=watches_.find(item->session);
+        waiting=waiting||(found!=watches_.end()&&found->second.identity()==watch_identity(item->session)&&found->second.status()==WatchStatus::watching);
+    }
+    return waiting?TabWatchIndicator::watching:TabWatchIndicator::none;
+}
 std::string NativeWindow::tab_title(TabId id, bool full) const {
     const auto* tab = workspace().tab(id);
     if (!tab) return {};
     auto title=tab->title.empty()?pane_title(tab->active_pane,full):tab->title;
-    bool unread=false,waiting=false;for(const auto pane:workspace().pane_order(id))if(const auto* item=workspace().pane(pane)) {
-        unread=unread||watch_unread(item->session);const auto found=watches_.find(item->session);waiting=waiting||(found!=watches_.end()&&found->second.status()==WatchStatus::watching);
-    }
-    return title+(unread?" · result":waiting?" · watching":"");
+    const auto state=tab_watch_indicator(id);
+    return title+(state==TabWatchIndicator::unread?" · result":state==TabWatchIndicator::watching?" · watching":"");
 }
 void NativeWindow::refresh_tooltips() {
     if (!tooltip_) return;
@@ -2825,7 +2834,15 @@ WindowScene NativeWindow::scene() {
             if (settle>0 || hovered>0) rectangle(tab.bounds, opacity(blend(raised,(daylight||high_contrast_)?background:Color{32,38,51,255},settle),std::max(settle,hovered*.65)),6,
                 opacity(high_contrast_?accent:Color{76,86,106,180},settle),1/scale_);
             if (selected) rectangle({tab.bounds.x+3,tab.bounds.y, std::max(0.0,tab.bounds.width-6),2/scale_},accent,1/scale_);
-            label({tab.bounds.x+10,tab.bounds.y+6,std::max(0.0,tab.bounds.width-40),20},tab_title(tab.tab),selected?text:secondary,13,selected);
+            const auto watch=tab_watch_indicator(tab.tab);
+            const auto caption=layout_tab_label(tab.bounds,watch);
+            if(caption.indicator.width>0) {
+                // Hollow = watching, filled = unread. Shape carries state even
+                // in high contrast; neither implies command success or animates.
+                const auto ink=selected?text:secondary;
+                rectangle(caption.indicator,watch==TabWatchIndicator::unread?ink:Color{0,0,0,0},3,ink,1);
+            }
+            label(caption.text,tab_title(tab.tab),selected?text:secondary,13,selected);
             if (chrome_.compact) label({tab.bounds.x+std::max(0.0,tab.bounds.width-28),tab.bounds.y+6,std::min(24.0,tab.bounds.width),20},"▾",text,13,false,ChromeTextAlignment::center);
             if (!chrome_.compact && (selected || hovered>0)) {
                 const double x = tab.close.x + tab.close.width / 2, y = tab.close.y + tab.close.height / 2;
@@ -4101,6 +4118,8 @@ bool NativeWindow::smoke_watch_progress() {
         smoke_watch_original_=workspace().active_pane();smoke_watch_project_=projects_.active_id();
         smoke_watch_pane_=workspace().state().tabs.back().active_pane;activate(smoke_watch_pane_);
         smoke_watch_session_=workspace().pane(smoke_watch_pane_)->session;smoke_watch_identity_=watch_identity(smoke_watch_session_);
+        smoke_watch_tab_title_=workspace().tab(workspace().active_tab())->title;
+        if(!workspace().rename_tab(workspace().active_tab(),"Long watched build title · 日本語 · deliberately beyond the visible tab width"))return fail("Watch long-title fixture rejected.");
         smoke_watch_actor_count_=sessions_.size();smoke_watch_input_=smoke_terminal_input_submissions_;smoke_watch_mouse_=smoke_terminal_mouse_submissions_;
         const auto other=projects_.create({"Watch review",projects_.active()->metadata.working_directory,"Local"});
         if(!other)return fail("Watch fixture could not create its empty owned workspace.");smoke_watch_other_=*other.value;
@@ -4125,7 +4144,10 @@ bool NativeWindow::smoke_watch_progress() {
         toggle_palette();query_="Watch this command";const auto commands=palette_commands();
         if(commands.empty()||commands.front().id!="watch.arm")return fail("Watch action missing from Commands.");key(VK_RETURN);
         if(palette_open_||!watches_.contains(smoke_watch_session_)||watches_.at(smoke_watch_session_).status()!=WatchStatus::watching||layout_.panes.size()!=before.size())return fail("Watch arming changed placement or failed eligibility.");
-        if(smoke_watch_cycle_==0)capture(L"watch-armed");
+        if(smoke_watch_cycle_==0) {
+            if(tab_watch_indicator(workspace().active_tab())!=TabWatchIndicator::watching)return fail("Watching tab indicator absent.");
+            capture(L"watch-armed");
+        }
         if(smoke_watch_cycle_==2){park_pane(smoke_watch_pane_);if(projects_.active()->parked_sessions.size()!=1)return fail("Watch parking lost its single parked representation.");}
         if(smoke_watch_cycle_==6){dispatch("watch.cancel");if(watches_.contains(smoke_watch_session_)||actor->process_finished())return fail("Cancel watch stopped the actor or retained the watch.");}
         if(smoke_watch_cycle_==1){projects_.activate(smoke_watch_other_);reset_project_view();}
@@ -4148,6 +4170,17 @@ bool NativeWindow::smoke_watch_progress() {
             if((smoke_watch_cycle_==1 && projects_.active_id()!=smoke_watch_other_) || (smoke_watch_cycle_!=1 && workspace().active_pane()!=smoke_watch_original_))return fail("Watch completion navigated or moved focus automatically.");
             if(sessions_.size()!=smoke_watch_actor_count_||actor->process_finished())return fail("Watch completion replaced or stopped its live shell actor.");
             capture(L"watch-result-"+std::to_wstring(smoke_watch_cycle_));
+            if(smoke_watch_cycle_==0) {
+                activate(smoke_watch_pane_);
+                if(tab_watch_indicator(workspace().active_tab())!=TabWatchIndicator::unread)return fail("Unread tab indicator absent.");
+                RECT original{};GetWindowRect(hwnd_,&original);
+                SetWindowPos(hwnd_,nullptr,0,0,static_cast<int>(480*scale_),static_cast<int>(480*scale_),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+                capture(L"watch-indicator-narrow");
+                const bool contrast=high_contrast_;high_contrast_=true;capture(L"watch-indicator-high-contrast-fixture");high_contrast_=contrast;
+                SetWindowPos(hwnd_,nullptr,0,0,original.right-original.left,original.bottom-original.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+                activate(smoke_watch_original_);
+                if(!watch_unread(smoke_watch_session_))return fail("Watch indicator capture acknowledged result.");
+            }
             if(smoke_watch_cycle_==1){projects_.activate(smoke_watch_project_);reset_project_view();}
             if(smoke_watch_cycle_==2) {
                 if(background_summary().unread()!=1)return fail("Watch and parked attention double-counted one completion.");
@@ -4174,6 +4207,7 @@ bool NativeWindow::smoke_watch_progress() {
     }
     if(!has_marker("WATCH_DONE"))return false;
     if(projects_.active_id()!=smoke_watch_project_){projects_.activate(smoke_watch_project_);reset_project_view();}
+    if(const auto tab=workspace().tab_of(smoke_watch_pane_))workspace().rename_tab(*tab,smoke_watch_tab_title_);
     activate(smoke_watch_original_);const auto removed=projects_.remove(smoke_watch_other_);if(!removed)return fail("Watch empty fixture workspace could not be removed.");
     if(layout_.panes.size()!=3||sessions_.size()!=smoke_watch_actor_count_||!watches_.empty())return fail("Watch fixture changed original layout ownership or left an unread result.");
     smoke_watch_stage_=4;changed(true);

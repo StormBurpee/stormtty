@@ -15,6 +15,18 @@ namespace stormtty {
 // Portable, DIP geometry shared by painting and native hit testing. The actual
 // window, metrics and input services remain platform-owned.
 struct ChromeTab { TabId tab; Rect bounds, close; };
+enum class TabWatchIndicator { none, watching, unread };
+struct TabLabelLayout { Rect text, indicator; };
+inline TabLabelLayout layout_tab_label(Rect bounds, TabWatchIndicator state) {
+    TabLabelLayout result{{bounds.x+10,bounds.y+6,std::max(0.0,bounds.width-40),20},{}};
+    // Keep the existing close/dropdown lane and all hit targets unchanged.
+    // Even when title text is clipped, state has its own fixed visual slot.
+    if(state!=TabWatchIndicator::none && bounds.width>=46 && bounds.height>=20) {
+        result.indicator={bounds.x+10,bounds.y+(bounds.height-6)/2,6,6};
+        result.text.x+=12;result.text.width=std::max(0.0,result.text.width-12);
+    }
+    return result;
+}
 struct ChromeLayout {
     Rect band, tabs_band, menu, new_tab, palette, minimize, maximize, close, drag;
     std::vector<ChromeTab> tabs;
