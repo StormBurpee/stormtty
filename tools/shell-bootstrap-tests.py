@@ -64,7 +64,11 @@ class ShellBootstrapTests(unittest.TestCase):
         fixture = (shell.LOCK.parent.parent / "tests/managed_nano_probe.cpp").read_text()
         self.assertIn('probe.expect("Write to File")', fixture)
         self.assertNotIn('probe.expect("File Name to Write")', fixture)
-        self.assertIn('probe.expect("Wrote 1 line")', fixture)
+        self.assertNotIn('probe.expect("Wrote 1 line")', fixture)
+        self.assertIn('probe.saved()', fixture)
+        self.assertIn('check(probe.exact_file())', fixture)
+        self.assertIn('diagnostic.file_exact = value == expected', fixture)
+        self.assertIn('MANAGED_NANO_DIAGNOSTIC phase=', fixture)
         self.assertIn('probe.expect("QNANO_EXIT_0")', fixture)
 
     def test_reject_windows_aliases_and_traversal(self):

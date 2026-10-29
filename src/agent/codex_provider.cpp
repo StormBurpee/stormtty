@@ -234,7 +234,13 @@ void AgentService::feed_stdout(std::string_view bytes) {
     } catch(const std::exception& e) { x.fail(e.what()); }
 }
 void AgentService::disconnect(std::string_view reason) {
-    auto& x=*impl_; std::lock_guard lock(x.mutex); const bool was_active=active(x.state.conversation);
+    auto& x=*impl_; std::lock_guard lock(x.mutex);
+    // Independent stdin/stdout workers can observe the same disconnect. Keep
+    // the first terminal reason, especially the active-turn reconciliation
+    // warning; later EOF/stop cleanup must not erase it. A fresh, never-connected
+    // service can still receive a launch error. connect() clears prior errors.
+    if(x.state.connection==AgentConnection::disconnected && !x.state.error.empty()) return;
+    const bool was_active=active(x.state.conversation);
     x.clear_transient(); x.state.connection=AgentConnection::disconnected;
     if(was_active) x.state.conversation=AgentConversation::failed;
     x.state.error=was_active?"Disconnected; execution outcome unknown. Reconcile before retry.":clipped(std::string(reason),4096); x.changed();

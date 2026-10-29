@@ -49,5 +49,19 @@ int main(){
     { AgentService s(association()); running(s); s.feed_stdout("{\"id\":19,\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"thread-a\",\"turnId\":\"turn-a\",\"itemId\":\"missing-scope\"}}\n"); auto a=s.snapshot().approvals[0]; CHECK(!a.can_accept); CHECK(!s.resolve(a.key,AgentApprovalDecision::accept_once)); CHECK(s.resolve(a.key,AgentApprovalDecision::decline)); }
     { AgentService s(association()); running(s); s.feed_stdout("{\"method\":\"account/updated\",\"params\":{}}\n"); CHECK(s.snapshot().connection==AgentConnection::failed); }
     { AgentService s(association()); running(s); for(int n=0;n<33;++n) s.feed_stdout("{\"id\":"+std::to_string(n+100)+",\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"thread-a\",\"turnId\":\"turn-a\",\"itemId\":\"missing-scope\"}}\n"); CHECK(s.snapshot().connection==AgentConnection::failed); CHECK(s.snapshot().approvals.empty()); }
+    // Deterministic Windows writer -> reader cleanup ordering: the second
+    // disconnect used to erase both stdin failure and active-turn uncertainty.
+    { AgentService s(association()); ready(s); s.disconnect("Provider stdin failed; no requests replayed");
+      const auto first=s.snapshot(); s.disconnect("Provider stdout closed"); s.disconnect("Provider stopped");
+      CHECK(s.snapshot().error==first.error); CHECK(s.snapshot().error.find("stdin")!=std::string::npos);
+      ready(s); CHECK(s.snapshot().error.empty()); }
+    { AgentService s(association()); ready(s); CHECK(s.start({"fixture","/fixture",true}));
+      s.disconnect("Provider stdin failed; no requests replayed"); const auto first=s.snapshot();
+      CHECK(first.error=="Disconnected; execution outcome unknown. Reconcile before retry.");
+      CHECK(first.conversation==AgentConversation::failed); CHECK(s.take_outbound().empty());
+      s.disconnect("Provider stdout closed"); s.disconnect("Provider stopped");
+      CHECK(s.snapshot().error==first.error); CHECK(s.snapshot().conversation==AgentConversation::failed); }
+    { AgentService s(association()); s.disconnect("Selected executable could not launch");
+      CHECK(s.snapshot().error=="Selected executable could not launch"); }
     std::cout<<"agent service fixtures passed (no live provider)\n";
 }

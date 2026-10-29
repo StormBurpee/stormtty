@@ -43,7 +43,14 @@ int main(int argc,char** argv){
         until([&]{return s->snapshot().connection==AgentConnection::ready;});
         CHECK(s->start({std::string(65536,'x'),closed.working_directory,true}));
         until([&]{return s->snapshot().connection==AgentConnection::disconnected;});
-        CHECK(s->snapshot().error.find("stdin")!=std::string::npos || s->snapshot().error.find("outcome unknown")!=std::string::npos);
+        // Join both transport workers before checking the final diagnostic.
+        // Otherwise the stdout worker can overwrite it after this assertion.
+        transport->stop(); const auto terminal=s->snapshot();
+        if(terminal.error!="Disconnected; execution outcome unknown. Reconcile before retry.")
+            std::cerr<<"closed-stdin final error: "<<terminal.error<<"\n";
+        CHECK(terminal.association.thread_id=="fixture-thread"); // thread/start reply consumed
+        CHECK(terminal.conversation==AgentConversation::failed);
+        CHECK(terminal.error=="Disconnected; execution outcome unknown. Reconcile before retry.");
         CHECK(s->take_outbound().empty()); transport.reset(); CHECK(std::filesystem::remove(dir));
 #ifndef _WIN32
         CHECK(sigaction(SIGPIPE,nullptr,&after)==0);
