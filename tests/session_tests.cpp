@@ -447,6 +447,9 @@ int main(int argc,char** argv) {
             TerminalOptions t; t.size={80,24,8,16};
             auto session=Session::start(p,t,[wakes]{wakes->signal();});
             check(await([&]{return frame_text(session->frame()).find("THEME-FIXTURE-READY")!=std::string::npos;},wakes),"complete theme fixture output did not reach frame");
+#ifdef STORMTTY_TEST_DEADLINE_unsupported
+            check(session->info().deadline.requested&&!session->info().deadline.available,"unsupported timer did not use production CV fallback");
+#endif
             const auto original=session->frame();
             const auto initial_text=frame_text(original);
             const auto identity_start=initial_text.find("READY:")+6;
@@ -484,6 +487,9 @@ int main(int argc,char** argv) {
             check(session->key(enter)==SessionSendResult::accepted,"enter not accepted");
             check(session->wait_closed(5s),"natural child exit did not close actor");
             check(session->info().state==SessionState::exited,"natural child exit state");
+#ifdef STORMTTY_TEST_DEADLINE_failure
+            check(session->info().deadline.failures==1,"failed timer did not fall back exactly once");
+#endif
             check(session->info().exit_code==7,"exit code lost");
             check(session->process_finished()&&session->wait_for_process_exit(0ms),"default process-exit observation missing");
             check(frame_text(session->frame()).find("GOT:hello PID:"+identity)!=std::string::npos,"input ordering or child identity changed during theme preview");

@@ -268,6 +268,8 @@ int main() {
             shell.key(Key::right); shell.key(Key::enter); ++shell.sequence;
             shell.expect("QSUGGEST731"); shell.ready(0);
             shell.quoted_typing();
+            const auto d=shell.session->info().deadline;
+            std::cout<<"SHIPPING_DEADLINE requested="<<d.requested<<" available="<<d.available<<" waits="<<d.waits<<" timers="<<d.timer_wakes<<" notified="<<d.notification_wakes<<" spurious="<<d.spurious_wakes<<" failures="<<d.failures<<" overshoot_total_us="<<d.overshoot_total_us<<" overshoot_max_us="<<d.overshoot_max_us<<'\n';
             shell.finish();
         }
         phase = 11;

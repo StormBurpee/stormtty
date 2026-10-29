@@ -1,4 +1,7 @@
 #include "stormtty/session.hpp"
+#ifdef STORMTTY_HIGH_RESOLUTION_ACTOR_DEADLINES
+#include "stormtty/actor_deadline_wait.hpp"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -67,9 +70,25 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     SessionInfo information;
     std::shared_ptr<Process> process;
     ProcessDiagnostics final_diagnostics;
+#ifdef STORMTTY_HIGH_RESOLUTION_ACTOR_DEADLINES
+    const std::unique_ptr<ActorDeadlineWait> deadline_wait=make_actor_deadline_wait();
+    bool deadline_failed{}; // actor-owned; notifiers never destroy/access this flag
+#endif
 
     Impl(ProcessOptions p, TerminalOptions t, Wake w, SessionRetentionPolicy policy)
-        : process_options(std::move(p)), terminal_options(t), wake(std::move(w)), retention(policy) {}
+        : process_options(std::move(p)), terminal_options(t), wake(std::move(w)), retention(policy) {
+#ifdef STORMTTY_HIGH_RESOLUTION_ACTOR_DEADLINES
+        information.deadline.requested=true;information.deadline.available=bool(deadline_wait);
+#endif
+    }
+    void wake_actor() noexcept {
+#ifdef STORMTTY_HIGH_RESOLUTION_ACTOR_DEADLINES
+        // Pair event signals with predicate changes under the queue lock. A late
+        // notification for already-consumed work does not relatch a stale event.
+        if(deadline_wait){std::lock_guard lock(mutex);if(!commands.empty()||!output.empty()||exit||close_requested)deadline_wait->notify();}
+#endif
+        changed.notify_all();
+    }
     void publish(FramePtr frame) {
         FramePtr retired;
         { std::lock_guard lock(frame_mutex); retired = std::exchange(latest, std::move(frame)); }
@@ -99,7 +118,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             command.search_request = request; command.sequence = ++next_sequence;
             command_bytes += amount; commands.push_back(std::move(command));
         }
-        changed.notify_all();
+        wake_actor();
         return {SessionSendResult::accepted, request};
     }
     void notify() noexcept { try { if (wake) wake(); } catch (...) {} }
@@ -123,7 +142,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             command.sequence = ++next_sequence;
             commands.push_back(std::move(command));
         }
-        changed.notify_all();
+        wake_actor();
         return SessionSendResult::accepted;
     }
     SessionSendResult enqueue(Command command) {
@@ -138,7 +157,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             command_bytes += amount;
             commands.push_back(std::move(command));
         }
-        changed.notify_all();
+        wake_actor();
         return SessionSendResult::accepted;
     }
     void accept_output(std::string_view bytes, std::stop_token stop) {
@@ -153,12 +172,12 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             information.bytes_received += count;
             offset += count;
             lock.unlock();
-            changed.notify_all();
+            wake_actor();
         }
     }
     void close() noexcept {
         { std::lock_guard lock(mutex); close_requested = true; }
-        changed.notify_all();
+        wake_actor();
     }
     void run() noexcept {
         try { actor(); }
@@ -331,7 +350,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             [weak](ProcessExit value) {
                 if (auto state = weak.lock()) {
                     { std::lock_guard lock(state->mutex); state->exit = std::move(value); }
-                    state->changed.notify_all();
+                    state->wake_actor();
                 }
             }
         });
@@ -483,7 +502,32 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             std::unique_lock lock(mutex);
             const auto ready = [&] { return !commands.empty() || !output.empty() || exit.has_value() || (close_requested && !closing); };
             if (until == TerminalCore::Clock::time_point::max()) changed.wait(lock, ready);
-            else changed.wait_until(lock, until, ready);
+            else {
+#ifdef STORMTTY_HIGH_RESOLUTION_ACTOR_DEADLINES
+                if(dirty && deadline_wait && !deadline_failed && !ready()) {
+                    // Reset under the SAME lock used to update/signal predicates.
+                    // No producer can insert work between reset and unlock unnoticed.
+                    if(!deadline_wait->prepare_wait()) {
+                        deadline_failed=true;++information.deadline.failures;
+                        changed.wait_until(lock,until,ready);
+                    } else {
+                        ++information.deadline.waits;
+                        lock.unlock();const auto result=deadline_wait->wait_until(until);
+                        const auto returned=TerminalCore::Clock::now();lock.lock();
+                        if(result.reason==ActorDeadlineWait::Reason::failed){
+                            deadline_failed=true;++information.deadline.failures;
+                            changed.wait_until(lock,until,ready); // reliable existing path, no retry loop
+                        } else if(result.reason==ActorDeadlineWait::Reason::deadline) {
+                            ++information.deadline.timer_wakes;
+                            const auto late=std::chrono::duration_cast<std::chrono::microseconds>(returned-until).count();
+                            if(late>0){information.deadline.overshoot_total_us+=late;information.deadline.overshoot_max_us=std::max(information.deadline.overshoot_max_us,static_cast<std::uint64_t>(late));}
+                        } else {++information.deadline.notification_wakes;if(!ready())++information.deadline.spurious_wakes;}
+                    }
+                } else changed.wait_until(lock,until,ready);
+#else
+                changed.wait_until(lock,until,ready);
+#endif
+            }
         }
     }
 };

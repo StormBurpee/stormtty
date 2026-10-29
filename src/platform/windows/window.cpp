@@ -4388,6 +4388,13 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
 }
 void NativeWindow::smoke_finish(std::string_view error) {
     if (!options_.smoke_test || smoke_finished_) return;
+    for(const auto& [id,session]:smoke_sessions_) {
+        const auto d=session->info().deadline;
+        std::fprintf(stderr,"Native actor deadline session=%llu requested=%u available=%u waits=%llu timers=%llu spurious=%llu failures=%llu\n",
+            static_cast<unsigned long long>(id.value),unsigned(d.requested),unsigned(d.available),
+            static_cast<unsigned long long>(d.waits),static_cast<unsigned long long>(d.timer_wakes),
+            static_cast<unsigned long long>(d.spurious_wakes),static_cast<unsigned long long>(d.failures));
+    }
     if (error.empty()) {
         for (const auto& [id,session]:smoke_sessions_) {
             const bool packaged_requested=smoke_bundled_sessions_.contains(id);

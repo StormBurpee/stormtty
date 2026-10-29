@@ -18,12 +18,18 @@ struct SearchSubmission {
     SessionSendResult result{SessionSendResult::closed};
     std::uint64_t request_id{};
 };
+struct SessionDeadlineDiagnostics {
+    bool requested{},available{};
+    std::uint64_t waits{},timer_wakes{},notification_wakes{},spurious_wakes{},failures{};
+    std::uint64_t overshoot_total_us{},overshoot_max_us{};
+};
 struct SessionInfo {
     SessionState state{SessionState::starting};
     std::string title, working_directory, error;
     std::optional<std::uint32_t> exit_code;
     std::uint64_t bytes_received{}, bytes_sent{};
     std::optional<ShellContext> shell_context; // Untrusted owned labels, never action authority.
+    SessionDeadlineDiagnostics deadline; // Bounded counters, not display-latency measurements.
     CommandSnapshot command; // Independent observed shell command, not process status.
 };
 // Thread-safe host facade. TerminalCore is owned by a dedicated actor; no VT
