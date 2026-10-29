@@ -373,4 +373,14 @@ private:
     std::uint64_t started_{}, duration_{};
 };
 
+// There is no visual transition *from* an unobserved selection. Seed new views
+// at their real state; animate only changes between states the user has seen.
+// This also avoids fading restored pane labels up from an invisible baseline.
+template<class Map, class Key>
+void target_chrome_selection(Map& transitions, Key key, double selected,
+                             std::uint64_t now, std::uint64_t duration) {
+    auto [entry,inserted]=transitions.try_emplace(key,selected);
+    if (!inserted) entry->second.target(selected,now,duration);
+}
+
 } // namespace stormtty

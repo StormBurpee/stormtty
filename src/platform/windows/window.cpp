@@ -337,6 +337,7 @@ private:
     void smoke_typing_diagnostic(const char* event);
     void smoke_settings_stage(unsigned stage);
     void capture_frame();
+    void capture_named_frame(std::wstring_view);
     NoticeLayout notice_layout();
     void submit(std::function<SessionSendResult()> action, std::size_t bytes = 64);
     void drain_input();
@@ -527,7 +528,6 @@ private:
     std::map<UINT_PTR, std::wstring> tooltip_texts_;
     std::map<std::uint64_t, ChromeTransition> hover_transitions_;
     std::map<TabId, ChromeTransition> tab_transitions_;
-    std::map<PaneId, ChromeTransition> pane_reveals_;
     std::map<PaneId, ChromeTransition> pane_focus_;
     std::map<ProjectWorkspaceId, ChromeTransition> workspace_focus_;
     ChromeTransition palette_transition_, settings_transition_, menu_transition_;
@@ -587,6 +587,7 @@ private:
     struct PendingInput { std::function<SessionSendResult()> action; std::size_t bytes; };
     std::deque<PendingInput> pending_input_;
     std::size_t pending_bytes_{};
+    bool initial_canvas_prepared_{}, first_exposed_frame_{};
     bool backdrop_{};
     MaterialRefreshTracker material_tracker_;
     std::string material_status_, material_probe_status_;
@@ -597,6 +598,12 @@ private:
     std::uint32_t material_probe_default_cells_{}, material_probe_explicit_cells_{}, material_probe_other_opaque_cells_{};
     DWORD material_probe_dwm_{};
     HRESULT material_probe_dwm_result_{E_PENDING};
+};
+
+struct RendererCallGuard {
+    bool& flag;
+    explicit RendererCallGuard(bool& value):flag(value){flag=true;}
+    ~RendererCallGuard(){flag=false;}
 };
 
 void NativeWindow::create() {
@@ -630,6 +637,9 @@ void NativeWindow::create() {
         if (tooltip_) { SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, 600); SendMessageW(tooltip_, TTM_SETDELAYTIME, TTDT_INITIAL, 600); }
     }
     dpi_ = GetDpiForWindow(hwnd_); scale_ = dpi_ / 96.0;
+    // Establish final DPI-scaled client geometry before renderer/actors exist.
+    // Shells no longer receive an avoidable second startup resize at high DPI.
+    SetWindowPos(hwnd_, nullptr, 0, 0, static_cast<int>(1100 * scale_), static_cast<int>(720 * scale_), SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
     RendererOptions options;
     options.force_warp = options_.smoke_test;
     options.smoke_teardown_diagnostics = options_.smoke_test;
@@ -687,9 +697,23 @@ void NativeWindow::create() {
         }
         changed(true);
     }
-    SetWindowPos(hwnd_, nullptr, 0, 0, static_cast<int>(1100 * scale_), static_cast<int>(720 * scale_), SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
     refresh_layout();
     settings_changed();
+    motion_schedule();
+    // Prime the real retained canvas before exposing the HWND. This is one
+    // nonblocking render, never a wait for shell output, a splash, or a fake
+    // ready state. Occlusion/busy keeps the normal post-show retry path intact.
+    const auto initial_scene=scene();
+    RenderResult initial_result;
+    { RendererCallGuard guard(renderer_call_); initial_result=renderer_->render(initial_scene); }
+    initial_canvas_prepared_=initial_result!=RenderResult::suspended;
+    if (!initial_canvas_prepared_) throw std::runtime_error("Initial native canvas was unavailable.");
+    dirty_=true; force_redraw_=true;
+    if (options_.smoke_test) {
+        capture_named_frame(L"startup-prepared");
+        std::fprintf(stderr,"Native startup canvas: prepared_before_show=1 visible=%u panes=%zu shell_readiness_claimed=0 result=%u\n",unsigned(IsWindowVisible(hwnd_)!=FALSE),initial_scene.panes.size(),unsigned(initial_result));
+        if (IsWindowVisible(hwnd_)) throw std::runtime_error("Startup canvas was prepared after window exposure.");
+    }
     ShowWindow(hwnd_, SW_SHOWNORMAL);
     UpdateWindow(hwnd_);
     if (options_.smoke_test && !options_.smoke_agent && !options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && options_.smoke_workspaces.empty() && !SetTimer(hwnd_,typing_smoke_timer,25,nullptr)) throw std::runtime_error("Could not start bounded typing smoke progress timer.");
@@ -767,11 +791,7 @@ void NativeWindow::refresh_clock() {
     if (config_.appearance.show_clock && !config_.ribbon.hidden[ribbon_index(RibbonBinding::clock)] && !minimized_ && !fullscreen_ && !focus_mode_)
         SetTimer(hwnd_,local_clock_timer,60000-time.wSecond*1000-time.wMilliseconds,nullptr);
 }
-struct RendererCallGuard {
-    bool& flag;
-    explicit RendererCallGuard(bool& value):flag(value){flag=true;}
-    ~RendererCallGuard(){flag=false;}
-};
+
 void NativeWindow::settings_changed() {
     refresh_clock();
     if (renderer_call_) { settings_pending_=true; defer_layout(); return; }
@@ -1376,6 +1396,7 @@ NativeWindow::FooterPresentation NativeWindow::footer_presentation() const {
     if(info.state==SessionState::failed) {result.status="failed";result.failed=true;}
     else if(info.state==SessionState::exited) result.status="exited";
     else if(info.state==SessionState::closing) result.status="closing";
+    else if(info.state==SessionState::starting) result.status="starting";
     else if(info.command.phase==CommandPhase::completed && info.command.last_exit_code && *info.command.last_exit_code!=0) {
         result.status="exit "+std::to_string(*info.command.last_exit_code); result.failed=true;
     }
@@ -1626,7 +1647,7 @@ void NativeWindow::workspace_menu(Point point, ProjectWorkspaceId target) {
 void NativeWindow::reset_project_view() {
     // Local Pane/Tab/Node identifiers can collide across projects. Actor IDs are
     // host-global; renderer identity is SessionId and all local view caches reset.
-    hover_transitions_.clear(); tab_transitions_.clear(); pane_reveals_.clear(); pane_focus_.clear();
+    hover_transitions_.clear(); tab_transitions_.clear(); pane_focus_.clear();
     closing_palette_primitives_.clear(); closing_palette_texts_.clear(); palette_transition_.finish();
     hover_={-1,-1}; palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false;
     text_input_.reset(); selection_pane_={}; drop_preview_.reset(); force_redraw_=true;
@@ -1776,18 +1797,16 @@ void NativeWindow::hover_changed(Point point) {
     if (modified) changed();
 }
 void NativeWindow::motion_schedule() {
-    const auto now=chrome_now(); const auto duration=reduced_motion_?0:120;
+    const auto now=chrome_now(); const auto duration=(reduced_motion_ || !IsWindowVisible(hwnd_))?0:120;
     palette_transition_.target(palette_open_||rename_open_?1:0,now,reduced_motion_?0:100);
     settings_transition_.target(settings_loading()||settings_input_blocked()?1:0,now,reduced_motion_?0:100);
     menu_transition_.target(context_menu_.is_open()?1:0,now,reduced_motion_?0:100);
-    for (const auto& project:projects_.entries()) workspace_focus_[project.id].target(project.id==projects_.active_id()?1:0,now,duration);
-    for (const auto& pane:layout_.panes) pane_focus_[pane.pane].target(pane.pane==workspace().active_pane()?1:0,now,duration);
+    for (const auto& project:projects_.entries()) target_chrome_selection(workspace_focus_,project.id,project.id==projects_.active_id()?1:0,now,duration);
+    for (const auto& pane:layout_.panes) target_chrome_selection(pane_focus_,pane.pane,pane.pane==workspace().active_pane()?1:0,now,duration);
     std::erase_if(workspace_focus_,[&](const auto& item){return !projects_.find(item.first);});
     std::erase_if(pane_focus_,[&](const auto& item){return !workspace().pane(item.first);});
-    for (const auto& tab:chrome_.tabs) tab_transitions_[tab.tab].target(tab.tab==workspace().active_tab()?1:0,now,duration);
-    for (const auto& pane:layout_.panes) pane_reveals_[pane.pane].target(1,now,duration);
+    for (const auto& tab:chrome_.tabs) target_chrome_selection(tab_transitions_,tab.tab,tab.tab==workspace().active_tab()?1:0,now,duration);
     std::erase_if(tab_transitions_,[&](const auto& item){return !workspace().tab(item.first);});
-    std::erase_if(pane_reveals_,[&](const auto& item){return !workspace().pane(item.first);});
     std::erase_if(hover_transitions_,[&](const auto& item){
         if (item.first&(1ull<<63)) return !workspace().node(NodeId{item.first&~(1ull<<63)});
         if (item.first&(1ull<<62)) return !projects_.find(ProjectWorkspaceId{item.first&~(1ull<<62)});
@@ -1800,7 +1819,6 @@ void NativeWindow::motion_schedule() {
     for (auto& [id,t]:pane_focus_) { (void)id; check(t); }
     for (auto& [id,t]:hover_transitions_) { (void)id; check(t); }
     for (auto& [id,t]:tab_transitions_) { (void)id; check(t); }
-    for (auto& [id,t]:pane_reveals_) { (void)id; check(t); }
     if (running && !motion_timer_active_) {
         motion_timer_active_=SetTimer(hwnd_,chrome_motion_timer,16,nullptr)!=0;
         if (!motion_timer_active_) { // Resource pressure must never leave chrome half-hidden.
@@ -1809,7 +1827,6 @@ void NativeWindow::motion_schedule() {
             for (auto& [id,t]:pane_focus_) { (void)id; t.finish(); }
             for (auto& [id,t]:hover_transitions_) { (void)id; t.finish(); }
             for (auto& [id,t]:tab_transitions_) { (void)id; t.finish(); }
-            for (auto& [id,t]:pane_reveals_) { (void)id; t.finish(); }
         }
     }
     else if (!running && motion_timer_active_) { KillTimer(hwnd_,chrome_motion_timer); motion_timer_active_=false; }
@@ -2287,10 +2304,9 @@ WindowScene NativeWindow::scene() {
                 Color wash=chrome; wash.a=89; rectangle(header,wash);
                 rectangle({header.x,header.y+header.height-1/scale_,header.width,1/scale_},daylight?Color{130,142,155,100}:Color{43,50,61,140});
             }
-            const double reveal=pane_reveals_[placement.pane].value(now);
             const double focus=pane_focus_[placement.pane].value(now);
             if (focus>0) rectangle({header.x + 12,header.y + 10,2,8},opacity(accent,focus));
-            label({header.x + 20,header.y + 6,std::max(0.0,header.width - 56),18}, pane_title(placement.pane), opacity(blend(secondary,text,focus),reveal), 13);
+            label({header.x + 20,header.y + 6,std::max(0.0,header.width - 56),18}, pane_title(placement.pane), blend(secondary,text,focus), 13);
             label({header.x + header.width - 28,header.y + 3,24,22}, "···", secondary, 16,false,ChromeTextAlignment::center);
         }
     }
@@ -2601,6 +2617,14 @@ void NativeWindow::render() {
     if (!render_busy_) dirty_ = false;
     observe_material_renderer();
     if (result==RenderResult::presented || result==RenderResult::unchanged) begin_material_probe(rendered);
+    if (!first_exposed_frame_ && result==RenderResult::presented && IsWindowVisible(hwnd_)) {
+        first_exposed_frame_=true;
+        if (options_.smoke_test) {
+            if (!initial_canvas_prepared_) throw std::runtime_error("First exposed frame had no prepared canvas.");
+            capture_named_frame(L"startup-exposed");
+            std::fprintf(stderr,"Native startup canvas: first_exposed=1 prepared_before_show=1 shell_readiness_claimed=0\n");
+        }
+    }
     if (options_.smoke_test) smoke_progress(result==RenderResult::presented,true);
     // Occlusion is retried on actual exposure/activation/output, not a timer.
 }
@@ -3386,6 +3410,13 @@ bool NativeWindow::smoke_typing_progress() {
     return false;
 }
 
+void NativeWindow::capture_named_frame(std::wstring_view suffix) {
+    if (!options_.smoke_test || options_.capture_path.empty()) return;
+    const auto original=options_.capture_path;
+    options_.capture_path=original.parent_path()/(original.stem().wstring()+L"-"+std::wstring(suffix)+original.extension().wstring());
+    try { capture_frame(); } catch (...) { options_.capture_path=original; throw; }
+    options_.capture_path=original;
+}
 void NativeWindow::capture_frame() {
     if (options_.capture_path.empty()) return;
     auto pixels=renderer_->read_pixels();
@@ -3511,6 +3542,13 @@ void NativeWindow::smoke_focus_evidence(bool project) {
     const auto original_pane=workspace().active_pane();
     const auto target_pane=project?PaneId{}:layout_.panes.back().pane;
     if (project) activate_project(smoke_secondary_project_); else activate(target_pane);
+    if (project) {
+        if (focused_session_!=workspace().pane(workspace().active_pane())->session)
+            throw std::runtime_error("Workspace switch delayed the real keyboard input target.");
+        for (const auto& tab:chrome_.tabs) if (tab.tab==workspace().active_tab() && tab_transitions_.at(tab.tab).value(start)!=1)
+            throw std::runtime_error("Workspace switch faded its new active tab from zero.");
+    }
+    smoke_motion_capture(project?L"workspace-focus-000ms":L"pane-focus-000ms",0);
     *smoke_chrome_time_=start+40;
     auto& incoming=project?workspace_focus_[smoke_secondary_project_]:pane_focus_[target_pane];
     const auto midway=incoming.value(chrome_now());

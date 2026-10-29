@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <array>
 #include <iostream>
+#include <map>
 
 namespace { void require(bool condition, const char* message) {
     if (!condition) { std::cerr << message << '\n'; std::exit(1); }
@@ -185,6 +186,22 @@ int main() {
         require(box.cancel.x+box.cancel.width<=box.confirm.x,"modal actions never overlap");
         require(box.body.y+box.body.height<=box.cancel.y && box.body.height>=18,"compact modal retains warning above actions");
     }
+    std::map<int,ChromeTransition> selections;
+    target_chrome_selection(selections,1,1,100,120);
+    target_chrome_selection(selections,2,0,100,120);
+    require(selections.at(1).value(100)==1 && !selections.at(1).active(100),"first frame selection is immediately legible, not an entrance fade");
+    require(selections.at(2).value(100)==0 && !selections.at(2).active(100),"unselected first-frame chrome stays quiet");
+    target_chrome_selection(selections,1,0,200,120);
+    target_chrome_selection(selections,2,1,200,120);
+    require(selections.at(2).value(240)>0 && selections.at(2).value(240)<1,"observed selection changes still animate");
+    const auto selected_midpoint=selections.at(2).value(240);
+    target_chrome_selection(selections,2,0,240,120);
+    require(selections.at(2).value(240)==selected_midpoint,"rapid selection reversal remains continuous");
+    selections.clear();
+    target_chrome_selection(selections,1,1,300,120);
+    require(selections.at(1).value(300)==1 && !selections.at(1).active(300),"workspace-local identity reset never hides a restored title");
+    target_chrome_selection(selections,1,0,400,0);
+    require(selections.at(1).value(400)==0 && !selections.at(1).active(400),"reduced motion commits selection without a timer");
     ChromeTransition transition;
     require(!transition.active(100) && transition.value(100)==0, "resting transition has no scheduler work");
     transition.target(1,100,80);
