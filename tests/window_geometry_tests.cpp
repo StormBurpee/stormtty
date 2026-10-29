@@ -1,5 +1,6 @@
 #include "stormtty/native_window.hpp"
 #include "stormtty/settings_panel.hpp"
+#include "stormtty/terminal_find.hpp"
 #include <cstdlib>
 #include <array>
 #include <iostream>
@@ -10,6 +11,56 @@ namespace { void require(bool condition, const char* message) {
 } }
 int main() {
     using namespace stormtty;
+    require(terminal_find_fits({0,0,180,112},false)&&!terminal_find_fits({0,0,179,112},false),"Find rejects squeezed width");
+    require(terminal_find_fits({0,0,180,140},true)&&!terminal_find_fits({0,0,180,139},true),"Find reserves terminal space in split panes");
+    TerminalFindQuery find_query;
+    require(find_query.insert("a界🙂z"),"Find accepts complete Unicode scalars");
+    find_query.left();require(find_query.erase(true)&&find_query.text()=="a界z","Find Backspace deletes one scalar, not a UTF-8 fragment");
+    find_query.home();find_query.right();require(find_query.insert("x")&&find_query.text()=="ax界z","Find inserts at the visible caret");
+    require(find_query.erase(false)&&find_query.text()=="axz","Find Delete removes the next scalar");
+    require(!find_query.insert("\n")&&!find_query.insert(std::string("\xff",1)),"Find rejects controls and malformed UTF-8 without altering query");
+    find_query.select_all();require(find_query.insert("needle")&&find_query.text()=="needle","Find replacement and paste honor select all");
+    find_query.select_all();require(!find_query.insert(std::string(4097,'a'))&&find_query.text()=="needle","oversized replacement leaves query intact");
+    find_query.end();const auto find_visible=terminal_find_visible(find_query,3,[](std::string_view x){return double(x.size());});
+    require(find_visible.first=="dle"&&find_visible.second==3,"Find caret scroll is bounded to measured field");
+    SearchSnapshot find_snapshot;find_snapshot.token={42,2,9};find_snapshot.query="needle";find_snapshot.status=SearchStatus::complete;find_snapshot.matches.resize(2);find_snapshot.selected_index=0;
+    require(current_find_result(find_snapshot,42,"needle")&&!current_find_result(find_snapshot,41,"needle")&&!current_find_result(find_snapshot,42,"other"),"Find ignores stale request/query snapshots");
+    require(terminal_find_status(&find_snapshot,42,"needle")=="2 / 2","Find count follows newest-first backend result order");
+    require(terminal_find_status(&find_snapshot,43,"needle")=="Searching…","old counts never masquerade as latest query results");
+    find_snapshot.selected_index.reset();
+    require(initial_find_selection_needed(find_snapshot,42,{})&&!initial_find_selection_needed(find_snapshot,41,{}),"initial Find selection belongs to current request");
+    const auto attempted=find_snapshot.token;
+    require(!initial_find_selection_needed(find_snapshot,42,attempted),"initial Find selection never spins on the same rejected token");
+    ++find_snapshot.token.generation;
+    require(initial_find_selection_needed(find_snapshot,42,attempted),"initial Find retries after output or resize publishes a fresh token");
+    find_snapshot.selected_index=0;
+    require(!initial_find_selection_needed(find_snapshot,42,attempted),"initial Find does not duplicate an accepted selection");
+    // Deterministic lifecycle: transient ConPTY repaint, queued/applied result,
+    // then invalidation before any stable frame. No wall-clock sleeps needed.
+    TerminalFindInitialSelection initial;
+    initial.begin(70);SearchSnapshot sequence;sequence.token={70,1,1};sequence.status=SearchStatus::complete;
+    require(!initial.take(sequence),"empty repaint preserves intent without submitting");
+    sequence.token={70,2,2};sequence.matches.resize(4);
+    require(initial.take(sequence)==sequence.token&&!initial.take(sequence),"fresh nonempty submits once, queued token never spins");
+    sequence.last_apply_result=SearchApplyResult::applied;sequence.selected_index=0;
+    require(!initial.take(sequence),"accepted selection is not duplicated");
+    sequence.token={70,3,3};sequence.selected_index.reset();sequence.last_apply_result.reset();sequence.status=SearchStatus::running;sequence.matches.clear();
+    require(!initial.take(sequence),"invalidated running search never selects old coordinates");
+    sequence.status=SearchStatus::complete;sequence.matches.resize(4);
+    require(initial.take(sequence)==sequence.token&&!initial.take(sequence),"fresh result after accepted repaint recovers once");
+    initial.cancel();sequence.token={70,4,4};
+    require(!initial.take(sequence),"explicit navigation ends automatic selection ownership");
+    initial.begin(71);require(!initial.take(sequence),"query replacement rejects previous request");
+    sequence.token={71,4,5};require(initial.take(sequence)==sequence.token,"replacement has independent first selection intent");
+    initial.cancel();sequence.token={71,5,6};require(!initial.take(sequence),"workspace close cancels pending selection ownership");
+    find_snapshot.status=SearchStatus::limited;require(terminal_find_status(&find_snapshot,42,"needle")=="Limit reached","bounded search cannot advertise an exhaustive count");
+    for(double width:{80.,180.,330.,439.,440.,1044.}) {
+        const auto find=layout_terminal_find({13,27,width,300},28);
+        require(find.strip.y==55&&find.strip.height==(width<440?72:42),"Find reserves responsive pane-local height");
+        const std::array<Rect,5> controls{find.query,find.status,find.previous,find.next,find.close};
+        for(std::size_t i=0;i<controls.size();++i){const auto a=controls[i];require(a.x>=13&&a.x+a.width<=13+width+.001&&a.y>=55&&a.y+a.height<=find.strip.y+find.strip.height,"Find controls stay in their reserved strip");
+            for(std::size_t j=i+1;j<controls.size();++j){const auto b=controls[j];require(a.x+a.width<=b.x+.001||b.x+b.width<=a.x+.001||a.y+a.height<=b.y+.001||b.y+b.height<=a.y+.001,"Find controls do not overlap at narrow widths");}}
+    }
     for (double width:{0.,24.,180.,320.,640.,1044.,1600.}) for(double height:{0.,32.,120.,240.,720.}) {
         std::vector<double> rows(44,36); rows[3]=48; rows[43]=48;
         for(std::size_t selected:{0u,3u,20u,43u,999u}) {

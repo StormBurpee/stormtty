@@ -304,8 +304,9 @@ the original palette; Save persists it. Existing terminal applications keep
 their own OSC color overrides and explicit ANSI/RGB colors. The Windows host
 retains bounded terminal output after process exit for scrolling, selection,
 copying and resize until the terminal is closed. Close confirmations, context menus and settings share the
-app's renderer-owned interface. Find-in-terminal has a tested core search service,
-but its user-facing command is not enabled yet.
+app's renderer-owned interface. **Ctrl+Shift+F** opens [Find in terminal](docs/terminal-find.md)
+for the active pane, including retained output from an exited process. Enter and
+Shift+Enter navigate matches; Escape returns keyboard focus to the terminal.
 
 The [command registry](src/core/commands.cpp) defines the full set of actions and
 platform-specific bindings. Close and paste behavior still need native
@@ -501,7 +502,7 @@ terminal compatibility are both dependable.
 | Saved workspaces | Windows persistence, named sets and additive restore implemented | Continued restart/recovery regression coverage; macOS host wiring |
 | Experimental AI | Paused and disabled by default; implementation retained behind explicit opt-in | Product direction, separately authorized live-provider qualification and platform UI |
 | Managed Zsh and modules | Bundled runtime, OMZ/editing modules, private state and fzf/zoxide integration | Module/tool-specific native gates, linked-source review, public packaging and physical interaction |
-| Find and cross-window tear-off | Core search implemented; UI/tear-off pending | User-facing implementation and native tests |
+| Find and cross-window tear-off | Native Windows Find strip; tear-off pending | Find native smoke plus physical IME/accessibility review; tear-off implementation |
 | Performance and distribution | Pending | Recorded-hardware measurements, ConPTY provider qualification, packaging and complete notices |
 
 The first Codex slice establishes the transport, consent and native-view seams;

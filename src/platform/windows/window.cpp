@@ -20,6 +20,7 @@
 #include <commctrl.h>
 #include <shobjidl.h>
 #include "stormtty/native_window.hpp"
+#include "stormtty/terminal_find.hpp"
 #include "stormtty/windows_managed_shell.hpp"
 #include "stormtty/windows_shell_state.hpp"
 #include "stormtty/windows_console_runtime.hpp"
@@ -379,8 +380,21 @@ private:
     void copy();
     void paste();
     void set_clipboard(std::string_view);
+    void open_find();
+    void close_find(bool geometry=true);
+    void submit_find();
+    void refresh_find();
+    void navigate_find(bool previous);
+    void activate_find_control(unsigned);
+    TerminalFindLayout find_layout() const;
+    std::pair<std::string,double> find_query_view() const;
     void toggle_palette();
     bool smoke_palette_evidence(SessionId);
+    bool smoke_find_progress();
+    unsigned smoke_find_stage_{}, smoke_find_trace_count_{};
+    std::uint64_t smoke_find_bytes_{}, smoke_find_revision_{}, smoke_find_input_baseline_{}, smoke_terminal_input_submissions_{};
+    std::size_t smoke_find_selection_{};
+    RECT smoke_find_window_{};
     struct PaletteEntry {
         std::string id, label, description;
         std::optional<ProjectSessionReference> session;
@@ -420,9 +434,18 @@ private:
     }
     Rect content_bounds(const PanePlacement& p) const {
         const double header = layout_.panes.size() > 1 ? 28.0 : 0.0;
-        return {p.bounds.x + 20, p.bounds.y + header + 16, std::max(0.0, p.bounds.width - 40), std::max(0.0, p.bounds.height - header - 32)};
+        const double find_height=find_session_ && p.session==find_session_?layout_terminal_find(p.bounds,header).strip.height:0;
+        return {p.bounds.x + 20, p.bounds.y + header + find_height + 16, std::max(0.0, p.bounds.width - 40), std::max(0.0, p.bounds.height - header - find_height - 32)};
     }
     Config config_;
+    SessionId find_session_{};
+    TerminalFindQuery find_query_;
+    SearchSnapshotPtr find_result_;
+    TerminalFindInitialSelection find_initial_selection_;
+    std::uint64_t find_request_{};
+    unsigned find_focus_{}; // query, previous, next, close
+    std::optional<unsigned> find_pressed_;
+    std::string find_error_;
     bool ai_enabled_{}; // Launch-time feature capability; never changed by reload/preview.
     NativeRunOptions options_;
     std::optional<Profile> managed_shell_profile_; // Resolved launch profile; only a stable marker is ever saved.
@@ -1032,6 +1055,10 @@ void NativeWindow::refresh_layout() {
     if (const auto* tab=workspace().tab(workspace().active_tab()); tab && tab->zoomed_pane && chrome_.drag.width>=260 && !fullscreen_)
         zoom_return_={chrome_.drag.x+chrome_.drag.width-128,2,120,28};
     layout_ = workspace().layout(workspace().active_tab(), workspace_viewport(), {1.0 / scale_, 7, 80, 48});
+    // Resizing can squeeze an already-open strip. Dismiss before actor sizing,
+    // preserving the query and restoring input without a recursive layout pass.
+    if(find_session_)for(const auto& place:layout_.panes)
+        if(place.session==find_session_ && !terminal_find_fits(place.bounds,layout_.panes.size()>1)){close_find(false);break;}
     if (renderer_) {
         {
             RendererCallGuard guard(renderer_call_);
@@ -1316,8 +1343,16 @@ void NativeWindow::close_tab(TabId tab, bool approved) {
     changed(true);
 }
 void NativeWindow::sync_focus() {
+    const auto* active_pane=workspace().pane(workspace().active_pane());
+    if(find_session_ && (!active_pane || active_pane->session!=find_session_)) {
+        if(auto actor=sessions_.find(find_session_);actor!=sessions_.end())(void)actor->second->cancel_search();
+        if(find_pressed_ && GetCapture()==hwnd_)ReleaseCapture();
+        find_session_={};find_result_.reset();find_request_=0;find_initial_selection_.cancel();find_pressed_.reset();
+        preedit_.clear();composing_=false;text_input_.reset();
+        if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
+    }
     SessionId desired{};
-    if (active_ && !palette_open_ && !rename_open_ && !modal_ && !overlay_open()) if (const auto* pane=workspace().pane(workspace().active_pane())) desired=pane->session;
+    if (active_ && !find_session_ && !palette_open_ && !rename_open_ && !modal_ && !overlay_open()) if (const auto* pane=workspace().pane(workspace().active_pane())) desired=pane->session;
     if (desired==focused_session_) return;
     const auto previous=focused_session_; focused_session_=desired;
     if (sessions_.contains(previous)) { auto old=sessions_.at(previous); submit([old] { return old->focus(false); }); }
@@ -1379,6 +1414,7 @@ void NativeWindow::update_sessions() {
     const auto footer_signature=footer.directory+"\n"+footer.head+"\n"+footer.status+(footer.subdued?"1":"0")+(footer.detached?"1":"0");
     if(footer_signature_!=footer_signature) {footer_signature_=footer_signature;state_changed=true;++chrome_generation_;}
     if (!titles.empty() || state_changed) refresh_tooltips();
+    refresh_find();
     settings_completed();
     refresh_agent_panel();
     workspace_save_completed();
@@ -1794,6 +1830,7 @@ void NativeWindow::refresh_tooltips() {
     const auto footer=placement.background;
     for (std::size_t i=0;i<footer.chips.size();++i) add(footer.chips[i],background_title(projects_.active()->parked_sessions[i])+"\nClick to restore · Right-click for actions");
     add(footer.overflow,"All background terminals");
+    if(find_session_){const auto f=find_layout();add(f.previous,"Previous match · Shift+Enter");add(f.next,"Next match · Enter");add(f.close,"Close Find · Escape");add(f.query,"Literal search in this terminal; ASCII case-insensitive");}
     add(chrome_.new_tab,"New tab · Ctrl+Shift+T"); add(chrome_.palette,"Commands · Ctrl+Shift+P"); add(chrome_.menu,"StormTTY menu");
 }
 double NativeWindow::hover_amount(std::uint64_t id) const {
@@ -1871,6 +1908,7 @@ void NativeWindow::reload_settings() {
     notice_="Reloading settings…"; changed();
 }
 void NativeWindow::open_settings(std::string binding) {
+    if(find_session_)close_find();
     if (modal_ || settings_input_blocked() || settings_job_) return;
     if (options_.config_path.empty()) { show_error("No settings file path is available. Start with --config and an absolute local path."); return; }
     if (settings_worker_.joinable()) settings_worker_.join(); // Prior completed worker only.
@@ -2057,10 +2095,80 @@ CommandContext NativeWindow::command_context() const {
     return context;
 }
 CommandAvailability host_availability(std::string_view id, const CommandContext& context) {
-    if (id == "terminal.find") return {false, "The retained-text search interface is not available yet"};
     return command_availability(id, context);
 }
+TerminalFindLayout NativeWindow::find_layout() const {
+    for(const auto& pane:layout_.panes)if(pane.session==find_session_)return layout_terminal_find(pane.bounds,layout_.panes.size()>1?28:0);
+    return {};
+}
+std::pair<std::string,double> NativeWindow::find_query_view() const {
+    const auto bounds=find_layout().query;
+    return terminal_find_visible(find_query_,std::max(0.0,bounds.width-34),[this](std::string_view text){
+        ChromeText measure;measure.text=std::string(text);measure.size_dip=13;measure.rect={0,0,100000,28*static_cast<float>(scale_)};
+        return renderer_->measure_chrome_text(measure).width/scale_;
+    });
+}
+void NativeWindow::open_find() {
+    if(modal_||overlay_open())return;
+    const auto* pane=workspace().pane(workspace().active_pane());
+    if(!pane||!sessions_.contains(pane->session))return;
+    for(const auto& place:layout_.panes)if(place.pane==pane->id && !terminal_find_fits(place.bounds,layout_.panes.size()>1)) {show_error("Enlarge this pane to use Find.");return;}
+    if(find_session_ && find_session_!=pane->session)close_find();
+    find_session_=pane->session; find_focus_=0; find_pressed_.reset();find_query_.select_all();
+    preedit_.clear();composing_=false;
+    if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
+    palette_open_=rename_open_=false;query_.clear();typing_motion_.reset();text_input_.reset();
+    changed(true);caret_schedule();submit_find();
+}
+void NativeWindow::close_find(bool geometry) {
+    if(!find_session_)return;
+    if(find_pressed_ && GetCapture()==hwnd_)ReleaseCapture();
+    if(auto actor=sessions_.find(find_session_);actor!=sessions_.end())(void)actor->second->cancel_search();
+    find_session_={};find_request_=0;find_initial_selection_.cancel();find_result_.reset();find_pressed_.reset();find_error_.clear();
+    preedit_.clear();composing_=false;text_input_.reset();
+    if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
+    changed(geometry);caret_schedule(true);
+}
+void NativeWindow::submit_find() {
+    if(!find_session_||!sessions_.contains(find_session_))return;
+    find_error_.clear();find_result_.reset();
+    auto actor=sessions_.at(find_session_);
+    (void)actor->clear_selection(); // A replaced/no-match query must not leave an old match highlighted.
+    const auto request=find_query_.text().empty()?actor->cancel_search():actor->search({find_query_.text()});
+    find_request_=request.request_id;find_initial_selection_.begin(find_query_.text().empty()?0:request.request_id);
+    if(request.result!=SessionSendResult::accepted)find_error_="Search unavailable";
+    changed();position_ime();
+}
+void NativeWindow::refresh_find() {
+    if(!find_session_)return;
+    const auto* pane=workspace().pane(workspace().active_pane());
+    if(!pane||pane->session!=find_session_||!sessions_.contains(find_session_)){close_find();return;}
+    auto actor=sessions_.at(find_session_);auto result=actor->search_snapshot();
+    if(!result||!current_find_result(*result,find_request_,find_query_.text()))return;
+    if(find_result_!=result){
+        find_result_=std::move(result);++chrome_generation_;
+        if(options_.smoke_projects && smoke_find_trace_count_++<64)
+            std::fprintf(stderr,"Native Find trace: stage=%u request=%llu revision=%llu generation=%llu status=%d matches=%zu selected=%lld apply=%d auto=%llu attempted_revision=%llu attempted_generation=%llu\n",smoke_find_stage_,static_cast<unsigned long long>(find_result_->token.request_id),static_cast<unsigned long long>(find_result_->token.revision),static_cast<unsigned long long>(find_result_->token.generation),int(find_result_->status),find_result_->matches.size(),find_result_->selected_index?static_cast<long long>(*find_result_->selected_index):-1,find_result_->last_apply_result?int(*find_result_->last_apply_result):-1,static_cast<unsigned long long>(find_initial_selection_.request()),static_cast<unsigned long long>(find_initial_selection_.attempted()?find_initial_selection_.attempted()->revision:0),static_cast<unsigned long long>(find_initial_selection_.attempted()?find_initial_selection_.attempted()->generation:0));
+    }
+    if(const auto token=find_initial_selection_.take(*find_result_)) {
+        const auto accepted=actor->select_search_match(*token,0);
+        if(options_.smoke_projects && smoke_find_trace_count_<64)std::fprintf(stderr,"Native Find auto-select: revision=%llu generation=%llu accepted=%d\n",static_cast<unsigned long long>(token->revision),static_cast<unsigned long long>(token->generation),int(accepted));
+    }
+}
+void NativeWindow::navigate_find(bool previous) {
+    find_initial_selection_.cancel(); // Explicit navigation owns selection from here.
+    if(!find_session_||!sessions_.contains(find_session_))return;
+    // Read a fresh owned snapshot at dispatch; the core still verifies all three
+    // token generations after queued output/resize, so stale cells never apply.
+    auto actor=sessions_.at(find_session_);const auto result=actor->search_snapshot();
+    if(result && current_find_result(*result,find_request_,find_query_.text()) && result->status==SearchStatus::complete && !result->matches.empty())
+        (void)actor->navigate_search(result->token,previous?SearchDirection::backward:SearchDirection::forward,true);
+}
+void NativeWindow::activate_find_control(unsigned index) {
+    if(index==3)close_find();else if(index==1||index==2)navigate_find(index==1);
+}
 void NativeWindow::toggle_palette() {
+    if(find_session_)close_find();
     palette_background_only_=false;
     palette_open_ = !palette_open_; rename_open_ = false; query_.clear(); palette_index_ = 0;
     composing_ = false; preedit_.clear();
@@ -2125,6 +2233,8 @@ void NativeWindow::dispatch(std::string_view command) {
     const auto tab = workspace().active_tab();
     const Rect viewport=workspace_viewport();
     auto report = [this](Status status) { if (!status) show_error(status.error); else workspace_model_changed(); };
+    if (command == "terminal.find") { open_find(); return; }
+    if (find_session_) close_find();
     if (command == "settings.reload") { reload_settings(); return; }
     if (command == "settings.open") { open_settings(); return; }
     if (command == "app.command_palette") { toggle_palette(); return; }
@@ -2322,7 +2432,7 @@ WindowScene NativeWindow::scene() {
         if (auto* session = session_for(placement.pane)) {
             auto frame=session->frame();
             const bool cursor_visible=!frame || !frame->cursor.blinking || reduced_motion_ || cursor_blink_.visible();
-            result.panes.push_back({placement.session.value,pixels(content_bounds(placement)),std::move(frame),active_ && placement.pane==workspace().active_pane() && !palette_open_ && !rename_open_ && !modal_ && !overlay_open(),cursor_visible,reduced_motion_ || cursor_blink_.visible()});
+            result.panes.push_back({placement.session.value,pixels(content_bounds(placement)),std::move(frame),active_ && !find_session_ && placement.pane==workspace().active_pane() && !palette_open_ && !rename_open_ && !modal_ && !overlay_open(),cursor_visible,reduced_motion_ || cursor_blink_.visible()});
             if (placement.pane==workspace().active_pane()) {
                 auto& rendered=result.panes.back();
                 rendered.cursor_reveal=typing_motion_.observe(rendered,GetTickCount64(),!reduced_motion_ && !composing_ && !minimized_ && !in_size_move_ && drag_!=Drag::selection);
@@ -2339,6 +2449,36 @@ WindowScene NativeWindow::scene() {
             if (focus>0) rectangle({header.x + 12,header.y + 10,2,8},opacity(accent,focus));
             label({header.x + 20,header.y + 6,std::max(0.0,header.width - 56),18}, pane_title(placement.pane), blend(secondary,text,focus), 13);
             label({header.x + header.width - 28,header.y + 3,24,22}, "···", secondary, 16,false,ChromeTextAlignment::center);
+        }
+    }
+    if(find_session_) {
+        const auto find=find_layout();
+        rectangle(find.strip,chrome);
+        line(find.strip.x,find.strip.y+find.strip.height,find.strip.x+find.strip.width,find.strip.y+find.strip.height,seam);
+        rectangle(find.query,background,4,find_focus_==0?accent:seam,find_focus_==0?1.5:1);
+        if(find_query_.selected())rectangle({find.query.x+3,find.query.y+3,std::max(0.0,find.query.width-6),std::max(0.0,find.query.height-6)},blend(background,accent,.25),2);
+        const auto visible=find_query_view();
+        label({find.query.x+8,find.query.y+5,std::max(0.0,find.query.width-16),18},find_query_.text().empty()?"Find in terminal…":visible.first,find_query_.text().empty()?secondary:text,13);
+        if(find_focus_==0 && !find_query_.selected()) {
+            const double caret=std::min(find.query.x+find.query.width-8,find.query.x+8+visible.second);
+            line(caret,find.query.y+6,caret,find.query.y+22,accent,1.2);
+        }
+        if(find_focus_==0 && composing_ && !preedit_.empty()) {
+            const double left=std::min(find.query.x+find.query.width-8,find.query.x+8+visible.second),width=std::max(0.0,find.query.x+find.query.width-8-left);
+            rectangle({left,find.query.y+3,width,find.query.height-6},background);
+            label({left,find.query.y+5,width,18},preedit_,text,13);
+            line(left,find.query.y+24,left+width,find.query.y+24,accent);
+        }
+        label({find.status.x,find.status.y+6,find.status.width,18},find_error_.empty()?terminal_find_status(find_result_.get(),find_request_,find_query_.text()):find_error_,secondary,11);
+        const bool ready=find_result_ && current_find_result(*find_result_,find_request_,find_query_.text()) && find_result_->status==SearchStatus::complete && !find_result_->matches.empty();
+        const std::array<Rect,3> buttons{find.previous,find.next,find.close};
+        for(unsigned i=0;i<buttons.size();++i) {
+            const auto b=buttons[i];const unsigned index=i+1;const bool focused=find_focus_==index;
+            const bool hover=b.contains(hover_), pressed=find_pressed_==index;
+            rectangle(b,pressed?blend(chrome,accent,.22):hover?raised:chrome,4,focused?accent:Color{0,0,0,0},focused?1.5:0);
+            const auto ink=i==2||ready?text:secondary;const double cx=b.x+b.width/2,cy=b.y+b.height/2;
+            if(i==2){line(cx-4,cy-4,cx+4,cy+4,ink);line(cx+4,cy-4,cx-4,cy+4,ink);}
+            else {const double sign=i==0?-1:1;line(cx-4,cy-sign*2,cx,cy+sign*2,ink);line(cx,cy+sign*2,cx+4,cy-sign*2,ink);}
         }
     }
     for (const auto& divider : layout_.dividers) rectangle(divider.bounds, drag_node_ == divider.node ? accent : blend(seam,accent,hover_amount((1ull<<63)|divider.node.value)));
@@ -2455,7 +2595,7 @@ WindowScene NativeWindow::scene() {
     if (drag_ == Drag::tab && drag_started_) {
         for (const auto& tab : chrome_.tabs) if (tab.bounds.contains(hover_)) rectangle({tab.bounds.x,tab.bounds.y,2,tab.bounds.height},accent);
     }
-    if (!preedit_.empty() && composing_) {
+    if (!find_session_ && !preedit_.empty() && composing_) {
         for (const auto& placement : layout_.panes) if (placement.pane == workspace().active_pane()) {
             if (auto* session = active_session(); session && session->frame()) {
                 const auto frame = session->frame(); const auto content = content_bounds(placement); const auto metrics = renderer_->metrics();
@@ -2749,6 +2889,7 @@ void NativeWindow::agent_input_changed() {
     sync_focus(); caret_schedule(true); changed();
 }
 void NativeWindow::terminal_text(std::string text, Key key, std::uint16_t modifiers) {
+    if(find_session_ && !modal_ && !overlay_open()) {if(find_focus_==0 && find_query_.insert(text))submit_find();return;}
     if (agent_panel_.is_open()) { agent_panel_.text(text); agent_input_changed(); return; }
     if (modal_ || settings_input_blocked() || settings_loading() || text.empty()) return;
     if (context_menu_.is_open()) { context_menu_.text(text,GetTickCount64()); menu_input_changed(); return; }
@@ -2760,6 +2901,7 @@ void NativeWindow::terminal_text(std::string text, Key key, std::uint16_t modifi
     if (!pane || !sessions_.contains(pane->session)) return;
     auto session = sessions_.at(pane->session);
     const auto bytes = text.size();
+    if(options_.smoke_test)++smoke_terminal_input_submissions_;
     const bool animate=!composing_ && !reduced_motion_ && text.size()<=4 && static_cast<unsigned char>(text[0])>=0x20 && text[0]!=0x7f;
     if (!animate) typing_motion_.reset();
     if (key == Key::unidentified && !modifiers) submit([this,session,animate,text = std::move(text)] {
@@ -2860,6 +3002,28 @@ bool NativeWindow::key_message(MSG& message) {
         }
         return true; // All terminal/palette chords and key-up are trapped.
     }
+    if (find_session_ && !modal_ && !overlay_open()) {
+        if(composing_ || vk==VK_PROCESSKEY)return false;
+        if(up)return true;
+        if(vk<consumed_keys_.size())consumed_keys_[vk]=true;
+        if(vk==VK_ESCAPE){close_find();return true;}
+        if(vk==VK_TAB){find_focus_=(find_focus_+((modifiers&Modifier::shift)?3:1))%4;changed();return true;}
+        if(vk==VK_RETURN){if(!(message.lParam&(1LL<<30))){if(find_focus_==0)navigate_find((modifiers&Modifier::shift)!=0);else activate_find_control(find_focus_);}return true;}
+        if(vk==VK_SPACE && find_focus_){activate_find_control(find_focus_);return true;}
+        if(find_focus_)return true;
+        if((modifiers&Modifier::control)&&!altgr) {
+            if(vk=='A'){find_query_.select_all();changed();return true;}
+            if(vk=='V'){paste();return true;}
+            if((vk=='C'||vk=='X')&&find_query_.selected()){set_clipboard(find_query_.text());if(vk=='X'&&find_query_.erase(true))submit_find();return true;}
+            if(vk=='F'){find_query_.select_all();changed();return true;}
+            return true;
+        }
+        if(vk==VK_BACK||vk==VK_DELETE){if(find_query_.erase(vk==VK_BACK))submit_find();return true;}
+        if(vk==VK_LEFT)find_query_.left();else if(vk==VK_RIGHT)find_query_.right();else if(vk==VK_HOME)find_query_.home();else if(vk==VK_END)find_query_.end();
+        else if(nontext_key(vk)||(!altgr && (modifiers&(Modifier::alt|Modifier::super))))return true;
+        else {text_vk_=vk;text_flags_=message.lParam;text_modifiers_=modifiers;return false;}
+        changed();position_ime();return true;
+    }
     if (composing_ || vk == VK_PROCESSKEY) return false;
     if (down && vk == VK_ESCAPE && drag_ != Drag::none) { cancel_drag(); consumed_keys_[vk] = true; return true; }
     if (palette_open_ || rename_open_) {
@@ -2930,6 +3094,7 @@ bool NativeWindow::key_message(MSG& message) {
         KeyInput input;
         input.key = key; input.modifiers = modifiers;
         input.action = up ? KeyAction::release : (message.lParam & (1LL << 30) ? KeyAction::repeat : KeyAction::press);
+        if(options_.smoke_test)++smoke_terminal_input_submissions_;
         submit([this,session,input] { const auto result=session->key(input);
             if (options_.smoke_test && smoke_typing_stage_>0 && smoke_typing_stage_<6) smoke_typing_input_result_=static_cast<int>(result);
             return result; });
@@ -2990,6 +3155,7 @@ void NativeWindow::paste() {
         GlobalUnlock(data);
     }
     if (text.size()>clipboard_limit) { show_error("Paste exceeds the 1 MiB safety limit; nothing was sent."); return; }
+    if(find_session_){if(find_focus_==0 && find_query_.insert(text))submit_find();return;}
     if(agent_panel_.is_open()) {agent_panel_.text(text);agent_input_changed();return;}
     const bool unsafe=!TerminalCore::paste_is_safe(text);
     const auto* pane=workspace().pane(workspace().active_pane());
@@ -2997,6 +3163,7 @@ void NativeWindow::paste() {
     auto session=sessions_.at(pane->session); const auto size=text.size();
     auto send=[this,session,text=std::move(text),unsafe,size] {
         if (session->process_finished()) { show_error("The paste destination has closed; nothing was sent."); return; }
+        if(options_.smoke_test)++smoke_terminal_input_submissions_;
         submit([session,text,unsafe] { return session->paste(text,unsafe); },size);
     };
     if (unsafe) show_modal("Review paste",{"This paste contains multiple lines","or terminal control characters.","It may execute shell commands."},"Paste anyway",std::move(send),false);
@@ -3138,6 +3305,15 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
         if (modal_pressed_) { modal_focus_.select(*modal_pressed_); SetCapture(hwnd_); }
         changed(); return;
     }
+    if(find_session_) {
+        const auto find=find_layout();
+        if(find.strip.contains(point)) {
+            const std::array<Rect,4> controls{find.query,find.previous,find.next,find.close};
+            for(unsigned i=0;i<controls.size();++i)if(controls[i].contains(point)){find_focus_=i;if(i){find_pressed_=i;SetCapture(hwnd_);}else find_query_.end();changed();position_ime();break;}
+            return;
+        }
+        close_find();
+    }
     notice_.clear();
     if (palette_open_ || rename_open_) {
         const auto commands=palette_commands(); const auto layout=palette_layout(commands);
@@ -3223,6 +3399,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
     }
 }
 void NativeWindow::pointer_move(Point point) {
+    if(find_session_ && (find_layout().strip.contains(point)||find_layout().strip.contains(hover_))) {hover_=point;changed();}
     if (agent_panel_.is_open()) {if(agent_panel_.pointer_move(point))changed();return;}
     if (settings_loading()) return;
     if (settings_input_blocked()) { settings_panel_.pointer_move(point); settings_input_changed(); return; }
@@ -3278,6 +3455,12 @@ void NativeWindow::pointer_move(Point point) {
     if (drag_==Drag::tab) changed();
 }
 void NativeWindow::pointer_up(Point point) {
+    if(find_pressed_) {
+        const auto pressed=*find_pressed_;find_pressed_.reset();if(GetCapture()==hwnd_)ReleaseCapture();
+        const auto find=find_layout();const std::array<Rect,4> controls{find.query,find.previous,find.next,find.close};
+        if(find_session_ && controls[pressed].contains(point))activate_find_control(pressed);
+        changed();return;
+    }
     if (agent_panel_.is_open()) { agent_panel_.pointer_up(point); if(GetCapture()==hwnd_) ReleaseCapture(); agent_input_changed(); return; }
     if (overlay_pointer_sequence_ || overlay_open()) {
         overlay_pointer_sequence_=false;
@@ -3507,6 +3690,68 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
         settings_transition_.value(chrome_now()),menu_transition_.value(chrome_now()),
         workspace_focus_[projects_.active_id()].value(chrome_now()),pane_focus_[workspace().active_pane()].value(chrome_now()),motion_timer_active_);
 }
+bool NativeWindow::smoke_find_progress() {
+    if(smoke_find_stage_==7)return true;
+    auto* actor=active_session();if(!actor){smoke_finish("Find smoke lost its active terminal.");return false;}
+    const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_.reset();};
+    const auto key=[&](WPARAM vk){MSG message{};message.hwnd=hwnd_;message.message=WM_KEYDOWN;message.wParam=vk;key_message(message);message.message=WM_KEYUP;key_message(message);};
+    if(smoke_find_stage_==0) {
+        const std::string command=smoke_managed_sessions_.contains(workspace().pane(workspace().active_pane())->session)?
+            "printf 'STORMTTY_FIND_NEEDLE alpha\nSTORMTTY_FIND_NEEDLE beta\n'":"echo STORMTTY_FIND_NEEDLE alpha & echo STORMTTY_FIND_NEEDLE beta";
+        auto owned=sessions_.at(workspace().pane(workspace().active_pane())->session);
+        submit([owned,command]{return owned->paste(command);},command.size());KeyInput enter;enter.key=Key::enter;submit([owned,enter]{return owned->key(enter);});
+        smoke_find_stage_=1;return false;
+    }
+    if(smoke_find_stage_==1) {
+        const auto frame=actor->frame();if(!frame)return false;
+        bool marker=false;for(const auto& row:frame->lines){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;marker=marker||text.find("STORMTTY_FIND_NEEDLE beta")!=std::string::npos;}
+        if(!marker)return false;
+        dispatch("terminal.find");if(!find_session_||focused_session_){smoke_finish("Find did not take exclusive query focus.");return false;}
+        smoke_find_input_baseline_=smoke_terminal_input_submissions_;smoke_find_bytes_=actor->info().bytes_sent;
+        find_query_.select_all();terminal_text("STORMTTY_FIND_NEEDLE");smoke_find_stage_=2;return false;
+    }
+    refresh_find();
+    const auto result=find_result_;
+    if(!result||!current_find_result(*result,find_request_,find_query_.text())||result->status!=SearchStatus::complete)return false;
+    if(smoke_find_stage_==2) {
+        if(result->matches.size()<2||!result->selected_index)return false;
+        const auto frame=actor->frame();if(!frame)return false;
+        bool selected=false;for(const auto& row:frame->lines)for(const auto& cell:row->cells)selected=selected||cell.selected;
+        if(!selected)return false; // The search mailbox can precede its rendered selection frame.
+        capture(L"find-results");smoke_find_selection_=*result->selected_index;key(VK_RETURN);smoke_find_stage_=3;return false;
+    }
+    if(smoke_find_stage_==3) {
+        if(!result->selected_index||*result->selected_index==smoke_find_selection_)return false;
+        capture(L"find-next");smoke_find_revision_=result->token.revision;GetWindowRect(hwnd_,&smoke_find_window_);
+        SetWindowPos(hwnd_,nullptr,0,0,static_cast<int>(480*scale_),static_cast<int>(480*scale_),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        smoke_find_stage_=4;return false;
+    }
+    if(smoke_find_stage_==4) {
+        const auto frame=actor->frame();if(!frame||result->token.revision==smoke_find_revision_)return false;
+        capture(L"find-narrow");
+        SetWindowPos(hwnd_,nullptr,0,0,smoke_find_window_.right-smoke_find_window_.left,smoke_find_window_.bottom-smoke_find_window_.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        find_query_.select_all();terminal_text("STORMTTY_FIND_ABSENT_713");smoke_find_stage_=5;return false;
+    }
+    if(smoke_find_stage_==5) {
+        if(!result->matches.empty()){smoke_finish("Find no-match query retained old result positions.");return false;}
+        const auto frame=actor->frame();if(!frame)return false;
+        for(const auto& row:frame->lines)for(const auto& cell:row->cells)if(cell.selected)return false;
+        capture(L"find-empty");key(VK_ESCAPE);
+        std::fprintf(stderr,"Native Find isolation: open=%u focused=%llu frontend_input_delta=%llu transport_bytes_delta=%llu (transport includes automatic protocol replies during resize).\n",unsigned(bool(find_session_)),static_cast<unsigned long long>(focused_session_.value),static_cast<unsigned long long>(smoke_terminal_input_submissions_-smoke_find_input_baseline_),static_cast<unsigned long long>(actor->info().bytes_sent-smoke_find_bytes_));
+        if(find_session_||!focused_session_||smoke_terminal_input_submissions_!=smoke_find_input_baseline_){smoke_finish("Find dismissal lost focus or leaked query/navigation to PTY.");return false;}
+        dispatch("terminal.find");find_query_.select_all();terminal_text("STORMTTY_FIND_NEEDLE");
+        find_query_.select_all();terminal_text("transient-absent");find_query_.select_all();terminal_text("STORMTTY_FIND_NEEDLE");smoke_find_stage_=6;return false;
+    }
+    if(smoke_find_stage_==6) {
+        if(result->matches.empty())return false;
+        const auto target=find_session_;activate_project(smoke_secondary_project_);
+        if(find_session_||active_session()==actor){smoke_finish("Find crossed workspace/session ownership.");return false;}
+        activate_project(smoke_primary_project_);
+        if(active_session()!=actor||!sessions_.contains(target)){smoke_finish("Find changed the terminal actor.");return false;}
+        smoke_find_stage_=7;std::fputs("Native Find smoke: real retained output, asynchronous match selection/navigation, narrow strip, no-match replacement, rapid query coalescing, Escape focus, zero frontend query/key/paste submissions and workspace isolation verified.\n",stderr);return true;
+    }
+    return false;
+}
 bool NativeWindow::smoke_palette_evidence(SessionId parked) {
     const auto actor=sessions_.at(parked);
     const auto actor_count=sessions_.size();
@@ -3626,7 +3871,10 @@ bool NativeWindow::smoke_frame_ready() const {
 void NativeWindow::smoke_workspace_progress(bool presented) {
     if (!workspace_smoke_ready_ || !presented || smoke_finished_) return;
     const auto finish=[this](std::string error) {
-        smoke_finished_=true; exit_code_=error.empty()?0:2;
+        if(options_.smoke_projects && !error.empty()) {
+        const auto found=find_result_;std::fprintf(stderr,"Native Find failure: stage=%u open=%u focused=%llu request=%llu status=%d matches=%zu selected=%lld apply=%d frontend_delta=%llu transport_delta=%llu\n",smoke_find_stage_,unsigned(bool(find_session_)),static_cast<unsigned long long>(focused_session_.value),static_cast<unsigned long long>(find_request_),found?int(found->status):-1,found?found->matches.size():0,found&&found->selected_index?static_cast<long long>(*found->selected_index):-1,found&&found->last_apply_result?int(*found->last_apply_result):-1,static_cast<unsigned long long>(smoke_terminal_input_submissions_-smoke_find_input_baseline_),static_cast<unsigned long long>(active_session()?active_session()->info().bytes_sent-smoke_find_bytes_:0));
+    }
+    smoke_finished_=true; exit_code_=error.empty()?0:2;
         std::fprintf(stderr,"Workspace persistence smoke %s: %s%s%s\n",
             error.empty()?"passed":"failed",options_.smoke_workspaces.c_str(),error.empty()?"":": ",error.c_str());
         if(hwnd_) destroy_window();
@@ -3759,6 +4007,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         }
         smoke_phase(SmokeDeadline::Phase::interaction);
     }
+    if (options_.smoke_projects && !smoke_find_progress()) return;
     if (options_.smoke_agent) {
         if (!smoke_agent_stage_) {
             toggle_agent_panel();
@@ -4479,6 +4728,9 @@ void NativeWindow::smoke_finish(std::string_view error) {
             unsigned(smoke_deadline_.phase()),static_cast<unsigned long long>(smoke_deadline_.phase_elapsed(GetTickCount64())),
             static_cast<unsigned long long>(smoke_deadline_.phase_budget()),GetTickCount64()-smoke_started_at_);
     }
+    if(options_.smoke_projects && !error.empty()) {
+        const auto found=find_result_;std::fprintf(stderr,"Native Find failure: stage=%u open=%u focused=%llu request=%llu status=%d matches=%zu selected=%lld apply=%d frontend_delta=%llu transport_delta=%llu\n",smoke_find_stage_,unsigned(bool(find_session_)),static_cast<unsigned long long>(focused_session_.value),static_cast<unsigned long long>(find_request_),found?int(found->status):-1,found?found->matches.size():0,found&&found->selected_index?static_cast<long long>(*found->selected_index):-1,found&&found->last_apply_result?int(*found->last_apply_result):-1,static_cast<unsigned long long>(smoke_terminal_input_submissions_-smoke_find_input_baseline_),static_cast<unsigned long long>(active_session()?active_session()->info().bytes_sent-smoke_find_bytes_:0));
+    }
     smoke_finished_=true; exit_code_=error.empty()?0:2;
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
@@ -4496,7 +4748,11 @@ void NativeWindow::smoke_finish(std::string_view error) {
 void NativeWindow::position_ime() {
     if (!hwnd_ || !renderer_) return;
     POINT position{}; RECT exclusion{};
-    if (palette_open_ || rename_open_) {
+    if(find_session_) {
+        const auto bounds=find_layout().query;const auto visible=find_query_view();
+        position={static_cast<LONG>((bounds.x+8+visible.second)*scale_),static_cast<LONG>((bounds.y+5)*scale_)};
+        exclusion={position.x,position.y,position.x+1,position.y+static_cast<LONG>(20*scale_)};
+    } else if (palette_open_ || rename_open_) {
         const auto panel=palette_layout({}).panel;
         ChromeText measure; measure.text=query_; measure.size_dip=16;
         measure.rect={0,0,static_cast<float>(panel.width*scale_),24*static_cast<float>(scale_)};
@@ -4543,7 +4799,7 @@ void NativeWindow::caret_schedule(bool restart) {
         for (const auto& row:snapshot->lines) if (row) for (const auto& cell:row->cells) if (cell.style.blink) { text_blinks=true; break; }
     }
     const bool cursor_blinks=!reduced_motion_ && frame && frame->cursor.visible && frame->cursor.blinking;
-    const bool should_blink=active_ && !minimized_ && !palette_open_ && !rename_open_ && !modal_ && !overlay_open() && (cursor_blinks || text_blinks) && interval && interval!=INFINITE;
+    const bool should_blink=active_ && !minimized_ && !find_session_ && !palette_open_ && !rename_open_ && !modal_ && !overlay_open() && (cursor_blinks || text_blinks) && interval && interval!=INFINITE;
     const auto now=GetTickCount64();
     const bool was_visible=cursor_blink_.visible();
     const auto previous_interval=cursor_blink_.interval();
@@ -4640,7 +4896,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         const bool focused=message==WM_SETFOCUS;
         typing_motion_.reset();
         active_=focused; text_input_.reset(); consumed_keys_.fill(false);
-        if (!focused) { agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.cancel(); menu_input_changed(); cancel_drag(); preedit_.clear(); composing_=false; }
+        if (!focused) { find_pressed_.reset(); agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.cancel(); menu_input_changed(); cancel_drag(); preedit_.clear(); composing_=false; }
         refresh_clock(); caret_schedule(focused); changed(); return 0;
     }
     case WM_ERASEBKGND: return 1;
@@ -4829,13 +5085,14 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         break;
     case WM_CAPTURECHANGED:
+        find_pressed_.reset();
         caption_pressed_=0; modal_pressed_.reset();
         agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.pointer_cancel(); overlay_pointer_sequence_=false;
         if (overlay_open()) changed();
         if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
         mouse_capture_pane_={}; mouse_capture_button_=MouseButton::none;
         if (drag_!=Drag::none) cancel_drag(); return 0;
-    case WM_CANCELMODE: agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.cancel(); menu_input_changed(); cancel_drag(); return 0;
+    case WM_CANCELMODE: find_pressed_.reset(); agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.cancel(); menu_input_changed(); cancel_drag(); return 0;
     case WM_CONTEXTMENU:
         if (modal_ || overlay_open()) return 0;
         if (GET_X_LPARAM(lparam)==-1 && GET_Y_LPARAM(lparam)==-1) popup_menu({width_/2,chrome_.band.height+12},true);
