@@ -63,6 +63,7 @@ jobs:
               if mode=='settings' and 'Semantic UI capture: saved custom theme, settings closed, presented=1 motion_settled=1' not in log: failures.append('settings-semantic-capture')
               if mode=='layout' and 'Native palette ownership smoke:' not in log: failures.append('layout-input-ownership')
               if mode=='settings' and 'Native Settings loading intent: held completion, Escape, immediate reopen and latest binding reuse same owned worker.' not in log: failures.append('settings-loading-intent')
+              if mode=='settings' and 'Native theme gallery: nine preset cards, normal3/narrow2 columns' not in log: failures.append('theme-gallery')
           expected=['commands','end','narrow','fuzzy','no-results','background']
           missing=[name for name in expected if not (artifacts/('craft-projects-palette-'+name+'.png')).is_file()]
           expected_startup=['craft-projects-startup-prepared.png','craft-projects-startup-exposed.png','craft-settings-startup-prepared.png','craft-settings-startup-exposed.png','craft-projects-workspace-focus-000ms.png']
@@ -71,6 +72,8 @@ jobs:
           missing.extend('find-'+name for name in expected_find if not (artifacts/('craft-projects-find-'+name+'.png')).is_file())
           expected_navigator=['normal','preview','narrow-workspaces','narrow-terminals','empty']
           missing.extend('navigator-'+name for name in expected_navigator if not (artifacts/('craft-projects-navigator-'+name+'.png')).is_file())
+          expected_gallery=['normal','narrow','high-contrast-fixture']
+          missing.extend('gallery-'+name for name in expected_gallery if not (artifacts/('craft-settings-theme-gallery-'+name+'.png')).is_file())
           expected_semantic=['craft-settings-appearance-blur-saved-reopened.png','craft-settings-appearance-shell-same-theme.png']
           missing.extend(name for name in expected_semantic if not (artifacts/name).is_file() or (artifacts/name).read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n')
           (artifacts/'manifest.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'ai_enabled':False,'required_palette_captures':expected,'required_semantic_captures':expected_semantic,'missing':missing,'failed_modes':failures},indent=2),encoding='utf-8')

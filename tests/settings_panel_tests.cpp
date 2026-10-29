@@ -209,6 +209,42 @@ int main() {return run_core_tests("settings panel",[] {
     CHECK(panel.key({{"ESCAPE"}}));CHECK(!panel.is_open());CHECK(panel.draft()==defaults);
     const auto cancel=panel.take_action();CHECK(cancel && cancel->kind==SettingsActionKind::cancel && cancel->config==defaults);
 
+    // Native preview cards share their grid geometry with spatial navigation.
+    // Resize/hover never edits the draft, and every off-screen editor remains
+    // reachable by normal focus traversal after the gallery grows vertically.
+    for (const auto& [width,columns]:std::vector<std::pair<double,unsigned>>{{1024,3},{480,2},{320,1}}) {
+        SettingsPanel gallery;gallery.resize({width,768});gallery.open(defaults);
+        const auto themes=builtin_themes();
+        const auto first_id="appearance.theme."+themes[0].name;
+        const auto first=item(gallery,first_id).bounds;
+        const auto next_row=item(gallery,"appearance.theme."+themes[columns].name).bounds;
+        CHECK(near(first.height,96));CHECK(near(next_row.x,first.x));
+        CHECK(near(next_row.y-first.y,104));
+        CHECK(first.width>=150);
+        const auto unchanged=gallery.draft();
+        gallery.pointer_move({first.x+12,first.y+12});
+        const auto hovered=item(gallery,first_id).bounds;
+        CHECK(near(hovered.x,first.x) && near(hovered.y,first.y));
+        CHECK(near(hovered.width,first.width) && near(hovered.height,first.height));
+        CHECK(gallery.draft()==unchanged);
+        WindowScene cards;gallery.append_scene(cards);
+        CHECK(std::any_of(cards.texts.begin(),cards.texts.end(),[](const auto& t){return t.text=="~/workspace";}));
+        CHECK(std::any_of(cards.texts.begin(),cards.texts.end(),[](const auto& t){return t.text=="> git status";}));
+        validate_scene(cards,width,768,1);
+        focus(gallery,first_id);gallery.key({{"DOWN"}});
+        CHECK(gallery.focused_control()=="appearance.theme."+themes[columns].name);
+        CHECK(gallery.draft().theme==themes[columns]);
+        gallery.key({{"UP"}});CHECK(gallery.focused_control()==first_id);
+        gallery.key({{"UP"}});CHECK(gallery.focused_control()==first_id);
+        focus(gallery,"appearance.theme.custom");gallery.key({{"DOWN"}});
+        CHECK(gallery.focused_control()=="appearance.theme.custom");
+        CHECK(item(gallery,"appearance.theme.custom").visible);
+        focus(gallery,"appearance.color.value");CHECK(item(gallery,"appearance.color.value").visible);
+        focus(gallery,"appearance.import");CHECK(item(gallery,"appearance.import").visible);
+        focus(gallery,"appearance.blur");CHECK(item(gallery,"appearance.blur").visible);
+        gallery.cancel();CHECK(gallery.take_action()->config==defaults);
+    }
+
     // Named themes change the actual draft and sample palette, remain reversible,
     // and preserve existing customized palettes until an explicit selection.
     for (const auto platform:{Platform::windows,Platform::macos}) {

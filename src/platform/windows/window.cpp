@@ -4435,9 +4435,29 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             *smoke_chrome_time_=start+40; smoke_motion_capture(L"settings-open-040ms",40);
             *smoke_chrome_time_=start+100; motion_schedule(); smoke_motion_capture(L"settings-open-settled-100ms",100);
             smoke_chrome_time_.reset();
+            const auto gallery_ok=[&](unsigned columns) {
+                std::vector<Rect> cards;
+                for(const auto& control:settings_panel_.layout().controls)if(control.id.starts_with("appearance.theme."))cards.push_back(control.bounds);
+                if(cards.size()!=9)return false;
+                unsigned first_row{};for(const auto& card:cards)if(std::abs(card.y-cards.front().y)<.1)++first_row;
+                return first_row==columns;
+            };
+            if(!gallery_ok(3)){smoke_finish("Normal theme gallery did not expose nine cards in three columns.");return;}
+            capture_settings(L"theme-gallery-normal");
+            RECT gallery_original{};GetWindowRect(hwnd_,&gallery_original);
+            SetWindowPos(hwnd_,nullptr,0,0,static_cast<int>(480*scale_),static_cast<int>(720*scale_),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+            if(!gallery_ok(2)){smoke_finish("Narrow theme gallery did not retain nine cards in two columns.");return;}
+            capture_settings(L"theme-gallery-narrow");
+            SetWindowPos(hwnd_,nullptr,0,0,gallery_original.right-gallery_original.left,gallery_original.bottom-gallery_original.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+            settings_panel_.set_high_contrast(true,{0,0,0,255},{255,255,255,255},{255,255,0,255},{0,0,0,255},{192,192,192,255});
+            capture_settings(L"theme-gallery-high-contrast-fixture");
+            settings_changed();
+            if(settings_panel_.draft()!=smoke_settings_original_||config_!=smoke_settings_original_||focused_session_){smoke_finish("Theme gallery presentation changed draft or terminal input ownership.");return;}
+            std::fputs("Native theme gallery: nine preset cards, normal3/narrow2 columns, authored high-contrast panel palette, unchanged draft and exclusive Settings focus; not OS accessibility qualification.\n",stderr);
             MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam='Q';
             if (!key_message(key)) { smoke_finish("Settings printable key escaped input trapping."); return; }
             terminal_text("SETTINGS_INPUT_MUST_NOT_REACH_SHELL");
+            for(unsigned i=0;i<256&&settings_panel_.focused_control()!="font.increase";++i)settings_panel_.key({{"TAB"}});
             const auto& controls=settings_panel_.layout().controls;
             const auto found=std::find_if(controls.begin(),controls.end(),[](const auto& control){return control.id=="font.increase" && control.visible && control.enabled;});
             if (found==controls.end()) { smoke_finish("Settings font preview control is not reachable."); return; }
@@ -4681,6 +4701,8 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     }
     if (options_.smoke_settings && smoke_settings_stage_==8 && smoke_settings_input_stage_<2) {
         if (!smoke_settings_input_stage_ && presented && !settings_panel_.is_open() && !motion_timer_active_) {
+            const auto restored=smoke_settings_actor_?smoke_settings_actor_->frame():FramePtr{};
+            if(!restored||restored->foreground!=color_hex(config_.theme.foreground,{})||restored->background!=color_hex(config_.theme.background,{}))return;
             capture_named_frame(L"appearance-shell-same-theme");
             std::fputs("Semantic UI capture: saved custom theme, settings closed, presented=1 motion_settled=1\n",stderr);
             smoke_settings_input_stage_=1;
