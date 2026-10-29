@@ -159,6 +159,35 @@ collision ACL preservation. Diagnostic preflight now invokes the staging suite.
 Local Linux results: 25 staging tests passed, native ACL test skipped; all 23
 seed packaging/parser/workflow tests passed. The correction has **not run on
 Windows** until a separately reviewed root publication qualifies it.
+## Separate durable initialization journal hardening (pending native evidence)
+
+The stage-4 probe retains the departed owner's mutex handle, so last-handle
+object disappearance is **not an established cause** of that run's failure.
+Nevertheless, a real process exit closes all mutex handles; a new process can
+then create a new mutex without receiving `WAIT_ABANDONED`. The opt-in lifecycle
+must not rely solely on that non-durable signal.
+
+The separate correctness candidate creates an exclusive private
+`completion-init-in-progress` file, writes its version marker and flushes it
+before seed adoption or permitting shared-cache compinit. Its handle is closed
+before child launch so ordinary state inspection and contenders remain possible.
+A pre-existing journal or uncertainty marker suppresses adoption and selects
+normal secure `compinit -i -D`, preserving config, completion paths and history.
+Only a trusted native readiness acknowledgement on the owning controller can
+remove the **current launch's** journal: it reopens a non-reparse, single-link
+file, checks original volume/file identity and private ACL, and deletes via that
+handle before releasing the mutex. Failure retains uncertainty. Child exit
+without acknowledgement releases the lease but does not clear the journal.
+An acknowledgement from a later uncached launch never clears an earlier journal.
+There is deliberately no automatic uncertainty recovery or sweep.
+
+The native probe adds a child that calls `ExitProcess` with the sole mutex handle
+still held, then requires subsequent launches to remain uncached even after
+acknowledgement. The evidence parser requires this new proof before starting
+startup measurements. Existing child-exit expectations are tightened: the lease
+is reusable but shared completion dumps are not. Local Windows-target compilation
+and portable parser/route tests pass; actual Windows journal behavior, flush
+cost and shipping latency remain unmeasured. Defaults remain OFF.
 
 ## Staging regression run 40876888614: reader error, no adoption result
 
@@ -177,3 +206,26 @@ ACEs, and unchanged ACLs on creation collision. Native API failures report their
 Win32 errors. The runtime implementation and strict verifier are unchanged by
 this reader correction. Local staging suite still passes 25 tests with the single
 Windows test skipped; native policy qualification remains pending.
+
+## Integrated journal candidate (not native-qualified)
+
+The integrated candidate combines the fresh-staging ACL correction and direct
+native ACL reader with the durable journal from `37a3462` and GUID fixture/stage
+ordering from `383118a`. Numeric `SHIPPING_VERIFY` diagnostics and every native
+adoption/security check remain intact. The crash test now counts adoption callback
+invocations explicitly (rather than throwing inside a swallowed callback), and
+checks that the journal exists before the initial adoption callback runs.
+
+The new lifecycle gate must report
+`INITIALIZATION_JOURNAL code=0 process_exit_persistent=1 prior_journal_not_cleared=1`
+in addition to all existing lifecycle checks. A child exits while holding its sole
+mutex handle; subsequent launches must choose no-dump completion, never invoke
+adoption, and never clear that previous journal even after readiness. This is
+required **before** startup timing is accepted.
+
+Local integrated validation: 25 staging tests passed (Windows ACL case skipped),
+24 seed packaging/parser/workflow tests passed, and both changed native lifecycle
+translation units compiled for Windows x86-64 with Zig C++20 and
+`-Wall -Wextra -Werror`. This is cross-compilation, not Windows execution. Prior
+installed timing and lifecycle success do not qualify this new journal or its
+flush overhead. No default enablement or automatic recovery policy is included.

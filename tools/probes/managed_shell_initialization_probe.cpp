@@ -32,6 +32,13 @@ struct Fixture {
 int main(){unsigned stage{};try{
     int argc{};auto argv=CommandLineToArgvW(GetCommandLineW(),&argc);check(argv);
     struct Arguments {LPWSTR* data;~Arguments(){LocalFree(data);}} arguments{argv};
+    if(argc==3 && std::wstring_view(argv[1])==L"--exit-with-initialization") {
+        auto held=managed_shell_initialization_at(fs::path(argv[2]),{});
+        std::vector<ProcessEnvironmentEntry> e;held->prepare(e);
+        check(value(e,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="0" && held->ready_event()!=0);
+        // No destructors: OS closes the sole mutex handle on process exit.
+        ExitProcess(0);
+    }
     if(argc==4 && std::wstring_view(argv[1])==L"--hold-initialization") {
         auto held=managed_shell_initialization_at(fs::path(argv[2]),{});
         std::vector<ProcessEnvironmentEntry> e;held->prepare(e);check(value(e,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="0");
@@ -42,9 +49,15 @@ int main(){unsigned stage{};try{
     }
     check(argc==1);
     Fixture fixture;unsigned callbacks{};
-    auto owner=managed_shell_initialization_at(fixture.root,[&]{++callbacks;return false;});
+    bool journal_before_callback{};
+    auto owner=managed_shell_initialization_at(fixture.root,[&]{
+        ++callbacks;
+        const auto state=prepare_managed_shell_state_at(fixture.root,false);
+        journal_before_callback=state && fs::is_regular_file(state.directory/L"completion-init-in-progress");
+        return false;
+    });
     std::vector<ProcessEnvironmentEntry> env;owner->prepare(env);stage=1;
-    check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="0" && owner->ready_event()!=0 && callbacks==1);
+    check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="0" && owner->ready_event()!=0 && callbacks==1 && journal_before_callback);
     bool contender_ok{};
     std::thread contender([&]{
         auto next=managed_shell_initialization_at(fixture.root,[]{throw std::runtime_error("must not adopt");return false;});
@@ -58,8 +71,10 @@ int main(){unsigned stage{};try{
     const auto state=prepare_managed_shell_state_at(fixture.root,false);check(static_cast<bool>(state));
     std::ofstream(state.directory/L"config.zsh")<<"# existing user config\n";
     auto custom=managed_shell_initialization_at(fixture.root,[&]{++callbacks;return true;});
-    env.clear();custom->prepare(env);check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="0" && callbacks==1);custom->finished();stage=3;
-    // Actual child exit without acknowledgement must release on its controller,
+    env.clear();custom->prepare(env);check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="0" && callbacks==1);custom->ready();stage=3;
+    // Actual child exit without acknowledgement releases the lease but retains
+    // the durable journal: subsequent launches must use uncached completion.
+    // Release must happen on its controller,
     // not the UI/probe thread that created the initialization object.
     wchar_t system[MAX_PATH]{};check(GetSystemDirectoryW(system,MAX_PATH)>0);
     const auto command=fs::path(system)/L"cmd.exe";auto u8=command.generic_u8string();
@@ -67,7 +82,7 @@ int main(){unsigned stage{};try{
     options.initialization=managed_shell_initialization_at(fixture.root,{});
     auto process=Process::start(std::move(options),{});check(process->wait_for_exit(20s));
     auto after=managed_shell_initialization_at(fixture.root,{});env.clear();after->prepare(env);
-    check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="0");after->finished();
+    check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1" && after->ready_event()!=0);after->finished();
     // A controller disappearing without ready/finished must not make a possibly
     // interrupted executable cache eligible again on the next launch.
     stage=31;Fixture abandoned_fixture;
@@ -78,7 +93,7 @@ int main(){unsigned stage{};try{
     auto recover=managed_shell_initialization_at(abandoned_fixture.root,{});env.clear();recover->prepare(env);
     const auto uncertain_state=prepare_managed_shell_state_at(abandoned_fixture.root,false);
     std::error_code marker_error;
-    const bool marker_present=uncertain_state && fs::exists(uncertain_state.directory/L"completion-init-uncertain",marker_error);
+    const bool marker_present=uncertain_state && fs::exists(uncertain_state.directory/L"completion-init-in-progress",marker_error);
     std::cout<<"INITIALIZATION_ABANDONED recovery_no_dump="<<(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1")
              <<" recovery_event="<<(recover->ready_event()!=0)<<" state_valid="<<static_cast<bool>(uncertain_state)
              <<" marker_present="<<marker_present<<" marker_error="<<marker_error.value()<<'\n';
@@ -107,6 +122,21 @@ int main(){unsigned stage{};try{
     check(observed->held.load());auto cross=managed_shell_initialization_at(process_fixture.root,{});env.clear();cross->prepare(env);
     check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1" && !value(env,"STORMTTY_NATIVE_ZSH_STATE").empty());cross->finished();
     check(SetEvent(release));check(holder->wait_for_exit(20s));check(observed->code && *observed->code==0);
+    stage=51;Fixture crashed_fixture;
+    ProcessOptions crash_options;crash_options.executable=as_utf8(fs::path(module));
+    crash_options.arguments={"--exit-with-initialization",as_utf8(crashed_fixture.root)};
+    std::optional<std::uint32_t> crash_code;
+    ProcessCallbacks crash_callbacks;crash_callbacks.exited=[&](ProcessExit exit){crash_code=exit.exit_code;};
+    auto crashed=Process::start(std::move(crash_options),std::move(crash_callbacks));
+    check(crashed->wait_for_exit(20s));check(crash_code && *crash_code==0);
+    unsigned recovery_callbacks{};
+    auto durable=managed_shell_initialization_at(crashed_fixture.root,[&]{++recovery_callbacks;return false;});
+    env.clear();durable->prepare(env);
+    check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1" && durable->ready_event()!=0 && recovery_callbacks==0);
+    durable->ready();
+    auto still_uncertain=managed_shell_initialization_at(crashed_fixture.root,[&]{++recovery_callbacks;return false;});env.clear();still_uncertain->prepare(env);
+    check(value(env,"STORMTTY_NATIVE_ZSH_NO_DUMP")=="1" && recovery_callbacks==0);still_uncertain->finished();
+    std::cout<<"INITIALIZATION_JOURNAL code=0 process_exit_persistent=1 prior_journal_not_cleared=1\n";
     stage=6;Fixture acl_fixture;const auto acl_state=prepare_managed_shell_state_at(acl_fixture.root,false);check(static_cast<bool>(acl_state));
     const auto public_file=acl_state.directory/L"public-runtime-fixture";std::ofstream(public_file)<<"authored fixture";
     auto checker=managed_runtime_access_check();stage=6;

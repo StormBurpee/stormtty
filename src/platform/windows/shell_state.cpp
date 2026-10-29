@@ -154,6 +154,9 @@ class Initialization final : public WindowsProcessInitialization {
     std::filesystem::path root_;
     std::function<bool()> adopt_;
     std::unique_ptr<Handle> mutex_, event_;
+    std::filesystem::path journal_path_;
+    BY_HANDLE_FILE_INFORMATION journal_identity_{};
+    bool journal_created_{};
     bool owned_{};
     DWORD owner_thread_{};
     void release() noexcept {
@@ -211,6 +214,22 @@ public:
                     CREATE_NEW,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
                 require(marker.value!=INVALID_HANDLE_VALUE || GetLastError()==ERROR_FILE_EXISTS);
             }
+            // Kernel abandonment is not durable across process death: the last
+            // mutex handle may disappear. Journal before any callback or shared
+            // compinit can mutate executable cache, and clear only on native ready.
+            const auto journal_path=state.directory/L"completion-init-in-progress";
+            const bool previous=std::filesystem::exists(journal_path) || std::filesystem::exists(uncertain);
+            if(!previous) {
+                Handle journal(CreateFileW(native(journal_path).c_str(),GENERIC_WRITE,
+                    FILE_SHARE_READ,&attributes,CREATE_NEW,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+                require(journal.value!=INVALID_HANDLE_VALUE);
+                constexpr char active[]="STORMTTY_INITIALIZATION_V1\n";
+                DWORD written{};
+                require(WriteFile(journal.value,active,sizeof(active)-1,&written,nullptr) && written==sizeof(active)-1);
+                require(FlushFileBuffers(journal.value));
+                require(GetFileInformationByHandle(journal.value,&journal_identity_));
+                journal_path_=journal_path;journal_created_=true;
+            }
             GUID guid{};require(SUCCEEDED(CoCreateGuid(&guid)));
             std::wstring event_name=L"Local\\StormTTY-ZshInit-";
             const auto* bytes=reinterpret_cast<const unsigned char*>(&guid);
@@ -224,7 +243,7 @@ public:
                 if(entry.path().filename().wstring().starts_with(L"zcompdump-"))fresh=false;
             const auto completions=state.directory/L"cache/completions";
             if(std::filesystem::exists(completions) && !std::filesystem::is_empty(completions))fresh=false;
-            if(!std::filesystem::exists(uncertain)) {
+            if(!previous) {
                 if(fresh && adopt_) (void)adopt_(); // Failure remains ordinary secure initialization.
                 environment.push_back({"STORMTTY_NATIVE_ZSH_NO_DUMP","0"});
             }
@@ -235,7 +254,25 @@ public:
         }
     }
     std::uintptr_t ready_event() const noexcept override {return event_?reinterpret_cast<std::uintptr_t>(event_->value):0;}
-    void ready() noexcept override {release();}
+    void ready() noexcept override {
+        try {
+            if(owned_ && owner_thread_==GetCurrentThreadId() && journal_created_) {
+                Handle journal(CreateFileW(native(journal_path_).c_str(),DELETE|READ_CONTROL|FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+                require(journal.value!=INVALID_HANDLE_VALUE);
+                BY_HANDLE_FILE_INFORMATION info{};require(GetFileInformationByHandle(journal.value,&info));
+                require(!(info.dwFileAttributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_DIRECTORY)) && info.nNumberOfLinks==1 &&
+                    info.dwVolumeSerialNumber==journal_identity_.dwVolumeSerialNumber &&
+                    info.nFileIndexHigh==journal_identity_.nFileIndexHigh && info.nFileIndexLow==journal_identity_.nFileIndexLow);
+                Security security;security.inspect(journal.value,false);
+                FILE_DISPOSITION_INFO disposition{TRUE};
+                require(SetFileInformationByHandle(journal.value,FileDispositionInfo,&disposition,sizeof(disposition)));
+                // Close/delete before releasing the mutex; no sharing-delete
+                // handle is retained while ordinary shell validation runs.
+            }
+        } catch(...) { /* Retained journal fails closed on the next launch. */ }
+        journal_created_=false;release();
+    }
     void finished() noexcept override {release();}
 };
 }

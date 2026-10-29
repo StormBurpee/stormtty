@@ -26,4 +26,12 @@ class ResultTests(unittest.TestCase):
         self.assertFalse(ok);self.assertIn(diagnostic.decode().strip(),lines)
         lines,_,_=m.sanitized(self.data(False)+b'SHIPPING_VERIFY sample=1 stage=path object=user win32_error=secret\n',False)
         self.assertNotIn('secret','\n'.join(lines))
+    def test_durable_journal_evidence_required(self):
+        normal=b'INITIALIZATION_CHECKS code=0 contention=1 config_preserved=1 native_ack=1 child_exit_release=1 abandoned_owner_no_dump=1 public_runtime_acl=1 cross_process_contention=1\n'
+        journal=b'INITIALIZATION_JOURNAL code=0 process_exit_persistent=1 prior_journal_not_cleared=1\n'
+        self.assertFalse(m.lifecycle_evidence(normal)[1])
+        self.assertTrue(m.lifecycle_evidence(normal+journal)[1])
+        lines,ok=m.lifecycle_evidence(normal+journal+b'private/user/path\n')
+        self.assertTrue(ok);self.assertNotIn('private','\n'.join(lines))
+        self.assertFalse(m.lifecycle_evidence(journal)[1])
 if __name__=='__main__':unittest.main()
