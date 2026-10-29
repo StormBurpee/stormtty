@@ -74,6 +74,10 @@ std::pair<std::string,double> terminal_find_visible(const TerminalFindQuery& que
 inline bool current_find_result(const SearchSnapshot& result, std::uint64_t request, std::string_view query) {
     return request && result.token.request_id==request && result.query==query;
 }
+inline bool initial_find_selection_needed(const SearchSnapshot& result, std::uint64_t request, const std::optional<SearchToken>& attempted) {
+    return result.token.request_id==request && result.status==SearchStatus::complete && !result.matches.empty() &&
+        !result.selected_index && (!attempted || *attempted!=result.token);
+}
 inline std::string terminal_find_status(const SearchSnapshot* result, std::uint64_t request, std::string_view query) {
     if(query.empty())return "";
     if(!result || !current_find_result(*result,request,query))return "Searching…";

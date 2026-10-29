@@ -438,6 +438,7 @@ private:
     SessionId find_session_{};
     TerminalFindQuery find_query_;
     SearchSnapshotPtr find_result_;
+    std::optional<SearchToken> find_auto_attempt_;
     std::uint64_t find_request_{}, find_auto_select_{};
     unsigned find_focus_{}; // query, previous, next, close
     std::optional<unsigned> find_pressed_;
@@ -2099,7 +2100,7 @@ void NativeWindow::close_find(bool geometry) {
 }
 void NativeWindow::submit_find() {
     if(!find_session_||!sessions_.contains(find_session_))return;
-    find_error_.clear();find_result_.reset();
+    find_error_.clear();find_result_.reset();find_auto_attempt_.reset();
     auto actor=sessions_.at(find_session_);
     (void)actor->clear_selection(); // A replaced/no-match query must not leave an old match highlighted.
     const auto request=find_query_.text().empty()?actor->cancel_search():actor->search({find_query_.text()});
@@ -2113,11 +2114,17 @@ void NativeWindow::refresh_find() {
     if(!pane||pane->session!=find_session_||!sessions_.contains(find_session_)){close_find();return;}
     auto actor=sessions_.at(find_session_);auto result=actor->search_snapshot();
     if(!result||!current_find_result(*result,find_request_,find_query_.text()))return;
-    if(find_result_==result)return;
-    find_result_=std::move(result);++chrome_generation_;
+    if(find_result_!=result){find_result_=std::move(result);++chrome_generation_;}
     if(find_auto_select_==find_request_ && find_result_->status==SearchStatus::complete) {
-        find_auto_select_=0;
-        if(!find_result_->matches.empty())(void)actor->select_search_match(find_result_->token,0);
+        bool selected=false;
+        if(const auto frame=actor->frame())for(const auto& row:frame->lines)for(const auto& cell:row->cells)selected=selected||cell.selected;
+        if(find_result_->matches.empty() || (find_result_->selected_index && selected))find_auto_select_=0;
+        else if(initial_find_selection_needed(*find_result_,find_request_,find_auto_attempt_)) {
+            // Resize/output may reject the old token. Retry only a fresh token,
+            // and retain the one-shot intent until its selected frame is visible.
+            find_auto_attempt_=find_result_->token;
+            (void)actor->select_search_match(find_result_->token,0);
+        }
     }
 }
 void NativeWindow::navigate_find(bool previous) {
@@ -3835,7 +3842,10 @@ bool NativeWindow::smoke_frame_ready() const {
 void NativeWindow::smoke_workspace_progress(bool presented) {
     if (!workspace_smoke_ready_ || !presented || smoke_finished_) return;
     const auto finish=[this](std::string error) {
-        smoke_finished_=true; exit_code_=error.empty()?0:2;
+        if(options_.smoke_projects && !error.empty()) {
+        const auto found=find_result_;std::fprintf(stderr,"Native Find failure: stage=%u open=%u focused=%llu request=%llu status=%d matches=%zu selected=%lld apply=%d frontend_delta=%llu transport_delta=%llu\n",smoke_find_stage_,unsigned(bool(find_session_)),static_cast<unsigned long long>(focused_session_.value),static_cast<unsigned long long>(find_request_),found?int(found->status):-1,found?found->matches.size():0,found&&found->selected_index?static_cast<long long>(*found->selected_index):-1,found&&found->last_apply_result?int(*found->last_apply_result):-1,static_cast<unsigned long long>(smoke_terminal_input_submissions_-smoke_find_input_baseline_),static_cast<unsigned long long>(active_session()?active_session()->info().bytes_sent-smoke_find_bytes_:0));
+    }
+    smoke_finished_=true; exit_code_=error.empty()?0:2;
         std::fprintf(stderr,"Workspace persistence smoke %s: %s%s%s\n",
             error.empty()?"passed":"failed",options_.smoke_workspaces.c_str(),error.empty()?"":": ",error.c_str());
         if(hwnd_) DestroyWindow(hwnd_);
@@ -4674,6 +4684,9 @@ void NativeWindow::smoke_finish(std::string_view error) {
         std::fprintf(stderr,"Native smoke deadline phase=%u phase_elapsed_ms=%llu budget_ms=%llu total_elapsed_ms=%llu\n",
             unsigned(smoke_deadline_.phase()),static_cast<unsigned long long>(smoke_deadline_.phase_elapsed(GetTickCount64())),
             static_cast<unsigned long long>(smoke_deadline_.phase_budget()),GetTickCount64()-smoke_started_at_);
+    }
+    if(options_.smoke_projects && !error.empty()) {
+        const auto found=find_result_;std::fprintf(stderr,"Native Find failure: stage=%u open=%u focused=%llu request=%llu status=%d matches=%zu selected=%lld apply=%d frontend_delta=%llu transport_delta=%llu\n",smoke_find_stage_,unsigned(bool(find_session_)),static_cast<unsigned long long>(focused_session_.value),static_cast<unsigned long long>(find_request_),found?int(found->status):-1,found?found->matches.size():0,found&&found->selected_index?static_cast<long long>(*found->selected_index):-1,found&&found->last_apply_result?int(*found->last_apply_result):-1,static_cast<unsigned long long>(smoke_terminal_input_submissions_-smoke_find_input_baseline_),static_cast<unsigned long long>(active_session()?active_session()->info().bytes_sent-smoke_find_bytes_:0));
     }
     smoke_finished_=true; exit_code_=error.empty()?0:2;
     if (error.empty()) {

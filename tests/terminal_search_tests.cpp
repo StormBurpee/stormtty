@@ -42,6 +42,19 @@ std::string frame_text(const FramePtr& frame) {
     }
     return text;
 }
+void visible_selection_publication() {
+    TerminalCore t(make_search_terminal_options(100,30));
+    t.feed("prompt>echo NEEDLE alpha & echo NEEDLE beta\r\nNEEDLE alpha\r\nNEEDLE beta\r\nprompt>");
+    (void)t.snapshot();
+    t.clear_selection();t.begin_search(1,{"NEEDLE"});auto result=finish(t);
+    check(result->matches.size()==4,"visible search fixture count");
+    check(t.select_search_match(result->token,0)==SearchApplyResult::applied,"newest visible search selection rejected");
+    auto frame=t.snapshot();bool selected=false;
+    for(const auto& row:frame->lines)for(const auto& cell:row->cells)selected=selected||cell.selected;
+    check(selected,"accepted newest search selection missing from immutable frame");
+    t.clear_selection();t.begin_search(2,{"ABSENT"});result=finish(t);frame=t.snapshot();
+    for(const auto& row:frame->lines)for(const auto& cell:row->cells)check(!cell.selected,"cleared search selection remained in immutable frame");
+}
 void real_history_navigation() {
     TerminalCore t(make_search_terminal_options());
     t.feed("old NEEDLE\r\n");
@@ -230,6 +243,7 @@ void session_coalescing_and_fairness(const std::string& executable) {
 int main(int argc,char** argv) {
     if(argc==2&&std::string_view(argv[1])=="--search-child")return child();
     const std::vector<std::pair<const char*,std::function<void()>>> tests{
+        {"visible selection publication",visible_selection_publication},
         {"real scrollback and bidirectional wrap",real_history_navigation},
         {"UTF-8/graphemes/literal ASCII-only folding",utf8_and_literal_semantics},
         {"alternate isolation and owned lifetime",alternate_isolation_and_owned_results},

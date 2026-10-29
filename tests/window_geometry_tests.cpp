@@ -27,6 +27,14 @@ int main() {
     require(current_find_result(find_snapshot,42,"needle")&&!current_find_result(find_snapshot,41,"needle")&&!current_find_result(find_snapshot,42,"other"),"Find ignores stale request/query snapshots");
     require(terminal_find_status(&find_snapshot,42,"needle")=="2 / 2","Find count follows newest-first backend result order");
     require(terminal_find_status(&find_snapshot,43,"needle")=="Searching…","old counts never masquerade as latest query results");
+    find_snapshot.selected_index.reset();
+    require(initial_find_selection_needed(find_snapshot,42,{})&&!initial_find_selection_needed(find_snapshot,41,{}),"initial Find selection belongs to current request");
+    const auto attempted=find_snapshot.token;
+    require(!initial_find_selection_needed(find_snapshot,42,attempted),"initial Find selection never spins on the same rejected token");
+    ++find_snapshot.token.generation;
+    require(initial_find_selection_needed(find_snapshot,42,attempted),"initial Find retries after output or resize publishes a fresh token");
+    find_snapshot.selected_index=0;
+    require(!initial_find_selection_needed(find_snapshot,42,attempted),"initial Find does not duplicate an accepted selection");
     find_snapshot.status=SearchStatus::limited;require(terminal_find_status(&find_snapshot,42,"needle")=="Limit reached","bounded search cannot advertise an exhaustive count");
     for(double width:{80.,180.,330.,439.,440.,1044.}) {
         const auto find=layout_terminal_find({13,27,width,300},28);
