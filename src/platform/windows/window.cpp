@@ -1,5 +1,6 @@
 #include "stormtty/workspace_ribbon.hpp"
 #include "stormtty/ui_colors.hpp"
+#include "stormtty/pane_context.hpp"
 #include "stormtty/smoke_commands.hpp"
 #include "stormtty/settings_reload.hpp"
 #include "stormtty/workspace_save_signal.hpp"
@@ -411,6 +412,9 @@ private:
     bool smoke_find_progress();
     bool smoke_navigator_evidence();
     bool smoke_palette_input_progress();
+    bool smoke_context_progress();
+    unsigned smoke_context_stage_{};
+    std::vector<std::pair<PaneId,std::shared_ptr<Session>>> smoke_context_actors_;
     unsigned smoke_palette_input_stage_{};
     bool smoke_palette_disable_sent_{};
     bool smoke_navigator_done_{};
@@ -448,6 +452,13 @@ private:
     void toggle_fullscreen();
     void show_error(std::string_view);
     std::string pane_title(PaneId, bool full = false) const;
+    PaneContextPresentation pane_context(PaneId) const;
+    PaneContextPresentation context_for(const Pane&,std::string_view,const SessionInfo&) const;
+    std::map<SessionId,SessionInfo> pane_infos_;
+    std::map<SessionId, PaneContextPresentation> pane_contexts_;
+    bool inspecting_context() const {return palette_open_ && inspected_context_.has_value();}
+    std::optional<PaneContextPresentation> inspected_context_;
+    mutable PaneContextLineCache inspected_lines_;
     std::string tab_title(TabId, bool full = false) const;
     PixelRect pixels(Rect r) const { return {static_cast<float>(r.x * scale_), static_cast<float>(r.y * scale_), static_cast<float>(r.width * scale_), static_cast<float>(r.height * scale_)}; }
     Point point(LPARAM lparam, bool screen = false) const {
@@ -1392,6 +1403,8 @@ void NativeWindow::update_sessions() {
     struct TitleUpdate { ProjectWorkspaceId project; PaneId pane; std::string title; };
     std::vector<TitleUpdate> titles;
     bool state_changed=false;
+    std::erase_if(pane_infos_,[this](const auto& value){return !sessions_.contains(value.first);});
+    std::erase_if(pane_contexts_,[this](const auto& value){return !sessions_.contains(value.first);});
     ParkedNoticeBatch notice_batch;
     std::string batch_notice;
     // Hidden workspaces retain actors and model metadata. Never retire them just
@@ -1399,6 +1412,11 @@ void NativeWindow::update_sessions() {
     for (const auto& project:projects_.entries()) for (const auto& [pane_id,pane]:project.workspace.state().panes) {
         auto found=sessions_.find(pane.session); if (found==sessions_.end()) continue;
         const auto info=found->second->info();
+        pane_infos_[pane.session]=info;
+        auto presentation=context_for(pane,project.metadata.working_directory,info);
+        if(!pane_contexts_.contains(pane.session) || pane_contexts_.at(pane.session)!=presentation){
+            pane_contexts_[pane.session]=std::move(presentation);state_changed=true;++chrome_generation_;
+        }
         if (!info.title.empty() && pane.title!=info.title) titles.push_back({project.id,pane_id,info.title});
         if (project.id==projects_.active_id() && !info.error.empty() && notice_!=info.error) {
             if (notice_batch.consider(ParkedNotice::process_failed)) batch_notice=info.error;
@@ -1409,6 +1427,8 @@ void NativeWindow::update_sessions() {
     for (const auto& project:projects_.entries()) for (const auto& parked:project.parked_sessions) {
         auto found=sessions_.find(parked.session); if (found==sessions_.end()) continue;
         const auto info=found->second->info();
+        pane_infos_[parked.session]=info; // Restore uses the latest owned snapshot, even if the actor is quiet.
+
         // Normally inserted by park_pane; fallback baselines without inventing an alert.
         auto attention=parked_attention_.try_emplace(parked.session,info).first;
         const auto event=attention->second.observe(info);
@@ -1807,27 +1827,34 @@ std::string NativeWindow::pane_title(PaneId id, bool full) const {
     const Profile* profile = managed_shell_profile_ && pane->profile==managed_shell_profile_->id?&*managed_shell_profile_:nullptr;
     if (!profile) for (const auto& candidate : config_.profiles) if (candidate.id == pane->profile) { profile = &candidate; break; }
     if (result.empty()) result = profile && !profile->label.empty() ? profile->label : "Terminal";
-    // Only replace an exact executable path, never arbitrary OSC text or a user
-    // rename. The untouched title remains available in the native tooltip.
-    if (!full && profile && !profile->label.empty()) {
-        auto canonical = [](std::string value) {
-            for (auto& c : value) { if (c == '/') c = '\\'; if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a'); }
-            return value;
-        };
-        const auto title = canonical(result), executable = canonical(profile->executable);
-        bool exact = !executable.empty() && title == executable;
-        if (executable == "cmd.exe" || executable == "cmd") {
-            std::array<wchar_t, MAX_PATH + 1> directory{};
-            const UINT length = GetSystemDirectoryW(directory.data(), static_cast<UINT>(directory.size()));
-            if (length && length < directory.size()) exact = exact || title == canonical(narrow(std::wstring(directory.data(), length) + L"\\cmd.exe"));
-        }
-        if (exact) result = profile->label;
-    }
-    result.erase(std::remove_if(result.begin(), result.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; }), result.end());
+    (void)full;
+    result=pane_context_text(result);
     // The model bounds untrusted titles. DirectWrite performs visual ellipsis;
     // do not byte-truncate UTF-8 or mutate the session title for presentation.
     if (auto* session = session_for(id); session && session->process_finished()) result += " · exited";
     return result;
+}
+PaneContextPresentation NativeWindow::context_for(const Pane& pane,std::string_view start,const SessionInfo& info) const {
+    const Profile* profile=managed_shell_profile_ && pane.profile==managed_shell_profile_->id?&*managed_shell_profile_:nullptr;
+    if(!profile)for(const auto& candidate:config_.profiles)if(candidate.id==pane.profile){profile=&candidate;break;}
+    // Preserve the existing model-resolved title and its validation bound; raw
+    // actor titles rejected by the workspace must not bypass that UI contract.
+    auto title=pane.title;
+    if(title.empty())title=profile&&!profile->label.empty()?profile->label:"Terminal";
+    const bool exited=info.state==SessionState::exited || info.state==SessionState::failed;
+    if(exited)title+=" · exited";
+    const auto configured=start.empty() && profile?std::string_view(profile->working_directory):start;
+    return make_pane_context({title,profile?profile->label:pane.profile,info.working_directory,configured,
+        info.shell_context?&*info.shell_context:nullptr,managed_shell_profile_ && pane.profile==managed_shell_profile_->id,exited});
+}
+PaneContextPresentation NativeWindow::pane_context(PaneId id) const {
+    const auto* pane=workspace().pane(id);
+    if(!pane)return make_pane_context({});
+    // Session metadata is copied once at the existing actor wake. Current
+    // workspace/profile labels are resolved here, so edits need no shell wake.
+    const auto found=pane_infos_.find(pane->session);
+    const SessionInfo unavailable;
+    return context_for(*pane,projects_.active()->metadata.working_directory,found==pane_infos_.end()?unavailable:found->second);
 }
 std::string NativeWindow::tab_title(TabId id, bool full) const {
     const auto* tab = workspace().tab(id);
@@ -1850,7 +1877,7 @@ void NativeWindow::refresh_tooltips() {
         info.lpszText=owned.data(); SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
     };
     for (const auto& tab:chrome_.tabs) add(tab.bounds,tab_title(tab.tab,true));
-    if (layout_.panes.size()>1) for (const auto& pane:layout_.panes) add({pane.bounds.x,pane.bounds.y,pane.bounds.width,28},pane_title(pane.pane,true));
+    if (layout_.panes.size()>1) for (const auto& pane:layout_.panes) add({pane.bounds.x,pane.bounds.y,pane.bounds.width,28},pane_context(pane.pane).detail);
     for (const auto& row:navigation_.projects) if (const auto* project=projects_.find(row.project)) add(row.bounds,project->metadata.name+"\n"+project->metadata.working_directory);
     add(navigation_.toggle,navigation_.expanded?"Collapse workspaces":width_<640?"Navigation stays compact in narrow windows":"Expand workspaces");
     if(ai_enabled_)add(footer_layout().agent,agent_status_label()+"\nOpen agent · Ctrl+Shift+J");
@@ -2119,7 +2146,7 @@ void NativeWindow::settings_input_changed() {
 }
 CommandContext NativeWindow::command_context() const {
     CommandContext context;
-    context.supports_settings_reload=true;
+    context.supports_settings_reload=true; context.supports_pane_context=true;
     context.supports_agent_panel=ai_enabled_;
     context.supports_background_sessions=true; context.parked_sessions=projects_.active()->parked_sessions.size();
     context.supports_workspace_navigator=true;context.supports_project_workspaces=true; context.project_workspaces=projects_.entries().size(); context.supports_focus_mode=true;
@@ -2290,7 +2317,7 @@ void NativeWindow::acquire_text_overlay_input() {
 void NativeWindow::toggle_palette() {
     if(navigator_open_)close_navigator();
     if(find_session_)close_find();
-    palette_background_only_=false;
+    palette_background_only_=false; inspected_context_.reset();
     if(!palette_open_)acquire_text_overlay_input();
     palette_open_ = !palette_open_; rename_open_ = false; query_.clear(); palette_index_ = 0;
     composing_ = false; preedit_.clear();
@@ -2299,6 +2326,20 @@ void NativeWindow::toggle_palette() {
 }
 std::vector<NativeWindow::PaletteEntry> NativeWindow::palette_commands() const {
     std::vector<PaletteEntry> result;
+    if(inspecting_context()) {
+        // Bounded viewport and keyboard paging reuse the existing Commands input
+        // owner. This frozen owned snapshot has no action IDs or PTY operations.
+        const auto width=std::max(40.0,std::min(640.0,width_-32)-72);
+        const auto& lines=inspected_lines_.lines(inspected_context_->detail,width,scale_,[this](std::string_view text,double wrap_width,double scale){
+            ChromeText item;item.text=std::string(text);item.size_dip=14;item.semibold=true;
+            item.rect={0,0,static_cast<float>(wrap_width*scale),28*static_cast<float>(scale)};
+            return renderer_->wrap_chrome_text(item); // One native shaping/layout, not one per scalar.
+        });
+        for(const auto& line:lines)
+            if(command_search_score(query_,line,"Pane context"))result.push_back({{},line,"Read-only snapshot · Escape returns to terminal",{},0});
+        return result;
+    }
+
     if (!palette_background_only_) for (const auto& command:command_registry())
         if ((ai_enabled_||command.id!="agent.toggle")) if (const auto score=command_search_score(query_,command.label,command.description))
             result.push_back({std::string(command.id),std::string(command.label),std::string(command.description),{},*score});
@@ -2330,6 +2371,7 @@ NativeWindow::PaletteLayout NativeWindow::palette_layout(std::span<const Palette
     return layout_command_palette(width_,height_,heights,palette_index_,rename_open_);
 }
 CommandAvailability NativeWindow::palette_availability(const PaletteEntry& entry) const {
+    if (inspecting_context()) return {true,{}};
     if (!entry.session) return host_availability(entry.id,command_context());
     const auto target=*entry.session;
     const auto* project=projects_.find(target.project);
@@ -2340,6 +2382,7 @@ CommandAvailability NativeWindow::palette_availability(const PaletteEntry& entry
     return {true,{}};
 }
 void NativeWindow::activate_palette_entry(const PaletteEntry& entry) {
+    if(inspecting_context())return;
     const auto available=palette_availability(entry);
     if (!available.enabled) { show_error(available.reason); return; }
     palette_open_=false; query_.clear();
@@ -2383,6 +2426,10 @@ void NativeWindow::dispatch(std::string_view command) {
     if (command == "background.restore") {
         if (!palette_open_) toggle_palette();
         palette_background_only_=true; query_.clear(); palette_index_=0; changed(); return;
+    }
+    if (command == "pane.inspect") {
+        acquire_text_overlay_input(); inspected_context_=pane_context(pane);
+        palette_open_=true; rename_open_=false; palette_background_only_=false; query_.clear(); palette_index_=0; changed(); return;
     }
     if (command == "pane.background") { park_pane(pane); return; }
     if (command == "pane.close") { close_pane(pane); return; }
@@ -2573,7 +2620,16 @@ WindowScene NativeWindow::scene() {
             }
             const double focus=pane_focus_[placement.pane].value(now);
             if (focus>0) rectangle({header.x + 12,header.y + 10,2,8},opacity(accent,focus));
-            label({header.x + 20,header.y + 6,std::max(0.0,header.width - 56),18}, pane_title(placement.pane), blend(secondary,text,focus), 13);
+            const auto context=pane_context(placement.pane);
+            const double available=std::max(0.0,header.width-56);
+            const auto measure=[&](const std::string& value,double size){ChromeText item;item.text=value;item.size_dip=static_cast<float>(size);item.rect={0,0,100000,28*static_cast<float>(scale_)};return renderer_->measure_chrome_text(item).width/scale_;};
+            const double primary_width=measure(context.primary,13);
+            auto detail=pane_context_secondary(context);
+            if(primary_width+16+measure(detail,11)>available)detail=pane_context_secondary(context,PaneContextDensity::directory);
+            if(primary_width+16+48>available || detail.size()>32768)detail.clear();
+            const double title_width=detail.empty()?available:std::min(primary_width,available);
+            label({header.x+20,header.y+6,title_width,18},context.primary,blend(secondary,text,focus),13);
+            if(!detail.empty())label({header.x+20+title_width+16,header.y+7,std::max(0.0,available-title_width-16),17},detail,secondary,11);
             label({header.x + header.width - 28,header.y + 3,24,22}, "···", secondary, 16,false,ChromeTextAlignment::center);
         }
     }
@@ -2807,7 +2863,7 @@ WindowScene NativeWindow::scene() {
         rectangle({x+w-49,y+18,30,19},background,4,seam,1);
         label({x+w-44,y+20,24,15},"Esc",secondary,10);
         const double search_left=x+(rename_open_?20:46);
-        label({search_left,y+16,std::max(0.0,x+w-66-search_left),24},query_.empty()?(rename_open_?(edit_text_action_?edit_text_hint_:"Tab name"):palette_background_only_?"Search background terminals…":"Type a command…"):query_,query_.empty()?secondary:text,16);
+        label({search_left,y+16,std::max(0.0,x+w-66-search_left),24},query_.empty()?(rename_open_?(edit_text_action_?edit_text_hint_:"Tab name"):inspecting_context()?"Inspect pane context · filter fields":palette_background_only_?"Search background terminals…":"Type a command…"):query_,query_.empty()?secondary:text,16);
         // A stationary caret remains visible with reduced motion. Measure the
         // actual chrome font; byte counts are not glyph widths (IME/Unicode).
         ChromeText query_measure; query_measure.text=query_; query_measure.size_dip=16;
@@ -2830,7 +2886,9 @@ WindowScene NativeWindow::scene() {
             // The same 16-DIP native line language as workspace navigation.
             const Color mark=selected?accent:secondary;
             const double ix=x+20, iy=top+3;
-            if (command.id.starts_with("workspace.")) {
+            if (inspecting_context()) {
+                // Metadata rows are not actions: no command/launch icon.
+            } else if (command.id.starts_with("workspace.")) {
                 rectangle({ix,iy+4,16,10},{0,0,0,0},1,mark,1);
                 line(ix,iy+4,ix,iy+1,mark); line(ix,iy+1,ix+6,iy+1,mark); line(ix+6,iy+1,ix+9,iy+4,mark);
             } else if (command.id.starts_with("pane.")) {
@@ -2849,7 +2907,7 @@ WindowScene NativeWindow::scene() {
             ChromeText key_measure; key_measure.text=shortcut; key_measure.size_dip=10;
             key_measure.rect={0,0,static_cast<float>(w*scale_),21*static_cast<float>(scale_)};
             const double key_width=shortcut.empty()?0:std::min(w*.4,renderer_->measure_chrome_text(key_measure).width/scale_+16);
-            label({x+48,top,std::max(0.0,w-68-key_width-(key_width?12:0)),21},command.label,available.enabled?text:secondary,14,selected);
+            label({x+(inspecting_context()?20:48),top,std::max(0.0,w-(inspecting_context()?40:68)-key_width-(key_width?12:0)),21},command.label,available.enabled?text:secondary,14,selected);
             if (!detail.empty()) label({x+48,top+21,std::max(0.0,w-68),17},std::string(detail),secondary,11);
             if (key_width) {
                 rectangle({x+w-20-key_width,top,key_width,21},raised,4,seam,1);
@@ -2857,10 +2915,10 @@ WindowScene NativeWindow::scene() {
             }
         }
         if (!rename_open_ && commands.empty()) {
-            label({x+20,y+60,w-40,21},palette_background_only_ && query_.empty()?"No background terminals":"No matching commands",text,14);
-            label({x+20,y+83,w-40,18},query_.empty()?"Move a terminal to background to keep it running here.":"Try fewer letters or a different action name.",secondary,11);
+            label({x+20,y+60,w-40,21},inspecting_context()?"No matching fields":palette_background_only_ && query_.empty()?"No background terminals":"No matching commands",text,14);
+            label({x+20,y+83,w-40,18},query_.empty()?"Move a terminal to background to keep it running here.":inspecting_context()?"Try fewer letters or clear the filter.":"Try fewer letters or a different action name.",secondary,11);
         }
-        const auto hint=rename_open_?"Enter  Save":palette_background_only_?"↑ ↓  Navigate     Enter  Restore":"↑↓  Move     Enter  Run     Alt+Enter  Shortcut";
+        const auto hint=inspecting_context()?"Read only     ↑↓ / PgUp PgDn  Browse     Esc  Close":rename_open_?"Enter  Save":palette_background_only_?"↑ ↓  Navigate     Enter  Restore":"↑↓  Move     Enter  Run     Alt+Enter  Shortcut";
         line(x+1,layout.detail.y,x+w-1,layout.detail.y,seam);
         if (!rename_open_ && !commands.empty()) {
             const auto& selected=commands[std::min(palette_index_,commands.size()-1)];
@@ -3213,7 +3271,7 @@ bool NativeWindow::key_message(MSG& message) {
             palette_index_ = 0; changed(); return true;
         }
         if (vk == VK_RETURN) {
-            if (palette_open_ && (modifiers&Modifier::alt) && !altgr) {
+            if (palette_open_ && !inspecting_context() && (modifiers&Modifier::alt) && !altgr) {
                 const auto commands=palette_commands();
                 if (!commands.empty() && !commands[std::min(palette_index_,commands.size()-1)].session) open_settings(commands[std::min(palette_index_,commands.size()-1)].id);
                 if (vk<consumed_keys_.size()) consumed_keys_[vk]=true;
@@ -3896,6 +3954,65 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
         settings_transition_.value(chrome_now()),menu_transition_.value(chrome_now()),
         workspace_focus_[projects_.active_id()].value(chrome_now()),pane_focus_[workspace().active_pane()].value(chrome_now()),motion_timer_active_);
 }
+bool NativeWindow::smoke_context_progress() {
+    if(smoke_context_stage_==3)return true;
+    const auto fail=[&](std::string_view message){smoke_finish(message);return false;};
+    if(!smoke_context_stage_) {
+        std::wstring module(32768,L'\0');const auto length=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
+        if(!length||length>=module.size())return fail("Context fixture could not resolve its native child.");
+        module.resize(length);const auto child=std::filesystem::path(module).parent_path()/L"terminal_search_tests.exe";
+        if(!std::filesystem::is_regular_file(child))return fail("Context fixture child is missing.");
+        unsigned index=0;
+        for(const auto& placement:layout_.panes) {
+            auto actor=sessions_.at(placement.session);smoke_context_actors_.push_back({placement.pane,actor});
+            const auto command="\""+narrow(child.generic_wstring())+"\" --native-context-child "+std::to_string(index++);
+            if(!TerminalCore::paste_is_safe(command)||actor->paste(command)!=SessionSendResult::accepted)return fail("Context fixture safe input was not accepted.");
+            KeyInput enter;enter.key=Key::enter;if(actor->key(enter)!=SessionSendResult::accepted)return fail("Context fixture Enter was not accepted.");
+        }
+        if(index!=3)return fail("Context fixture requires three existing distinct pane actors.");
+        smoke_context_stage_=1;return false;
+    }
+    if(smoke_context_stage_==1) {
+        for(const auto& [pane,actor]:smoke_context_actors_) {
+            const auto info=actor->info();if(!info.shell_context)return false;
+            if(!info.shell_context->directory_key.starts_with("file:///C:/context-fixture-"))return false;
+            if(pane_context(pane).directory!=info.shell_context->display_directory)return false;
+        }
+        const auto original=workspace().active_pane();const auto count=sessions_.size();
+        const auto baseline=smoke_terminal_input_submissions_;const auto mouse_baseline=smoke_terminal_mouse_submissions_;
+        const auto key=[&](WPARAM vk){MSG m{};m.hwnd=hwnd_;m.message=WM_KEYDOWN;m.wParam=vk;key_message(m);m.message=WM_KEYUP;key_message(m);};
+        const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_.reset();};
+        if(pane_context(smoke_context_actors_[0].first).primary!=pane_context_text(smoke_context_actors_[0].second->info().title) || !pane_context(smoke_context_actors_[1].first).detached)return fail("Context title provenance or detached HEAD changed.");
+        capture(L"context-headers");
+        for(const auto& [pane,actor]:smoke_context_actors_) {
+            activate(pane);const auto before=actor->info().bytes_sent;const auto geometry=layout_.panes;const auto frame=actor->frame();
+            toggle_palette();query_="Inspect pane context";const auto commands=palette_commands();
+            if(commands.empty()||commands.front().id!="pane.inspect")return fail("Context command is not discoverable.");
+            key(VK_RETURN);
+            if(!palette_open_||!inspected_context_||focused_session_||inspected_context_->directory!=actor->info().shell_context->display_directory)return fail("Context inspection lost its owned snapshot or input ownership.");
+            key(VK_END);key(VK_HOME);terminal_text("Repository");key(VK_RETURN);query_.clear();
+            if(actor->info().bytes_sent!=before||layout_.panes.size()!=geometry.size()||active_session()!=actor.get()||sessions_.size()!=count)return fail("Read-only context inspection changed transport or actor identity.");
+            const auto after=actor->frame();if(!frame||!after||frame->columns!=after->columns||frame->rows!=after->rows)return fail("Context inspection changed the terminal grid.");
+            capture(L"context-inspect");key(VK_ESCAPE);
+        }
+        activate(smoke_context_actors_[2].first);dispatch("pane.inspect");
+        RECT original_window{};GetWindowRect(hwnd_,&original_window);
+        SetWindowPos(hwnd_,nullptr,0,0,static_cast<int>(480*scale_),static_cast<int>(480*scale_),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        capture(L"context-narrow");const bool contrast=high_contrast_;high_contrast_=true;capture(L"context-high-contrast-fixture");high_contrast_=contrast;
+        SetWindowPos(hwnd_,nullptr,0,0,original_window.right-original_window.left,original_window.bottom-original_window.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        key(VK_ESCAPE);activate(original);
+        if(smoke_terminal_input_submissions_!=baseline||smoke_terminal_mouse_submissions_!=mouse_baseline)return fail("Context keyboard inspection leaked frontend input.");
+        for(const auto& [pane,actor]:smoke_context_actors_){(void)pane;if(actor->text("q")!=SessionSendResult::accepted)return fail("Context fixture stop was rejected.");}
+        smoke_context_stage_=2;return false;
+    }
+    for(const auto& [pane,actor]:smoke_context_actors_) {
+        if(session_for(pane)!=actor.get())return fail("Context fixture changed pane actor ownership.");
+        const auto info=actor->info();if(info.shell_context&&info.shell_context->directory_key.starts_with("file:///C:/context-fixture-"))return false;
+    }
+    smoke_context_stage_=3;
+    std::fputs("Native pane context: three distinct owned actors, exact OSC titles preserved, observed directory/branch/detached HEAD, Unicode long path, keyboard Commands inspection, zero PTY input, unchanged grid and identity, narrow/high-contrast captures; context from explicit test child, not live Git discovery.\n",stderr);
+    return true;
+}
 bool NativeWindow::smoke_palette_input_progress() {
     if(smoke_palette_input_stage_==2)return true;
     auto* actor=active_session();if(!actor){smoke_finish("Palette ownership smoke lost its actor.");return false;}
@@ -4301,6 +4418,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         smoke_phase(SmokeDeadline::Phase::interaction);
     }
     if (options_.smoke_layout && !smoke_palette_input_progress()) return;
+    if (options_.smoke_layout && !smoke_context_progress()) return;
     if (options_.smoke_projects && !smoke_find_progress()) return;
     if (options_.smoke_projects && !smoke_navigator_evidence()) return;
     if (options_.smoke_agent) {
@@ -4885,7 +5003,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if(!foreground || footer_presentation().directory.empty()) {
             smoke_finish("Foreground footer lost its actual session directory/profile."); return;
         }
-        std::fprintf(stderr,"Native footer smoke: active directory/context retained beside background restore targets; no synthetic Git metadata injected.\n");
+        std::fprintf(stderr,"Native footer smoke: active directory/context retained beside background restore targets.\n");
         const auto current_context=foreground->info().shell_context;
         if(current_context && footer_presentation().directory!=current_context->display_directory) {
             smoke_finish("Footer did not use the active actor's owned display directory."); return;

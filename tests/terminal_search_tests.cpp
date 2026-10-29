@@ -44,6 +44,34 @@ std::string frame_text(const FramePtr& frame) {
     return text;
 }
 #ifdef _WIN32
+int native_context_child(unsigned index) {
+    const auto old_cp=GetConsoleOutputCP();
+    struct RestoreCodePage {UINT value;~RestoreCodePage(){SetConsoleOutputCP(value);}} restore_cp{old_cp};
+    if(!SetConsoleOutputCP(CP_UTF8))return 29;
+    const HANDLE input=GetStdHandle(STD_INPUT_HANDLE),output=GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD old_input{},old_output{};
+    if(!GetConsoleMode(input,&old_input)||!GetConsoleMode(output,&old_output))return 30;
+    struct Restore {HANDLE handle;DWORD mode;~Restore(){SetConsoleMode(handle,mode);}} ri{input,old_input},ro{output,old_output};
+    if(!SetConsoleMode(input,ENABLE_VIRTUAL_TERMINAL_INPUT|ENABLE_EXTENDED_FLAGS)||!SetConsoleMode(output,old_output|ENABLE_VIRTUAL_TERMINAL_PROCESSING))return 31;
+    const auto emit=[&](std::string_view value){DWORD written{};return WriteFile(output,value.data(),static_cast<DWORD>(value.size()),&written,nullptr)&&written==value.size();};
+    std::wstring cwd(32768,L'\0');const auto cwd_length=GetCurrentDirectoryW(static_cast<DWORD>(cwd.size()),cwd.data());
+    if(!cwd_length||cwd_length>=cwd.size())return 35;
+    cwd.resize(cwd_length);const auto size=WideCharToMultiByte(CP_UTF8,0,cwd.data(),static_cast<int>(cwd.size()),nullptr,0,nullptr,nullptr);
+    if(size<=0)return 36;
+    std::string actual_directory(static_cast<std::size_t>(size),'\0');
+    WideCharToMultiByte(CP_UTF8,0,cwd.data(),static_cast<int>(cwd.size()),actual_directory.data(),size,nullptr,nullptr);
+    const auto suffix=std::to_string(index);
+    const auto directory=index==2?"C:/work/\xe6\x97\xa5\xe6\x9c\xac/"+std::string(180,'x')+"/shared": "C:/work/project-"+suffix+"/shared";
+    const auto key="file:///C:/context-fixture-"+suffix;
+    const auto title=index==0?"cmd.exe":index==1?"Review · café":"Build · 日本語";
+    const auto packet="\x1b]2;"+std::string(title)+"\x07\x1b]7;"+key+"\x07\x1b]7400;stormtty-context;1;set;"+key+";"+directory+";C:/work/project-"+suffix+";"+(index==1?"detached;123456789abcdef":"branch;feature/context-"+suffix)+"\x07\r\nSTORMTTY_CONTEXT_READY_"+suffix+"\r\n";
+    if(!emit(packet))return 32;
+    unsigned bytes{};char value{};DWORD read{};
+    while(bytes++<4096&&ReadFile(input,&value,1,&read,nullptr)&&read==1) {
+        if(value=='q')return emit("\x1b]9;9;"+actual_directory+"\x07\x1b]7400;stormtty-context;1;clear\x07\r\nSTORMTTY_CONTEXT_DONE\r\n")?0:33;
+    }
+    return 34;
+}
 int native_mouse_child() {
     const HANDLE input=GetStdHandle(STD_INPUT_HANDLE),output=GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD old_input{},old_output{};
@@ -281,6 +309,7 @@ void session_coalescing_and_fairness(const std::string& executable) {
 }
 int main(int argc,char** argv) {
 #ifdef _WIN32
+    if(argc==3&&std::string_view(argv[1])=="--native-context-child")return native_context_child(static_cast<unsigned>(std::atoi(argv[2])));
     if(argc==2&&std::string_view(argv[1])=="--native-mouse-child")return native_mouse_child();
 #endif
     if(argc==2&&std::string_view(argv[1])=="--search-child")return child();
