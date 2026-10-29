@@ -33,5 +33,10 @@ inline bool valid_ribbon(const RibbonConfig& config) {
 }
 // Host must construct this anew for the active workspace, never retain stale context.
 // Attention is essential and cannot be hidden by a declarative preference.
-struct RibbonHostData { bool agent_available{}; bool agent_attention{}; bool session_error{}; };
+struct RibbonHostData {
+    bool agent_available{}; bool agent_attention{}; bool session_error{};
+    // Opt-in compact workspace summary: one Navigator target, not per-terminal chips.
+    bool compact_background{};
+    bool background_attention{}; // Unread explicit command completion, not shell liveness.
+};
 }

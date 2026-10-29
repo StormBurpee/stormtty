@@ -283,11 +283,44 @@ inline SessionFooterLayout layout_session_footer(Rect footer, std::size_t parked
     for(std::size_t i=0;i<shown.size();++i) shown[i]=shown[i] && !config.hidden[i];
     if(host.session_error) shown[ribbon_index(RibbonBinding::status)]=true;
     if(host.agent_attention) shown[ribbon_index(RibbonBinding::agent)]=true;
+    if(host.background_attention && parked) shown[ribbon_index(RibbonBinding::background)]=true;
     std::array<double,6> widths{};
-    const double available=std::max(0.0,footer.width-16);
+    const double inset=std::min(8.0,footer.width/4);
+    const double available=std::max(0.0,footer.width-2*inset);
     double used=0;std::size_t count=0;
     auto priority=ribbon_bindings;
-    if(host.session_error) priority[ribbon_index(RibbonBinding::status)].priority=99;
+    if(host.compact_background) {
+        priority[ribbon_index(RibbonBinding::background)].minimum=96;
+        priority[ribbon_index(RibbonBinding::background)].preferred=208;
+        priority[ribbon_index(RibbonBinding::status)].minimum=112;
+        priority[ribbon_index(RibbonBinding::status)].preferred=176;
+    }
+    if(host.session_error) priority[ribbon_index(RibbonBinding::status)].priority=host.compact_background?104:99;
+    if(host.compact_background) {
+        priority[ribbon_index(RibbonBinding::background)].priority=103;
+        if(host.agent_attention) priority[ribbon_index(RibbonBinding::agent)].priority=105;
+    }
+    // Reserve narrow attention/navigation affordances before ordinary admission.
+    // User order is still used below. Explicitly hidden quiet background stays hidden.
+    if(host.compact_background) {
+        const std::array<bool,6> essential{false,false,host.session_error,
+            shown[ribbon_index(RibbonBinding::background)],host.agent_attention,false};
+        const auto essentials=std::count(essential.begin(),essential.end(),true);
+        double minimums=0;
+        for(const auto& item:priority) if(essential[ribbon_index(item.binding)]) minimums+=item.minimum;
+        if(essentials && minimums+12*(essentials-1)>available) {
+            const double gap=std::min(12.0,available/(2*essentials));
+            const double share=(available-gap*(essentials-1))/essentials;
+            double x=footer.x+inset;
+            for(const auto item:config.order) if(essential[ribbon_index(item)]) {
+                const Rect r{x,footer.y+3,share,footer.height-6}; x+=share+gap;
+                if(item==RibbonBinding::status) result.status=r;
+                if(item==RibbonBinding::background) result.background.overflow=r;
+                if(item==RibbonBinding::agent) result.agent=r;
+            }
+            return result;
+        }
+    }
     std::stable_sort(priority.begin(),priority.end(),[](const auto& a,const auto& b){return a.priority>b.priority;});
     for(const auto& item:priority) {
         const auto i=ribbon_index(item.binding);if(!shown[i]) continue;
@@ -298,7 +331,7 @@ inline SessionFooterLayout layout_session_footer(Rect footer, std::size_t parked
     // Grow admitted items without stealing room from more important values.
     for(const auto& item:priority) {auto& width=widths[ribbon_index(item.binding)];if(width<=0) continue;
         const double extra=std::min(available-used,item.preferred-width);width+=extra;used+=extra;}
-    double x=footer.x+8;
+    double x=footer.x+inset;
     for(auto item:config.order) {
         const double width=widths[ribbon_index(item)];if(width<=0) continue;
         const Rect rect{x,footer.y+3,width,footer.height-6};x+=width+12;
@@ -308,7 +341,10 @@ inline SessionFooterLayout layout_session_footer(Rect footer, std::size_t parked
         case RibbonBinding::status:result.status=rect;break;
         case RibbonBinding::clock:result.clock=rect;break;
         case RibbonBinding::agent:result.agent=rect;break;
-        case RibbonBinding::background:result.background=layout_background_footer({rect.x,footer.y,rect.width,footer.height},parked,false);break;
+        case RibbonBinding::background:
+            if(host.compact_background) result.background.overflow=rect;
+            else result.background=layout_background_footer({rect.x,footer.y,rect.width,footer.height},parked,false);
+            break;
         }
     }
     return result;
