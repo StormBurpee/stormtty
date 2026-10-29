@@ -25,6 +25,9 @@ public:
         timer_.value=CreateWaitableTimerExW(nullptr,nullptr,0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,TIMER_MODIFY_STATE|SYNCHRONIZE);
         if(!event_.value||!timer_.value)throw std::runtime_error("Qualification high-resolution deadline timer unavailable");
     }
+    bool prepare_wait() noexcept override {
+        return !notify_error_.load(std::memory_order_acquire) && ResetEvent(event_.value);
+    }
     void notify() noexcept override {
         if(!SetEvent(event_.value))notify_error_.store(GetLastError(),std::memory_order_release);
     }

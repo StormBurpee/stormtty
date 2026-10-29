@@ -23,7 +23,7 @@ def sanitize(output, traced=False, replay=False):
     lines=[]
     for line in output.decode('utf-8',errors='replace').splitlines():
         if replay and REPLAY.fullmatch(line): lines.append(line)
-        elif not replay and (CONTROL.fullmatch(line) or re.fullmatch(r"TYPING_WAIT_MODE high_resolution=[01]",line)): lines.append(line)
+        elif not replay and (CONTROL.fullmatch(line) or re.fullmatch(r"TYPING_WAIT_MODE high_resolution=[01]",line) or re.fullmatch(r"TYPING_PUBLICATION_BUDGET ms=(?:8|16)",line)): lines.append(line)
         elif traced and (TRACE_HEADER.fullmatch(line) or TRACE_EVENT.fullmatch(line) or line=='END_TYPING_TRACE' or line=='TYPING_TRACE_RESULT inconclusive=1 reason=capacity'): lines.append(line)
     return lines
 
@@ -49,7 +49,7 @@ def valid(lines, traced=False, replay=False):
             # Never declare this structural sanitizer alone an exact replay.
     return ok
 
-def one(command, output, *, traced=False, replay=False, invoke=None, deadline_mode=None):
+def one(command, output, *, traced=False, replay=False, invoke=None, deadline_mode=None, publication_budget=None):
     lines=[]; passed=False
     invoke=invoke or runner.run_owned
     try:
@@ -59,7 +59,9 @@ def one(command, output, *, traced=False, replay=False, invoke=None, deadline_mo
         if deadline_mode is not None:
             modes=[line for line in lines if line.startswith('TYPING_WAIT_MODE ')]
             wakes=[line for line in lines if line.startswith('TYPING_EVENT kind=wake ')]
-            passed=passed and modes==['TYPING_WAIT_MODE high_resolution='+str(deadline_mode)] and bool(wakes) and all(' alternate='+str(deadline_mode)+' ' in line for line in wakes)
+            passed=passed and modes==['TYPING_WAIT_MODE high_resolution='+str(deadline_mode)] and bool(wakes) and (any(' alternate=1 ' in line for line in wakes) if deadline_mode else all(' alternate=0 ' in line for line in wakes))
+        if publication_budget is not None:
+            passed=passed and [line for line in lines if line.startswith('TYPING_PUBLICATION_BUDGET ')]==['TYPING_PUBLICATION_BUDGET ms='+str(publication_budget)]
         lines.append('RESPONSIVENESS_RUNNER exit_code=%d timed_out=%d reaped=%d truncated=%d cleanup_error=%d elapsed_seconds=%.3f' % (result.exit_code,result.timed_out,result.reaped,result.output_truncated,bool(result.cleanup_error),result.elapsed_seconds))
     except OSError:
         lines.append('RESPONSIVENESS_LAUNCH_ERROR code=1')
@@ -72,29 +74,32 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('build','runtime','provider','output'): p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--deadline-ab',action='store_true')
+    p.add_argument('--cadence-ab',action='store_true')
     a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
+    if a.cadence_ab and not a.deadline_ab:p.error('--cadence-ab requires --deadline-ab')
     failures=[];signatures={}
     for provider,extra in [('inbox',[]),('packaged',[str(a.provider.resolve())])]:
-        cases=[('control',False),('trace',True)]+([('highres',True)] if a.deadline_ab else [])
+        cases=[('control',False),('trace',True)]+([('highres',True)] if a.deadline_ab else [])+([('highres16',True)] if a.cadence_ab else [])
         for case,traced in cases:
             exe='managed_shell_typing_trace.exe' if traced else 'managed_shell_state_probe.exe'
             args=[str((a.build/exe).resolve()),str(a.runtime.resolve()),*extra]
-            if case=='highres':args.append('--high-resolution-deadlines')
+            if case.startswith('highres'):args.append('--high-resolution-deadlines')
+            if case=='highres16':args.append('--publication-budget-16')
             output=a.output/(provider+'-'+case+'.log')
-            mode=int(case=='highres') if a.deadline_ab and traced else None
-            passed,_=one(args,output,traced=traced,deadline_mode=mode)
+            mode=int(case.startswith('highres')) if a.deadline_ab and traced else None
+            passed,_=one(args,output,traced=traced,deadline_mode=mode,publication_budget=(16 if case=='highres16' else 8) if a.cadence_ab and traced else None)
             if not passed: failures.append(provider+'-'+case)
             if traced:
                 # Run replay even if probe/lifecycle failed: retain independent
                 # parser evidence. A missing/incomplete trace must fail replay.
-                ok,lines=one([str((a.build/'qualification_typing_evidence_tests.exe').resolve()),'--replay',str(output.resolve())],a.output/(provider+('-highres-replay.log' if case=='highres' else '-replay.log')),replay=True)
-                if not ok: failures.append(provider+('-highres-replay' if case=='highres' else '-replay'))
+                ok,lines=one([str((a.build/'qualification_typing_evidence_tests.exe').resolve()),'--replay',str(output.resolve())],a.output/(provider+('-'+case+'-replay.log' if case.startswith('highres') else '-replay.log')),replay=True)
+                if not ok: failures.append(provider+('-'+case+'-replay' if case.startswith('highres') else '-replay'))
                 if ok:
                     match=next(REPLAY.fullmatch(line) for line in lines if REPLAY.fullmatch(line))
-                    signatures[provider+('-highres' if case=='highres' else '')]=(int(match[1]),int(match[2]))
-    comparable=len(signatures)==(4 if a.deadline_ab else 2) and len(set(signatures.values()))==1
+                    signatures[provider+('-'+case if case.startswith('highres') else '')]=(int(match[1]),int(match[2]))
+    comparable=len(signatures)==(6 if a.cadence_ab else 4 if a.deadline_ab else 2) and len(set(signatures.values()))==1
     summary={'schema':1,'fixture':'authored managed shell warm quoted typing','retries':0,
-             'deadline_ab':a.deadline_ab,'instrumentation_perturbs_timing':True,'physical_display_verified':False,
+             'deadline_ab':a.deadline_ab,'cadence_ab':a.cadence_ab,'budgets_ms':[8,16] if a.cadence_ab else [8],'instrumentation_perturbs_timing':True,'physical_display_verified':False,
              'completed_input_identical':comparable,'completed_input_signatures':signatures,'failed_cases':failures}
     if not comparable: failures.append('completed-input-comparison-inconclusive')
     (a.output/'comparison.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n',encoding='utf-8')

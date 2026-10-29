@@ -83,14 +83,26 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     Impl(ProcessOptions p, TerminalOptions t, Wake w, SessionRetentionPolicy policy)
         : process_options(std::move(p)), terminal_options(t), wake(std::move(w)), retention(policy) {
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if(process_options.qualification_publication_budget_ms!=8 && process_options.qualification_publication_budget_ms!=16)
+            throw std::invalid_argument("Qualification publication budget must be 8 or 16ms");
         if(process_options.qualification_high_resolution_deadlines)
             deadline_wait=qualification::make_high_resolution_deadline_wait();
+#endif
+    }
+    std::chrono::milliseconds publication_budget() const noexcept {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        return std::chrono::milliseconds(process_options.qualification_publication_budget_ms);
+#else
+        return std::chrono::milliseconds(8);
 #endif
     }
     void wake_actor() noexcept {
         changed.notify_all();
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
-        if(deadline_wait)deadline_wait->notify();
+        if(deadline_wait) {
+            std::lock_guard lock(mutex);
+            if(!commands.empty() || !output.empty() || exit.has_value() || close_requested)deadline_wait->notify();
+        }
 #endif
     }
     void publish(FramePtr frame) {
@@ -336,7 +348,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             }
             const auto now = TerminalCore::Clock::now();
             step_search(core, now, next_search_step);
-            if (dirty && now - last_frame >= std::chrono::milliseconds(8)) {
+            if (dirty && now - last_frame >= publication_budget()) {
                 publish(core.snapshot(now)); last_frame = now; dirty = false;
                 // Display-only operations must never turn retained protocol
                 // effects into writes or start another process.
@@ -344,7 +356,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             }
             if (!batch.empty()) continue;
             auto until = TerminalCore::Clock::time_point::max();
-            if (dirty) until = last_frame + std::chrono::milliseconds(8);
+            if (dirty) until = last_frame + publication_budget();
             if (core.search_needs_work()) until = std::min(until, next_search_step);
             std::unique_lock lock(mutex);
             const auto ready = [&] { return !commands.empty() || close_requested; };
@@ -500,7 +512,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             if (!closing && !child_exit) step_search(core, now, next_search_step);
             if (child_exit) core.finish_output(); // Reveal final held bytes and freeze animations.
             const auto deadline = core.next_deadline();
-            if ((dirty && now - last_frame >= std::chrono::milliseconds(8)) ||
+            if ((dirty && now - last_frame >= publication_budget()) ||
                 (deadline && now >= *deadline) || child_exit) {
                 publish(core.snapshot(now));
                 last_frame = now; dirty = false; effects(); notify();
@@ -532,7 +544,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             }
             if (!batch.empty() || !bytes.empty() || progress) continue;
             auto until = TerminalCore::Clock::time_point::max();
-            if (dirty) until = last_frame + std::chrono::milliseconds(8);
+            if (dirty) until = last_frame + publication_budget();
             if (deadline) until = std::min(until, *deadline);
             if (!writes.empty()) until = std::min(until, now + std::chrono::milliseconds(5));
             if (starting) until = std::min(until, now + std::chrono::milliseconds(20));
@@ -546,7 +558,8 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                     const auto begin=TerminalCore::Clock::now();
                     auto returned=begin;
                     std::uint32_t reason{};
-                    if(deadline_wait) {
+                    if(deadline_wait && dirty) {
+                        if(!deadline_wait->prepare_wait())throw std::runtime_error("Qualification deadline prepare failed");
                         lock.unlock();const auto result=deadline_wait->wait_until(until);
                         returned=TerminalCore::Clock::now();lock.lock();
                         reason=static_cast<std::uint32_t>(result.reason);
@@ -560,7 +573,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                     // Do not hold the Session queue mutex while recording evidence.
                     const bool pending=ready();lock.unlock();
                     if(process_options.qualification_typing_evidence)
-                        process_options.qualification_typing_evidence->wake(++trace_wait_sequence,until,begin,returned,reacquired,reason,pending,deadline_wait!=nullptr);
+                        process_options.qualification_typing_evidence->wake(++trace_wait_sequence,until,begin,returned,reacquired,reason,pending,deadline_wait!=nullptr && dirty);
                 }
 #else
                 changed.wait_until(lock, until, ready);

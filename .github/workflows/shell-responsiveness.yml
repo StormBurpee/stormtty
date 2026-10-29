@@ -1,16 +1,16 @@
 # Explicit synthetic-only diagnostic. Not a production/default qualification gate.
-name: Isolated high-resolution typing A/B
+name: Isolated 8ms versus 16ms typing cadence
 on:
   push:
-    branches: [diagnostic/typing-highres]
+    branches: [diagnostic/typing-cadence]
 permissions:
   contents: read
 concurrency:
-  group: typing-highres-${{ github.ref }}
+  group: typing-cadence-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   observe:
-    if: github.ref == 'refs/heads/diagnostic/typing-highres'
+    if: github.ref == 'refs/heads/diagnostic/typing-cadence'
     runs-on: windows-2025
     timeout-minutes: 80
     env:
@@ -99,12 +99,12 @@ jobs:
           actual={'runtime.zsh':runtime/'usr/bin/zsh.exe','runtime.msys':runtime/'usr/bin/msys-2.0.dll','runtime.loader':runtime/'stormtty/zsh/.zshrc','provider.dll':provider/'conpty.dll','provider.host':provider/'OpenConsole.exe'}
           hashes.update({name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in actual.items() if path.is_file()})
           (root/'identity.json').write_text(json.dumps({'commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'runner_os':os.name,'input_fixture':'authored only','instrumentation_perturbs_timing':True,'physical_display_verified':False,'hashes':hashes},indent=2,sort_keys=True)+'\n')
-      - name: One uninstrumented control and one trace plus exact replay per provider
+      - name: Control plus CV8 highres8 highres16 and all exact replays per provider
         id: typing
         if: always() && steps.configure.outcome == 'success' && steps.shell.outcome == 'success' && steps.provider.outcome == 'success'
         timeout-minutes: 12
         shell: pwsh
-        run: python tools/probes/run-shell-responsiveness.py --build build-responsiveness --runtime .deps/responsiveness-shell --provider (Join-Path $env:RUNNER_TEMP 'stormtty-responsiveness-provider') --output build-responsiveness/artifacts/typing --deadline-ab
+        run: python tools/probes/run-shell-responsiveness.py --build build-responsiveness --runtime .deps/responsiveness-shell --provider (Join-Path $env:RUNNER_TEMP 'stormtty-responsiveness-provider') --output build-responsiveness/artifacts/typing --deadline-ab --cadence-ab
       - name: Separate attributed startup three fresh and three warm per provider
         id: profile
         if: always() && steps.configure.outcome == 'success' && steps.shell.outcome == 'success' && steps.provider.outcome == 'success'

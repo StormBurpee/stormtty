@@ -14,6 +14,7 @@ public:
     enum class Reason : std::uint32_t { notified, deadline, failed };
     struct Result { Reason reason; std::uint32_t error{}; };
     virtual ~DeadlineWait()=default;
+    virtual bool prepare_wait() noexcept=0; // caller holds queue lock with predicate false
     virtual void notify() noexcept=0;
     virtual Result wait_until(Clock::time_point) noexcept=0;
 };

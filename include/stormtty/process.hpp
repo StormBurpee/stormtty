@@ -38,6 +38,7 @@ struct ProcessOptions {
     std::shared_ptr<qualification::InputEvidence> qualification_input_evidence;
     std::shared_ptr<qualification::TypingEvidence> qualification_typing_evidence;
     bool qualification_high_resolution_deadlines{};
+    unsigned qualification_publication_budget_ms{8}; // isolated 8/16ms experiment only
 #endif
     // UTF-8. executable must be an absolute path. arguments excludes argv[0].
     // No shell interpolation is performed. For a shell command, launch that shell

@@ -28,6 +28,7 @@ unsigned phase{}, checks{};
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
 std::shared_ptr<qualification::TypingEvidence> typing_trace;
 bool high_resolution_deadlines{};
+unsigned publication_budget_ms{8};
 #endif
 struct TypingEvidence {
     unsigned characters{}, frames{}, retreats{};
@@ -88,6 +89,7 @@ struct ManagedSessionProbe {
         (void)trace;
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
         process.qualification_high_resolution_deadlines=high_resolution_deadlines;
+        process.qualification_publication_budget_ms=publication_budget_ms;
         if (trace) {
             typing_trace=std::make_shared<qualification::TypingEvidence>();
             process.qualification_typing_evidence=typing_trace;
@@ -234,6 +236,7 @@ int main() {
         int count{}; LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
         struct Arguments { LPWSTR* p; ~Arguments() { if (p) LocalFree(p); } } owned{args};
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if(args&&count>2&&std::wstring_view(args[count-1])==L"--publication-budget-16") {publication_budget_ms=16;--count;}
         if(args&&count>2&&std::wstring_view(args[count-1])==L"--high-resolution-deadlines") {high_resolution_deadlines=true;--count;}
 #endif
         check(args && (count == 2 || count == 3));
@@ -312,6 +315,7 @@ int main() {
         check(persisted == config);
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
         std::cout<<"TYPING_WAIT_MODE high_resolution="<<high_resolution_deadlines<<'\n';
+        std::cout<<"TYPING_PUBLICATION_BUDGET ms="<<publication_budget_ms<<'\n';
         const auto trace=typing_trace->snapshot(); qualification::TypingEvidence::dump(std::cout,trace);
         if (trace.overflow) { std::cout<<"TYPING_TRACE_RESULT inconclusive=1 reason=capacity\n"; return 2; }
 #endif

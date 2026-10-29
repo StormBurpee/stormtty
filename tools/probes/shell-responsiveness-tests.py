@@ -94,9 +94,29 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(code,int(missing_mode));self.assertEqual(len(calls),10)
                 self.assertEqual(sum('--high-resolution-deadlines' in call for call in calls),2)
                 self.assertEqual(len(list((root/'out').glob('*.log'))),10)
+    def test_cadence_all_six_replays_and_budget_mismatch_fail_closed(self):
+        for wrong_budget in [False,True]:
+            calls=[]
+            def invoke(args,**kw):
+                calls.append(args)
+                if args[0].endswith('managed_shell_state_probe.exe'):return result(CONTROL)
+                if args[0].endswith('managed_shell_typing_trace.exe'):
+                    mode=int('--high-resolution-deadlines' in args)
+                    budget=16 if '--publication-budget-16' in args and not wrong_budget else 8
+                    wake=EVENT.replace('kind=publication','kind=wake').replace(' alternate=0 ',' alternate='+str(mode)+' ')
+                    trace=TRACE.replace('records=4','records=5').replace(FREEZE,wake+FREEZE)
+                    return result('TYPING_WAIT_MODE high_resolution='+str(mode)+'\nTYPING_PUBLICATION_BUDGET ms='+str(budget)+'\n'+trace)
+                return result(REPLAY)
+            with tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);argv=['driver','--build',str(root),'--runtime',str(root),'--provider',str(root),'--output',str(root/'out'),'--deadline-ab','--cadence-ab']
+                with mock.patch.object(sys,'argv',argv),mock.patch.object(m.runner,'run_owned',invoke),contextlib.redirect_stdout(io.StringIO()):code=m.main()
+                self.assertEqual(code,int(wrong_budget));self.assertEqual(len(calls),14)
+                self.assertEqual(sum('--publication-budget-16' in call for call in calls),2)
+                self.assertEqual(sum('--replay' in call for call in calls),6)
+                self.assertEqual(len(list((root/'out').glob('*.log'))),14)
     def test_workflow_is_exact_push_and_preserves_independent_results(self):
         text=(Path(__file__).resolve().parents[2]/'.github/workflows/shell-responsiveness.yml').read_text()
-        self.assertIn('branches: [diagnostic/typing-highres]',text)
+        self.assertIn('branches: [diagnostic/typing-cadence]',text)
         self.assertNotIn('pull_request:',text);self.assertNotIn('workflow_run:',text)
         self.assertIn('cancel-in-progress: false',text);self.assertIn('if: always()',text)
         self.assertNotIn("steps.typing.outcome == 'success'",text)
