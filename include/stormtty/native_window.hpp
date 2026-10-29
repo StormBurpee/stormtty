@@ -119,6 +119,7 @@ inline WindowMaterialPolicy window_material_policy(const AppearanceConfig& appea
 struct MaterialRenderState {
     bool composition{},software{};
     std::uint64_t generation{};
+    bool host_backdrop{};
     bool operator==(const MaterialRenderState&) const = default;
 };
 class MaterialRefreshTracker {

@@ -120,6 +120,7 @@ struct RendererStats {
     std::uint64_t device_recoveries{}, dirty_rectangles{};
     std::size_t shape_cache_bytes{}, image_cache_bytes{};
     bool warp{}, color_fonts{}, composition{};
+    bool host_backdrop{}; // Additional Gaussian graph active; not proof of physical DWM blur.
     bool bundled_font{}; // Actual selected terminal base is a private bundled face.
 };
 // Alpha-only diagnostic of a bounded, caller-selected canvas patch. Never
@@ -149,6 +150,8 @@ public:
     void set_background_opacity(float opacity);
     CellMetrics metrics() const noexcept;
 #ifdef _WIN32
+    // Background-only extra Gaussian sigma; 0 keeps the default OS material path.
+    void set_additional_blur(float sigma);
     // Actual DirectWrite chrome-font bounds in pixels, using the label's wrapping.
     PixelRect measure_chrome_text(const ChromeText& label) const;
     // Actual DirectWrite word wrapping; UTF-8 lines retain all text except newlines.

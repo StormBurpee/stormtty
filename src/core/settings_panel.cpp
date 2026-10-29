@@ -67,7 +67,7 @@ void SettingsPanel::open(const Config& running, const Config& config, std::span<
     error_.clear(); capture_command_.clear(); terminal_override_.reset(); hover_.clear(); pressed_.clear();
     custom_theme_=has_custom_theme(config)?std::optional<Theme>(config.theme):std::nullopt;
     editing_color_=false; color_index_=0; color_input_.clear();
-    open_=true; saving_=false; dragging_opacity_=false; scroll_=0;
+    open_=true; saving_=false; dragging_opacity_=false;dragging_blur_=false; scroll_=0;
     section_=SettingsSection::appearance; focus_="nav.appearance";
     const auto valid=validate_config(config,platform_);
     if (!valid) error_=bounded_message(valid.error);
@@ -157,7 +157,7 @@ void SettingsPanel::rebuild_layout() {
         add("nav.ribbon",{x+16,y+242,180,40});
     }
     layout_.content={content_x,content_y,content_w,std::max(0.0,layout_.footer.y-content_y-16)};
-    document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?684.0:
+    document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?740.0:
         section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
     const double top=content_y-scroll_, right=content_x+content_w;
@@ -185,8 +185,9 @@ void SettingsPanel::rebuild_layout() {
             constexpr std::array ids{"auto","none","mica","acrylic"};
             add(std::string("appearance.backdrop.")+ids[i],{content_x+i*(sw+gap),top+540,sw,32},true);
         }
-        add("appearance.motion",{right-cw,top+586,cw,34},true);
-        if (platform_==Platform::windows) add("appearance.clock",{right-42,top+642,42,24},true);
+        add("appearance.blur",{right-cw,top+586,cw,34},true,platform_==Platform::windows);
+        add("appearance.motion",{right-cw,top+642,cw,34},true);
+        if (platform_==Platform::windows) add("appearance.clock",{right-42,top+698,42,24},true);
     } else if (section_==SettingsSection::ribbon) {
         std::size_t visible_row=0;
         for(std::size_t i=0;i<draft_.ribbon.order.size();++i) {
@@ -286,6 +287,7 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     } else if (id=="font.decrease") draft_.font.size_dip=std::clamp(draft_.font.size_dip-1.0,6.0,72.0);
     else if (id=="font.increase") draft_.font.size_dip=std::clamp(draft_.font.size_dip+1.0,6.0,72.0);
     else if (id=="font.ligatures") draft_.font.ligatures=!draft_.font.ligatures;
+    else if (id=="appearance.blur") draft_.appearance.additional_blur=std::clamp(draft_.appearance.additional_blur+direction,0.0,64.0);
     else if (id=="appearance.opacity") draft_.appearance.background_opacity=std::clamp(std::round((draft_.appearance.background_opacity+direction*0.01)*100)/100,0.0,1.0);
     else if (id=="appearance.clock") {
         draft_.appearance.show_clock=!(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)]);
@@ -397,7 +399,7 @@ bool SettingsPanel::key(const KeyEvent& event) {
     else if (key=="ENTER" && (modifiers==CommandModifier::control || modifiers==CommandModifier::command)) request_save();
     else if ((key=="LEFT" || key=="RIGHT" || key=="UP" || key=="DOWN") && modifiers==CommandModifier::none) {
         const int direction=(key=="LEFT" || key=="UP")?-1:1;
-        if (focus_=="appearance.color.field" || focus_=="font.family" || focus_=="appearance.motion" || focus_=="appearance.opacity") activate(focus_,direction);
+        if (focus_=="appearance.color.field" || focus_=="font.family" || focus_=="appearance.motion" || focus_=="appearance.opacity" || focus_=="appearance.blur") activate(focus_,direction);
         else if (focus_.starts_with("nav.")) {
             constexpr std::array ids{"nav.appearance","nav.shell","nav.shortcuts","nav.ribbon"};
             const auto current=std::find(ids.begin(),ids.end(),focus_);
@@ -431,20 +433,23 @@ bool SettingsPanel::key(const KeyEvent& event) {
             const auto id=ids[static_cast<std::size_t>((index+direction+4)%4)];
             focus_control(id);activate(id);
         }
-    } else if ((key=="HOME" || key=="END") && focus_=="appearance.opacity" && modifiers==CommandModifier::none) {
-        draft_.appearance.background_opacity=key=="HOME"?0.0:1.0; changed();
+    } else if ((key=="HOME" || key=="END") && (focus_=="appearance.opacity" || focus_=="appearance.blur") && modifiers==CommandModifier::none) {
+        if(focus_=="appearance.blur") draft_.appearance.additional_blur=key=="HOME"?0.0:64.0;
+        else draft_.appearance.background_opacity=key=="HOME"?0.0:1.0;
+        changed();
     } else if ((key=="PAGEUP" || key=="PAGEDOWN") && modifiers==CommandModifier::none) {
         scroll_+=(key=="PAGEUP"?-1:1)*std::max(48.0,layout_.content.height-48); ++generation_;rebuild_layout();
     }
     return true;
 }
-void SettingsPanel::adjust_opacity(Point p) {
-    const auto* slider=find_control(layout_,"appearance.opacity");
+void SettingsPanel::adjust_opacity(Point p,bool blur) {
+    const auto* slider=find_control(layout_,blur?"appearance.blur":"appearance.opacity");
     if (!slider || !finite(p)) return;
     const double width=std::max(1.0,slider->bounds.width-16);
     const double t=std::clamp((p.x-slider->bounds.x-8)/width,0.0,1.0);
-    const double value=std::round(t*100)/100;
-    if (value!=draft_.appearance.background_opacity) {draft_.appearance.background_opacity=value;changed();}
+    const double value=blur?std::round(t*64):std::round(t*100)/100;
+    auto& current=blur?draft_.appearance.additional_blur:draft_.appearance.background_opacity;
+    if (value!=current) {current=value;changed();}
 }
 bool SettingsPanel::pointer_down(Point point) {
     if (!open_) return false;
@@ -455,20 +460,20 @@ bool SettingsPanel::pointer_down(Point point) {
         const auto id=item->id;
         if (editing_color_ && id!="appearance.color.value") {editing_color_=false;color_input_.clear();error_.clear();}
         focus_control(id);
-        if (id=="appearance.opacity") {dragging_opacity_=true;adjust_opacity(point);}
+        if (id=="appearance.opacity" || id=="appearance.blur") {dragging_opacity_=true;dragging_blur_=id=="appearance.blur";adjust_opacity(point,dragging_blur_);}
     }
     ++generation_;return true;
 }
 bool SettingsPanel::pointer_move(Point point) {
     if (!open_) return false;
-    if (dragging_opacity_) adjust_opacity(point);
+    if (dragging_opacity_) adjust_opacity(point,dragging_blur_);
     const auto* item=hit(point);const auto hover=item?item->id:"";
     if (hover_!=hover) {hover_=hover;++generation_;}
     return true;
 }
 bool SettingsPanel::pointer_up(Point point) {
     if (!open_) return false;
-    if (dragging_opacity_) {adjust_opacity(point);dragging_opacity_=false;pressed_.clear();++generation_;return true;}
+    if (dragging_opacity_) {adjust_opacity(point,dragging_blur_);dragging_opacity_=false;dragging_blur_=false;pressed_.clear();++generation_;return true;}
     const auto* item=hit(point);
     const auto id=item?item->id:"";
     const bool invoke=!id.empty() && id==pressed_;
@@ -478,7 +483,7 @@ bool SettingsPanel::pointer_up(Point point) {
 }
 void SettingsPanel::pointer_cancel() noexcept {
     if (dragging_opacity_ || !pressed_.empty() || !hover_.empty()) ++generation_;
-    dragging_opacity_=false;pressed_.clear();hover_.clear();
+    dragging_opacity_=false;dragging_blur_=false;pressed_.clear();hover_.clear();
 }
 bool SettingsPanel::wheel(Point point,double lines) {
     if (!open_) return false;
@@ -491,13 +496,13 @@ void SettingsPanel::request_save() {
     if (!open_ || saving_) return;
     const auto valid=validate_config(draft_,platform_);
     if (!valid) {error_=bounded_message(valid.error);++generation_;return;}
-    capture_command_.clear();terminal_override_.reset();error_.clear();saving_=true;dragging_opacity_=false;pressed_.clear();
+    capture_command_.clear();terminal_override_.reset();error_.clear();saving_=true;dragging_opacity_=false;dragging_blur_=false;pressed_.clear();
     pending_=SettingsAction{SettingsActionKind::save,draft_};++generation_;rebuild_layout();
 }
 void SettingsPanel::cancel() {
     if (!open_ || saving_) return;
     pending_=SettingsAction{SettingsActionKind::cancel,original_};
-    draft_=original_;initial_draft_=original_;loaded_changes_=false;open_=false;capture_command_.clear();terminal_override_.reset();dragging_opacity_=false;pressed_.clear();++generation_;
+    draft_=original_;initial_draft_=original_;loaded_changes_=false;open_=false;capture_command_.clear();terminal_override_.reset();dragging_opacity_=false;dragging_blur_=false;pressed_.clear();++generation_;
 }
 std::optional<SettingsAction> SettingsPanel::take_action() {return std::exchange(pending_,std::nullopt);}
 void SettingsPanel::persistence_result(bool success,std::string error) {
@@ -658,17 +663,28 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             box({r.x+8+width*progress-5,track_y-4,10,11},ink,transparent,5);
             label({r.x+8,r.y-2,std::max(0.0,r.width-16),21},number(std::round(draft_.appearance.background_opacity*100))+"%",ink,12,true,true);
         }
-        row_labels(493,"Window material · OS blur fixed",material_status_.empty()?"OS blur is fixed; opacity controls the tint, not blur radius.":material_status_,content.width);
+        row_labels(493,"Window material",material_status_.empty()?"Opacity controls tint; additional blur controls edge softness.":material_status_,content.width);
         constexpr std::array ids{"appearance.backdrop.auto","appearance.backdrop.none","appearance.backdrop.mica","appearance.backdrop.acrylic"};
         constexpr std::array names{"Auto","Solid","Mica","Acrylic"};
         const auto material=draft_.appearance.backdrop;
         const int selected=material==BackdropPreference::automatic?0:material==BackdropPreference::none?1:material==BackdropPreference::mica?2:3;
         for (std::size_t i=0;i<ids.size();++i) button(ids[i],names[i],selected==static_cast<int>(i));
-        row_labels(582,"Reduce motion","Use system settings or reduce animations",lw);
+        row_labels(582,"Additional blur",platform_==Platform::windows?"0 retains OS blur · Auto / Acrylic":"Unavailable on macOS",lw);
+        if (const auto* slider=find_control(layout_,"appearance.blur");slider && slider->visible) {
+            const auto r=slider->bounds;
+            if (focus_==slider->id) box(r,transparent,accent,5,1);
+            const double progress=draft_.appearance.additional_blur/64.0;
+            const double width=std::max(0.0,r.width-16), track_y=r.y+27;
+            box({r.x+8,track_y,width,3},border,transparent,1.5);
+            box({r.x+8,track_y,width*progress,3},slider->enabled?accent:border,transparent,1.5);
+            box({r.x+8+width*progress-5,track_y-4,10,11},ink,transparent,5);
+            label({r.x+8,r.y-2,std::max(0.0,r.width-16),21},number(draft_.appearance.additional_blur)+" sigma",ink,12,true,true);
+        }
+        row_labels(638,"Reduce motion","Use system settings or reduce animations",lw);
         const std::string motion=draft_.appearance.reduced_motion==ReducedMotionPreference::system?"Follow system":draft_.appearance.reduced_motion==ReducedMotionPreference::enabled?"Always reduce":"Allow motion";
         button("appearance.motion",motion+"   ›");
         if (platform_==Platform::windows) {
-            row_labels(638,"Clock","",std::max(0.0,content.width-62));
+            row_labels(694,"Clock","",std::max(0.0,content.width-62));
             if (const auto* c=find_control(layout_,"appearance.clock");c && c->visible) {
                 box(c->bounds,(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?accent:border,focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
                 box({c->bounds.x+((draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?21:3),c->bounds.y+3,18,18},(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?primary_ink:ink,transparent,9);

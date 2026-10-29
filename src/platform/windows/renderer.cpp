@@ -13,6 +13,7 @@
 #include <dwrite_3.h>
 #include <dcomp.h>
 #include "smoke_teardown_trace.hpp"
+#include "host_backdrop.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -402,6 +403,8 @@ constexpr Color selection_foreground{236,238,242,255};
 
 struct Renderer::Impl {
     Apartment apartment;
+    windows::HostBackdrop host_backdrop;
+    float additional_blur{};
     HWND window{};
     OpaquePresentationWindow opaque_window;
     RendererOptions options;
@@ -487,6 +490,7 @@ struct Renderer::Impl {
             throw std::invalid_argument("Invalid terminal font");
     }
     void release_swapchain() noexcept {
+        host_backdrop.detach();counters.host_backdrop=false;
         composition_visual.reset(); composition_target.reset(); composition.reset();
         windows::smoke_teardown_trace(tracing_teardown,"renderer latency handle close begin");
         latency.reset();
@@ -562,7 +566,14 @@ struct Renderer::Impl {
             const bool no_redirection=(extended_style(window) & WS_EX_NOREDIRECTIONBITMAP)!=0;
             // Never compose translucent pixels above an ordinary backing surface.
             // An ordinary caller-provided HWND safely selects the opaque path.
-            if (options.composition && no_redirection) {
+            if(options.composition && no_redirection && additional_blur>0 && !counters.warp) {
+                desc.AlphaMode=DXGI_ALPHA_MODE_PREMULTIPLIED;
+                if(SUCCEEDED(factory->CreateSwapChainForComposition(device.get(),&desc,nullptr,swapchain.put())) &&
+                    host_backdrop.attach(window,swapchain.get(),additional_blur,width,height)) {
+                    counters.composition=true;counters.host_backdrop=true;
+                } else {host_backdrop.detach();swapchain.reset();}
+            }
+            if (options.composition && no_redirection && !swapchain) {
                 desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
                 const char* stage = "DCompositionCreateDevice";
                 auto hr = DCompositionCreateDevice(dxgi_device.get(), __uuidof(IDCompositionDevice),
@@ -610,6 +621,14 @@ struct Renderer::Impl {
             if (!latency.value) throw std::runtime_error("Swapchain did not provide frame latency handle");
         }
         opaque_window.resize(width,height);
+        if(counters.host_backdrop && !host_backdrop.update(additional_blur,width,height)) {
+            release_swapchain();
+            // Failed graph update must not leave an invisible presentation. Use
+            // the already-qualified ordinary renderer path for this generation.
+            const auto requested=additional_blur;additional_blur=0;
+            try {create_surfaces();} catch(...) {additional_blur=requested;throw;}
+            additional_blur=requested;return;
+        }
         D3D11_TEXTURE2D_DESC texture{};
         texture.Width = width; texture.Height = height; texture.MipLevels = 1; texture.ArraySize = 1;
         texture.Format = DXGI_FORMAT_B8G8R8A8_UNORM; texture.SampleDesc.Count = 1;
@@ -1274,6 +1293,20 @@ void Renderer::set_font(FontOptions font) {
 void Renderer::set_background_opacity(float opacity) {
     if(!std::isfinite(opacity) || opacity<0 || opacity>1) throw std::invalid_argument("Invalid background opacity");
     if(impl_->options.background_opacity!=opacity) {impl_->options.background_opacity=opacity;impl_->invalid=true;}
+}
+void Renderer::set_additional_blur(float sigma) {
+    if(!std::isfinite(sigma) || sigma<0 || sigma>64) throw std::invalid_argument("Invalid additional blur");
+    auto& p=*impl_;
+    if(p.additional_blur==sigma) return;
+    const auto previous=p.additional_blur;p.additional_blur=sigma;
+    if(p.host_backdrop.active() && sigma>0 && p.host_backdrop.update(sigma,p.width,p.height)) {
+        p.invalid=true;return;
+    }
+    // Avoid rebuilding an unsupported graph on every pointer move. A return to
+    // zero, policy transition or device recovery permits another explicit try.
+    if(previous>0 && sigma>0 && !p.counters.host_backdrop) return;
+    p.dc->SetTarget(nullptr);p.canvas.reset();p.canvas_texture.reset();
+    p.release_swapchain();p.create_surfaces();p.invalid=true;
 }
 CellMetrics Renderer::metrics() const noexcept {return impl_->cell;}
 RenderResult Renderer::render(const WindowScene& scene) {
