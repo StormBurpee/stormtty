@@ -108,3 +108,16 @@ failure; the stack alone does not establish the precise internal WARP cause.
 No graphics resources are abandoned, no window messages dispatched during
 member teardown, and external test deadlines are unchanged. Native results
 remain pending; do not call this a verified fix until the full gate passes.
+
+Run 40865086237 narrowed the lifetime bug further: completion queries and device
+release succeeded for renderer-first 1/16/64-frame cases, but the HWND-first
+16-frame query could not finish after the presentation window was destroyed.
+The next repair explicitly completes/releases GPU and presentation ownership
+before every NativeWindow DestroyWindow call, guarded against nested renderer
+callbacks; the host dispatcher still shuts down only after HWND/userdata teardown.
+The matrix retains both object-destruction orders, with the HWND-first owner now
+using the required explicit prepare_window_destruction lifecycle. This method is
+irreversible: no renderer calls are valid afterward except final destruction.
+The previous candidate is not promoted; native qualification of this ordering
+repair is required. This is not a promise that arbitrary external destruction of
+a renderer's HWND can be made safe after the presentation queue has stopped.

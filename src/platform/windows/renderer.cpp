@@ -1297,6 +1297,13 @@ Renderer::~Renderer() {
     impl_.reset();
     windows::smoke_teardown_trace(smoke,"renderer destructor end");
 }
+void Renderer::prepare_window_destruction() noexcept {
+    if (!impl_) return;
+    impl_->tracing_teardown=impl_->options.smoke_teardown_diagnostics;
+    windows::smoke_teardown_trace(impl_->tracing_teardown,"renderer prepare HWND destruction begin");
+    impl_->release_gpu(true);
+    windows::smoke_teardown_trace(impl_->tracing_teardown,"renderer prepare HWND destruction end");
+}
 Renderer::Renderer(Renderer&&) noexcept = default;
 Renderer& Renderer::operator=(Renderer&&) noexcept = default;
 void Renderer::resize(std::uint32_t width,std::uint32_t height,float dpi) {

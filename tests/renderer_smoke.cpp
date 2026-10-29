@@ -657,14 +657,20 @@ void final_teardown_test() {
                 if(message.message!=WM_QUIT) {TranslateMessage(&message);DispatchMessageW(&message);}
             }
         }
-        if(hwnd_first) {require(DestroyWindow(host.hwnd)!=FALSE,"Destroy app-order HWND failed");host.hwnd=nullptr;}
+        if(hwnd_first) {
+            renderer->prepare_window_destruction();
+            renderer->prepare_window_destruction(); // Explicit preparation is idempotent.
+            require(renderer->frame_latency_wait_handle()==nullptr && !renderer->stats().composition,
+                    "Prepared renderer retained presentation ownership");
+            require(DestroyWindow(host.hwnd)!=FALSE,"Destroy app-order HWND failed");host.hwnd=nullptr;
+        }
         renderer.reset();
         if(host.hwnd) {require(GetWindow(host.hwnd,GW_CHILD)==nullptr,"Final teardown leaked opaque child");}
         std::cerr<<"Final teardown case complete: composition="<<composition<<" hwnd_first="<<hwnd_first<<" frames="<<frames<<std::endl;
         ++cases;
     }
     require(cases==12,"Final teardown fixture matrix incomplete");
-    std::cout<<"PASS renderer final teardown: 12/12 cases, opaque/composition, HWND-first/renderer-first, 1/16/64 frames"<<std::endl;
+    std::cout<<"PASS renderer final teardown: 12/12 cases, opaque/composition, prepared-HWND-first/renderer-first, 1/16/64 frames"<<std::endl;
 }
 
 } // namespace
