@@ -618,6 +618,13 @@ void chrome_notice_measurement_test() {
     const auto unicode_lines=renderer.wrap_chrome_text(label);std::string reconstructed;
     for(const auto& line:unicode_lines){reconstructed+=line;auto probe=label;probe.text=line;probe.wrap=false;require(renderer.measure_chrome_text(probe).width<=161,"native wrapped line exceeds measured width");}
     require(reconstructed==label.text,"native wrapping lost or split Unicode evidence");
+    label.text.clear();for(unsigned n=0;n<80;++n)label.text+="e\xcc\x81";
+    label.rect.width=160;const auto clusters=renderer.wrap_chrome_text(label);reconstructed.clear();
+    for(const auto& line:clusters) {
+        require(!line.starts_with("\xcc\x81"),"native context wrapping split a combining cluster");
+        reconstructed+=line;
+    }
+    require(reconstructed==label.text,"native context wrapping lost combining evidence");
     renderer.resize(1200,900,144); label.text="build · Command finished"; label.rect.width=804;
     const auto scaled=renderer.measure_chrome_text(label);
     require(std::abs(scaled.width/1.5f-compact.width)<1 && std::abs(scaled.height/1.5f-compact.height)<1,"notice measurement respects DPI");

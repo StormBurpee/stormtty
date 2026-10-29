@@ -1,5 +1,6 @@
 #pragma once
 #include "stormtty/process.hpp"
+#include "stormtty/session_write_accounting.hpp"
 #include "stormtty/terminal.hpp"
 #include <chrono>
 #include <array>
@@ -25,6 +26,7 @@ struct SessionInfo {
     std::uint64_t bytes_received{}, bytes_sent{};
     std::optional<ShellContext> shell_context; // Untrusted owned labels, never action authority.
     CommandSnapshot command; // Independent observed shell command, not process status.
+    SessionWriteAccounting sent; // Actual accepted transport bytes; total() == bytes_sent.
 };
 // Thread-safe host facade. TerminalCore is owned by a dedicated actor; no VT
 // method runs on the UI or PTY reader thread. Destruction/close never joins UI.

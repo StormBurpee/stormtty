@@ -46,6 +46,10 @@ int main() { return run_core_tests("commands", [] {
     CHECK(*command_search_score("tab","tab")>*command_search_score("tab","t a b"));
     for (int i=0;i<20;++i) CHECK(search_commands("pane")==search_commands("pane"));
     for (std::size_t i=0;i<command_registry().size();++i) CHECK(search_commands("")[i]==&command_registry()[i]);
+    CommandContext inspect{1,1};
+    CHECK(!command_availability("pane.inspect",inspect).enabled);
+    inspect.supports_pane_context=true; CHECK(command_availability("pane.inspect",inspect).enabled);
+    inspect.panes=0; CHECK(!command_availability("pane.inspect",inspect).enabled);
     CommandContext background{1,1};
     CHECK(!command_availability("pane.background",background).enabled);
     background.supports_background_sessions=true;
