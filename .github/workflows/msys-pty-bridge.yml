@@ -80,7 +80,8 @@ jobs:
           update: true
           cache: false
           path-type: minimal
-          install: gcc zstd gnupg curl
+          # Helper command closure; do not rely on incidental base-devel installs.
+          install: gcc zstd gnupg curl diffutils coreutils gawk grep sed tar binutils
       - name: Verify private exact GCC15 and compile synthetic broker
         id: compile
         timeout-minutes: 12
@@ -88,6 +89,11 @@ jobs:
         run: |
           set -euo pipefail
           root=$(cygpath -u "$BRIDGE_ROOT")
+          # bash/pacman/msys2-runtime belong to setup-msys2's base; the rest are
+          # explicit packages above. Fail before downloads with the missing name.
+          for tool in bash realpath dirname mkdir cp chmod sha256sum uname tee cmp awk grep sed tar zstd curl gpg pacman pacman-conf cygpath ldd as ld; do
+            command -v "$tool" || { printf 'Missing required build tool: %s\n' "$tool" >&2; exit 127; }
+          done > "$root/evidence/build-tools.txt"
           pacman -Q > "$root/evidence/build-environment.txt"
           bash tools/probes/msys-runtime-experiment/toolchain.sh "$root/gcc15" 2>&1 | tee "$root/evidence/private-compiler.txt"
           bash tools/probes/msys-pty-bridge/build-msys.sh "$root/gcc15/wrappers/stormtty-gcc-15" "$root/compiled" 2>&1 | tee "$root/evidence/broker-compile.txt"

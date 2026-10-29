@@ -2,6 +2,7 @@
 """Portable staging and authorization-boundary guards, not runtime evidence."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -54,6 +55,21 @@ class Workflow(unittest.TestCase):
         self.assertIn('timeout-minutes: 60', workflow)
         self.assertIn('toolchain.sh', workflow)
         self.assertIn('private-runtime', workflow)
+    def test_declared_helper_tool_closure(self):
+        workflow = (HERE.parents[2] / '.github/workflows/msys-pty-bridge.yml').read_text()
+        packages = set(re.search(r'^          install: (.+)$', workflow, re.MULTILINE).group(1).split())
+        # External helper commands mapped to official MSYS package providers.
+        closure = {'gcc': (), 'diffutils': ('cmp',), 'coreutils': ('realpath', 'dirname', 'mkdir', 'cp', 'chmod', 'sha256sum', 'uname', 'tee'),
+                   'gawk': ('awk',), 'grep': ('grep',), 'sed': ('sed',), 'tar': ('tar',),
+                   'zstd': ('zstd',), 'curl': ('curl',), 'gnupg': ('gpg',), 'binutils': ('as', 'ld')}
+        self.assertTrue(set(closure) <= packages, 'Required official helper packages missing')
+        commands = set(re.search(r'for tool in (.+); do', workflow).group(1).split())
+        expected = {tool for tools in closure.values() for tool in tools}
+        expected.update(('bash', 'pacman', 'pacman-conf', 'cygpath', 'ldd'))
+        self.assertEqual(commands, expected)
+        self.assertLess(workflow.index('for tool in '), workflow.index('bash tools/probes/msys-runtime-experiment/toolchain.sh'))
+        self.assertIn('command -v "$tool"', workflow)
+        self.assertIn('exit 127;', workflow)
     def test_fixed_modes_and_owned_timeout(self):
         self.assertEqual(module.MODES, ('bytes', 'raw', 'resize', 'signal', 'eof', 'flood'))
         source = (HERE / 'qualify-windows.py').read_text()
