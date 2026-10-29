@@ -4,6 +4,7 @@
 #include "platform.hpp"
 #include "input.hpp"
 #include "menu_shortcuts.hpp"
+#include "pane_inspector.hpp"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CATransaction.h>
 #include <algorithm>
@@ -186,7 +187,7 @@ public:
         return id=="app.command_palette"||id=="tab.new"||id=="tab.close"||id=="tab.next"||id=="tab.previous"||id=="tab.rename"||
             id=="tab.move_left"||id=="tab.move_right"||id=="pane.split_right"||id=="pane.split_down"||id=="pane.close"||
             id.starts_with("pane.focus_")||id=="pane.zoom"||id=="pane.new_tab"||id.starts_with("pane.resize_")||id=="pane.equalize"||
-            id=="edit.copy"||id=="edit.paste"||id=="window.fullscreen"||id=="settings.open"||id=="terminal.find";
+            id=="edit.copy"||id=="edit.paste"||id=="window.fullscreen"||id=="settings.open"||id=="terminal.find"||id=="pane.inspect";
     }
     void appearance() {
         if(smoke_capture_pending){appearance_pending=true;return;}
@@ -329,7 +330,7 @@ public:
         enqueue([session,input]{return session->key(input);});cursor_on=true;wake();
     }
     CommandContext context()const {
-        CommandContext result;result.tabs=workspace.state().tabs.size();result.panes=workspace.pane_order(workspace.active_tab()).size();
+        CommandContext result;result.supports_pane_context=true;result.tabs=workspace.state().tabs.size();result.panes=workspace.pane_order(workspace.active_tab()).size();
         result.total_panes=workspace.state().panes.size();auto tab=workspace.tab(workspace.active_tab());result.zoomed=tab&&tab->zoomed_pane.has_value();
         if(auto session=active()){const auto info=session->info();result.session_running=info.state==SessionState::running||info.state==SessionState::starting;
             if(auto frame=session->frame())for(const auto& row:frame->lines)if(row)for(const auto& cell:row->cells)result.has_selection|=cell.selected;}
@@ -355,7 +356,7 @@ public:
         for(auto& [id,session]:sessions)if(!retained.contains(id))session->request_close();
     }
     void command(std::string_view id) {
-        if(closing||smoke_capture_pending)return;
+        if(closing||smoke_capture_pending||window.attachedSheet)return;
         if(!command_availability(id,context()).enabled)return;
         if(id=="tab.new"){create_tab();return;}
         if(id=="pane.split_right"||id=="pane.split_down"){
@@ -408,6 +409,25 @@ public:
                 apply_menu_shortcut(item,command.id,config.bindings);
                 item.enabled=command_availability(command.id,context()).enabled;[menu addItem:item];}
             [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(view.bounds.size.width-30,44) inView:view];return;
+        }else if(id=="pane.inspect"){
+            // Do not steal AppKit marked text or nest a modal inspector. Capture
+            // metadata once, without polling the shell or touching PTY ownership.
+            if(!menu_commands_available(view.hasMarkedText,closing,NSApp.modalWindow!=nil))return;
+            const auto* pane=workspace.pane(workspace.active_pane());const auto session=active();
+            if(!pane||!session)return;
+            const auto info=session->info();
+            const auto profile=std::find_if(config.profiles.begin(),config.profiles.end(),[&](const Profile& p){return p.id==pane->profile;});
+            const std::string_view label=profile==config.profiles.end()?std::string_view(pane->profile):std::string_view(profile->label);
+            const std::string_view start=options.smoke_test?std::string_view("/"):profile==config.profiles.end()?std::string_view{}:std::string_view(profile->working_directory);
+            // This host launches ordinary profiles, not the Windows managed shell.
+            const auto snapshot=make_pane_context({info.title,label,info.working_directory,start,
+                info.shell_context?&*info.shell_context:nullptr,false,
+                info.state==SessionState::exited||info.state==SessionState::failed});
+            STPaneInspector* inspector=[[STPaneInspector alloc] initWithSnapshot:snapshot];
+            auto weak=weak_from_this();
+            [inspector presentForWindow:window completion:^{if(auto h=weak.lock())
+                h->guard([&]{if(!h->closing)[h->window makeFirstResponder:h->view];});}];
+            return;
         }else if(id=="terminal.find"){
             NSAlert* alert=[NSAlert new];alert.messageText=@"Find in visible terminal";NSTextField* field=[[NSTextField alloc] initWithFrame:NSMakeRect(0,0,300,24)];
             alert.accessoryView=field;[alert addButtonWithTitle:@"Find"];[alert addButtonWithTitle:@"Cancel"];
@@ -573,8 +593,11 @@ public:
     }
     void begin_close(bool authorized=false) {
         if(closing||finished)return;
+        // Finish the read-only sheet before opening a separate close prompt.
+        if(window.attachedSheet&&!authorized){[window.attachedSheet makeKeyAndOrderFront:nil];return;}
         if(!authorized&&!confirm_close(@"Close StormTTY and its terminal sessions?"))return;
         closing=true;close_authorized=true;pending.clear();pending_bytes=0;
+        if(window.attachedSheet)[window endSheet:window.attachedSheet returnCode:NSModalResponseCancel];
         for(auto& [id,s]:sessions){(void)id;s->request_close();}[window orderOut:nil];wake();
     }
     void finish() noexcept {
@@ -677,7 +700,7 @@ public:
 - (void)windowDidChangeOcclusionState:(NSNotification*)note{(void)note;if(auto h=host.lock())h->wake();}
 - (void)executeCommand:(id)sender{if(auto h=host.lock())h->guard([&]{h->command(stormtty::macos::utf8([sender identifier]));});}
 - (void)selectTab:(id)sender{if(auto h=host.lock())h->guard([&]{h->select_tab(static_cast<std::uint64_t>([sender tag]));});}
-- (BOOL)validateMenuItem:(NSMenuItem*)item{auto h=host.lock();if(!h)return NO;BOOL valid=NO;h->guard([&]{valid=stormtty::macos::menu_commands_available(h->view.hasMarkedText,h->closing,NSApp.modalWindow!=nil)&&stormtty::command_availability(stormtty::macos::utf8(item.identifier),h->context()).enabled;});return valid;}
+- (BOOL)validateMenuItem:(NSMenuItem*)item{auto h=host.lock();if(!h)return NO;BOOL valid=NO;h->guard([&]{valid=stormtty::macos::menu_commands_available(h->view.hasMarkedText,h->closing,NSApp.modalWindow!=nil||h->window.attachedSheet!=nil)&&stormtty::command_availability(stormtty::macos::utf8(item.identifier),h->context()).enabled;});return valid;}
 - (void)displayPreferencesChanged:(NSNotification*)note{(void)note;if(auto h=host.lock())h->guard([&]{h->appearance();});}
 @end
 

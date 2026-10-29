@@ -219,3 +219,23 @@ service. The portable theme exchange parser is available but macOS import/export
 pickers are not implemented. Adding direct permanent imports without reversible
 Settings drafts would misrepresent Windows parity, so this change does not do so.
 No Liquid Glass or other material default is enabled by this keyboard change.
+
+## Read-only pane context inspector
+
+`pane.inspect` is available in the native Terminal menu and command pop-up,
+using the configured shortcut machinery (no new hard-coded binding). It takes
+one owned active-session snapshot and presents selectable, wrapping text in a
+scrollable attached AppKit sheet. Escape or Close dismisses it and returns focus to the
+terminal. It does not send terminal input, resolve paths, probe repositories,
+open links, or change session ownership. Terminal labels use the shared display
+sanitizer. Observed directory and configured start folder remain distinct;
+missing observed context stays explicitly unavailable. Retained exited sessions
+are labeled. Close/reopen refreshes the snapshot; this is not a live inspector.
+
+`macos_pane_inspector_tests` covers native text controls, untrusted labels,
+provenance, owned snapshot lifetime, text selection, and repeated actual sheet
+presentation/dismissal. `macos-pane-context-native.yml` builds the real app and
+runs it alongside menu and portable context contracts on macOS. These are native
+fixture checks, with light/dark owned-view PNGs, not physical keyboard, VoiceOver, IME, or full host-interaction
+verification. Pane-header/footer context parity and scrollback-wide Find remain
+unimplemented on macOS.
