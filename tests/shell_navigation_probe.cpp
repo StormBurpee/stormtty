@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +20,55 @@ using namespace stormtty;
 using namespace std::chrono_literals;
 namespace {
 unsigned phase{}, checks{};
+struct ConsoleCodePages {
+    UINT input{GetConsoleCP()}, output{GetConsoleOutputCP()};
+    ~ConsoleCodePages() { if (input) SetConsoleCP(input); if (output) SetConsoleOutputCP(output); }
+    bool utf8() { return input && output && SetConsoleCP(CP_UTF8) && SetConsoleOutputCP(CP_UTF8); }
+};
+int native_read(bool utf8_mode, std::string id) {
+    ConsoleCodePages pages;
+    if (utf8_mode && !pages.utf8()) return 2;
+    const HANDLE input = CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (input == INVALID_HANDLE_VALUE) return 3;
+    struct Input { HANDLE h; ~Input() { CloseHandle(h); } } owned{input};
+    DWORD old{};
+    if (!GetConsoleMode(input, &old)) return 3;
+    struct Mode { HANDLE h; DWORD value; ~Mode() { SetConsoleMode(h, value); } } mode{input, old};
+    if (!SetConsoleMode(input, ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_EXTENDED_FLAGS)) return 4;
+    std::cout << "\x1b[?2004lQREAD_META_" << id << '_' << GetConsoleCP() << '_' << GetConsoleOutputCP() << "\nQREAD_READY_" << id << std::endl;
+    std::string bytes;
+    while (bytes.size() < 64) {
+        char byte{}; DWORD count{};
+        if (!ReadFile(input, &byte, 1, &count, nullptr) || count != 1) return 5;
+        if (byte == '\r' || byte == '\n') break;
+        bytes += byte;
+    }
+    constexpr char hex[] = "0123456789abcdef";
+    std::string encoded;
+    for (const unsigned char byte : bytes) { encoded += hex[byte >> 4]; encoded += hex[byte & 15]; }
+    std::cout << "\r\nQREAD_HEX_" << id << '_' << encoded << std::endl;
+    return 0;
+}
+int native_setup(int count, LPWSTR* args) {
+    UINT input = CP_UTF8, output = CP_UTF8;
+    if (count == 4) { input = static_cast<UINT>(_wtoi(args[2])); output = static_cast<UINT>(_wtoi(args[3])); }
+    else if (count != 2) return 2;
+    if (!GetConsoleCP() || !GetConsoleOutputCP() || !input || !output) return 3;
+    const UINT previous_input = GetConsoleCP(), previous_output = GetConsoleOutputCP();
+    if (!SetConsoleCP(input) || !SetConsoleOutputCP(output)) {
+        SetConsoleCP(previous_input); SetConsoleOutputCP(previous_output); return 4;
+    }
+    std::cout << "QSET_PAGES_" << GetConsoleCP() << '_' << GetConsoleOutputCP() << std::endl;
+    return GetConsoleCP() == input && GetConsoleOutputCP() == output ? 0 : 5;
+}
+int native_hold() {
+    const UINT input = GetConsoleCP(), output = GetConsoleOutputCP();
+    std::cout << "QHOLD_READY" << std::endl;
+    char line[8]{}; DWORD read{};
+    if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), line, sizeof(line), &read, nullptr)) return 2;
+    std::cout << "QHOLD_SAME_" << (input == GetConsoleCP() && output == GetConsoleOutputCP() ? 1 : 0) << std::endl;
+    return 0;
+}
 void check(bool ok) { ++checks; if (!ok) throw std::runtime_error("qualification failed"); }
 std::string utf8(const fs::path& path) {
     const auto text = path.generic_u8string();
@@ -29,6 +79,11 @@ std::string posix(const fs::path& path) {
     check(value.size() > 2 && value[1] == ':');
     char drive = value[0]; if (drive >= 'A' && drive <= 'Z') drive += 'a' - 'A';
     return "/" + std::string(1, drive) + value.substr(2);
+}
+std::string shell_quote(std::string_view value) {
+    std::string result = "'";
+    for (char ch : value) { if (ch == '\'') result += "'\\''"; else result += ch; }
+    return result + "'";
 }
 void write(const fs::path& path, std::string_view data) {
     std::ofstream stream(path, std::ios::binary); stream << data; stream.close(); check(stream.good());
@@ -98,7 +153,7 @@ struct ManagedSessionProbe {
     ~ManagedSessionProbe() { if (session) { session->request_close(); (void)session->wait_closed(8s); } }
     void expect(std::string_view token) { check(until([&] { return screen(session).find(token) != std::string::npos; })); }
     void absent(std::string_view token) { check(until([&] { return screen(session).find(token) == std::string::npos; })); }
-    void selected(std::string_view path) {
+    bool selected(std::string_view path, bool required = true) {
         // The walker and query matcher run asynchronously. Prompt visibility
         // alone does not mean Enter can accept a candidate. Observe the actual
         // selected row, with a fixed fixture-only ASCII pointer, before accepting.
@@ -147,7 +202,8 @@ struct ManagedSessionProbe {
             }
             std::cout << "SHELL_WALKER_READY phase=" << phase << " selected=0 rows=" << emitted << std::endl;
         }
-        check(found);
+        if (required) check(found);
+        return found;
     }
     void text(std::string value) { check(session->text(std::move(value)) == SessionSendResult::accepted); }
     void key(Key value, std::uint16_t mods = 0) { KeyInput input; input.key = value; input.modifiers = mods; if (value == Key::t) input.unshifted_codepoint = 't'; if (value == Key::r) input.unshifted_codepoint = 'r'; if (value == Key::c) input.unshifted_codepoint = 'c'; if (value == Key::u) input.unshifted_codepoint = 'u'; check(session->key(input) == SessionSendResult::accepted); }
@@ -155,6 +211,25 @@ struct ManagedSessionProbe {
     void ready(unsigned status) {
         expect("QREADY_" + std::to_string(sequence) + "_" + std::to_string(status));
         expect("QZLE_" + std::to_string(sequence) + " >");
+    }
+    void zle_idle() {
+        // Inspect the actual cursor row, never a QZLE token left in scrollback.
+        // Widget accept-line operations advance the shell's counter independently
+        // of the host sequence, so recognize the complete owned prompt grammar.
+        check(until([&] {
+            const auto frame = session->frame();
+            if (!frame || frame->alternate_screen || !frame->cursor.visible || frame->cursor.row >= frame->lines.size()) return false;
+            const auto& cells = frame->lines[frame->cursor.row]->cells;
+            if (frame->cursor.column > cells.size()) return false;
+            std::string prefix;
+            for (unsigned i = 0; i < frame->cursor.column; ++i) if (cells[i].span) prefix += cells[i].grapheme.empty() ? " " : cells[i].grapheme;
+            if (!prefix.starts_with("QZLE_") || !prefix.ends_with(" > ")) return false;
+            const auto digits = prefix.substr(5, prefix.size() - 8);
+            if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos) return false;
+            for (unsigned i = frame->cursor.column; i < cells.size(); ++i)
+                if (!cells[i].grapheme.empty() && cells[i].grapheme != " ") return false;
+            return true;
+        }));
     }
     void finish() {
         command("exit"); check(session->wait_for_process_exit(15s));
@@ -182,7 +257,11 @@ int main() {
         phase = 1;
         int count{}; LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
         struct Arguments { LPWSTR* p; ~Arguments() { if (p) LocalFree(p); } } owned{args};
+        if (args && count == 3 && std::wstring_view(args[1]) == L"--native-read") return native_read(std::wstring_view(args[2]) == L"utf8", std::wstring_view(args[2]) == L"after" ? "A" : std::wstring_view(args[2]) == L"utf8" ? "U" : "D");
+        if (args && count >= 2 && std::wstring_view(args[1]) == L"--console-pages") return native_setup(count, args);
+        if (args && count == 2 && std::wstring_view(args[1]) == L"--console-hold") return native_hold();
         check(args && (count == 2 || count == 3));
+        const fs::path self = fs::absolute(args[0]);
         const fs::path runtime = fs::absolute(args[1]);
         const fs::path provider = count == 3 ? fs::absolute(args[2]) : fs::path{};
         Fixture fixture;
@@ -196,6 +275,41 @@ int main() {
         command("(( ! ${+commands[perl]} )) && [[ -x $_stormtty_tools_root/usr/bin/awk.exe ]] && [[ $(awk 'BEGIN {print 712+1}') == 713 ]] && print -r -- QAWK$((20+4))", "QAWK24");
         // A fresh prompt must not create the database or invoke a navigation tool.
         check(!fs::exists(state.directory / L"db.zo"));
+        // Compare native ReadFile input under the same authored Unicode in a
+        // fresh direct PTY and when MSYS launches the exact same helper.
+        auto report_read = [&](const std::shared_ptr<Session>& session, const std::string& id, const char* route) {
+            check(until([&] { return screen(session).find("QREAD_READY_" + id) != std::string::npos; }));
+            check(session->text("路径\r") == SessionSendResult::accepted);
+            check(until([&] { return screen(session).find("QREAD_HEX_" + id + "_") != std::string::npos; }));
+            const auto frame = screen(session);
+            for (const auto& prefix : {"QREAD_META_" + id + "_", "QREAD_HEX_" + id + "_"}) {
+                const auto start = frame.find(prefix);
+                check(start != std::string::npos);
+                const auto end = frame.find_first_not_of("0123456789abcdef_", start + prefix.size());
+                std::cout << "NATIVE_INPUT route=" << route << " value=" << frame.substr(start, end - start) << std::endl;
+            }
+        };
+        std::string original_pages;
+        for (bool utf8_mode : {false, true}) {
+            ProcessOptions options; options.executable = utf8(self);
+            options.arguments = {"--native-read", utf8_mode ? "utf8" : "default"};
+            options.working_directory = utf8(fixture.cwd); options.grid = {160, 40};
+            options.provider = provider.empty() ? ProcessProvider::windows_inbox_basic : ProcessProvider::windows_packaged_experimental;
+            options.provider_directory = utf8(provider);
+            TerminalOptions terminal; terminal.size = {160, 40, 8, 16};
+            auto direct = Session::start(std::move(options), terminal);
+            report_read(direct, utf8_mode ? "U" : "D", "direct");
+            check(direct->wait_for_process_exit(8s)); direct->request_close(); check(direct->wait_closed(8s));
+            shell.command(shell_quote(posix(self)) + " --native-read " + (utf8_mode ? "utf8" : "default"));
+            report_read(shell.session, utf8_mode ? "U" : "D", "msys");
+            shell.zle_idle();
+            if (!utf8_mode) {
+                const auto frame = screen(shell.session); const auto prefix = std::string("QREAD_META_D_");
+                const auto start = frame.find(prefix) + prefix.size();
+                original_pages = frame.substr(start, frame.find_first_not_of("0123456789_", start) - start);
+                std::replace(original_pages.begin(), original_pages.end(), '_', ' ');
+            }
+        }
         phase = 3;
         // Actual upstream Ctrl-T widget selection, then ordinary ZLE input.
         shell.text("[[ -f "); shell.key(Key::t, control); shell.expect("QFZF_SELECT:");
@@ -252,7 +366,27 @@ int main() {
         phase = 131;
         shell.key(Key::c, alt); shell.expect("QFZF_SELECT:");
         phase = 132;
-        shell.text("nested 路径"); shell.selected("walker space é/nested 路径"); shell.key(Key::enter); shell.absent("QFZF_SELECT:");
+        shell.text("nested 路径");
+        const bool raw_selection = shell.selected("walker space é/nested 路径", false);
+        std::cout << "SHELL_RAW_UNICODE_SELECTION value=" << raw_selection << std::endl;
+        shell.key(raw_selection ? Key::enter : Key::escape); shell.absent("QFZF_SELECT:");
+        if (raw_selection) command("[[ $PWD == $QUAL_EXPECT_CWD/'walker space é/nested 路径' ]] && builtin cd -- \"$QUAL_EXPECT_CWD\" && print -r -- QRAW$((80+1))", "QRAW81");
+        // A separate live owned PTY must retain its codepages while the managed
+        // session runs the one-shot setup. No AttachConsole or host global state.
+        ProcessOptions guard_options; guard_options.executable = utf8(self);
+        guard_options.arguments = {"--console-hold"}; guard_options.working_directory = utf8(fixture.cwd);
+        guard_options.grid = {160, 40}; guard_options.provider = provider.empty() ? ProcessProvider::windows_inbox_basic : ProcessProvider::windows_packaged_experimental;
+        guard_options.provider_directory = utf8(provider);
+        TerminalOptions guard_terminal; guard_terminal.size = {160, 40, 8, 16};
+        auto other = Session::start(std::move(guard_options), guard_terminal);
+        check(until([&] { return screen(other).find("QHOLD_READY") != std::string::npos; }));
+        shell.command(shell_quote(posix(self)) + " --console-pages"); shell.expect("QSET_PAGES_65001_65001"); shell.zle_idle();
+        shell.command(shell_quote(posix(self)) + " --native-read after");
+        report_read(shell.session, "A", "msys-after-setup"); shell.expect("QREAD_HEX_A_e8b7afe5be84"); shell.zle_idle();
+        std::cout << "SHELL_UTF8_SETUP input=65001 output=65001 read_hex=e8b7afe5be84" << std::endl;
+        phase = 137;
+        shell.key(Key::c, alt); shell.expect("QFZF_SELECT:"); shell.text("nested 路径");
+        shell.selected("walker space é/nested 路径"); shell.key(Key::enter); shell.absent("QFZF_SELECT:");
         phase = 133;
         // Numeric-only diagnostics distinguish a selection/path contract failure
         // from a final prompt or process teardown failure. Never print frames.
@@ -273,7 +407,15 @@ int main() {
         phase = 135;
         command("print -r -- QEND$((50+3))", "QEND53");
         phase = 136;
+        shell.command(shell_quote(posix(self)) + " --console-pages " + original_pages);
+        auto restored_pages = original_pages; std::replace(restored_pages.begin(), restored_pages.end(), ' ', '_');
+        shell.expect("QSET_PAGES_" + restored_pages); shell.zle_idle();
+        check(other->text("check\r") == SessionSendResult::accepted);
+        check(until([&] { return screen(other).find("QHOLD_SAME_1") != std::string::npos; }));
+        check(other->wait_for_process_exit(8s)); other->request_close(); check(other->wait_closed(8s));
         shell.finish();
+        std::cout << "SHELL_UTF8_SETUP_COMPARISON passed=1 other_pty_unchanged=1 restored=1 raw_selection=" << raw_selection << std::endl;
+        check(raw_selection); // A test-only workaround must not qualify shipping behavior.
         std::cout << "SHELL_NAVIGATION_RESULT code=0 phase=13 checks=" << checks << " cold_samples=1 cold_ms=" << cold_ms << " warm_samples=0 warm_ms=" << warm_ms << '\n';
         return 0;
     } catch (...) {
