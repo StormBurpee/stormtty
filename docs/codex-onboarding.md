@@ -51,3 +51,15 @@ open a real browser, and do not prove current native OAuth/provider runtime
 compatibility. Native visual/UI verification is recorded separately. Opening an
 app-server may perform provider-managed initialization/network work; the claim is
 **no model task is started**, not “no process/network activity.”
+
+## Workspace lifetime
+
+Closing a confirmed idle/signing-in workspace retires its controller entry before
+removing the workspace model. Model-active/approval states still block close.
+One dedicated cleanup worker stops/reaps the app-server and joins its workers;
+normal workspace close never waits for those process joins. The queue bounds
+queued plus in-flight ownership to 16. A full queue refuses the close without
+removing the entry/model, so the host can ask the user to retry. Retiring an entry
+advances the UI catalog generation, invalidating stale Connect actions even for
+never-connected/missing installations. Application shutdown drains remaining
+owned entries; it can wait for that cleanup before exit.

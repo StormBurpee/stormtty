@@ -21,6 +21,7 @@ struct AgentPanelView {
     AgentPanelState state{AgentPanelState::unavailable};
     std::string execution_scope, connection_scope, error;
     AgentAuth auth{AgentAuth::unknown};
+    bool task_available{}; // Provider is connected, authenticated and has no active turn.
     std::string account_label, login_id, auth_url; // Transient; never render full URL or log it.
     std::vector<AgentPanelMessage> transcript;
     std::vector<AgentPanelApproval> approvals;

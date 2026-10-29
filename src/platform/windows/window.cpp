@@ -1651,6 +1651,11 @@ void NativeWindow::close_project(ProjectWorkspaceId id, bool approved) {
         }); return;
     }
     if (projects_.entries().size()==1) { DestroyWindow(hwnd_); return; } // Deliberate final close, never a replacement shell.
+    // Consent is complete. Transfer the inactive provider to the bounded
+    // controller reaper before dropping the workspace; never join on this UI thread.
+    if(agent_controller_&&!agent_controller_->retire(projects_.find(id)->metadata.persistent_id)) {
+        show_error("Codex is still finishing in this workspace. Try closing it again in a moment.");return;
+    }
     if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
     cancel_drag();
     const bool was_active=projects_.active_id()==id;
@@ -3604,7 +3609,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if (options_.smoke_agent) {
         if (!smoke_agent_stage_) {
             toggle_agent_panel();
-            auto initial=agent_panel_.view();initial.fixture=true;initial.state=AgentPanelState::ready;initial.auth=AgentAuth::signed_in;initial.setup_status.clear();
+            auto initial=agent_panel_.view();initial.fixture=true;initial.state=AgentPanelState::ready;initial.auth=AgentAuth::signed_in;initial.task_available=true;initial.setup_status.clear();
             agent_panel_.open(initial);agent_panel_.text("Review the terminal input path");
             initial.state=AgentPanelState::unavailable;initial.auth=AgentAuth::unknown;agent_panel_.update(initial);
             if (!agent_panel_.is_open() || focused_session_) {smoke_finish("Agent panel did not isolate terminal focus.");return;}
@@ -3633,6 +3638,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if(smoke_agent_stage_==6) {view.approvals={{{1,"fixture-thread","fixture-turn","fixture-item","1"},"Read source files","Read-only fixture scope: src/platform/windows/window.cpp\n\nThis request can inspect source files. It cannot write files or access the network.",true}};}
         if(smoke_agent_stage_==7) {view.approvals.clear();view.state=AgentPanelState::failed;view.error="Authored fixture: provider disconnected. No task was retried.";}
         if(smoke_agent_stage_==8) {view.state=AgentPanelState::unavailable;view.error.clear();view.setup_available=true;view.provider_settings={"C:\\Fixture\\codex.exe",""};}
+        view.task_available=view.auth==AgentAuth::signed_in&&view.state==AgentPanelState::ready;
         agent_panel_.update(std::move(view));
         if(smoke_agent_stage_==8) for(const auto& control:agent_panel_.controls()) if(control.id=="settings.open") {const Point point{control.bounds.x+1,control.bounds.y+1};agent_panel_.pointer_down(point);agent_panel_.pointer_up(point);break;}
         ++smoke_agent_stage_;changed();return;

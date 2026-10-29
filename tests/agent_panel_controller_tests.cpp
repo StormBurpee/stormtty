@@ -4,6 +4,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <filesystem>
+#include <thread>
 using namespace stormtty;
 int main(){return run_core_tests("agent_panel_controller",[]{
     AgentPanelController unavailable;
@@ -52,7 +54,7 @@ int main(){return run_core_tests("agent_panel_controller",[]{
     CHECK(setup_controller.dispatch(connect,"C:/fixture"));
     {std::unique_lock lock(mutex);CHECK(cv.wait_for(lock,std::chrono::seconds(5),[&]{return complete;}));}
     CHECK(launch_calls==1);CHECK(accepted);CHECK(confirmed);CHECK(runtime_label=="not-probed");
-    CHECK(setup_controller.view(workspace_id,"Fixture","C:/fixture").state==AgentPanelState::disconnected);
+    CHECK(setup_controller.view(workspace_id,"Fixture","C:/fixture").state==AgentPanelState::failed);
     // Panel opening may discover/status-check known binaries, never a model task.
     complete=false;launch_calls=0;unsigned discoveries=0;
     AgentPanelController automatic({},[&]{std::lock_guard lock(mutex);complete=true;cv.notify_one();},{},
@@ -64,12 +66,63 @@ int main(){return run_core_tests("agent_panel_controller",[]{
     CHECK(automatic.opened(workspace_id,"/untrusted/repository"));
     {std::unique_lock lock(mutex);CHECK(cv.wait_for(lock,std::chrono::seconds(5),[&]{return complete;}));}
     CHECK(discoveries==1);CHECK(launch_calls==1);CHECK(!automatic.opened(workspace_id,"/untrusted/repository"));
-    complete=false;launch_calls=0;
+    CHECK(automatic.view(workspace_id,"Fixture","/fixture").state==AgentPanelState::failed);
+    complete=false;launch_calls=0;bool installation_appeared=false;
     AgentPanelController missing({},[&]{std::lock_guard lock(mutex);complete=true;cv.notify_one();},{},
         [&](const AgentStdioOptions&,std::shared_ptr<AgentService>,std::string&)->std::unique_ptr<AgentStdioTransport>{++launch_calls;return {};},
-        []{return AgentDiscoveryResult{{},"Install Codex, then retry.",{}};});
+        [&]{return installation_appeared?AgentDiscoveryResult{"/fixture/installed/codex","Fixture appeared","/fixture/installed"}:AgentDiscoveryResult{{},"Fixture missing result.",{}};});
     CHECK(missing.opened(workspace_id,"/untrusted/repository"));
     {std::unique_lock lock(mutex);CHECK(cv.wait_for(lock,std::chrono::seconds(5),[&]{return complete;}));}
-    CHECK(launch_calls==0);CHECK(missing.view(workspace_id,"Fixture","/fixture").error.find("Install Codex")!=std::string::npos);
+    CHECK(launch_calls==0);
+    const auto missing_view=missing.view(workspace_id,"Fixture","/fixture");
+    CHECK(missing_view.state==AgentPanelState::unavailable);CHECK(missing_view.error=="Fixture missing result.");
+    // Real controller output, not an authored panel state: missing CLI must offer
+    // Install and one-click Check again, never pretend a discovered entry exists.
+    auto control=[](const AgentPanel& panel,std::string_view id){for(const auto& c:panel.controls())if(c.id==id)return true;return false;};
+    auto click=[](AgentPanel& panel,std::string_view id){for(const auto& c:panel.controls())if(c.id==id){const Point p{c.bounds.x+1,c.bounds.y+1};panel.pointer_down(p);panel.pointer_up(p);return;}CHECK(false);};
+    AgentPanel panel;panel.open(missing_view);CHECK(control(panel,"install_codex"));CHECK(control(panel,"connect"));
+    click(panel,"install_codex");const auto install=panel.take_action();CHECK(install&&install->kind==AgentPanelActionKind::install_codex);CHECK(launch_calls==0);
+    panel.update(missing_view);click(panel,"connect");const auto retry=panel.take_action();CHECK(retry&&retry->kind==AgentPanelActionKind::connect);
+    complete=false;CHECK(missing.dispatch(*retry,"/fixture"));
+    {std::unique_lock lock(mutex);CHECK(cv.wait_for(lock,std::chrono::seconds(5),[&]{return complete;}));}
+    CHECK(missing.view(workspace_id,"Fixture","/fixture").state==AgentPanelState::unavailable);CHECK(launch_calls==0);
+    installation_appeared=true;complete=false;
+    panel.update(missing.view(workspace_id,"Fixture","/fixture"));click(panel,"connect");const auto installed_retry=panel.take_action();CHECK(installed_retry&&installed_retry->kind==AgentPanelActionKind::connect);
+    CHECK(missing.dispatch(*installed_retry,"/fixture"));
+    {std::unique_lock lock(mutex);CHECK(cv.wait_for(lock,std::chrono::seconds(5),[&]{return complete;}));}
+    CHECK(launch_calls==1);CHECK(missing.view(workspace_id,"Fixture","/fixture").state==AgentPanelState::failed);
+    CHECK(missing.view(workspace_id,"Fixture","/fixture").error=="Provider launch failed."); // old missing diagnostic retired
+    panel.update(automatic.view(workspace_id,"Fixture","/fixture"));CHECK(panel.view().state==AgentPanelState::failed);CHECK(!control(panel,"install_codex"));CHECK(control(panel,"connect"));
+    CHECK(!control(panel,"composer"));CHECK(!panel.view().task_available);
+    WindowScene error_scene;panel.append_scene(error_scene,Theme{});bool honest_error=false;
+    for(const auto& text:error_scene.texts)if(text.text=="Codex could not connect")honest_error=true;
+    CHECK(honest_error);
+    // A successfully launched authored stdio fixture, then explicit Disconnect,
+    // is different from missing installation and launch failure. No turn is sent.
+    const auto fixture=std::filesystem::path(STORMTTY_FAKE_APP_SERVER);
+    const auto fixture_directory=fixture.parent_path().string();
+    AgentPanelController found({}, {}, {}, {}, [&]{return AgentDiscoveryResult{fixture.string(),"Fixture found",fixture_directory};});
+    CHECK(found.opened(workspace_id,"/untrusted/repository"));
+    auto until=[](auto predicate){const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);while(!predicate()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(5));CHECK(predicate());};
+    until([&]{return found.view(workspace_id,"Fixture",fixture_directory).state==AgentPanelState::ready;});
+    auto found_view=found.view(workspace_id,"Fixture",fixture_directory);CHECK(found_view.auth==AgentAuth::signed_in);CHECK(found.associations()[0].thread_id.empty());
+    // Real controller -> authored stdio -> panel: a failed turn is not a dead
+    // connection. Retrying requires fresh task review, never reconnects/replays.
+    CHECK(found_view.task_available);panel.open(found_view);panel.text("fixture-turn-failure");
+    click(panel,"start");CHECK(!panel.take_action());click(panel,"start");auto first_turn=panel.take_action();
+    CHECK(first_turn&&first_turn->kind==AgentPanelActionKind::start);CHECK(found.dispatch(*first_turn,fixture_directory));
+    until([&]{return found.view(workspace_id,"Fixture",fixture_directory).state==AgentPanelState::failed;});
+    auto failed_turn=found.view(workspace_id,"Fixture",fixture_directory);
+    CHECK(failed_turn.task_available);CHECK(failed_turn.auth==AgentAuth::signed_in);CHECK(failed_turn.provider_generation==found_view.provider_generation);
+    panel.update(failed_turn);CHECK(control(panel,"composer"));CHECK(control(panel,"start"));CHECK(!control(panel,"connect"));CHECK(!panel.take_action());
+    click(panel,"start");CHECK(!panel.take_action());click(panel,"start");auto next_turn=panel.take_action();
+    CHECK(next_turn&&next_turn->kind==AgentPanelActionKind::start);CHECK(found.dispatch(*next_turn,fixture_directory));
+    until([&]{return found.view(workspace_id,"Fixture",fixture_directory).state==AgentPanelState::failed;});
+    CHECK(found.view(workspace_id,"Fixture",fixture_directory).provider_generation==found_view.provider_generation);
+    AgentPanelAction disconnect;disconnect.kind=AgentPanelActionKind::disconnect;disconnect.workspace_id=workspace_id;disconnect.settings_generation=found_view.settings_generation;disconnect.provider_generation=found_view.provider_generation;
+    CHECK(found.dispatch(disconnect,fixture_directory));
+    until([&]{return found.view(workspace_id,"Fixture",fixture_directory).state==AgentPanelState::disconnected;});
+    panel.update(found.view(workspace_id,"Fixture",fixture_directory));CHECK(!control(panel,"install_codex"));CHECK(control(panel,"connect"));
+
 
 });}

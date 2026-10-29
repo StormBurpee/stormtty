@@ -40,7 +40,7 @@ jobs:
       - name: Configure isolated native UI build
         run: cmake -S . -B build-ui -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF -DSTORMTTY_TEST_INK=OFF
       - name: Build app and focused native tests
-        run: cmake --build build-ui --parallel 2 --target stormtty agent_panel_tests agent_panel_controller_tests agent_auth_tests agent_service_tests agent_discovery_tests agent_provider_settings_tests renderer_smoke
+        run: cmake --build build-ui --parallel 2 --target stormtty agent_panel_tests agent_panel_controller_tests agent_auth_tests agent_service_tests agent_discovery_tests agent_provider_settings_tests agent_stdio_tests agent_retirement_tests renderer_smoke
       - name: Capture nine authored native onboarding and conversation states
         id: capture
         shell: python
@@ -75,7 +75,7 @@ jobs:
           if-no-files-found: error
       - name: Run focused native provider, layout and renderer tests
         if: always() && steps.capture.outcome != 'skipped'
-        run: ctest --test-dir build-ui -R "^(agent_panel_tests|agent_panel_controller_tests|agent_auth_tests|agent_service_tests|agent_discovery_tests|agent_provider_settings_tests|renderer_smoke)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
+        run: ctest --test-dir build-ui -R "^(agent_panel_tests|agent_panel_controller_tests|agent_auth_tests|agent_service_tests|agent_discovery_tests|agent_provider_settings_tests|agent_stdio_tests|agent_retirement_tests|renderer_smoke)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
       - name: Preserve focused test diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

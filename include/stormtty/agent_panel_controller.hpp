@@ -20,6 +20,11 @@ public:
     // Call once when opening the panel: discovers known installations and checks
     // status only. An advanced override still requires explicit Connect.
     bool opened(std::string workspace_id, std::string directory);
+    // UI-thread catalog operation: no process stop/join here. Call after close
+    // confirmation and before removing the workspace model. False leaves it intact.
+    bool retire(std::string_view workspace_id);
+    static constexpr std::size_t maximum_retiring = 16;
+    std::size_t retiring_count() const;
     std::vector<WorkspaceAgentAssociation> associations() const;
     bool can_reconfigure() const;
     bool reconfigure(const AgentProviderSettings&);
@@ -29,11 +34,13 @@ public:
     bool active(std::string_view workspace_id) const;
 private:
     struct Entry;
+    struct Reaper;
     AgentStdioOptions options_;
     LaunchFactory launch_;
     DiscoveryFactory discover_;
     std::uint64_t settings_generation_{};
     std::function<void()> wake_;
     std::map<std::string,std::unique_ptr<Entry>> entries_;
+    std::unique_ptr<Reaper> reaper_;
 };
 }

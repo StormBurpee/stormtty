@@ -18,6 +18,7 @@ Color color(std::string_view s) {
 }
 AgentPanelView agent_panel_view(const AgentSnapshot& snapshot,std::string name,std::string directory,bool available) {
     AgentPanelView v;v.workspace_id=snapshot.association.workspace_persistent_id;v.workspace_name=std::move(name);v.directory=std::move(directory);
+    v.task_available=available && snapshot.connection==AgentConnection::ready && snapshot.auth==AgentAuth::signed_in && snapshot.conversation!=AgentConversation::starting && snapshot.conversation!=AgentConversation::running && snapshot.conversation!=AgentConversation::interrupting;
     v.auth=snapshot.auth;v.account_label=snapshot.account_label;v.login_id=snapshot.login_id;v.auth_url=snapshot.auth_url;
     v.provider=snapshot.association.provider;v.provider_generation=snapshot.generation;v.error=snapshot.error;
     v.execution_scope="Read-only sandbox; network disabled; untrusted commands require approval; user reviews";
@@ -55,7 +56,7 @@ void AgentPanel::settings_reloaded(const AgentProviderSettings& settings,std::st
 }
 void AgentPanel::resize(Size v) { viewport_=v; layout(); }
 const std::string& AgentPanel::draft() const { static const std::string empty; auto i=drafts_.find(view_.workspace_id); return i==drafts_.end()?empty:i->second; }
-bool AgentPanel::can_start() const { return view_.auth!=AgentAuth::signed_out && view_.auth!=AgentAuth::signing_in && view_.auth!=AgentAuth::failed && !view_.workspace_id.empty() && !view_.execution_scope.empty() && view_.approvals.empty() && (view_.state==AgentPanelState::ready||view_.state==AgentPanelState::completed||view_.state==AgentPanelState::interrupted) && !draft().empty(); }
+bool AgentPanel::can_start() const { return view_.task_available && view_.auth!=AgentAuth::signed_out && view_.auth!=AgentAuth::signing_in && view_.auth!=AgentAuth::failed && !view_.workspace_id.empty() && !view_.execution_scope.empty() && view_.approvals.empty() && (view_.state==AgentPanelState::ready||view_.state==AgentPanelState::completed||view_.state==AgentPanelState::interrupted||view_.state==AgentPanelState::failed) && !draft().empty(); }
 std::string AgentPanel::status_label() const {
     if(!view_.approvals.empty()) return "Needs approval";
     if(view_.auth==AgentAuth::signed_out)return "Sign in needed";
@@ -68,12 +69,12 @@ std::string AgentPanel::status_label() const {
     } return "Unavailable";
 }
 void AgentPanel::layout() {
-    const bool onboarding=view_.transcript.empty() && view_.approvals.empty() && view_.state!=AgentPanelState::running && !confirming_;
+    const bool onboarding=(view_.transcript.empty()||view_.state==AgentPanelState::disconnected||(view_.state==AgentPanelState::failed&&!view_.task_available)||view_.auth==AgentAuth::signed_out||view_.auth==AgentAuth::signing_in||view_.auth==AgentAuth::failed) && view_.approvals.empty() && view_.state!=AgentPanelState::running && !confirming_;
     const auto w=std::max(0.0,std::min(640.0,viewport_.width-32));
-    const auto h=std::max(0.0,std::min(onboarding||editing_settings_?500.0:!view_.approvals.empty()||confirming_?540.0:640.0,viewport_.height-(viewport_.height<440?32:80)));
+    const auto h=std::max(0.0,std::min(editing_settings_?380.0:onboarding?440.0:!view_.approvals.empty()||confirming_?540.0:640.0,viewport_.height-(viewport_.height<440?32:80)));
     panel_={std::max(0.0,viewport_.width-w-24),std::max(16.0,(viewport_.height-h)/2),w,h};
     composer_={panel_.x+20,panel_.y+std::max(120.0,h-132),std::max(0.0,w-40),64};
-    transcript_={panel_.x+20,panel_.y+132,std::max(0.0,w-40),std::max(0.0,composer_.y-panel_.y-152)};
+    transcript_={panel_.x+20,panel_.y+132,std::max(0.0,w-40),std::max(0.0,composer_.y-panel_.y-158)};
     controls_.clear();
     auto add=[&](std::string id,std::string title,Rect r,bool enabled=true){controls_.push_back({std::move(id),std::move(title),r,enabled});};
     add("close","Close",{panel_.x+w-82,panel_.y+16,62,28});
@@ -85,34 +86,38 @@ void AgentPanel::layout() {
         return;
     }
     add("settings.open","Advanced",{panel_.x+w-182,panel_.y+16,92,28},(view_.setup_available||view_.setup_reload_available)&&!view_.setup_busy);
-    const bool needs_onboarding=view_.transcript.empty() && view_.approvals.empty() && !confirming_ &&
-        (view_.state==AgentPanelState::unavailable || view_.state==AgentPanelState::connecting || view_.state==AgentPanelState::disconnected || view_.auth==AgentAuth::signed_out || view_.auth==AgentAuth::signing_in || view_.auth==AgentAuth::failed);
+    const bool needs_onboarding=view_.approvals.empty() && !confirming_ &&
+        (view_.auth==AgentAuth::signed_out || view_.auth==AgentAuth::signing_in || view_.auth==AgentAuth::failed ||
+         (view_.state==AgentPanelState::unavailable || view_.state==AgentPanelState::connecting || (view_.state==AgentPanelState::failed&&!view_.task_available) || view_.state==AgentPanelState::disconnected));
     if(needs_onboarding) {
         const auto y=panel_.y+panel_.height-78;
         if(view_.auth==AgentAuth::signing_in) {
             add("open_sign_in","Continue in browser",{panel_.x+20,y,180,34},!view_.auth_url.empty()&&!pending_);
-            add("cancel_sign_in","Cancel sign-in",{panel_.x+w-154,y,134,34},!pending_);
+            add("cancel_sign_in","Cancel sign-in",{panel_.x+212,y,134,34},!pending_);
         } else if(view_.auth==AgentAuth::signed_out || view_.auth==AgentAuth::failed) {
             add("sign_in","Sign in to ChatGPT",{panel_.x+20,y,180,34},!pending_);
-            add("refresh_account","Check again",{panel_.x+w-142,y,122,34},!pending_);
+            add("refresh_account","Check again",{panel_.x+212,y,122,34},!pending_);
         } else if(view_.state==AgentPanelState::unavailable) {
             add("install_codex","Install Codex",{panel_.x+20,y,144,34},!pending_);
-            add("connect","Check again",{panel_.x+w-142,y,122,34},!pending_);
-        } else if(view_.state==AgentPanelState::disconnected) add("connect","Connect Codex",{panel_.x+20,y,144,34},!pending_);
-        if(std::none_of(controls_.begin(),controls_.end(),[&](auto& c){return c.id==focus_&&c.enabled;})) focus_="close";
+            add("connect","Check again",{panel_.x+176,y,122,34},!pending_);
+        } else if(view_.state==AgentPanelState::disconnected||(view_.state==AgentPanelState::failed&&!view_.task_available)) add("connect",view_.state==AgentPanelState::failed?"Retry connection":"Connect Codex",{panel_.x+20,y,144,34},!pending_);
+        if(std::none_of(controls_.begin(),controls_.end(),[&](auto& c){return c.id==focus_&&c.enabled;})) {
+            const auto primary=std::find_if(controls_.begin(),controls_.end(),[](const auto& c){return c.enabled&&c.id!="close"&&c.id!="settings.open";});
+            focus_=primary==controls_.end()?"close":primary->id;
+        }
         return;
     }
     add("composer","Task",composer_);
     const auto y=composer_.y+72;
-    if(view_.state==AgentPanelState::disconnected||view_.state==AgentPanelState::failed) add("connect",connecting_?"Connect":"Review connect",{panel_.x+w-142,y,122,30},!view_.connection_scope.empty()&&!pending_&&!view_.setup_busy);
+    if(view_.state==AgentPanelState::disconnected||(view_.state==AgentPanelState::failed&&!view_.task_available)) add("connect",connecting_?"Connect":"Review connect",{panel_.x+w-142,y,122,30},!view_.connection_scope.empty()&&!pending_&&!view_.setup_busy);
     else add("start",confirming_?"Start task":"Review task",{panel_.x+w-142,y,122,30},can_start()&&!pending_&&!view_.setup_busy);
     if(!confirming_ && view_.disconnect_available && (view_.state==AgentPanelState::ready||view_.state==AgentPanelState::completed||view_.state==AgentPanelState::interrupted||view_.state==AgentPanelState::failed||view_.state==AgentPanelState::disconnected)) add("disconnect","Disconnect",{panel_.x+20,y,100,30},!pending_);
     if(view_.state==AgentPanelState::running) add("interrupt","Interrupt",{panel_.x+20,y,100,30},!pending_);
     if(confirming_) add("cancel","Cancel",{panel_.x+20,y,100,30});
     if(!view_.approvals.empty()) {
         const auto ay=transcript_.y+std::max(0.0,transcript_.height-36);
-        add("decline","Decline",{panel_.x+20,ay,100,30},!pending_);
-        add("allow","Allow once",{panel_.x+132,ay,110,30},view_.approvals.front().allow_supported&&!pending_);
+        add("decline","Decline",{panel_.x+32,ay,100,30},!pending_);
+        add("allow","Allow once",{panel_.x+144,ay,110,30},view_.approvals.front().allow_supported&&!pending_);
     }
     if(std::none_of(controls_.begin(),controls_.end(),[&](auto& c){return c.id==focus_;})) focus_="composer";
 }
@@ -127,7 +132,7 @@ void AgentPanel::text(std::string_view t) {
         if(settings_select_all_){field->clear();settings_select_all_=false;}
         field->append(t);settings_reload_confirm_=false;settings_error_.clear();layout();return;
     }
-    if(focus_!="composer"||confirming_) return;
+    if(focus_!="composer"||confirming_||std::none_of(controls_.begin(),controls_.end(),[](const auto& c){return c.id=="composer"&&c.enabled;})) return;
     auto& d=drafts_[view_.workspace_id]; if(t.size()>16384-d.size()) return; for(char c:t) if((static_cast<unsigned char>(c)>=32||c=='\n')&&c!=127&&d.size()<16384) d+=c;
     layout();
 }
@@ -196,6 +201,7 @@ void AgentPanel::pointer_up(Point p) {auto id=std::exchange(pressed_,{});for(aut
 void AgentPanel::scroll(double lines) {
     if(!std::isfinite(lines))return;
     std::size_t bytes=0;for(const auto& m:view_.transcript)bytes+=m.text.size()+m.role.size()+2;
+    if(!view_.error.empty())bytes=std::max(bytes,view_.error.size());
     if(confirming_)bytes=view_.connection_scope.size()+view_.execution_scope.size()+view_.workspace_name.size()+256;
     if(!view_.approvals.empty()) bytes=view_.approvals.front().scope.size()+view_.approvals.front().title.size()+64;
     scroll_=static_cast<std::size_t>(std::clamp(static_cast<double>(scroll_)+lines,0.0,static_cast<double>(bytes)));
@@ -207,10 +213,10 @@ void AgentPanel::append_scene(WindowScene& s,const Theme& t,float scale,const Te
     const auto border=blend(chrome,fg,.18),control=blend(chrome,fg,.035),subdued=blend(fg,chrome,.48);
     const Color primary_ink=(accent.r*299+accent.g*587+accent.b*114)>140000?Color{17,21,32,255}:Color{255,255,255,255};
     auto px=[&](Rect r){return PixelRect{float(r.x*scale),float(r.y*scale),float(r.width*scale),float(r.height*scale)};};
-    auto box=[&](Rect r,Color fill,Color stroke=Color{}){ChromePrimitive p;p.rect=px(r);p.fill=fill;p.stroke=stroke;p.stroke_width=scale;p.radius=6*scale;p.z=z;s.primitives.push_back(p);};
+    auto box=[&](Rect r,Color fill,Color stroke=Color{0,0,0,0}){ChromePrimitive p;p.rect=px(r);p.fill=fill;p.stroke=stroke;p.stroke_width=scale;p.radius=6*scale;p.z=z;s.primitives.push_back(p);};
     auto label=[&](Rect r,std::string text,float size=13,bool bold=false){ChromeText x;x.rect=px(r);x.text=agent_display_text(text);x.color=fg;x.size_dip=size;x.semibold=bold;x.z=z;x.wrap=true;s.texts.push_back(std::move(x));};
     auto button=[&](const AgentPanelControl& c) {
-        const bool primary=c.enabled&&(c.id=="start"||c.id=="connect"||c.id=="settings.save"||c.id=="sign_in"||c.id=="open_sign_in"||c.id=="install_codex");
+        const bool primary=c.enabled&&(c.id=="start"||(c.id=="connect"&&view_.state!=AgentPanelState::unavailable)||c.id=="settings.save"||c.id=="sign_in"||c.id=="open_sign_in"||c.id=="install_codex");
         auto fill=primary?accent:control;
         if(c.enabled&&c.id==pressed_)fill=blend(fill,primary?chrome:fg,.12);
         else if(c.enabled&&c.id==hover_)fill=blend(fill,fg,.075);
@@ -273,7 +279,7 @@ void AgentPanel::append_scene(WindowScene& s,const Theme& t,float scale,const Te
                 label({c.bounds.x+8,c.bounds.y+6,c.bounds.width-16,c.bounds.height-12},value.empty()?(c.id=="settings.executable"?"C:\\Tools\\codex.exe":"Optional account label"):value,12);
             } else button(c);
         }
-        if(panel_.height>350) label({transcript_.x,panel_.y+190,transcript_.width,panel_.height-244},"Use an absolute path only if automatic discovery misses Codex.\nLeave it empty to use automatic discovery.\n\nSign-in is managed by Codex, not by these settings.",12);
+        if(panel_.height>350) label({transcript_.x,panel_.y+190,transcript_.width,76},"Use an absolute path only if automatic discovery misses Codex.\nLeave it empty to use automatic discovery.\n\nSign-in is managed by Codex, not by these settings.",12);
         return;
     }
     if(!view_.approvals.empty()||confirming_) {
@@ -282,29 +288,43 @@ void AgentPanel::append_scene(WindowScene& s,const Theme& t,float scale,const Te
     const bool has_composer=std::any_of(controls_.begin(),controls_.end(),[](const auto& c){return c.id=="composer";});
     if(!has_composer) {
         const bool compact=panel_.height<380;
-        const auto x=panel_.x+24, y=panel_.y+(compact?120:156), w=panel_.width-48;
+        const auto x=panel_.x+24, y=panel_.y+(compact?120:144), w=panel_.width-48;
         std::string title, body;
         if(view_.auth==AgentAuth::signing_in){title="Finish signing in";body="Continue in your browser to connect your ChatGPT account. This panel updates when sign-in is complete.";}
         else if(view_.auth==AgentAuth::signed_out||view_.auth==AgentAuth::failed){title="Connect your account";body="Codex is installed. Sign in to ChatGPT to use it in this workspace. Your password stays in the browser.";}
         else if(view_.state==AgentPanelState::connecting){title="Getting Codex ready";body="Looking for the installed CLI and checking your sign-in. No task is started.";}
-        else if(view_.state==AgentPanelState::disconnected){title="Codex is available";body="Connect the local Codex provider to check your account. You will review the connection before continuing.";}
+        else if(view_.state==AgentPanelState::disconnected){title="Codex is disconnected";body="Reconnect the local provider to check your account. You will review the connection before continuing.";}
+        else if(view_.state==AgentPanelState::failed){title="Codex could not connect";body="The local provider could not be started. Retry the connection, or check the executable override in Advanced.";}
         else {title="Install Codex to get started";body="StormTTY could not find the Codex CLI on this computer. Install it, then choose Check again. Already installed elsewhere? Set an executable override in Advanced.";}
-        if(compact)body=view_.auth==AgentAuth::signing_in?"Continue in your browser to finish sign-in.":view_.auth==AgentAuth::signed_out?"Sign in with your ChatGPT account.":view_.state==AgentPanelState::connecting?"Checking the installed CLI and your account…":"Install Codex, or set its location in Advanced.";
-        box({x,y-10,w,compact?90.0:156.0},blend(chrome,fg,.025),border);
+        if(compact)body=view_.auth==AgentAuth::signing_in?"Continue in your browser to finish sign-in.":(view_.auth==AgentAuth::signed_out||view_.auth==AgentAuth::failed)?"Sign in with your ChatGPT account.":view_.state==AgentPanelState::connecting?"Checking the installed CLI and your account…":view_.state==AgentPanelState::failed?"Retry the connection, or check Advanced.":view_.state==AgentPanelState::disconnected?"Reconnect to check your account.":"Install Codex, or set its location in Advanced.";
+        box({x,y-10,w,compact?90.0:128.0},blend(chrome,fg,.025),border);
         label({x+20,y+8,w-40,compact?24.0:32.0},title,compact?16:20,true);
-        label({x+20,y+(compact?36:52),w-40,compact?40.0:86.0},body,13);s.texts.back().color=subdued;
-        if(!view_.error.empty()) document(view_.error,{x,y+162,w,std::max(0.0,panel_.height-400)},false);
+        if(compact&&!view_.error.empty())document(view_.error,{x+20,y+36,w-40,40},false);
+        else {label({x+20,y+(compact?36:52),w-40,compact?40.0:54.0},body,13);s.texts.back().color=subdued;}
+        if(!compact&&!view_.error.empty()) document(view_.error,{x,y+126,w,std::max(0.0,panel_.height-350)},false);
     }
     else if(connecting_) document("Connect Codex? · PageDown for full scope\nWorkspace: "+view_.workspace_name+"\n"+view_.connection_scope,transcript_,false);
     else if(confirming_) document("Start a Codex task?\nWorkspace: "+view_.workspace_name+"\nProvider: "+view_.provider+"\nScope: "+view_.execution_scope+"\n\nOnly Start task authorizes this prompt.",transcript_,false);
-    else if(!view_.approvals.empty()) {const auto& a=view_.approvals.front();document("Permission request · "+std::to_string(view_.approvals.size())+" pending\nPageUp / PageDown to inspect the full scope\n\n"+a.title+"\n"+a.scope,{transcript_.x,transcript_.y,transcript_.width,std::max(0.0,transcript_.height-44)},false);}
+    else if(!view_.approvals.empty()) {
+        const auto& a=view_.approvals.front();
+        label({transcript_.x+12,transcript_.y+8,transcript_.width-24,24},"Permission request",16,true);
+        label({transcript_.x+12,transcript_.y+34,transcript_.width-24,18},std::to_string(view_.approvals.size())+" pending · PageUp / PageDown to inspect the full scope",11);s.texts.back().color=subdued;
+        document(a.title+"\n\n"+a.scope,{transcript_.x+12,transcript_.y+62,transcript_.width-24,std::max(0.0,transcript_.height-108)},false);
+    }
     else if(!view_.error.empty()) document(view_.error,transcript_,false);
-    else if(view_.transcript.empty()&&!view_.account_label.empty()) document("Signed in as "+view_.account_label+"\n\nWhat would you like to work on?\n\nAsk about this workspace, investigate an issue, or review a change.",transcript_,false);
-    else if(view_.transcript.empty()) document(view_.state==AgentPanelState::unavailable?"Codex was not found\n\nInstall the Codex CLI, then try again. If it is already installed in a custom location, choose Advanced.":view_.state==AgentPanelState::connecting?"Finding Codex and checking your account…\n\nThis does not start a task.":"What would you like to work on?\n\nAsk about this workspace, investigate an issue, or review a change. You will review the scope before a task starts.",transcript_,false);
+    else if(view_.transcript.empty()) {
+        label({transcript_.x,transcript_.y+4,transcript_.width,30},"What would you like to work on?",20,true);
+        if(!view_.account_label.empty()) {
+            label({transcript_.x,transcript_.y+42,transcript_.width,20},"Signed in as "+view_.account_label,12);
+            s.texts.back().color=subdued;
+        }
+        label({transcript_.x,transcript_.y+72,transcript_.width,38},"Ask about this workspace, investigate an issue, or review a change.",13);
+        s.texts.back().color=subdued;
+    }
     else {std::string text;for(const auto& m:view_.transcript) text+=(m.role=="user"?"You":m.role=="assistant"?"Codex":m.role)+"\n"+m.text+"\n\n";document(std::move(text),transcript_,true);}
 
-    if(has_composer) {box(composer_,bg,focus_=="composer"?accent:chrome);label({composer_.x+10,composer_.y+8,composer_.width-20,composer_.height-16},draft().empty()?"Ask Codex about this workspace…":draft());}
-    label({panel_.x+20,panel_.y+panel_.height-26,panel_.width-40,18},view_.fixture?"Authored UI fixture · no provider or model calls":has_composer?"Enter to review · Shift+Enter for a new line · Esc to close":"No task starts until you review and confirm it",10);
+    if(has_composer) {label({composer_.x,composer_.y-20,composer_.width,18},"Task",11,true);s.texts.back().color=subdued;box(composer_,bg,focus_=="composer"?accent:chrome);label({composer_.x+10,composer_.y+8,composer_.width-20,composer_.height-16},draft().empty()?"Ask Codex about this workspace…":draft());}
+    label({panel_.x+20,panel_.y+panel_.height-26,panel_.width-40,18},view_.fixture?"Authored UI fixture · no provider or model calls":has_composer?"Enter to review scope · Shift+Enter for a new line · Esc to close":"No task starts until you review and confirm it",10);
     s.texts.back().color=subdued;s.texts.back().wrap=false;
     for(const auto& c:controls_)if(c.id!="composer")button(c);
 }

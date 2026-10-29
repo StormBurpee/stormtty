@@ -5,7 +5,7 @@
 using namespace stormtty;
 namespace {
 void click(AgentPanel& p,std::string_view id) {for(const auto& c:p.controls())if(c.id==id){Point point{c.bounds.x+1,c.bounds.y+1};p.pointer_down(point);p.pointer_up(point);return;}CHECK(false);}
-AgentPanelView view(std::string id="workspace-a") {AgentPanelView v;v.state=AgentPanelState::ready;v.workspace_id=id;v.workspace_name="StormTTY";v.directory="C:/project";v.execution_scope="Read-only sandbox; untrusted commands require approval";return v;}
+AgentPanelView view(std::string id="workspace-a") {AgentPanelView v;v.state=AgentPanelState::ready;v.task_available=true;v.workspace_id=id;v.workspace_name="StormTTY";v.directory="C:/project";v.execution_scope="Read-only sandbox; untrusted commands require approval";return v;}
 }
 int main() {
     AgentPanel p; p.open(view());p.text("Build tests");click(p,"start");CHECK(!p.take_action());CHECK(p.status_label()=="Ready");
@@ -94,6 +94,7 @@ int main() {
     CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](const auto& text){return text.text=="Allow once"&&text.alignment==ChromeTextAlignment::center;}));
     // Onboarding actions never start work; URLs remain transient and invisible.
     AgentPanel onboarding;auto auth=view();auth.state=AgentPanelState::ready;auth.auth=AgentAuth::signed_out;
+    auth.transcript={{"assistant","Earlier conversation is retained during reauthentication."}};
     onboarding.open(auth);CHECK(onboarding.status_label()=="Sign in needed");
     CHECK(std::none_of(onboarding.controls().begin(),onboarding.controls().end(),[](const auto& c){return c.id=="composer";}));
     click(onboarding,"sign_in");CHECK(onboarding.take_action()->kind==AgentPanelActionKind::sign_in);
@@ -112,6 +113,12 @@ int main() {
             CHECK(control.bounds.x>=0&&control.bounds.y>=0&&control.bounds.x+control.bounds.width<=size.width&&control.bounds.y+control.bounds.height<=size.height);
             if(control.enabled)CHECK(std::find(visited.begin(),visited.end(),control.id)!=visited.end());
         }
+    }
+    // Opening or returning to onboarding never accepts an invisible draft.
+    AgentPanel hidden;auto hidden_view=view();hidden.open(hidden_view);hidden.text("preserved draft");hidden.close();
+    for(const auto state:std::vector<AgentPanelState>{AgentPanelState::unavailable,AgentPanelState::connecting,AgentPanelState::ready}) {
+        hidden_view.state=state;hidden_view.auth=state==AgentPanelState::ready?AgentAuth::signed_out:AgentAuth::unknown;hidden_view.task_available=false;
+        hidden.open(hidden_view);CHECK(hidden.focused_control()!="composer");hidden.text(" invisible text");CHECK(hidden.draft()=="preserved draft");CHECK(!hidden.take_action());hidden.close();
     }
     return 0;
 }
