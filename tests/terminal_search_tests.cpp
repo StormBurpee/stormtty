@@ -43,6 +43,25 @@ std::string frame_text(const FramePtr& frame) {
     }
     return text;
 }
+#ifdef _WIN32
+int native_mouse_child() {
+    const HANDLE input=GetStdHandle(STD_INPUT_HANDLE),output=GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD old_input{},old_output{};
+    if(!GetConsoleMode(input,&old_input)||!GetConsoleMode(output,&old_output))return 20;
+    struct Restore {HANDLE handle;DWORD mode;~Restore(){SetConsoleMode(handle,mode);}} restore_input{input,old_input},restore_output{output,old_output};
+    if(!SetConsoleMode(input,ENABLE_VIRTUAL_TERMINAL_INPUT|ENABLE_EXTENDED_FLAGS)||
+       !SetConsoleMode(output,old_output|ENABLE_VIRTUAL_TERMINAL_PROCESSING))return 21;
+    const auto emit=[&](std::string_view value){DWORD written{};return WriteFile(output,value.data(),static_cast<DWORD>(value.size()),&written,nullptr)&&written==value.size();};
+    if(!emit("\x1b[?1003h\x1b[?1006h\r\nSTORMTTY_MOUSE_READY\r\n"))return 22;
+    // Host owns this child and its deadline. Only the explicit sentinel exits;
+    // captured mouse release reports are consumed without echo or shell execution.
+    unsigned bytes{};char value{};DWORD read{};
+    while(bytes++<4096&&ReadFile(input,&value,1,&read,nullptr)&&read==1) {
+        if(value=='q')return emit("\x1b[?1003l\x1b[?1006l\r\nSTORMTTY_MOUSE_DONE\r\n")?0:23;
+    }
+    return 24;
+}
+#endif
 void safe_native_fixture() {
     TerminalCore core(make_search_terminal_options());
     for(bool managed : {false,true}) {
@@ -51,11 +70,10 @@ void safe_native_fixture() {
         check(core.encode_paste(command)==command,"Find fixture encoding changed printable command");
         check(!native_find_fixture_output(command),"command echo must not satisfy output gate");
     }
-    for(bool managed : {false,true}) for(bool enable : {false,true}) {
-        const auto command=native_mouse_fixture_command(managed,enable);
-        check(TerminalCore::paste_is_safe(command),"mouse fixture must use ordinary safe paste");
-        check(core.encode_paste(command)==command,"mouse fixture encoding changed printable command");
-    }
+    const auto mouse_command=native_mouse_child_command("C:/fixture with spaces/terminal_search_tests.exe");
+    check(!mouse_command.empty()&&TerminalCore::paste_is_safe(mouse_command),"native mouse child command must be paste-safe");
+    check(core.encode_paste(mouse_command)==mouse_command,"native mouse child command encoding changed");
+    check(native_mouse_child_command("bad\npath").empty()&&native_mouse_child_command("bad\"path").empty(),"unsafe child path accepted");
     const std::string unsafe="printf 'alpha\nbeta\n'";
     check(!TerminalCore::paste_is_safe(unsafe),"multiline paste must remain unsafe");
     bool rejected=false;try{core.encode_paste(unsafe);}catch(const std::invalid_argument&){rejected=true;}
@@ -262,6 +280,9 @@ void session_coalescing_and_fairness(const std::string& executable) {
 }
 }
 int main(int argc,char** argv) {
+#ifdef _WIN32
+    if(argc==2&&std::string_view(argv[1])=="--native-mouse-child")return native_mouse_child();
+#endif
     if(argc==2&&std::string_view(argv[1])=="--search-child")return child();
     const std::vector<std::pair<const char*,std::function<void()>>> tests{
         {"safe native Find fixture",safe_native_fixture},

@@ -9,7 +9,11 @@ presses retain their consumed-key ownership through the matching key release,
 even when Enter or Escape closes the overlay.
 
 The native `--smoke-layout` fixture enables real 1003/1006 mouse reporting in its
-owned shell and waits for an acknowledged terminal frame. It tests captured
+owned native test child (`terminal_search_tests --native-mouse-child`) with explicit
+console VT input/output modes, then waits for an acknowledged terminal frame.
+A cmd prompt escape alone does not establish this contract through ConPTY.
+The child consumes mouse reports without echo, exits on the host sentinel, and
+restores the previous console modes; completion requires its actual output row. It tests captured
 button transfer, WM_MOUSEMOVE/WM_LBUTTONUP isolation, Escape and rename Enter
 release handling, and opening while a real divider owns HWND capture. The
 original split ratio must remain unchanged. Mouse and key ingress counters

@@ -3900,16 +3900,25 @@ bool NativeWindow::smoke_palette_input_progress() {
     auto* actor=active_session();if(!actor){smoke_finish("Palette ownership smoke lost its actor.");return false;}
     auto owned=sessions_.at(workspace().pane(workspace().active_pane())->session);
     auto mode=[&](bool enable){
-        const bool managed=smoke_managed_sessions_.contains(workspace().pane(workspace().active_pane())->session);
-        const std::string command(native_mouse_fixture_command(managed,enable));
-        if(!TerminalCore::paste_is_safe(command)||owned->paste(command)!=SessionSendResult::accepted){smoke_finish("Palette fixture safe paste was not accepted.");return false;}
+        if(!enable) {
+            if(owned->text("q")!=SessionSendResult::accepted){smoke_finish("Palette fixture stop sentinel was not accepted.");return false;}
+            return true;
+        }
+        std::wstring module(32768,L'\0');const auto length=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
+        if(!length||length>=module.size()){smoke_finish("Palette fixture could not resolve its native child.");return false;}
+        module.resize(length);
+        const auto child=std::filesystem::path(module).parent_path()/L"terminal_search_tests.exe";
+        const std::string command=native_mouse_child_command(narrow(child.generic_wstring()));
+        if(!std::filesystem::is_regular_file(child)){smoke_finish("Palette fixture native child is missing.");return false;}
+        if(command.empty()||!TerminalCore::paste_is_safe(command)||owned->paste(command)!=SessionSendResult::accepted){smoke_finish("Palette fixture safe paste was not accepted.");return false;}
         KeyInput enter;enter.key=Key::enter;
         if(owned->key(enter)!=SessionSendResult::accepted){smoke_finish("Palette fixture Enter was not accepted.");return false;}
         return true;
     };
     if(!smoke_palette_input_stage_){if(mode(true))smoke_palette_input_stage_=1;return false;}
     const auto frame=actor->frame();if(!frame)return false;
-    if(smoke_palette_disable_sent_){if(frame->mouse_reporting)return false;smoke_palette_input_stage_=2;std::fputs("Native palette ownership smoke: acknowledged1003/1006 mouse mode, captured-button release before transfer, zero hidden mouse/key ingress, Escape/Enter release consumption, real divider ratio and capture cancellation verified.\n",stderr);return true;}
+    if(smoke_palette_disable_sent_){if(frame->mouse_reporting)return false;
+        bool done=false;for(const auto& row:frame->lines){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;while(!text.empty()&&text.back()==' ')text.pop_back();done=done||text=="STORMTTY_MOUSE_DONE";}if(!done)return false;smoke_palette_input_stage_=2;std::fputs("Native palette ownership smoke: acknowledged1003/1006 mouse mode, captured-button release before transfer, zero hidden mouse/key ingress, Escape/Enter release consumption, real divider ratio and capture cancellation verified.\n",stderr);return true;}
     if(!frame->mouse_reporting)return false;
     const auto pane=std::find_if(layout_.panes.begin(),layout_.panes.end(),[&](const auto& p){return p.pane==workspace().active_pane();});
     if(pane==layout_.panes.end()||layout_.dividers.empty()){smoke_finish("Palette ownership smoke requires its real split layout.");return false;}
@@ -4152,7 +4161,8 @@ bool NativeWindow::smoke_frame_ready() const {
 void NativeWindow::smoke_workspace_progress(bool presented) {
     if (!workspace_smoke_ready_ || !presented || smoke_finished_) return;
     const auto finish=[this](std::string error) {
-        if(options_.smoke_projects && !error.empty()) {
+            if(options_.smoke_layout&&!error.empty()){const auto* active=active_session();const auto frame=active?active->frame():FramePtr{};std::fprintf(stderr,"Native palette fixture: stage=%u stop_sent=%d mouse_mode=%d mouse_submissions=%llu capture=%d\n",smoke_palette_input_stage_,smoke_palette_disable_sent_,frame&&frame->mouse_reporting,static_cast<unsigned long long>(smoke_terminal_mouse_submissions_),GetCapture()==hwnd_);}
+    if(options_.smoke_projects && !error.empty()) {
         const auto found=find_result_;std::fprintf(stderr,"Native Find failure: stage=%u open=%u focused=%llu request=%llu status=%d matches=%zu selected=%lld apply=%d frontend_delta=%llu transport_delta=%llu\n",smoke_find_stage_,unsigned(bool(find_session_)),static_cast<unsigned long long>(focused_session_.value),static_cast<unsigned long long>(find_request_),found?int(found->status):-1,found?found->matches.size():0,found&&found->selected_index?static_cast<long long>(*found->selected_index):-1,found&&found->last_apply_result?int(*found->last_apply_result):-1,static_cast<unsigned long long>(smoke_terminal_input_submissions_-smoke_find_input_baseline_),static_cast<unsigned long long>(active_session()?active_session()->info().bytes_sent-smoke_find_bytes_:0));
     }
     smoke_finished_=true; exit_code_=error.empty()?0:2;
