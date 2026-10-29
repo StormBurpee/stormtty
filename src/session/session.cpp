@@ -1,6 +1,7 @@
 #include "stormtty/session.hpp"
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
 #include "stormtty/qualification_typing_evidence.hpp"
+#include "stormtty/qualification_deadline_wait.hpp"
 #endif
 #include <algorithm>
 #include <atomic>
@@ -75,11 +76,23 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     std::shared_ptr<Process> process;
     ProcessDiagnostics final_diagnostics;
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
-    std::uint64_t trace_fed_sequence{}, trace_fed_bytes{}, trace_command_sequence{};
+    std::uint64_t trace_fed_sequence{}, trace_fed_bytes{}, trace_command_sequence{}, trace_wait_sequence{};
+    std::unique_ptr<qualification::DeadlineWait> deadline_wait;
 #endif
 
     Impl(ProcessOptions p, TerminalOptions t, Wake w, SessionRetentionPolicy policy)
-        : process_options(std::move(p)), terminal_options(t), wake(std::move(w)), retention(policy) {}
+        : process_options(std::move(p)), terminal_options(t), wake(std::move(w)), retention(policy) {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if(process_options.qualification_high_resolution_deadlines)
+            deadline_wait=qualification::make_high_resolution_deadline_wait();
+#endif
+    }
+    void wake_actor() noexcept {
+        changed.notify_all();
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if(deadline_wait)deadline_wait->notify();
+#endif
+    }
     void publish(FramePtr frame) {
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
         if (frame && process_options.qualification_typing_evidence) {
@@ -116,7 +129,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             command.search_request = request; command.sequence = ++next_sequence;
             command_bytes += amount; commands.push_back(std::move(command));
         }
-        changed.notify_all();
+        wake_actor();
         return {SessionSendResult::accepted, request};
     }
     void notify() noexcept { try { if (wake) wake(); } catch (...) {} }
@@ -140,7 +153,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             command.sequence = ++next_sequence;
             commands.push_back(std::move(command));
         }
-        changed.notify_all();
+        wake_actor();
         return SessionSendResult::accepted;
     }
     SessionSendResult enqueue(Command command) {
@@ -155,7 +168,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             command_bytes += amount;
             commands.push_back(std::move(command));
         }
-        changed.notify_all();
+        wake_actor();
         return SessionSendResult::accepted;
     }
     void accept_output(std::string_view bytes, std::stop_token stop) {
@@ -174,12 +187,12 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             information.bytes_received += count;
             offset += count;
             lock.unlock();
-            changed.notify_all();
+            wake_actor();
         }
     }
     void close() noexcept {
         { std::lock_guard lock(mutex); close_requested = true; }
-        changed.notify_all();
+        wake_actor();
     }
     void run() noexcept {
         try { actor(); }
@@ -352,7 +365,7 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             [weak](ProcessExit value) {
                 if (auto state = weak.lock()) {
                     { std::lock_guard lock(state->mutex); state->exit = std::move(value); }
-                    state->changed.notify_all();
+                    state->wake_actor();
                 }
             }
         });
@@ -527,7 +540,32 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             std::unique_lock lock(mutex);
             const auto ready = [&] { return !commands.empty() || !output.empty() || exit.has_value() || (close_requested && !closing); };
             if (until == TerminalCore::Clock::time_point::max()) changed.wait(lock, ready);
-            else changed.wait_until(lock, until, ready);
+            else {
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+                if(!ready()) {
+                    const auto begin=TerminalCore::Clock::now();
+                    auto returned=begin;
+                    std::uint32_t reason{};
+                    if(deadline_wait) {
+                        lock.unlock();const auto result=deadline_wait->wait_until(until);
+                        returned=TerminalCore::Clock::now();lock.lock();
+                        reason=static_cast<std::uint32_t>(result.reason);
+                        if(result.reason==qualification::DeadlineWait::Reason::failed)
+                            throw std::runtime_error("Qualification deadline wait failed: "+std::to_string(result.error));
+                    } else {
+                        reason=changed.wait_until(lock,until,ready)?0u:1u;
+                        returned=TerminalCore::Clock::now();
+                    }
+                    const auto reacquired=TerminalCore::Clock::now();
+                    // Do not hold the Session queue mutex while recording evidence.
+                    const bool pending=ready();lock.unlock();
+                    if(process_options.qualification_typing_evidence)
+                        process_options.qualification_typing_evidence->wake(++trace_wait_sequence,until,begin,returned,reacquired,reason,pending,deadline_wait!=nullptr);
+                }
+#else
+                changed.wait_until(lock, until, ready);
+#endif
+            }
         }
     }
 };

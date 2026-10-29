@@ -19,7 +19,7 @@ namespace stormtty::qualification {
 class TypingEvidence final {
 public:
     static constexpr std::size_t record_capacity=2048, byte_capacity=1024*1024;
-    enum class Kind { read, write, enqueue, feed, command, publication, marker, prelude_feed };
+    enum class Kind { read, write, enqueue, feed, command, publication, marker, prelude_feed, wake };
     enum class Phase { prelude, typing, frozen };
     struct Record {
         Kind kind{};
@@ -94,13 +94,22 @@ public:
         r.row_hash=fingerprint(f);
         append(r,{});
     }
+    void wake(std::uint64_t sequence,std::chrono::steady_clock::time_point deadline,
+              std::chrono::steady_clock::time_point begin,std::chrono::steady_clock::time_point returned,
+              std::chrono::steady_clock::time_point reacquired,std::uint32_t reason,bool pending,bool high_resolution) {
+        std::lock_guard lock(mutex_);if(phase_!=Phase::typing)return;
+        auto us=[&](auto t){return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(t-start_).count());};
+        Record r;r.kind=Kind::wake;r.sequence=sequence;r.offset=us(deadline);r.size=us(begin);
+        r.auxiliary=us(returned);r.next=us(reacquired);r.reported=reason;r.success=pending;r.alternate=high_resolution;
+        append(r,{});
+    }
     Snapshot snapshot() const {
         std::lock_guard lock(mutex_);
         return {overflow_,phase_,{records_.begin(),records_.begin()+record_count_},{bytes_.begin(),bytes_.begin()+byte_count_}};
     }
     static void dump(std::ostream& out,const Snapshot& s) {
         out<<"TYPING_TRACE version=2 overflow="<<s.overflow<<" phase="<<static_cast<unsigned>(s.phase)<<" records="<<s.records.size()<<" bytes="<<s.bytes.size()<<'\n';
-        constexpr std::array names{"read","write","enqueue","feed","command","publication","marker","prelude_feed"};
+        constexpr std::array names{"read","write","enqueue","feed","command","publication","marker","prelude_feed","wake"};
         constexpr char hex[]="0123456789abcdef";
         for (const auto& r:s.records) {
             out<<"TYPING_EVENT kind="<<names[static_cast<unsigned>(r.kind)]<<" ordinal="<<r.ordinal<<" us="<<r.us

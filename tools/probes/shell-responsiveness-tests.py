@@ -75,11 +75,32 @@ class EvidenceTests(unittest.TestCase):
     def test_v2_prelude_survives_sanitization(self):
         lines=m.sanitize(TRACE.encode(),traced=True)
         self.assertIn(PRELUDE.strip(),lines);self.assertIn(ARM.strip(),lines);self.assertIn(FREEZE.strip(),lines)
+    def test_deadline_ab_runs_all_cases_and_requires_actual_mode(self):
+        for missing_mode in [False,True]:
+            calls=[]
+            def invoke(args,**kw):
+                calls.append(args)
+                if args[0].endswith('managed_shell_state_probe.exe'):return result(CONTROL)
+                if args[0].endswith('managed_shell_typing_trace.exe'):
+                    mode=int('--high-resolution-deadlines' in args)
+                    wake=EVENT.replace('kind=publication','kind=wake').replace(' alternate=0 ',' alternate='+str(mode)+' ')
+                    trace=TRACE.replace('records=4','records=5').replace(FREEZE,wake+FREEZE)
+                    if not missing_mode:trace='TYPING_WAIT_MODE high_resolution='+str(mode)+'\n'+trace
+                    return result(trace)
+                return result(REPLAY)
+            with tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);argv=['driver','--build',str(root),'--runtime',str(root),'--provider',str(root),'--output',str(root/'out'),'--deadline-ab']
+                with mock.patch.object(sys,'argv',argv),mock.patch.object(m.runner,'run_owned',invoke),contextlib.redirect_stdout(io.StringIO()):code=m.main()
+                self.assertEqual(code,int(missing_mode));self.assertEqual(len(calls),10)
+                self.assertEqual(sum('--high-resolution-deadlines' in call for call in calls),2)
+                self.assertEqual(len(list((root/'out').glob('*.log'))),10)
     def test_workflow_is_exact_push_and_preserves_independent_results(self):
         text=(Path(__file__).resolve().parents[2]/'.github/workflows/shell-responsiveness.yml').read_text()
-        self.assertIn('branches: [diagnostic/typing-scoped]',text)
+        self.assertIn('branches: [diagnostic/typing-highres]',text)
         self.assertNotIn('pull_request:',text);self.assertNotIn('workflow_run:',text)
         self.assertIn('cancel-in-progress: false',text);self.assertIn('if: always()',text)
         self.assertNotIn("steps.typing.outcome == 'success'",text)
+        self.assertIn('--deadline-ab',text)
+        self.assertIn("'qualification_deadline_wait_tests'",text)
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -22,7 +22,7 @@ void replay(std::istream& input) {
     FramePtr previous; std::uint64_t previous_hash{};
     std::map<std::uint64_t,std::pair<std::uint64_t,std::uint64_t>> enqueued;
     bool header=false,footer=false,typing=false,armed=false,frozen=false;
-    std::uint64_t expected_records{},expected_bytes{},stored_bytes{},prelude_bytes{},last_enqueued{},fed_sequence{},command_sequence{};
+    std::uint64_t expected_records{},expected_bytes{},stored_bytes{},prelude_bytes{},last_enqueued{},fed_sequence{},command_sequence{},last_wake{};
     while(std::getline(input,line)) {
         const auto head=line.find("TYPING_TRACE version=");
         if(head!=std::string::npos) {require(!header);std::istringstream h(line.substr(head+13));std::map<std::string,std::string> values;std::string f;
@@ -70,6 +70,12 @@ void replay(std::istream& input) {
             else {require(n("size")==2&&armed&&typing);typing=false;frozen=true;}
             previous.reset();
         }
+        else if(kind=="wake") {
+            require(typing&&n("sequence")>last_wake&&n("reported")<=1);
+            require(n("size")<=n("auxiliary")&&n("auxiliary")<=n("next")&&n("next")<=n("us"));
+            if(n("reported")==1)require(n("auxiliary")>=n("offset"));
+            last_wake=n("sequence");
+        }
         else if(kind=="publication") {
             require(typing&&n("offset")==fed&&n("sequence")==fed_sequence&&n("auxiliary")==command_sequence);
             const auto f=core.snapshot();
@@ -101,6 +107,7 @@ void unit() {
         evidence->publication(*core.snapshot(),seq,offset,3001,0,0);
     }
     evidence->write(1,0,"a",true,1,0);
+    const auto now=std::chrono::steady_clock::now();evidence->wake(1,now,now,now,now,1,false,true);
     evidence->phase(false,++seq,offset);
     const auto frozen=evidence->snapshot();std::ostringstream text;E::dump(text,frozen);std::istringstream source(text.str());replay(source);
     evidence->read("cleanup");evidence->write(2,0,"exit",true,4,0);evidence->event(E::Kind::command,++seq,0,1);

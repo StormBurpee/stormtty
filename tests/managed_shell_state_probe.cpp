@@ -27,6 +27,7 @@ namespace {
 unsigned phase{}, checks{};
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
 std::shared_ptr<qualification::TypingEvidence> typing_trace;
+bool high_resolution_deadlines{};
 #endif
 struct TypingEvidence {
     unsigned characters{}, frames{}, retreats{};
@@ -86,6 +87,7 @@ struct ManagedSessionProbe {
         ProcessOptions process;
         (void)trace;
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        process.qualification_high_resolution_deadlines=high_resolution_deadlines;
         if (trace) {
             typing_trace=std::make_shared<qualification::TypingEvidence>();
             process.qualification_typing_evidence=typing_trace;
@@ -231,6 +233,9 @@ int main() {
         phase = 1;
         int count{}; LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
         struct Arguments { LPWSTR* p; ~Arguments() { if (p) LocalFree(p); } } owned{args};
+#ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        if(args&&count>2&&std::wstring_view(args[count-1])==L"--high-resolution-deadlines") {high_resolution_deadlines=true;--count;}
+#endif
         check(args && (count == 2 || count == 3));
         const fs::path runtime = fs::absolute(args[1]);
         const fs::path provider = count == 3 ? fs::absolute(args[2]) : fs::path{};
@@ -306,6 +311,7 @@ int main() {
         const std::string persisted{std::istreambuf_iterator<char>(input), {}};
         check(persisted == config);
 #ifdef STORMTTY_QUALIFICATION_INPUT_EVIDENCE
+        std::cout<<"TYPING_WAIT_MODE high_resolution="<<high_resolution_deadlines<<'\n';
         const auto trace=typing_trace->snapshot(); qualification::TypingEvidence::dump(std::cout,trace);
         if (trace.overflow) { std::cout<<"TYPING_TRACE_RESULT inconclusive=1 reason=capacity\n"; return 2; }
 #endif

@@ -1,16 +1,16 @@
 # Explicit synthetic-only diagnostic. Not a production/default qualification gate.
-name: Isolated scoped typing evidence
+name: Isolated high-resolution typing A/B
 on:
   push:
-    branches: [diagnostic/typing-scoped]
+    branches: [diagnostic/typing-highres]
 permissions:
   contents: read
 concurrency:
-  group: typing-scoped-${{ github.ref }}
+  group: typing-highres-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   observe:
-    if: github.ref == 'refs/heads/diagnostic/typing-scoped'
+    if: github.ref == 'refs/heads/diagnostic/typing-highres'
     runs-on: windows-2025
     timeout-minutes: 80
     env:
@@ -51,7 +51,7 @@ jobs:
           import json,pathlib,subprocess
           root=pathlib.Path('build-responsiveness/artifacts');root.mkdir(parents=True,exist_ok=True)
           results={}
-          for target in ['managed_shell_state_probe','managed_shell_typing_trace','qualification_typing_evidence_tests','qualification_input_evidence_tests','managed_shell_startup_probe']:
+          for target in ['managed_shell_state_probe','managed_shell_typing_trace','qualification_typing_evidence_tests','qualification_deadline_wait_tests','qualification_input_evidence_tests','managed_shell_startup_probe']:
             try: code=subprocess.run(['cmake','--build','build-responsiveness','--target',target,'--parallel','2'],timeout=180).returncode
             except subprocess.TimeoutExpired: code=124
             results[target]=code
@@ -66,6 +66,7 @@ jobs:
           results={};root=pathlib.Path('build-responsiveness/artifacts');root.mkdir(parents=True,exist_ok=True)
           commands={
             'typing-evidence':['build-responsiveness/qualification_typing_evidence_tests.exe'],
+            'deadline-wait':['build-responsiveness/qualification_deadline_wait_tests.exe'],
             'input-evidence':['build-responsiveness/qualification_input_evidence_tests.exe'],
             'driver-tests':['python','tools/probes/shell-responsiveness-tests.py'],
             'source-profile-tests':['python','tools/probes/managed-source-profile-tests.py']}
@@ -103,7 +104,7 @@ jobs:
         if: always() && steps.configure.outcome == 'success' && steps.shell.outcome == 'success' && steps.provider.outcome == 'success'
         timeout-minutes: 12
         shell: pwsh
-        run: python tools/probes/run-shell-responsiveness.py --build build-responsiveness --runtime .deps/responsiveness-shell --provider (Join-Path $env:RUNNER_TEMP 'stormtty-responsiveness-provider') --output build-responsiveness/artifacts/typing
+        run: python tools/probes/run-shell-responsiveness.py --build build-responsiveness --runtime .deps/responsiveness-shell --provider (Join-Path $env:RUNNER_TEMP 'stormtty-responsiveness-provider') --output build-responsiveness/artifacts/typing --deadline-ab
       - name: Separate attributed startup three fresh and three warm per provider
         id: profile
         if: always() && steps.configure.outcome == 'success' && steps.shell.outcome == 'success' && steps.provider.outcome == 'success'

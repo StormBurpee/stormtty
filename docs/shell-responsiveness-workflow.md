@@ -1,6 +1,6 @@
 # Isolated shell responsiveness workflow
 
-Triggered only by a push to `diagnostic/typing-scoped`; it does not depend
+Triggered only by a push to `diagnostic/typing-highres`; it does not depend
 on a workflow already existing on the default branch. No PR/default production
 gate, shipped setting or provider pin changes. Root owns branch publication.
 
@@ -42,3 +42,7 @@ case; typing failures do not suppress the separate source attribution step.
 Portable driver tests cover strict expected records, no retries, independent
 failures, truncation/timeout/cleanup rejection, allowlisted output, and exact push
 scope. They are not a native workflow execution. Native CI remains root-owned.
+
+This branch adds the internal high-resolution deadline A/B; see
+[high-resolution actor deadline](high-resolution-actor-deadline.md). Native CI
+and production defaults remain unchanged.
