@@ -35,7 +35,7 @@ def prepare(runtime, cache, offline=False, zstd=None):
     owned=previous.get("schema")==1 and previous.get("build_owned") is True
     if runtime.exists() and not owned:
         raise RuntimeError("Refusing to replace a runtime not owned by this build helper")
-    required=("etc/fstab","etc/nsswitch.conf","usr/bin/zsh.exe","usr/bin/msys-2.0.dll","stormtty/zsh/.zshrc","stormtty/vendor/oh-my-zsh/oh-my-zsh.sh","stormtty/vendor/addons.lock.json","usr/bin/awk.exe","usr/bin/msys-readline8.dll","usr/bin/msys-mpfr-6.dll","ucrt64/bin/fzf.exe","ucrt64/bin/zoxide.exe","stormtty/vendor/shell-tools/tools.lock.json","stormtty-shell-manifest.json","notices/stormtty-review/THIRD-PARTY-NOTICES.txt")
+    required=("etc/fstab","etc/nsswitch.conf","usr/bin/zsh.exe","usr/bin/msys-2.0.dll","stormtty/zsh/.zshrc","stormtty/vendor/oh-my-zsh/oh-my-zsh.sh","stormtty/vendor/addons.lock.json","usr/bin/awk.exe","usr/bin/msys-readline8.dll","usr/bin/msys-mpfr-6.dll","ucrt64/bin/fzf.exe","ucrt64/bin/zoxide.exe","stormtty/vendor/shell-tools/tools.lock.json","stormtty-shell-manifest.json","notices/stormtty-review/THIRD-PARTY-NOTICES.txt", "usr/bin/nano.exe", "usr/bin/file.exe", "usr/bin/msys-magic-1.dll", "usr/bin/msys-bz2-1.dll", "usr/bin/msys-lzma-5.dll", "usr/share/misc/magic.mgc")
     if owned and previous.get("recipe")==recipe and all((runtime/p).is_file() for p in required): return
     runtime.parent.mkdir(parents=True,exist_ok=True)
     guard=runtime.with_name(runtime.name+".build-active")

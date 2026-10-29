@@ -37,12 +37,48 @@ class ShellBootstrapTests(unittest.TestCase):
 
     def test_lock_exact_official_and_sources(self):
         lock = shell.read_lock(shell.LOCK)
-        self.assertEqual(len(lock["packages"]), 17)
-        self.assertEqual(len(lock["sources"]), 17)
+        self.assertEqual(len(lock["packages"]), 21)
+        self.assertEqual(len(lock["sources"]), 21)
         self.assertTrue(lock["default_activation_allowed"])
         self.assertFalse(lock["public_redistribution_ready"])
         self.assertEqual(lock["native_qualification"]["status"], "passed")
-        self.assertEqual(sum(p["bytes"] for p in lock["packages"]), 15190478)
+        self.assertEqual(sum(p["bytes"] for p in lock["packages"]), 16467938)
+
+    def test_nano_dependency_closure_and_pending_qualification(self):
+        lock = shell.read_lock(shell.LOCK)
+        names = {p["name"] for p in lock["packages"]} | {"sh"}  # bash owns sh.exe
+        for package in lock["packages"]:
+            for dependency in package.get("dependencies", []):
+                self.assertIn(dependency, names)
+        self.assertTrue({"nano", "file", "libbz2", "liblzma"} <= names)
+        self.assertEqual(lock["nano_qualification"]["status"], "pending")
+        self.assertFalse(lock["public_source_availability_verified"])
+
+    def test_nano_write_prompt_tracks_pinned_source_version(self):
+        # nano-9.2/src/files.c write_it_out(): msg = _("Write to File").
+        # An upgrade needs an explicit source/UI handshake review, not accepting
+        # arbitrary output and potentially sending Enter before the save prompt.
+        lock = shell.read_lock(shell.LOCK)
+        nano = next(p for p in lock["packages"] if p["name"] == "nano")
+        self.assertEqual(nano["version"], "9.2-1")
+        fixture = (shell.LOCK.parent.parent / "tests/managed_nano_probe.cpp").read_text()
+        self.assertIn('probe.expect("Write to File")', fixture)
+        self.assertNotIn('probe.expect("File Name to Write")', fixture)
+        self.assertNotIn('probe.expect("Wrote 1 line")', fixture)
+        self.assertIn('probe.saved()', fixture)
+        self.assertIn('check(probe.exact_file())', fixture)
+        self.assertIn('diagnostic.file_exact = value == expected', fixture)
+        self.assertIn('MANAGED_NANO_DIAGNOSTIC phase=', fixture)
+        self.assertIn('probe.expect("QNANO_EXIT_0")', fixture)
+
+    def test_nano_edit_keeps_one_automatic_final_newline(self):
+        fixture = (shell.LOCK.parent.parent / "tests/managed_nano_probe.cpp").read_text()
+        edit = fixture.split('        phase = 3;', 1)[1].split('        phase = 4;', 1)[0]
+        self.assertIn('probe.key(Key::a, true); probe.key(Key::k, true);', edit)
+        self.assertIn('probe.text("edited caf', edit)
+        self.assertNotIn('probe.key(Key::enter)', edit)
+        self.assertIn('diagnostic.file_exact = value == expected', fixture)
+        self.assertIn('phase = 43; check(probe.exact_file())', fixture)
 
     def test_reject_windows_aliases_and_traversal(self):
         for name in ("../escape", "/absolute", "usr/../escape", "C:/escape", "usr\\bin\\bad",

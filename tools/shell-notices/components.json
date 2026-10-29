@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "bundle_id": "zsh-msys2-x86_64-20261028-r1",
+  "bundle_id": "zsh-msys2-x86_64-20261029-r1",
   "review_basis": "Exact locked binary/source archives, embedded recipes and build manifests; preserves upstream terms, not a legal opinion or a host relicensing decision.",
   "components": [
     {
@@ -197,6 +197,50 @@
         "zstd"
       ],
       "review_notes": "Both LICENSE and COPYING preserved; package declares BSD."
+    },
+    {
+      "package": "nano",
+      "version": "9.2-1",
+      "binary_sha256": "0fd23077af18ab656e4a082ce0455ab16217c852f3968343e903843c204a12b2",
+      "source": "nano-9.2-1.src.tar.zst",
+      "license_review": "GPL-3.0-or-later code; manual dual GPL-3.0-or-later or GFDL-1.2-or-later, no invariant/cover texts",
+      "notice_components": [
+        "nano"
+      ],
+      "review_notes": "Exact upstream notices retained with complete matching MSYS2 source archive, recipe and patches. No package install scripts executed."
+    },
+    {
+      "package": "file",
+      "version": "5.48-1",
+      "binary_sha256": "f55026638fe4ed4b31ee3cf316843ac190d9332816bff8dcb0a99fd8c6350608",
+      "source": "file-5.48-1.src.tar.zst",
+      "license_review": "BSD-family source and magic database notices; separate Python license",
+      "notice_components": [
+        "file"
+      ],
+      "review_notes": "Exact upstream notices retained with complete matching MSYS2 source archive, recipe and patches. No package install scripts executed."
+    },
+    {
+      "package": "libbz2",
+      "version": "1.0.8-4",
+      "binary_sha256": "89fb0e1478b22b80effda55ab4ae7549388d01245d3841a096d8a2d63236c2a1",
+      "source": "bzip2-1.0.8-4.src.tar.zst",
+      "license_review": "bzip2 license",
+      "notice_components": [
+        "bzip2"
+      ],
+      "review_notes": "Exact upstream notices retained with complete matching MSYS2 source archive, recipe and patches. No package install scripts executed."
+    },
+    {
+      "package": "liblzma",
+      "version": "5.8.4-1",
+      "binary_sha256": "4b7d61656e72a5651a797680b66186338dce4f8fbc62a637ab3b59922dd01074",
+      "source": "xz-5.8.4-1.src.tar.zst",
+      "license_review": "0BSD liblzma per upstream COPYING; MSYS2 metadata declares LGPL-2.1-or-later",
+      "notice_components": [
+        "xz"
+      ],
+      "review_notes": "Preserve both upstream 0BSD and declared-package LGPL texts; do not infer library terms from the coarse package tag. Complete source/recipes retained."
     }
   ]
 }

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "bundle_id": "zsh-msys2-x86_64-20261028-r1",
+  "bundle_id": "zsh-msys2-x86_64-20261029-r1",
   "assets": [
     {
       "component": "zsh",
@@ -1085,6 +1085,229 @@
         "git_commit": "867eb7748e6e5a0e8430ce9f46af27b4b1e8f204",
         "selection": "complete copyright/license C-comment blocks in first 64 KiB of winsup source files, exact text, deduplicated",
         "source_blocks": 484
+      }
+    },
+    {
+      "component": "nano",
+      "path": "texts/nano/COPYING",
+      "sha256": "fc82ca8b6fdb18d4e3e85cfd8ab58d1bcd3f1b29abe782895abd91d64763f8e7",
+      "bytes": 35068,
+      "provenance": {
+        "outer_archive": "nano-9.2-1.src.tar.zst",
+        "inner_archive": "nano/nano-9.2.tar.xz",
+        "inner_sha256": "05ecb99247b782e8a5b3a25ed4101dd034b0236902f7449bc9795b717642f7e9",
+        "source_path": "nano-9.2/COPYING",
+        "local_path": "nano/COPYING",
+        "sha256": "fc82ca8b6fdb18d4e3e85cfd8ab58d1bcd3f1b29abe782895abd91d64763f8e7",
+        "bytes": 35068
+      }
+    },
+    {
+      "component": "nano",
+      "path": "texts/nano/COPYING.DOC",
+      "sha256": "f45cc81b400a048b56c9edbd4c3317f7a8958463dfd55aa96f268ecfd6baa12c",
+      "bytes": 20403,
+      "provenance": {
+        "outer_archive": "nano-9.2-1.src.tar.zst",
+        "inner_archive": "nano/nano-9.2.tar.xz",
+        "inner_sha256": "05ecb99247b782e8a5b3a25ed4101dd034b0236902f7449bc9795b717642f7e9",
+        "source_path": "nano-9.2/COPYING.DOC",
+        "local_path": "nano/COPYING.DOC",
+        "sha256": "f45cc81b400a048b56c9edbd4c3317f7a8958463dfd55aa96f268ecfd6baa12c",
+        "bytes": 20403
+      }
+    },
+    {
+      "component": "nano",
+      "path": "texts/nano/AUTHORS",
+      "sha256": "ae7a2b7362e8eefa24004f0ff4e72181e9be3a470cc9ae26736489ac1363cacd",
+      "bytes": 2936,
+      "provenance": {
+        "outer_archive": "nano-9.2-1.src.tar.zst",
+        "inner_archive": "nano/nano-9.2.tar.xz",
+        "inner_sha256": "05ecb99247b782e8a5b3a25ed4101dd034b0236902f7449bc9795b717642f7e9",
+        "source_path": "nano-9.2/AUTHORS",
+        "local_path": "nano/AUTHORS",
+        "sha256": "ae7a2b7362e8eefa24004f0ff4e72181e9be3a470cc9ae26736489ac1363cacd",
+        "bytes": 2936
+      }
+    },
+    {
+      "component": "file",
+      "path": "texts/file/AUTHORS",
+      "sha256": "384608dfc681207f911ed051f8df01d95c5484675750d7280ed219a740ecfa6c",
+      "bytes": 13,
+      "provenance": {
+        "outer_archive": "file-5.48-1.src.tar.zst",
+        "inner_archive": "file/file-5.48.tar.gz",
+        "inner_sha256": "ed14656883b23a364b4057c05595d93252da9bc473d30106519519d0da141283",
+        "source_path": "file-5.48/AUTHORS",
+        "local_path": "file/AUTHORS",
+        "sha256": "384608dfc681207f911ed051f8df01d95c5484675750d7280ed219a740ecfa6c",
+        "bytes": 13
+      }
+    },
+    {
+      "component": "file",
+      "path": "texts/file/COPYING",
+      "sha256": "0bfa856a9930bddadbef95d1be1cf4e163c0be618e76ea3275caaf255283e274",
+      "bytes": 1649,
+      "provenance": {
+        "outer_archive": "file-5.48-1.src.tar.zst",
+        "inner_archive": "file/file-5.48.tar.gz",
+        "inner_sha256": "ed14656883b23a364b4057c05595d93252da9bc473d30106519519d0da141283",
+        "source_path": "file-5.48/COPYING",
+        "local_path": "file/COPYING",
+        "sha256": "0bfa856a9930bddadbef95d1be1cf4e163c0be618e76ea3275caaf255283e274",
+        "bytes": 1649
+      }
+    },
+    {
+      "component": "file",
+      "path": "texts/file/python__LICENSE",
+      "sha256": "9d402e401ecfd65d9c600cf84ecb317aba1c5c6fcb788dd79af94fd1fdc527a8",
+      "bytes": 1432,
+      "provenance": {
+        "outer_archive": "file-5.48-1.src.tar.zst",
+        "inner_archive": "file/file-5.48.tar.gz",
+        "inner_sha256": "ed14656883b23a364b4057c05595d93252da9bc473d30106519519d0da141283",
+        "source_path": "file-5.48/python/LICENSE",
+        "local_path": "file/python__LICENSE",
+        "sha256": "9d402e401ecfd65d9c600cf84ecb317aba1c5c6fcb788dd79af94fd1fdc527a8",
+        "bytes": 1432
+      }
+    },
+    {
+      "component": "bzip2",
+      "path": "texts/bzip2/LICENSE",
+      "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3",
+      "bytes": 1896,
+      "provenance": {
+        "outer_archive": "bzip2-1.0.8-4.src.tar.zst",
+        "inner_archive": "bzip2/bzip2-1.0.8.tar.gz",
+        "inner_sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+        "source_path": "bzip2-1.0.8/LICENSE",
+        "local_path": "bzip2/LICENSE",
+        "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3",
+        "bytes": 1896
+      }
+    },
+    {
+      "component": "xz",
+      "path": "texts/xz/AUTHORS",
+      "sha256": "01e6df90d71d591f4307db3f397a5a4fac93b18533f5a3862156f1a0a7dc8610",
+      "bytes": 2146,
+      "provenance": {
+        "outer_archive": "xz-5.8.4-1.src.tar.zst",
+        "inner_archive": "xz/v5.8.4.tar.gz",
+        "inner_sha256": "b6b34c52e672e810d339db14e0c10b5b6f5f67a30d8d05cdac5d8cb4d82f78d5",
+        "source_path": "xz-5.8.4/AUTHORS",
+        "local_path": "xz/AUTHORS",
+        "sha256": "01e6df90d71d591f4307db3f397a5a4fac93b18533f5a3862156f1a0a7dc8610",
+        "bytes": 2146
+      }
+    },
+    {
+      "component": "xz",
+      "path": "texts/xz/COPYING",
+      "sha256": "616a3ad264ce29b8f1cb97e53037b139d406899ca8d1f799651e17bfa09830b8",
+      "bytes": 3119,
+      "provenance": {
+        "outer_archive": "xz-5.8.4-1.src.tar.zst",
+        "inner_archive": "xz/v5.8.4.tar.gz",
+        "inner_sha256": "b6b34c52e672e810d339db14e0c10b5b6f5f67a30d8d05cdac5d8cb4d82f78d5",
+        "source_path": "xz-5.8.4/COPYING",
+        "local_path": "xz/COPYING",
+        "sha256": "616a3ad264ce29b8f1cb97e53037b139d406899ca8d1f799651e17bfa09830b8",
+        "bytes": 3119
+      }
+    },
+    {
+      "component": "xz",
+      "path": "texts/xz/COPYING.0BSD",
+      "sha256": "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1",
+      "bytes": 607,
+      "provenance": {
+        "outer_archive": "xz-5.8.4-1.src.tar.zst",
+        "inner_archive": "xz/v5.8.4.tar.gz",
+        "inner_sha256": "b6b34c52e672e810d339db14e0c10b5b6f5f67a30d8d05cdac5d8cb4d82f78d5",
+        "source_path": "xz-5.8.4/COPYING.0BSD",
+        "local_path": "xz/COPYING.0BSD",
+        "sha256": "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1",
+        "bytes": 607
+      }
+    },
+    {
+      "component": "xz",
+      "path": "texts/xz/COPYING.GPLv2",
+      "sha256": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+      "bytes": 17984,
+      "provenance": {
+        "outer_archive": "xz-5.8.4-1.src.tar.zst",
+        "inner_archive": "xz/v5.8.4.tar.gz",
+        "inner_sha256": "b6b34c52e672e810d339db14e0c10b5b6f5f67a30d8d05cdac5d8cb4d82f78d5",
+        "source_path": "xz-5.8.4/COPYING.GPLv2",
+        "local_path": "xz/COPYING.GPLv2",
+        "sha256": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+        "bytes": 17984
+      }
+    },
+    {
+      "component": "xz",
+      "path": "texts/xz/COPYING.GPLv3",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "bytes": 35149,
+      "provenance": {
+        "outer_archive": "xz-5.8.4-1.src.tar.zst",
+        "inner_archive": "xz/v5.8.4.tar.gz",
+        "inner_sha256": "b6b34c52e672e810d339db14e0c10b5b6f5f67a30d8d05cdac5d8cb4d82f78d5",
+        "source_path": "xz-5.8.4/COPYING.GPLv3",
+        "local_path": "xz/COPYING.GPLv3",
+        "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+        "bytes": 35149
+      }
+    },
+    {
+      "component": "xz",
+      "path": "texts/xz/COPYING.LGPLv2.1",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "bytes": 26419,
+      "provenance": {
+        "outer_archive": "xz-5.8.4-1.src.tar.zst",
+        "inner_archive": "xz/v5.8.4.tar.gz",
+        "inner_sha256": "b6b34c52e672e810d339db14e0c10b5b6f5f67a30d8d05cdac5d8cb4d82f78d5",
+        "source_path": "xz-5.8.4/COPYING.LGPLv2.1",
+        "local_path": "xz/COPYING.LGPLv2.1",
+        "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+        "bytes": 26419
+      }
+    },
+    {
+      "component": "nano",
+      "path": "texts/nano/MANUAL-COPYING.txt",
+      "sha256": "18bf50135cf13591dc4917aa4951cf379a7c70bc00a608991c8a884e8371471b",
+      "bytes": 855,
+      "provenance": {
+        "outer_archive": "nano-9.2-1.src.tar.zst",
+        "inner_archive": "nano/nano-9.2.tar.xz",
+        "inner_sha256": "05ecb99247b782e8a5b3a25ed4101dd034b0236902f7449bc9795b717642f7e9",
+        "source_path": "nano-9.2/doc/nano.texi (titlepage copying statement)",
+        "sha256": "18bf50135cf13591dc4917aa4951cf379a7c70bc00a608991c8a884e8371471b",
+        "bytes": 855
+      }
+    },
+    {
+      "component": "file",
+      "path": "texts/file/SOURCE-NOTICES.txt",
+      "sha256": "a93c4ab015b6e2f31101befda8389d28fe6327abb470ef157c368cb0f7e4e8fb",
+      "bytes": 78210,
+      "provenance": {
+        "outer_archive": "file-5.48-1.src.tar.zst",
+        "inner_archive": "file/file-5.48.tar.gz",
+        "inner_sha256": "ed14656883b23a364b4057c05595d93252da9bc473d30106519519d0da141283",
+        "source_path": "file-5.48/{src,magic,python} copyright/license comment blocks",
+        "sha256": "a93c4ab015b6e2f31101befda8389d28fe6327abb470ef157c368cb0f7e4e8fb",
+        "bytes": 78210
       }
     }
   ]

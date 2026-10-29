@@ -300,7 +300,7 @@ def write_notice_packet(destination: Path, lock: dict, lock_hash: str, sources: 
     text = ["StormTTY Zsh private runtime - QUALIFICATION ONLY", "",
             "This is a collection of independent upstream programs, not a renamed Zsh fork.",
             "All upstream files/notices are retained. No package install script was executed.",
-            "The pinned runtime has passed native Windows qualification for build-default use.",
+            "The base Zsh subset has historical native Windows qualification; new nano qualification is tracked separately.",
             "Public distribution still requires the reviewed notice overlay and matching source delivery.",
             "Package license tags below are not a substitute for the reviewed per-component packet.",
             "", "Required release work:",
@@ -375,7 +375,7 @@ def stage(args) -> Path:
                 print(f"Extracting {package['name']} {package['version']}", flush=True)
                 with open_package(archive, zstd) as bundle:
                     extract_package(bundle, root, package["name"], records, budget)
-            for name in ("usr/bin/zsh.exe", "usr/bin/msys-2.0.dll", "usr/bin/sleep.exe"):
+            for name in ("usr/bin/zsh.exe", "usr/bin/msys-2.0.dll", "usr/bin/sleep.exe", "usr/bin/nano.exe", "usr/bin/file.exe", "usr/bin/msys-magic-1.dll", "usr/bin/msys-bz2-1.dll", "usr/bin/msys-lzma-5.dll", "usr/share/misc/magic.mgc"):
                 if not (root / name).is_file():
                     raise RuntimeError(f"Missing required runtime file: {name}")
             preset = Path(__file__).with_name("shell-preset.zsh")

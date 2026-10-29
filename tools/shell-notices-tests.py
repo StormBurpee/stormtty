@@ -20,15 +20,15 @@ class NoticeTests(unittest.TestCase):
     def test_all_binary_components_mapped_and_assets_exact(self):
         lock = notices.bootstrap.read_lock(notices.TOOLS / "shell-bootstrap.lock.json")
         assets, mapping = notices.validated_assets(lock)
-        self.assertEqual(len(mapping["components"]), 17)
-        self.assertEqual(len(assets["assets"]), 79)
+        self.assertEqual(len(mapping["components"]), 21)
+        self.assertEqual(len(assets["assets"]), 94)
         self.assertTrue(all((notices.ASSETS / a["path"]).stat().st_size == a["bytes"] for a in assets["assets"]))
 
-    def test_static_source_closure_is_nineteen_not_seventeen(self):
+    def test_static_source_closure_includes_nano_and_static_dependencies(self):
         lock = notices.bootstrap.read_lock(notices.TOOLS / "shell-bootstrap.lock.json")
         records = notices.source_records(lock)
-        self.assertEqual(len(records), 19)
-        self.assertEqual(sum(r["bytes"] for r in records), 338606284)
+        self.assertEqual(len(records), 23)
+        self.assertEqual(sum(r["bytes"] for r in records), 345576536)
         self.assertIn("readline-8.3.006-1.src.tar.zst", {r["filename"] for r in records})
         self.assertIn("binutils-2.47-1.src.tar.zst", {r["filename"] for r in records})
 
@@ -80,6 +80,20 @@ class NoticeTests(unittest.TestCase):
                     source.write_bytes(raw)
                     self.assertEqual(notices.notice_bytes(source, checksum, len(original)), original)
                     self.assertEqual(source.read_bytes(), raw)
+
+    def test_new_nano_dependency_notice_assets_survive_windows_crlf(self):
+        index = notices.read_json(notices.ASSETS / "assets.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "notice"
+            for asset in index["assets"]:
+                if asset["component"] not in {"nano", "file", "bzip2", "xz"}:
+                    continue
+                original = (notices.ASSETS / asset["path"]).read_bytes()
+                converted = original.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+                path.write_bytes(converted)
+                with self.subTest(asset=asset["path"]):
+                    self.assertEqual(notices.notice_bytes(path, asset["sha256"], asset["bytes"]), original)
+                    self.assertEqual(path.read_bytes(), converted)
 
     def test_notice_recovery_requires_exact_hash_and_size(self):
         original = b"Pinned vendor notice\n"

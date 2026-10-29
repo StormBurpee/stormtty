@@ -1,6 +1,6 @@
 # StormTTY Zsh runtime staging (Windows x64 qualification)
 
-No installer, package scripts, global PATH changes or user dotfile edits. This stages the 17 exact official MSYS2 archives in `shell-bootstrap.lock.json`, plus the owned managed loader and pinned OMZ/plugin sources. It does **not** fork Zsh or establish a new Windows runtime pass. The app's existing default activation remains separate from addon qualification.
+No installer, package scripts, global PATH changes or user dotfile edits. This stages the 21 exact official MSYS2 archives in `shell-bootstrap.lock.json`, plus the owned managed loader and pinned OMZ/plugin sources. It does **not** fork Zsh or establish a new Windows runtime pass. The app's existing default activation remains separate from addon qualification.
 
 ## Windows build and CI
 
@@ -214,3 +214,39 @@ OSC A/B prompt boundaries themselves if desired—the loader does not scrape or
 rewrite their prompt strings. `STORMTTY_AUTOSUGGESTIONS=0` and
 `STORMTTY_HIGHLIGHTING=0` opt out of those respective packaged editing modules.
 No optional theme is downloaded, enabled or configured automatically.
+
+## Bundled nano
+
+The private managed Windows runtime includes pinned GNU nano 9.2-1 by default,
+plus `file`, `libbz2`, and `liblzma`; no system install or global PATH edit is
+needed. Existing package versions remain unchanged. Restage after updating the
+lock: the new bundle identity invalidates old developer runtime receipts.
+
+`managed_nano_probe <runtime> [packaged-provider-directory]` launches the managed
+Zsh through the real Session/ConPTY path, opens a synthetic Unicode filename,
+replaces its contents, saves with Ctrl-O, exits with Ctrl-X, and compares exact
+UTF-8/LF bytes. CI runs both Windows providers. This is not physical UI evidence;
+`nano_qualification` remains pending until native evidence is recorded. Historical
+base-Zsh qualification and the closed public redistribution/source gates are not
+expanded by the package addition. See `shell-notices/REVIEW.md` for provenance.
+
+### Native nano fixture evidence
+
+The pinned 9.2 source audit maps the title to `src/winio.c`'s `PACKAGE_STRING`
+branding, write-out input to `src/files.c`'s `Write to File`, and the optional
+`Wrote %zu line(s)` status to `src/files.c` (minibar can use `report_size` instead).
+`src/nano.c` supplies `Save modified buffer?`, used only as a diagnostic flag.
+`QNANO_READY` / `QNANO_EXIT_0` are synthetic shell handshake markers, while
+`original` / `edited caf` are synthetic fixture contents, not upstream UI strings.
+
+Saving is authoritative only when the synthetic file matches the exact expected
+UTF-8/LF bytes. The probe then requires Ctrl-X to return nano status zero to Zsh
+and checks those bytes again. It does not depend on an English save-status line.
+Phase 41 means waiting for exact disk bytes, 42 means waiting for editor exit,
+and 43 means rechecking saved bytes after exit. Success still ends at phase 5.
+A previous phase-4/status-text timeout did **not** establish a successful save.
+
+`run-nano-probe.py` retains only known numeric diagnostic/result fields, bounded
+in length and count. It writes separate provider logs even on timeout/failure;
+CI uploads these immediately. No arbitrary screen output, error strings, paths,
+file contents, environment, or configuration enters those artifacts.

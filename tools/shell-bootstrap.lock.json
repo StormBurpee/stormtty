@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "bundle_id": "zsh-msys2-x86_64-20261028-r1",
+  "bundle_id": "zsh-msys2-x86_64-20261029-r1",
   "platform": "windows-x86_64",
   "qualification_only": false,
   "default_activation_allowed": true,
@@ -179,6 +179,63 @@
       "sha256": "5e370b2e725a0a7e5ff58d84653c9a0cd5a10b9cfe930f2d949a28ad2a11c1f2",
       "license": "BSD",
       "source": "zstd-1.5.7-1.src.tar.zst"
+    },
+    {
+      "name": "nano",
+      "version": "9.2-1",
+      "filename": "nano-9.2-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/nano-9.2-1-x86_64.pkg.tar.zst",
+      "bytes": 688103,
+      "sha256": "0fd23077af18ab656e4a082ce0455ab16217c852f3968343e903843c204a12b2",
+      "license": "spdx:GPL-3.0-or-later",
+      "source": "nano-9.2-1.src.tar.zst",
+      "dependencies": [
+        "file",
+        "libintl",
+        "ncurses",
+        "sh"
+      ]
+    },
+    {
+      "name": "file",
+      "version": "5.48-1",
+      "filename": "file-5.48-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/file-5.48-1-x86_64.pkg.tar.zst",
+      "bytes": 468042,
+      "sha256": "f55026638fe4ed4b31ee3cf316843ac190d9332816bff8dcb0a99fd8c6350608",
+      "license": "custom",
+      "source": "file-5.48-1.src.tar.zst",
+      "dependencies": [
+        "gcc-libs",
+        "zlib",
+        "libbz2",
+        "liblzma",
+        "libzstd"
+      ]
+    },
+    {
+      "name": "libbz2",
+      "version": "1.0.8-4",
+      "filename": "libbz2-1.0.8-4-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/libbz2-1.0.8-4-x86_64.pkg.tar.zst",
+      "bytes": 30786,
+      "sha256": "89fb0e1478b22b80effda55ab4ae7549388d01245d3841a096d8a2d63236c2a1",
+      "license": "custom",
+      "source": "bzip2-1.0.8-4.src.tar.zst",
+      "dependencies": [
+        "gcc-libs"
+      ]
+    },
+    {
+      "name": "liblzma",
+      "version": "5.8.4-1",
+      "filename": "liblzma-5.8.4-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/liblzma-5.8.4-1-x86_64.pkg.tar.zst",
+      "bytes": 90529,
+      "sha256": "4b7d61656e72a5651a797680b66186338dce4f8fbc62a637ab3b59922dd01074",
+      "license": "spdx:LGPL-2.1-or-later",
+      "source": "xz-5.8.4-1.src.tar.zst",
+      "dependencies": []
     }
   ],
   "sources": [
@@ -334,6 +391,42 @@
       "packages": [
         "libzstd"
       ]
+    },
+    {
+      "filename": "nano-9.2-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/nano-9.2-1.src.tar.zst",
+      "bytes": 1763170,
+      "sha256": "515cd0d11b63cb5b4909697dd854e57c8291748bd4ce84c95f5a93779f18a651",
+      "packages": [
+        "nano"
+      ]
+    },
+    {
+      "filename": "file-5.48-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/file-5.48-1.src.tar.zst",
+      "bytes": 2694782,
+      "sha256": "29859c6060a1514d8fd8f44867b509b0e7c0f004fbcbfc5b997ac0de0e977904",
+      "packages": [
+        "file"
+      ]
+    },
+    {
+      "filename": "bzip2-1.0.8-4.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/bzip2-1.0.8-4.src.tar.zst",
+      "bytes": 842603,
+      "sha256": "a7e9ea6335ef2902508de0bbbb70e2e9909b6b7b6d05fc207f8fdf0cf44ad053",
+      "packages": [
+        "libbz2"
+      ]
+    },
+    {
+      "filename": "xz-5.8.4-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/xz-5.8.4-1.src.tar.zst",
+      "bytes": 1669697,
+      "sha256": "dedeb89e94779cdf4a90ce6f6422ac218b7b1ac1e11766dcb915a823e1c4d8ee",
+      "packages": [
+        "liblzma"
+      ]
     }
   ],
   "public_redistribution_ready": false,
@@ -353,5 +446,9 @@
     "scope": "Passed native Windows Zsh subset only. Overall Windows/macOS suites retain separate Ink/macOS-presentation failures; not a whole-workflow, physical UI, universal compatibility, or publication claim.",
     "tree": "45e528127a26d1ef72021907798b884f553d42d5",
     "workflow_job": "https://github.com/StormBurpee/stormtty/actions/runs/40650974545/job/122690698403"
+  },
+  "nano_qualification": {
+    "status": "pending",
+    "scope": "Bundled nano open/edit/save/exit fixture requires native execution on both Windows ConPTY providers. Existing native_qualification records the historical Zsh subset only."
   }
 }

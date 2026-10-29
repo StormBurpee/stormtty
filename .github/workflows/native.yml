@@ -279,6 +279,23 @@ jobs:
             print('MANAGED_CONTEXT_RESULT='+name+':'+str(result.returncode),flush=True)
             if result.returncode: failures.append(name)
           if failures: raise SystemExit(1)
+      - name: Qualify bundled nano edit save and exit
+        id: managed_nano
+        if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
+        shell: python
+        run: |
+          import os,pathlib,subprocess,sys
+          subprocess.run([sys.executable,'tools/run-nano-probe-tests.py'],check=True)
+          subprocess.run([sys.executable,'tools/run-nano-probe.py',
+            '--runtime','.deps/stormtty-shell','--probe','build/managed_nano_probe.exe',
+            '--provider',str(pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'),
+            '--output','build/artifacts/nano'],check=True)
+      - name: Preserve nano qualification evidence immediately
+        if: always() && runner.os == 'Windows' && steps.managed_nano.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nano-qualification-windows
+          path: build/artifacts/nano/nano-*.log
       - name: Verify managed shell HOME and drive paths
         if: always() && runner.os == 'Windows' && steps.staged_shell.outcome == 'success'
         run: python tools/shell-path-tests.py --runtime .deps/stormtty-shell --resolver-probe build/bundled_shell_probe.exe
