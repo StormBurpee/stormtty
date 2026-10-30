@@ -41,6 +41,8 @@
 #include "stormtty/smoke_deadline.hpp"
 #include "stormtty/session.hpp"
 #include "stormtty/session_wake_router.hpp"
+#include "stormtty/session_identities.hpp"
+#include <ranges>
 #include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
 #include "stormtty/windows_settings_wheel.hpp"
@@ -75,11 +77,6 @@
 
 namespace stormtty {
 namespace {
-std::uint64_t allocate_watch_host() {
-    static std::atomic<std::uint64_t> next{1};auto value=next.load();
-    while(value!=std::numeric_limits<std::uint64_t>::max())if(next.compare_exchange_weak(value,value+1))return value;
-    return 0; // Saturation disables watches, never reuses an identity.
-}
 constexpr UINT wake_message = WM_APP + 41;
 constexpr UINT workspace_saved_message = WM_APP + 45;
 constexpr UINT deferred_layout_message = WM_APP + 42;
@@ -312,30 +309,171 @@ private:
     HANDLE armed_{}; // UI thread only.
     std::atomic<bool> fired_{};
 };
-struct ApplicationActors {
-    std::map<SessionId,std::shared_ptr<Session>> sessions;
-    std::map<SessionId,SessionState> states;
-    std::map<SessionId,std::string> background_labels;
-    std::map<SessionId,ParkedAttention> parked_attention;
-    const std::uint64_t watch_host{allocate_watch_host()};
-    std::uint64_t next_watch_actor{1};
-    std::map<SessionId,std::uint64_t> watch_actors;
-    std::map<SessionId,CommandWatch> watches;
-    std::shared_ptr<ActorWakeRouter> wakes{std::make_shared<ActorWakeRouter>()};
-    SessionId allocate() {
-        if(!next_session_)throw std::runtime_error("Application session identity exhausted.");
-        const SessionId id{next_session_};
-        next_session_=next_session_==std::numeric_limits<std::uint64_t>::max()?0:next_session_+1;
-        return id;
+// UI-thread owner of actor registration and wake-route discoverability. Actors
+// and retained callbacks may outlive registration; neither disposal nor this
+// destructor joins an actor. Starting processes remains the host's transaction.
+class ActorLifetimeRegistry final {
+public:
+    struct SnapshotEntry {
+        SessionId id;
+        std::shared_ptr<Session> actor;
+        WatchIdentity identity;
+
+        bool operator==(const SnapshotEntry&) const = default;
+    };
+
+    ~ActorLifetimeRegistry() {
+        for (const auto& [id, actor] : sessions_) {
+            (void)id;
+            actor->request_close();
+        }
     }
+
+    [[nodiscard]] SessionId allocate() {
+        return identities_.allocate();
+    }
+
     Session::Wake callback(SessionId id, const std::shared_ptr<WakeState>& endpoint) {
-        auto route=wakes->bind(id,endpoint);
-        return [route=std::move(route)] {route->wake();};
+        auto route = wakes_.bind(id, endpoint);
+        return [route = std::move(route)] { route->wake(); };
     }
-    ~ApplicationActors() { for(auto& [id,session]:sessions){(void)id;session->request_close();} }
+
+    void register_actor(SessionId id, std::shared_ptr<Session> actor) {
+        sessions_.emplace(id, std::move(actor));
+        identities_.register_actor(id);
+    }
+
+    // Borrowed lookup/range: UI thread only. Do not retain an actor reference
+    // after its registration is erased, or across reentrant host operations.
+    // Removal passes advance their iterator before disposing its former entry.
+    // These hot-path queries allocate nothing and copy no shared ownership.
+    [[nodiscard]] Session* find(SessionId id) const noexcept {
+        const auto found = sessions_.find(id);
+        return found == sessions_.end() ? nullptr : found->second.get();
+    }
+
+    [[nodiscard]] auto read() const noexcept {
+        return std::ranges::subrange(sessions_.cbegin(), sessions_.cend());
+    }
+
+    // Explicit ownership for queued actions and other uses that outlive lookup.
+    // Like the former checked map lookup, a missing registration is an error.
+    [[nodiscard]] std::shared_ptr<Session> retain(SessionId id) const {
+        return sessions_.at(id);
+    }
+
+    [[nodiscard]] bool contains(SessionId id) const noexcept {
+        return sessions_.contains(id);
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept {
+        return sessions_.size();
+    }
+
+    [[nodiscard]] bool empty() const noexcept {
+        return sessions_.empty();
+    }
+
+    [[nodiscard]] WatchIdentity identity(SessionId id) const noexcept {
+        return identities_.find(id);
+    }
+
+    // Owned qualification snapshot, never a per-frame view.
+    [[nodiscard]] std::vector<SnapshotEntry> snapshot() const {
+        std::vector<SnapshotEntry> result;
+        result.reserve(sessions_.size());
+        for (const auto& [id, actor] : sessions_) {
+            result.push_back({id, actor, identities_.find(id)});
+        }
+        return result;
+    }
+
+    void dispose(SessionId id, const std::shared_ptr<WakeState>& completion = {}) {
+        if (completion) {
+            // Rebind BEFORE close: even a synchronous/final actor wake must
+            // target application completion rather than a destroyed HWND.
+            wakes_.bind(id, completion);
+        }
+        if (const auto found = sessions_.find(id); found != sessions_.end()) {
+            found->second->request_close();
+            sessions_.erase(found);
+        }
+        identities_.forget(id);
+        // A failed start may have a route but no registered actor. Forget only
+        // discoverability: callbacks retain their route and last weak endpoint.
+        wakes_.erase(id);
+    }
+
 private:
-    std::uint64_t next_session_{1};
+    SessionIdentities identities_;
+    std::map<SessionId, std::shared_ptr<Session>> sessions_;
+    ActorWakeRouter wakes_;
 };
+
+struct ApplicationActors {
+    std::map<SessionId, SessionState> states;
+    std::map<SessionId, std::string> background_labels;
+    std::map<SessionId, ParkedAttention> parked_attention;
+    std::map<SessionId, CommandWatch> watches;
+    ActorLifetimeRegistry registry; // Closes before presentation metadata is destroyed.
+
+    // The remaining presentation metadata is deliberately not part of the
+    // lifetime registry yet. One application operation coordinates its cleanup.
+    void dispose(SessionId id, const std::shared_ptr<WakeState>& completion = {}) {
+        registry.dispose(id, completion);
+        states.erase(id);
+        background_labels.erase(id);
+        parked_attention.erase(id);
+        watches.erase(id);
+    }
+};
+// Native qualification of the actual partial-registration path: a callback
+// exists, but Session::start has not returned a handle. Real actor close/reap
+// remains covered separately by the two-window and project scenarios.
+void qualify_unregistered_actor_disposal() {
+    auto original = std::make_shared<WakeState>();
+    auto completion = std::make_shared<WakeState>();
+    original->thread = GetCurrentThreadId();
+    completion->thread = GetCurrentThreadId();
+    Session::Wake retained_callback;
+    {
+        ApplicationActors fixture;
+        const auto abandoned = fixture.registry.allocate();
+        const auto survivor = fixture.registry.allocate();
+        retained_callback = fixture.registry.callback(abandoned, original);
+        for (const auto id : {abandoned, survivor}) {
+            fixture.states.emplace(id, SessionState::starting);
+            fixture.background_labels.emplace(id, "retained metadata");
+            fixture.parked_attention.emplace(id, ParkedAttention(SessionInfo{}));
+            fixture.watches.emplace(id, CommandWatch{});
+        }
+        fixture.dispose(abandoned, completion);
+        fixture.dispose(abandoned); // Missing registration must remain harmless.
+        if (fixture.registry.contains(abandoned) || fixture.registry.identity(abandoned) ||
+            fixture.states.contains(abandoned) || fixture.background_labels.contains(abandoned) ||
+            fixture.parked_attention.contains(abandoned) || fixture.watches.contains(abandoned) ||
+            !fixture.states.contains(survivor) || !fixture.background_labels.contains(survivor) ||
+            !fixture.parked_attention.contains(survivor) || !fixture.watches.contains(survivor)) {
+            throw std::runtime_error("Partial actor disposal leaked metadata or removed a survivor.");
+        }
+        retained_callback();
+        if (!completion->posted || original->posted) {
+            throw std::runtime_error("Forgotten actor route lost its rebound completion endpoint.");
+        }
+        fixture.dispose(survivor);
+    }
+    completion->posted = false;
+    original.reset();
+    retained_callback();
+    if (!completion->posted) {
+        throw std::runtime_error("Actor callback did not outlive registry and old endpoint.");
+    }
+    std::fputs(
+        "Native actor lifetime: unregistered callback disposal cleared only its metadata, "
+        "repeated disposal was harmless, rebound route survived registry and old endpoint.\n",
+        stderr);
+}
+
 // Single application writer backing state. File operations stay serialized and
 // preserve the existing exact-baseline conflict checks. No per-window copy.
 struct WorkspaceSaveMailbox {
@@ -445,7 +583,11 @@ public:
     ~NativeWindow() {
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor body begin");
         wake_->window.store(nullptr, std::memory_order_release);
-        for (auto& [id,session]:sessions_) if(projects_.contains_session(id))session->request_close();
+        for (const auto& [id, session] : actor_registry_.read()) {
+            if (projects_.contains_session(id)) {
+                session->request_close();
+            }
+        }
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor close requests complete");
         if (hwnd_) destroy_window();
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor HWND destruction complete");
@@ -550,9 +692,6 @@ private:
     void acknowledge_watch(SessionId);
     void open_watch(ProjectSessionReference,WatchIdentity);
     bool project_watch_unread(ProjectWorkspaceId) const;
-    const std::uint64_t& watch_host_{application_.actors.watch_host};
-    std::uint64_t& next_watch_actor_{application_.actors.next_watch_actor};
-    std::map<SessionId,std::uint64_t>& watch_actors_{application_.actors.watch_actors};
     std::map<SessionId,CommandWatch>& watches_{application_.actors.watches};
     bool using_managed_shell() const { return session_launcher_.using_managed_shell(config_); }
     const std::string& session_profile_id() const { return session_launcher_.default_profile_id(config_); }
@@ -632,6 +771,7 @@ private:
     unsigned smoke_palette_input_stage_{};
     bool smoke_palette_disable_sent_{};
     bool smoke_navigator_done_{};
+    SessionId smoke_navigator_disposable_{};
     unsigned smoke_find_stage_{}, smoke_find_trace_count_{};
     std::uint64_t smoke_find_bytes_{}, smoke_find_revision_{}, smoke_find_input_baseline_{}, smoke_terminal_input_submissions_{}, smoke_terminal_mouse_submissions_{};
     std::size_t smoke_find_selection_{};
@@ -752,7 +892,7 @@ private:
     bool smoke_settings_file_owned_{};
     unsigned smoke_reload_stage_{};
     Config smoke_reload_expected_;
-    std::map<SessionId,std::shared_ptr<Session>> smoke_reload_actors_;
+    std::vector<ActorLifetimeRegistry::SnapshotEntry> smoke_reload_actors_;
     std::uint64_t smoke_reload_received_{};
     Config smoke_settings_original_;
     std::shared_ptr<Session> smoke_settings_actor_;
@@ -800,7 +940,7 @@ private:
     std::size_t navigation_first_{};
     ProjectNavigationLayout navigation_;
     std::string context_label_;
-    std::map<SessionId, std::shared_ptr<Session>>& sessions_{application_.actors.sessions};
+    const ActorLifetimeRegistry& actor_registry_{application_.actors.registry};
     std::map<SessionId, TerminalSize> sizes_;
     std::map<SessionId, SessionState>& session_states_{application_.actors.states};
     std::map<SessionId, std::string>& background_labels_{application_.actors.background_labels};
@@ -977,7 +1117,10 @@ void NativeWindow::create() {
         const auto second=projects_.create({project_name(std::filesystem::path(widen(path))),path,"Local"});
         if (!second) throw std::runtime_error(second.error);
         smoke_secondary_project_=*second.value; activate_project(*second.value); new_tab();
-        smoke_project_actors_=sessions_; navigation_expanded_=true; activate_project(smoke_primary_project_);
+        const auto registered = actor_registry_.read();
+        smoke_project_actors_.insert(registered.begin(), registered.end());
+        navigation_expanded_ = true;
+        activate_project(smoke_primary_project_);
     }
     if (options_.smoke_layout) {
         const auto first=workspace().active_pane();
@@ -1048,10 +1191,8 @@ NativeWindow& NativeApplication::create_view(Config config, NativeRunOptions opt
         if(candidate)retired_smoke_sessions.merge(candidate->smoke_sessions_);
         candidate.reset();
         projects.abort_window_creation(window_id);
-        for(const auto id:created) {
-            if(const auto actor=actors.sessions.find(id);actor!=actors.sessions.end()){actor->second->request_close();actors.sessions.erase(actor);}
-            actors.states.erase(id);actors.background_labels.erase(id);
-            actors.parked_attention.erase(id);actors.watches.erase(id);actors.watch_actors.erase(id);actors.wakes->erase(id);
+        for (const auto id : created) {
+            actors.dispose(id);
         }
         creating_view=false;
         // Reentrant survivor edits remain dirty; capture only the rolled-back state.
@@ -1087,9 +1228,11 @@ int NativeApplication::run(Config config, NativeRunOptions options) {
     auto fixture_config=config;auto fixture_options=options;
     auto& first=create_view(std::move(config),std::move(options),true);
     if(windows_fixture) {
+        qualify_unregistered_actor_disposal();
         const auto actor_id=[](const NativeWindow& view){const auto* pane=view.workspace().pane(view.workspace().active_pane());if(!pane||!pane->session)throw std::runtime_error("Window fixture has no bound actor.");return pane->session;};
         smoke_first_window=first.projects_.id();smoke_first_actor=actor_id(first);
-        smoke_first_session=actors.sessions.at(smoke_first_actor);
+        smoke_first_session=actors.registry.retain(smoke_first_actor);
+        const auto original_identity = actors.registry.identity(smoke_first_actor);
         for(unsigned failure:{1u,2u}) {
             bool rejected=false;
             try {create_view(fixture_config,fixture_options,false,failure);}catch(const std::runtime_error& error){
@@ -1097,13 +1240,15 @@ int NativeApplication::run(Config config, NativeRunOptions options) {
                 if(error.what()!=expected)throw;
                 rejected=true;
             }
-            if(!rejected || projects.windows().size()!=1 || windows.size()!=1 || actors.sessions.size()!=1 ||
-               actors.sessions.at(smoke_first_actor)!=smoke_first_session || smoke_first_session->closed() || !projects.validate())
+            if(!rejected || projects.windows().size()!=1 || windows.size()!=1 || actors.registry.size()!=1 ||
+               actors.registry.retain(smoke_first_actor)!=smoke_first_session ||
+               actors.registry.identity(smoke_first_actor)!=original_identity ||
+               smoke_first_session->closed() || !projects.validate())
                 throw std::runtime_error("Candidate failure damaged the original window/actor.");
         }
         auto& second=create_view(std::move(fixture_config),std::move(fixture_options),false);
         smoke_survivor_window=second.projects_.id();smoke_survivor_actor=actor_id(second);
-        smoke_survivor_session=actors.sessions.at(smoke_survivor_actor);
+        smoke_survivor_session=actors.registry.retain(smoke_survivor_actor);
         std::fputs("Native windows rollback: pre-HWND and post-renderer/actor failures preserved original ownership.\n",stderr);
     }
     for (;;) {
@@ -1461,8 +1606,8 @@ void NativeWindow::refresh_layout() {
             size.cell_width = metrics.width; size.cell_height = metrics.height;
             if (sizes_[placement.session] != size) {
                 sizes_[placement.session] = size;
-                if (auto found = sessions_.find(placement.session); found != sessions_.end()) {
-                    auto session = found->second;
+                if (actor_registry_.contains(placement.session)) {
+                    auto session = actor_registry_.retain(placement.session);
                     submit([session,size] { return session->request_resize(size); });
                 }
             }
@@ -1499,8 +1644,7 @@ void NativeWindow::drain_input() {
 Session* NativeWindow::session_for(PaneId pane) const {
     const auto* model = workspace().pane(pane);
     if (!model) return nullptr;
-    auto found = sessions_.find(model->session);
-    return found == sessions_.end() ? nullptr : found->second.get();
+    return actor_registry_.find(model->session);
 }
 Session* NativeWindow::active_session() const { return session_for(workspace().active_pane()); }
 SessionId NativeWindow::new_session(std::string profile_id) {
@@ -1515,7 +1659,7 @@ SessionId NativeWindow::new_session(std::string profile_id) {
     auto& terminal = launch.terminal;
     const bool managed = launch.managed;
 
-    const SessionId id = application_.actors.allocate();
+    const SessionId id = application_.actors.registry.allocate();
     if (!committed_view_) {
         creation_sessions_.push_back(id); // Allocate ledger before launching.
     }
@@ -1524,7 +1668,7 @@ SessionId NativeWindow::new_session(std::string profile_id) {
     auto session = Session::start(
         std::move(process),
         terminal,
-        application_.actors.callback(id, wake_),
+        application_.actors.registry.callback(id, wake_),
         SessionRetentionPolicy::retain_document);
 
     if (options_.smoke_test) {
@@ -1536,11 +1680,7 @@ SessionId NativeWindow::new_session(std::string profile_id) {
             smoke_managed_sessions_.insert(id);
         }
     }
-    sessions_.emplace(id, std::move(session));
-
-    const auto token = next_watch_actor_ == std::numeric_limits<std::uint64_t>::max()
-        ? 0 : next_watch_actor_++;
-    watch_actors_.emplace(id, token);
+    application_.actors.registry.register_actor(id, std::move(session));
     return id;
 }
 
@@ -1550,7 +1690,7 @@ void NativeWindow::new_tab() {
     try { id = new_session(profile); }
     catch (const std::exception& error) { show_error(error.what()); return; }
     auto result = workspace().create_tab(id, profile);
-    if (!result) { sessions_.at(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
+    if (!result) { actor_registry_.retain(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
     workspace_model_changed(); changed(true);
 }
 void NativeWindow::split(Direction direction) {
@@ -1561,14 +1701,21 @@ void NativeWindow::split(Direction direction) {
     try { id = new_session(profile); }
     catch (const std::exception& error) { show_error(error.what()); return; }
     auto result = workspace().split(active, direction, id, profile);
-    if (!result) { sessions_.at(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
+    if (!result) { actor_registry_.retain(id)->request_close(); show_error(result.error); retire_unused_sessions(); return; }
     workspace_model_changed(); activate(*result.value); changed(true);
 }
 void NativeWindow::retire_unused_sessions() {
-    for (auto iterator = sessions_.begin(); iterator != sessions_.end();) {
-        const bool used = application_.projects.catalog().contains_session(iterator->first);
-        if (!used) { iterator->second->request_close(); sizes_.erase(iterator->first); session_states_.erase(iterator->first); background_labels_.erase(iterator->first); parked_attention_.erase(iterator->first); watches_.erase(iterator->first); watch_actors_.erase(iterator->first); application_.actors.wakes->erase(iterator->first); iterator = sessions_.erase(iterator); }
-        else ++iterator;
+    // Map erasure preserves the other iterators. Advance before disposal and
+    // keep no borrowed actor reference across it: no snapshot allocation is
+    // needed after a successful placement removal, even under memory pressure.
+    const auto registered = actor_registry_.read();
+    for (auto iterator = registered.begin(); iterator != registered.end();) {
+        const auto id = (iterator++)->first;
+        if (application_.projects.catalog().contains_session(id)) {
+            continue; // Hidden projects and parked actors still belong to the app.
+        }
+        sizes_.erase(id);
+        application_.actors.dispose(id);
     }
 }
 void NativeWindow::show_modal(std::string title, std::vector<std::string> body, std::string confirm, std::function<void()> action, bool destructive) {
@@ -1593,11 +1740,11 @@ void NativeWindow::answer_modal(ModalDecision decision) {
     if (hwnd_) { changed(); caret_schedule(); }
 }
 WatchIdentity NativeWindow::watch_identity(SessionId id) const {
-    const auto found=watch_actors_.find(id);return {watch_host_,id.value,found==watch_actors_.end()?0:found->second};
+    return actor_registry_.identity(id);
 }
 void NativeWindow::commit_terminal_selection() {
     const auto* pane=workspace().pane(workspace().active_pane());
-    if(pane && sessions_.contains(pane->session))previous_terminal_.commit(watch_identity(pane->session));
+    if(pane && actor_registry_.contains(pane->session))previous_terminal_.commit(watch_identity(pane->session));
 }
 NativeWindow::PreviousTarget NativeWindow::previous_terminal_target() const {
     const auto target=previous_terminal_.previous();
@@ -1608,11 +1755,11 @@ NativeWindow::PreviousTarget NativeWindow::previous_terminal_target() const {
         for(const auto& parked:project.parked_sessions)if(parked.session==session)
             return {PreviousTerminalState::parked,{},{},{}};
         for(const auto& [id,pane]:project.workspace.state().panes)if(pane.session==session) {
-            if(!sessions_.contains(session))return {PreviousTerminalState::dormant,{},{},{}};
+            if(!actor_registry_.contains(session))return {PreviousTerminalState::dormant,{},{},{}};
             if(watch_identity(session)!=target)return {PreviousTerminalState::stale,{},{},{}};
             const auto tab=project.workspace.tab_of(id);
             const auto* item=tab?project.workspace.tab(*tab):nullptr;
-            const auto title=background_session_title(item?item->title:std::string{},sessions_.at(session)->info().title,"Terminal");
+            const auto title=background_session_title(item?item->title:std::string{},actor_registry_.find(session)->info().title,"Terminal");
             return {PreviousTerminalState::available,project.id,id,
                 "Return to · "+pane_context_text(agent_display_text(project.metadata.name,256))+" · "+pane_context_text(agent_display_text(title,256))};
         }
@@ -1669,7 +1816,7 @@ bool NativeWindow::project_watch_unread(ProjectWorkspaceId id) const {
 }
 void NativeWindow::open_watch(ProjectSessionReference target,WatchIdentity identity) {
     const auto found=watches_.find(target.local);const auto* entry=projects_.find(target.project);
-    if(!entry||!sessions_.contains(target.local)||watch_identity(target.local)!=identity||found==watches_.end()||!found->second.unread()||found->second.identity()!=identity){show_error("The watched actor is no longer available.");return;}
+    if(!entry||!actor_registry_.contains(target.local)||watch_identity(target.local)!=identity||found==watches_.end()||!found->second.unread()||found->second.identity()!=identity){show_error("The watched actor is no longer available.");return;}
     PaneId pane{};for(const auto& [id,item]:entry->workspace.state().panes)if(item.session==target.local){pane=id;break;}
     const bool parked=std::any_of(entry->parked_sessions.begin(),entry->parked_sessions.end(),[&](const auto& value){return value.session==target.local;});
     if(!pane&&!parked){show_error("The watched terminal is no longer placed.");return;}
@@ -1686,8 +1833,8 @@ std::string NativeWindow::background_title(const ParkedSession& parked, bool sta
     if (session_launcher_.managed_profile() && session_launcher_.managed_profile()->id==parked.profile) profile=session_launcher_.managed_profile()->label;
     else for (const auto& candidate:config_.profiles) if (candidate.id==parked.profile) { profile=candidate.label; break; }
     std::string title=background_session_title(parked.user_title,parked.title,profile);
-    if (auto found=sessions_.find(parked.session); found!=sessions_.end()) {
-        const auto info=found->second->info();
+    if (const auto* actor = actor_registry_.find(parked.session)) {
+        const auto info = actor->info();
         title=background_session_title(parked.user_title,info.title.empty()?parked.title:info.title,profile);
         // Keep UTF-8 intact; DirectWrite clips bounded actor titles.
         if (!status) return title;
@@ -1703,12 +1850,12 @@ void NativeWindow::park_pane(PaneId pane) {
     const auto result=projects_.park({projects_.active_id(),pane});
     if (!result) { show_error(result.error); return; }
     // Baseline only after placement succeeds, before any reset/update can observe it.
-    parked_attention_.insert_or_assign(*result.value,ParkedAttention(sessions_.at(*result.value)->info()));
+    parked_attention_.insert_or_assign(*result.value,ParkedAttention(actor_registry_.retain(*result.value)->info()));
     workspace_model_changed();
     reset_project_view(); // Clear IME, selection and renderer-local placement state.
 }
 void NativeWindow::restore_parked(ProjectSessionReference target) {
-    if (target.project!=projects_.active_id() || !sessions_.contains(target.local)) { show_error("The background target changed; nothing was restored."); return; }
+    if (target.project!=projects_.active_id() || !actor_registry_.contains(target.local)) { show_error("The background target changed; nothing was restored."); return; }
     const auto result=projects_.reattach_to_new_tab(target);
     if (!result) { show_error(result.error); return; }
     workspace_model_changed();
@@ -1719,7 +1866,7 @@ void NativeWindow::restore_parked(ProjectSessionReference target) {
 }
 void NativeWindow::close_parked(ProjectSessionReference target, bool approved) {
     const auto* project=projects_.find(target.project);
-    if (!project || target.project!=projects_.active_id() || !sessions_.contains(target.local) ||
+    if (!project || target.project!=projects_.active_id() || !actor_registry_.contains(target.local) ||
         std::none_of(project->parked_sessions.begin(),project->parked_sessions.end(),[&](const auto& item){return item.session==target.local;})) {
         show_error("The background target changed; nothing was closed."); return;
     }
@@ -1803,7 +1950,7 @@ void NativeWindow::close_tab(TabId tab, bool approved) {
 void NativeWindow::sync_focus() {
     const auto* active_pane=workspace().pane(workspace().active_pane());
     if(find_session_ && (!active_pane || active_pane->session!=find_session_)) {
-        if(auto actor=sessions_.find(find_session_);actor!=sessions_.end())(void)actor->second->cancel_search();
+        if (auto* actor = actor_registry_.find(find_session_)) (void)actor->cancel_search();
         if(find_pressed_ && GetCapture()==hwnd_)ReleaseCapture();
         find_session_={};find_result_.reset();find_request_=0;find_initial_selection_.cancel();find_pressed_.reset();
         preedit_.clear();composing_=false;text_input_.reset();
@@ -1813,8 +1960,8 @@ void NativeWindow::sync_focus() {
     if (active_ && !navigator_open_ && !find_session_ && !palette_open_ && !rename_open_ && !modal_ && !overlay_open()) if (const auto* pane=workspace().pane(workspace().active_pane())) desired=pane->session;
     if (desired==focused_session_) return;
     const auto previous=focused_session_; focused_session_=desired;
-    if (sessions_.contains(previous)) { auto old=sessions_.at(previous); submit([old] { return old->focus(false); }); }
-    if (sessions_.contains(desired)) { auto current=sessions_.at(desired); submit([current] { return current->focus(true); }); }
+    if (actor_registry_.contains(previous)) { auto old=actor_registry_.retain(previous); submit([old] { return old->focus(false); }); }
+    if (actor_registry_.contains(desired)) { auto current=actor_registry_.retain(desired); submit([current] { return current->focus(true); }); }
 }
 void NativeWindow::activate(PaneId pane) {
     if (workspace().active_pane() == pane) return;
@@ -1827,15 +1974,16 @@ void NativeWindow::update_sessions() {
     struct TitleUpdate { ProjectWorkspaceId project; PaneId pane; std::string title; };
     std::vector<TitleUpdate> titles;
     bool state_changed=false;
-    std::erase_if(pane_infos_,[this](const auto& value){return !sessions_.contains(value.first);});
-    std::erase_if(pane_contexts_,[this](const auto& value){return !sessions_.contains(value.first);});
+    std::erase_if(pane_infos_,[this](const auto& value){return !actor_registry_.contains(value.first);});
+    std::erase_if(pane_contexts_,[this](const auto& value){return !actor_registry_.contains(value.first);});
     ParkedNoticeBatch notice_batch;
     std::string batch_notice;
     // Hidden workspaces retain actors and model metadata. Never retire them just
     // because only the active project's panes are submitted to the renderer.
     for (const auto& project:projects_.entries()) for (const auto& [pane_id,pane]:project.workspace.state().panes) {
-        auto found=sessions_.find(pane.session); if (found==sessions_.end()) continue;
-        const auto info=found->second->info();
+        const auto* actor = actor_registry_.find(pane.session);
+        if (!actor) continue;
+        const auto info = actor->info();
         pane_infos_[pane.session]=info;
         if(observe_watch(pane.session,info)){state_changed=true;++chrome_generation_;}
         auto presentation=context_for(pane,project.metadata.working_directory,info);
@@ -1850,8 +1998,9 @@ void NativeWindow::update_sessions() {
         if (!session_states_.contains(pane.session) || session_states_[pane.session]!=info.state) { session_states_[pane.session]=info.state; state_changed=true; ++chrome_generation_; }
     }
     for (const auto& project:projects_.entries()) for (const auto& parked:project.parked_sessions) {
-        auto found=sessions_.find(parked.session); if (found==sessions_.end()) continue;
-        const auto info=found->second->info();
+        const auto* actor = actor_registry_.find(parked.session);
+        if (!actor) continue;
+        const auto info = actor->info();
         if(observe_watch(parked.session,info)){state_changed=true;++chrome_generation_;}
         pane_infos_[parked.session]=info; // Restore uses the latest owned snapshot, even if the actor is quiet.
 
@@ -1937,10 +2086,11 @@ WorkspaceActivitySummary NativeWindow::activity_summary() const {
     std::set<SessionId> seen;
     const auto append=[&](SessionId id,bool parked) {
         const auto* watch=current_watch(id);if(!parked && !watch)return;
-        const auto actor=sessions_.find(id);if(actor==sessions_.end() || !seen.insert(id).second)return;
+        const auto* actor = actor_registry_.find(id);
+        if (!actor || !seen.insert(id).second) return;
         const auto attention=parked_attention_.find(id);
         result.add(parked,parked && attention!=parked_attention_.end()?attention->second.unread_generation():std::nullopt,
-            watch,actor->second->info().state);
+            watch,actor->info().state);
     };
     for(const auto& [pane,item]:project->workspace.state().panes){(void)pane;append(item.session,false);}
     for(const auto& parked:project->parked_sessions)append(parked.session,true);
@@ -2003,11 +2153,8 @@ void NativeApplication::retire_destroyed_views() {
         if(!preview){workspace_error(preview.error);++it;continue;}
         auto detached=projects.close_window(*preview.value);
         if(!detached){workspace_error(detached.error);++it;continue;}
-        for(const auto id:preview.value->sessions) {
-            actors.wakes->bind(id,actor_completion); // Final disposal outlives the destroyed HWND.
-            if(const auto actor=actors.sessions.find(id);actor!=actors.sessions.end()){actor->second->request_close();actors.sessions.erase(actor);}
-            actors.states.erase(id);actors.background_labels.erase(id);actors.parked_attention.erase(id);
-            actors.watches.erase(id);actors.watch_actors.erase(id);actors.wakes->erase(id);
+        for (const auto id : preview.value->sessions) {
+            actors.dispose(id, actor_completion);
         }
         actor_completion->wake(); // Covers a callback that already captured the old endpoint.
         retired_smoke_sessions.merge(view.smoke_sessions_);
@@ -2145,7 +2292,7 @@ void NativeWindow::launch_restored_project(bool retry_failed) {
     std::vector<PaneId> unbound;
     for (const auto& [id,pane]:workspace().state().panes) {
         if (!pane.session) unbound.push_back(id);
-        else if (retry_failed && sessions_.contains(pane.session) && sessions_.at(pane.session)->info().state==SessionState::failed) {
+        else if (retry_failed && actor_registry_.contains(pane.session) && actor_registry_.find(pane.session)->info().state==SessionState::failed) {
             // Explicit repair only: never restart exited or running commands.
             unbound.push_back(id);
         }
@@ -2248,7 +2395,7 @@ void NativeWindow::workspace_menu(Point point, ProjectWorkspaceId target) {
             metadata.preferred_profile=key; edit(std::move(metadata));
             if (auto* target=projects_.workspace(id)) {
                 auto state=target->state();
-                for (auto& [pane_id,pane]:state.panes) { (void)pane_id; if (!pane.session || (sessions_.contains(pane.session) && sessions_.at(pane.session)->info().state==SessionState::failed)) pane.profile=key; }
+                for (auto& [pane_id,pane]:state.panes) { (void)pane_id; if (!pane.session || (actor_registry_.contains(pane.session) && actor_registry_.find(pane.session)->info().state==SessionState::failed)) pane.profile=key; }
                 auto changed_layout=Workspace::from_state(std::move(state));
                 if (changed_layout) *target=std::move(*changed_layout.value);
             }
@@ -2334,7 +2481,7 @@ void NativeWindow::close_project(ProjectWorkspaceId id, bool approved) {
     if (!projects_.find(id)) return;
     if(agent_controller_ && agent_controller_->active(projects_.find(id)->metadata.persistent_id)) {show_error("Interrupt the workspace agent before closing this workspace.");return;}
     bool live=false;
-    for (const auto session:projects_.session_ids(id)) if (sessions_.contains(session) && !sessions_.at(session)->process_finished()) live=true;
+    for (const auto session:projects_.session_ids(id)) if (actor_registry_.contains(session) && !actor_registry_.find(session)->process_finished()) live=true;
     if (!approved && live) {
         const auto preview=application_.projects.preview_close(id);
         if(!preview){show_error(preview.error);return;}
@@ -2765,7 +2912,10 @@ void NativeWindow::preview_settings(const Config& candidate) {
         // Exited sessions retain their immutable final frame; no shell restarts.
         std::array<Color,16> ansi;
         for (std::size_t i=0;i<16;++i) ansi[i]=color_hex(candidate.theme.ansi[i],{0,0,0,255});
-        for (const auto& [id,session]:sessions_) { (void)id; session->set_default_colors(foreground,background,ansi); }
+        for (const auto& [id, session] : actor_registry_.read()) {
+            (void)id;
+            session->set_default_colors(foreground, background, ansi);
+        }
         config_.theme=candidate.theme;
     }
     config_.font=candidate.font; config_.appearance=candidate.appearance; config_.ribbon=candidate.ribbon;
@@ -2902,8 +3052,9 @@ void NativeWindow::refresh_navigator() {
         auto append=[&](SessionId id,std::string_view user_title,std::string_view profile,bool parked) {
             if(navigator_background_only_&&!parked)return;
             if(navigator_activity_project_ && !parked && !current_watch(id))return;
-            const auto actor=sessions_.find(id);if(actor==sessions_.end())return;
-            const auto info=actor->second->info();
+            const auto* actor = actor_registry_.find(id);
+            if (!actor) return;
+            const auto info = actor->info();
             std::string profile_label(profile);for(const auto& p:config_.profiles)if(p.id==profile)profile_label=p.label;
             if(session_launcher_.managed_profile()&&session_launcher_.managed_profile()->id==profile)profile_label=session_launcher_.managed_profile()->label;
             auto title=background_session_title(user_title,info.title,profile_label);if(title.empty())title="Terminal";
@@ -2918,7 +3069,7 @@ void NativeWindow::refresh_navigator() {
             const bool managed=session_launcher_.managed_profile()&&session_launcher_.managed_profile()->id==profile;
             const auto directory=info.shell_context?info.shell_context->display_directory:managed?std::string{}:info.working_directory;
             if(navigator_activity_project_) {const auto attention=parked_attention_.find(id);activity_ranks[id]=activity_priority(current_watch(id),info.state,attention!=parked_attention_.end()&&attention->second.unread_completion());}
-            item.terminals.push_back({id,text(title),text(directory),state,parked,active_session()==actor->second.get(),watch_identity(id)});
+            item.terminals.push_back({id,text(title),text(directory),state,parked,active_session()==actor,watch_identity(id)});
         };
         for(const auto& tab:project.workspace.state().tabs)for(const auto pane_id:project.workspace.pane_order(tab.id))if(const auto* pane=project.workspace.pane(pane_id))append(pane->session,tab.title,pane->profile,false);
         for(const auto& parked:project.parked_sessions)append(parked.session,parked.user_title,parked.profile,true);
@@ -2960,7 +3111,7 @@ void NativeWindow::commit_navigator() {
     const auto target=navigator_.target();
     if(!target||!target->session)return;
     auto* project=projects_.workspace(target->project);
-    if(!project||!sessions_.contains(target->session)){if(navigator_activity_project_)show_error("The retained actor is no longer available.");refresh_navigator();changed();return;}
+    if(!project||!actor_registry_.contains(target->session)){if(navigator_activity_project_)show_error("The retained actor is no longer available.");refresh_navigator();changed();return;}
     PaneId pane{};for(const auto& [id,item]:project->state().panes)if(item.session==target->session){pane=id;break;}
     const auto* entry=projects_.find(target->project);
     const bool parked=std::any_of(entry->parked_sessions.begin(),entry->parked_sessions.end(),[&](const auto& item){return item.session==target->session;});
@@ -2988,7 +3139,7 @@ void NativeWindow::open_find() {
     if(navigator_open_)close_navigator();
     if(modal_||overlay_open())return;
     const auto* pane=workspace().pane(workspace().active_pane());
-    if(!pane||!sessions_.contains(pane->session))return;
+    if(!pane||!actor_registry_.contains(pane->session))return;
     for(const auto& place:layout_.panes)if(place.pane==pane->id && !terminal_find_fits(place.bounds,layout_.panes.size()>1)) {show_error("Enlarge this pane to use Find.");return;}
     if(find_session_ && find_session_!=pane->session)close_find();
     find_session_=pane->session; find_focus_=0; find_pressed_.reset();find_query_.select_all();
@@ -3000,16 +3151,16 @@ void NativeWindow::open_find() {
 void NativeWindow::close_find(bool geometry) {
     if(!find_session_)return;
     if(find_pressed_ && GetCapture()==hwnd_)ReleaseCapture();
-    if(auto actor=sessions_.find(find_session_);actor!=sessions_.end())(void)actor->second->cancel_search();
+    if (auto* actor = actor_registry_.find(find_session_)) (void)actor->cancel_search();
     find_session_={};find_request_=0;find_initial_selection_.cancel();find_result_.reset();find_pressed_.reset();find_error_.clear();
     preedit_.clear();composing_=false;text_input_.reset();
     if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
     changed(geometry);caret_schedule(true);
 }
 void NativeWindow::submit_find() {
-    if(!find_session_||!sessions_.contains(find_session_))return;
+    if(!find_session_||!actor_registry_.contains(find_session_))return;
     find_error_.clear();find_result_.reset();
-    auto actor=sessions_.at(find_session_);
+    auto actor=actor_registry_.retain(find_session_);
     (void)actor->clear_selection(); // A replaced/no-match query must not leave an old match highlighted.
     const auto request=find_query_.text().empty()?actor->cancel_search():actor->search({find_query_.text()});
     find_request_=request.request_id;find_initial_selection_.begin(find_query_.text().empty()?0:request.request_id);
@@ -3019,8 +3170,8 @@ void NativeWindow::submit_find() {
 void NativeWindow::refresh_find() {
     if(!find_session_)return;
     const auto* pane=workspace().pane(workspace().active_pane());
-    if(!pane||pane->session!=find_session_||!sessions_.contains(find_session_)){close_find();return;}
-    auto actor=sessions_.at(find_session_);auto result=actor->search_snapshot();
+    if(!pane||pane->session!=find_session_||!actor_registry_.contains(find_session_)){close_find();return;}
+    auto actor=actor_registry_.retain(find_session_);auto result=actor->search_snapshot();
     if(!result||!current_find_result(*result,find_request_,find_query_.text()))return;
     if(find_result_!=result){
         find_result_=std::move(result);++chrome_generation_;
@@ -3034,10 +3185,10 @@ void NativeWindow::refresh_find() {
 }
 void NativeWindow::navigate_find(bool previous) {
     find_initial_selection_.cancel(); // Explicit navigation owns selection from here.
-    if(!find_session_||!sessions_.contains(find_session_))return;
+    if(!find_session_||!actor_registry_.contains(find_session_))return;
     // Read a fresh owned snapshot at dispatch; the core still verifies all three
     // token generations after queued output/resize, so stale cells never apply.
-    auto actor=sessions_.at(find_session_);const auto result=actor->search_snapshot();
+    auto actor=actor_registry_.retain(find_session_);const auto result=actor->search_snapshot();
     if(result && current_find_result(*result,find_request_,find_query_.text()) && result->status==SearchStatus::complete && !result->matches.empty())
         (void)actor->navigate_search(result->token,previous?SearchDirection::backward:SearchDirection::forward,true);
 }
@@ -3093,8 +3244,8 @@ std::vector<NativeWindow::PaletteEntry> NativeWindow::palette_commands() const {
     for (const auto& parked:projects_.active()->parked_sessions) {
         const auto title=(palette_background_only_?"":"Restore · ")+background_title(parked,false);
         auto context=projects_.active()->metadata.name;
-        if (const auto actor=sessions_.find(parked.session); actor!=sessions_.end()) {
-            const auto info=actor->second->info();
+        if (const auto* actor = actor_registry_.find(parked.session)) {
+            const auto info = actor->info();
             const bool managed=session_launcher_.managed_profile() && parked.profile==session_launcher_.managed_profile()->id;
             // Match the footer: typed context is display data; a managed clear
             // must not resurrect the previous raw OSC 7 URI in search results.
@@ -3158,7 +3309,7 @@ CommandAvailability NativeWindow::palette_availability(const PaletteEntry& entry
     if (!entry.session) return host_availability(entry.id,command_context());
     const auto target=*entry.session;
     const auto* project=projects_.find(target.project);
-    if (!project || target.project!=projects_.active_id() || !sessions_.contains(target.local) ||
+    if (!project || target.project!=projects_.active_id() || !actor_registry_.contains(target.local) ||
         std::none_of(project->parked_sessions.begin(),project->parked_sessions.end(),[&](const auto& item){return item.session==target.local;}))
         return {false,"This background terminal is no longer available"};
     if (project->workspace.state().tabs.size()>=Workspace::maximum_tabs) return {false,"Tab limit reached"};
@@ -3217,9 +3368,9 @@ void NativeWindow::dispatch(std::string_view command) {
         palette_background_only_=true; query_.clear(); palette_index_=0; changed(); return;
     }
     if(command.starts_with("watch.")) {
-        const auto* item=workspace().pane(pane);if(!item||!sessions_.contains(item->session))return;
+        const auto* item=workspace().pane(pane);if(!item||!actor_registry_.contains(item->session))return;
         const auto id=item->session;
-        if(command=="watch.arm") {CommandWatch watch;if(!watches_.contains(id)&&watch.arm(watch_identity(id),sessions_.at(id)->info(),true))watches_.emplace(id,std::move(watch));else show_error("Available while shell integration reports a running command; dismiss any previous watch first.");}
+        if(command=="watch.arm") {CommandWatch watch;if(!watches_.contains(id)&&watch.arm(watch_identity(id),actor_registry_.find(id)->info(),true))watches_.emplace(id,std::move(watch));else show_error("Available while shell integration reports a running command; dismiss any previous watch first.");}
         else if(command=="watch.cancel") {const auto found=watches_.find(id);if(found!=watches_.end()&&found->second.status()==WatchStatus::watching)watches_.erase(found);}
         else if(command=="watch.dismiss")acknowledge_watch(id);
         refresh_tooltips();changed();return;
@@ -3955,8 +4106,8 @@ void NativeWindow::terminal_text(std::string text, Key key, std::uint16_t modifi
         palette_index_ = 0; changed(); return;
     }
     const auto* pane = workspace().pane(workspace().active_pane());
-    if (!pane || !sessions_.contains(pane->session)) return;
-    auto session = sessions_.at(pane->session);
+    if (!pane || !actor_registry_.contains(pane->session)) return;
+    auto session = actor_registry_.retain(pane->session);
     const auto bytes = text.size();
     if(options_.smoke_test)++smoke_terminal_input_submissions_;
     const bool animate=!composing_ && !reduced_motion_ && text.size()<=4 && static_cast<unsigned char>(text[0])>=0x20 && text[0]!=0x7f;
@@ -4173,11 +4324,11 @@ bool NativeWindow::key_message(MSG& message) {
         }
     }
     const auto* pane = workspace().pane(workspace().active_pane());
-    if (!pane || !sessions_.contains(pane->session)) return false;
+    if (!pane || !actor_registry_.contains(pane->session)) return false;
     const Key key = physical_key(vk,message.lParam);
     if (key == Key::unidentified) return false;
     if (up || nontext_key(vk)) {
-        auto session = sessions_.at(pane->session);
+        auto session = actor_registry_.retain(pane->session);
         KeyInput input;
         input.key = key; input.modifiers = modifiers;
         input.action = up ? KeyAction::release : (message.lParam & (1LL << 30) ? KeyAction::repeat : KeyAction::press);
@@ -4193,8 +4344,8 @@ bool NativeWindow::key_message(MSG& message) {
 }
 void NativeWindow::copy() {
     const auto* pane = workspace().pane(workspace().active_pane());
-    if (!pane || !sessions_.contains(pane->session)) return;
-    auto session = sessions_.at(pane->session);
+    if (!pane || !actor_registry_.contains(pane->session)) return;
+    auto session = actor_registry_.retain(pane->session);
     std::weak_ptr<WakeState> weak = wake_;
     submit([session,weak] { return session->copy_selection([weak](std::string text) {
         if (auto state=weak.lock(); state && state->window.load(std::memory_order_acquire)) {
@@ -4247,8 +4398,8 @@ void NativeWindow::paste() {
     if(agent_panel_.is_open()) {agent_panel_.text(text);agent_input_changed();return;}
     const bool unsafe=!TerminalCore::paste_is_safe(text);
     const auto* pane=workspace().pane(workspace().active_pane());
-    if (!pane || !sessions_.contains(pane->session)) return;
-    auto session=sessions_.at(pane->session); const auto size=text.size();
+    if (!pane || !actor_registry_.contains(pane->session)) return;
+    auto session=actor_registry_.retain(pane->session); const auto size=text.size();
     auto send=[this,session,text=std::move(text),unsafe,size] {
         if (session->process_finished()) { show_error("The paste destination has closed; nothing was sent."); return; }
         if(options_.smoke_test)++smoke_terminal_input_submissions_;
@@ -4265,8 +4416,8 @@ void NativeWindow::terminal_mouse(Point point, MouseAction action, MouseButton b
         if (mouse_capture_pane_ ? !captured : !placement.bounds.contains(point)) continue;
         const auto content=content_bounds(placement);
         const auto* pane=workspace().pane(placement.pane);
-        if (!pane || !sessions_.contains(pane->session)) return;
-        auto session=sessions_.at(pane->session);
+        if (!pane || !actor_registry_.contains(pane->session)) return;
+        auto session=actor_registry_.retain(pane->session);
         const auto frame=session->frame();
         if (!frame || !frame->mouse_reporting || (!content.contains(point) && !captured)) {
             if (action==MouseAction::release && captured) {
@@ -4499,7 +4650,7 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
             selection_column_=static_cast<std::uint16_t>(std::clamp((point.x-content.x)*scale_/metrics.width,0.0,frame && frame->columns?static_cast<double>(frame->columns-1):0.0));
             selection_row_=static_cast<std::uint16_t>(std::clamp((point.y-content.y)*scale_/metrics.height,0.0,frame && frame->rows?static_cast<double>(frame->rows-1):0.0));
             selection_pane_=pane; drag_=Drag::selection; drag_origin_=point; SetCapture(hwnd_);
-            const auto* model=workspace().pane(pane); if (model && sessions_.contains(model->session)) { auto owned=sessions_.at(model->session); submit([owned] { return owned->clear_selection(); }); }
+            const auto* model=workspace().pane(pane); if (model && actor_registry_.contains(model->session)) { auto owned=actor_registry_.retain(model->session); submit([owned] { return owned->clear_selection(); }); }
             return;
         }
     }
@@ -4548,8 +4699,8 @@ void NativeWindow::pointer_move(Point point) {
     }
     if (drag_==Drag::selection && drag_started_) {
         for (const auto& pane:layout_.panes) if (pane.pane==selection_pane_) {
-            const auto* model=workspace().pane(pane.pane); if (!model || !sessions_.contains(model->session)) break;
-            auto session=sessions_.at(model->session); auto frame=session->frame(); if (!frame || !frame->columns || !frame->rows) break;
+            const auto* model=workspace().pane(pane.pane); if (!model || !actor_registry_.contains(model->session)) break;
+            auto session=actor_registry_.retain(model->session); auto frame=session->frame(); if (!frame || !frame->columns || !frame->rows) break;
             const auto content=content_bounds(pane); const auto metrics=renderer_->metrics();
             const auto column=static_cast<std::uint16_t>(std::clamp((point.x-content.x)*scale_/metrics.width,0.0,static_cast<double>(frame->columns-1)));
             const auto row=static_cast<std::uint16_t>(std::clamp((point.y-content.y)*scale_/metrics.height,0.0,static_cast<double>(frame->rows-1)));
@@ -4661,7 +4812,7 @@ bool NativeWindow::smoke_typing_progress() {
         // controlled prompt; never type into a half-built startup frame.
         if (!smoke_typing_handshake_sent_) {
             const auto* pane=workspace().pane(workspace().active_pane());
-            auto actor=sessions_.at(pane->session);
+            auto actor=actor_registry_.retain(pane->session);
             // Controlled prompt belongs only to this disposable smoke child.
             // Other modes still exercise the configured managed prompt/hooks.
             const std::string command=using_managed_shell()?
@@ -4838,7 +4989,8 @@ bool NativeWindow::smoke_activity_evidence() {
     const auto saved_clock=smoke_chrome_time_;const auto saved_contrast=high_contrast_;
     const auto saved_ribbon=config_.ribbon;const auto saved_project=projects_.active_id();
     const auto saved_model=workspace();const auto saved_parked=projects_.active()->parked_sessions;
-    auto saved_tokens=watch_actors_;auto saved_attention=parked_attention_;
+    const auto saved_actors = actor_registry_.snapshot();
+    auto saved_attention=parked_attention_;
     auto saved_labels=background_labels_;const auto saved_history=previous_terminal_;
     const auto saved_watch_pane=smoke_watch_pane_;auto saved_notice=notice_;
     RECT saved_bounds{};
@@ -4847,7 +4999,7 @@ bool NativeWindow::smoke_activity_evidence() {
         // Each independent cleanup is best effort on failure, preserving the
         // original diagnostic. Success is checked explicitly below instead.
         smoke_chrome_time_=saved_clock;high_contrast_=saved_contrast;config_.ribbon=saved_ribbon;
-        watch_actors_.swap(saved_tokens);smoke_watch_pane_=saved_watch_pane;notice_.swap(saved_notice);
+        smoke_watch_pane_=saved_watch_pane;notice_.swap(saved_notice);
         try {cancel_drag();}catch(...){}
         navigator_open_=navigator_switch_pressed_=palette_open_=rename_open_=false;
         navigator_activity_project_.reset();navigator_=WorkspaceNavigator{};navigator_query_=TerminalFindQuery{};
@@ -4882,7 +5034,7 @@ bool NativeWindow::smoke_activity_evidence() {
     const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_=saved_clock;};
     const auto* watch=current_watch(smoke_watch_session_);if(!watch)return fail("Activity fixture lost its Watch.");
     const bool unread=watch->unread();const auto original=workspace().active_pane();
-    const auto before=sizes_;const auto actor=sessions_.at(smoke_watch_session_);const auto count=sessions_.size();
+    const auto before=sizes_;const auto actor=actor_registry_.retain(smoke_watch_session_);const auto count=actor_registry_.size();
     const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
     const auto summary=activity_summary();
     if(summary.terminals!=1 || summary.unread()!=std::size_t(unread) || footer_layout().background.overflow.width<=0)return fail("Activity omitted an unparked Watch or doubled a parked Watch.");
@@ -4919,7 +5071,22 @@ bool NativeWindow::smoke_activity_evidence() {
     if(!navigator_open_ || navigator_activity_project_!=smoke_watch_project_ || navigator_.entries().size()!=1 || !select_watch() || navigator_.target()->identity!=smoke_watch_identity_)return fail("Activity escaped its frozen workspace or lost actor identity.");
     capture(unread?L"activity-picker-"+std::to_wstring(smoke_watch_cycle_):L"activity-picker-running");
     if(unread && smoke_watch_cycle_==0) {
-        const auto token=watch_actors_.at(smoke_watch_session_);++watch_actors_.at(smoke_watch_session_);refresh_navigator();commit_navigator();watch_actors_.at(smoke_watch_session_)=token;refresh_navigator();
+        // Refresh a stale owned presentation, never mutate the live registry.
+        // The changed identity must latch stale selection before commit.
+        auto stale_entries = navigator_.entries();
+        for (auto& project : stale_entries) {
+            for (auto& terminal : project.terminals) {
+                if (terminal.session == smoke_watch_session_) {
+                    ++terminal.identity.actor;
+                }
+            }
+        }
+        navigator_.refresh(std::move(stale_entries), smoke_watch_project_, smoke_watch_session_);
+        if (!navigator_.selection_stale()) {
+            return fail("Activity refresh did not latch its stale actor identity.");
+        }
+        commit_navigator();
+        refresh_navigator();
         if(!navigator_open_ || !watch_unread(smoke_watch_session_) || !select_watch())return fail("Stale Activity actor action navigated or acknowledged a result.");
         projects_.activate(smoke_watch_other_);commit_navigator();projects_.activate(smoke_watch_project_);refresh_navigator();
         if(!navigator_open_ || !watch_unread(smoke_watch_session_) || !select_watch())return fail("Activity silently switched its frozen workspace.");
@@ -4935,7 +5102,7 @@ bool NativeWindow::smoke_activity_evidence() {
         const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);
         const Point button{nav.footer.x+nav.footer.width-60,nav.footer.y+25};pointer_down(button,false);pointer_up(button);
     } else key(VK_RETURN);
-    if(navigator_open_ || active_session()!=actor.get() || sessions_.size()!=count || watch_unread(smoke_watch_session_)!=unread)return fail("Activity return replaced its actor or acknowledged its Watch.");
+    if(navigator_open_ || active_session()!=actor.get() || actor_registry_.size()!=count || watch_unread(smoke_watch_session_)!=unread)return fail("Activity return replaced its actor or acknowledged its Watch.");
     smoke_watch_pane_=workspace().active_pane();
     if(parked)park_pane(smoke_watch_pane_);
     if(quiet)restore_parked({smoke_watch_project_,quiet});
@@ -4944,7 +5111,7 @@ bool NativeWindow::smoke_activity_evidence() {
     RECT restored_bounds{};
     if(!GetWindowRect(hwnd_,&restored_bounds) || restored_bounds.right-restored_bounds.left!=saved_bounds.right-saved_bounds.left ||
        restored_bounds.bottom-restored_bounds.top!=saved_bounds.bottom-saved_bounds.top || high_contrast_!=saved_contrast ||
-       smoke_chrome_time_!=saved_clock || config_.ribbon!=saved_ribbon || watch_actors_!=saved_tokens ||
+       smoke_chrome_time_!=saved_clock || config_.ribbon!=saved_ribbon || actor_registry_.snapshot()!=saved_actors ||
        projects_.active_id()!=saved_project || navigator_open_ || palette_open_ || GetCapture()==hwnd_)
         return fail("Activity fixture did not restore temporary policy, actor token, scope, bounds or input capture.");
     restore.restored=true;
@@ -4962,20 +5129,22 @@ bool NativeWindow::smoke_watch_progress() {
         smoke_watch_session_=workspace().pane(smoke_watch_pane_)->session;smoke_watch_identity_=watch_identity(smoke_watch_session_);
         smoke_watch_tab_title_=workspace().tab(workspace().active_tab())->title;
         if(!workspace().rename_tab(workspace().active_tab(),"Long watched build title · 日本語 · deliberately beyond the visible tab width"))return fail("Watch long-title fixture rejected.");
-        smoke_watch_actor_count_=sessions_.size();smoke_watch_input_=smoke_terminal_input_submissions_;smoke_watch_mouse_=smoke_terminal_mouse_submissions_;
+        smoke_watch_actor_count_=actor_registry_.size();smoke_watch_input_=smoke_terminal_input_submissions_;smoke_watch_mouse_=smoke_terminal_mouse_submissions_;
         const auto other=projects_.create({"Watch review",projects_.active()->metadata.working_directory,"Local"});
         if(!other)return fail("Watch fixture could not create its empty owned workspace.");smoke_watch_other_=*other.value;
         std::wstring module(32768,L'\0');const auto length=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
         if(!length||length>=module.size())return fail("Watch fixture child path unavailable.");module.resize(length);
         const auto child=std::filesystem::path(module).parent_path()/L"terminal_search_tests.exe";
         const auto command="\""+narrow(child.generic_wstring())+"\" --native-watch-child";
-        auto actor=sessions_.at(smoke_watch_session_);
+        auto actor=actor_registry_.retain(smoke_watch_session_);
         if(!std::filesystem::is_regular_file(child)||!TerminalCore::paste_is_safe(command)||actor->paste(command)!=SessionSendResult::accepted)return fail("Watch native child launch input rejected.");
         KeyInput enter;enter.key=Key::enter;if(actor->key(enter)!=SessionSendResult::accepted)return fail("Watch native child Enter rejected.");
         smoke_watch_stage_=1;return false;
     }
-    const auto found=sessions_.find(smoke_watch_session_);if(found==sessions_.end()||watch_identity(smoke_watch_session_)!=smoke_watch_identity_)return fail("Watch fixture lost its original actor incarnation.");
-    const auto actor=found->second;
+    if (!actor_registry_.contains(smoke_watch_session_) || watch_identity(smoke_watch_session_) != smoke_watch_identity_) {
+        return fail("Watch fixture lost its original actor incarnation.");
+    }
+    const auto actor = actor_registry_.retain(smoke_watch_session_);
     const auto has_marker=[&](std::string_view marker){const auto frame=actor->frame();if(!frame)return false;for(const auto& row:frame->lines){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;while(!text.empty()&&text.back()==' ')text.pop_back();if(text==marker)return true;}return false;};
     if(smoke_watch_stage_==1) {
         const auto info=actor->info();
@@ -5014,7 +5183,7 @@ bool NativeWindow::smoke_watch_progress() {
             if(smoke_watch_cycle_==4 && !((watch.status()==WatchStatus::completed&&watch.exit_code()==0)||watch.status()==WatchStatus::completion_unconfirmed))return fail("Watch borrowed a later command result.");
             if(smoke_watch_cycle_==5 && (watch.status()==WatchStatus::completed||watch.exit_code()))return fail("Watch claimed command success after reset.");
             if((smoke_watch_cycle_==1 && projects_.active_id()!=smoke_watch_other_) || (smoke_watch_cycle_!=1 && workspace().active_pane()!=smoke_watch_original_))return fail("Watch completion navigated or moved focus automatically.");
-            if(sessions_.size()!=smoke_watch_actor_count_||actor->process_finished())return fail("Watch completion replaced or stopped its live shell actor.");
+            if(actor_registry_.size()!=smoke_watch_actor_count_||actor->process_finished())return fail("Watch completion replaced or stopped its live shell actor.");
             capture(L"watch-result-"+std::to_wstring(smoke_watch_cycle_));
             if(smoke_watch_cycle_==0) {
                 activate(smoke_watch_pane_);
@@ -5055,7 +5224,7 @@ bool NativeWindow::smoke_watch_progress() {
             capture(L"watch-open-commands");
             if(smoke_watch_cycle_==1){const auto layout=palette_layout(entries);if(layout.row_bounds.empty())return fail("Watch pointer row unavailable.");const auto row=layout.row_bounds.front();pointer_down({row.x+20,row.y+row.height/2},false);}
             else key(VK_RETURN);
-            if(active_session()!=actor.get()||watches_.contains(smoke_watch_session_)||sessions_.size()!=smoke_watch_actor_count_)return fail("Open result did not acknowledge exactly the existing actor.");
+            if(active_session()!=actor.get()||watches_.contains(smoke_watch_session_)||actor_registry_.size()!=smoke_watch_actor_count_)return fail("Open result did not acknowledge exactly the existing actor.");
             smoke_watch_pane_=workspace().active_pane();
         }
         if(smoke_terminal_input_submissions_!=smoke_watch_input_||smoke_terminal_mouse_submissions_!=smoke_watch_mouse_)return fail("Watch UI submitted terminal input.");
@@ -5066,7 +5235,7 @@ bool NativeWindow::smoke_watch_progress() {
     if(projects_.active_id()!=smoke_watch_project_){projects_.activate(smoke_watch_project_);reset_project_view();}
     if(const auto tab=workspace().tab_of(smoke_watch_pane_))workspace().rename_tab(*tab,smoke_watch_tab_title_);
     activate(smoke_watch_original_);const auto removed=projects_.remove(smoke_watch_other_);if(!removed)return fail("Watch empty fixture workspace could not be removed.");
-    if(layout_.panes.size()!=3||sessions_.size()!=smoke_watch_actor_count_||!watches_.empty())return fail("Watch fixture changed original layout ownership or left an unread result.");
+    if(layout_.panes.size()!=3||actor_registry_.size()!=smoke_watch_actor_count_||!watches_.empty())return fail("Watch fixture changed original layout ownership or left an unread result.");
     smoke_watch_stage_=4;changed(true);
     std::fputs("Native workspace activity: active workspace union, explicit running/zero/nonzero/unknown results, no fabricated finished state, frozen scope and stale incarnation rejection, same-actor keyboard/pointer return and restore, preview/Escape preserve unread, mixed background dedup, unchanged state-transition grids, zero frontend UI input.\n",stderr);
     std::fputs("Native command watch: explicit arm, hidden-tab/workspace completion, zero/nonzero/unknown status, coalesced generations/reset without borrowed success, cancel without stopping, same-actor keyboard/pointer Open, ordinary visibility/restore retains unread, park/restore/repark dedup, canceled close and stale identity rejection; zero frontend UI input. Native fixture OSC observations, not external-process or physical performance proof.\n",stderr);
@@ -5082,7 +5251,7 @@ bool NativeWindow::smoke_context_progress() {
         if(!std::filesystem::is_regular_file(child))return fail("Context fixture child is missing.");
         unsigned index=0;
         for(const auto& placement:layout_.panes) {
-            auto actor=sessions_.at(placement.session);smoke_context_actors_.push_back({placement.pane,actor});
+            auto actor=actor_registry_.retain(placement.session);smoke_context_actors_.push_back({placement.pane,actor});
             const auto command="\""+narrow(child.generic_wstring())+"\" --native-context-child "+std::to_string(index++);
             if(!TerminalCore::paste_is_safe(command)||actor->paste(command)!=SessionSendResult::accepted)return fail("Context fixture safe input was not accepted.");
             KeyInput enter;enter.key=Key::enter;if(actor->key(enter)!=SessionSendResult::accepted)return fail("Context fixture Enter was not accepted.");
@@ -5110,7 +5279,7 @@ bool NativeWindow::smoke_context_progress() {
             // never the echoed command or an arbitrary settling delay.
             if(!ready)return false;
         }
-        const auto original=workspace().active_pane();const auto count=sessions_.size();
+        const auto original=workspace().active_pane();const auto count=actor_registry_.size();
         const auto baseline=smoke_terminal_input_submissions_;const auto mouse_baseline=smoke_terminal_mouse_submissions_;
         const auto key=[&](WPARAM vk){MSG m{};m.hwnd=hwnd_;m.message=WM_KEYDOWN;m.wParam=vk;key_message(m);m.message=WM_KEYUP;key_message(m);};
         const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_.reset();};
@@ -5127,14 +5296,14 @@ bool NativeWindow::smoke_context_progress() {
             std::fprintf(stderr,"Native context isolation: pane=%llu bytes_before=%llu bytes_after=%llu frontend_delta=%llu mouse_delta=%llu actor_same=%u actors_before=%zu actors_after=%zu placements_before=%zu placements_after=%zu queued_input=%zu\n",
                 static_cast<unsigned long long>(pane.value),static_cast<unsigned long long>(before),static_cast<unsigned long long>(after_info.bytes_sent),
                 static_cast<unsigned long long>(smoke_terminal_input_submissions_-baseline),static_cast<unsigned long long>(smoke_terminal_mouse_submissions_-mouse_baseline),
-                unsigned(active_session()==actor.get()),count,sessions_.size(),geometry.size(),layout_.panes.size(),actor->diagnostics().queued_input_bytes);
+                unsigned(active_session()==actor.get()),count,actor_registry_.size(),geometry.size(),layout_.panes.size(),actor->diagnostics().queued_input_bytes);
             const auto frontend=after_info.sent.frontend()-before_info.sent.frontend();
             const auto focus=after_info.sent.focus_bytes-before_info.sent.focus_bytes;
             const auto protocol=after_info.sent.protocol_bytes-before_info.sent.protocol_bytes;
             std::fprintf(stderr,"Native context write origins: frontend=%llu focus=%llu protocol=%llu total_before=%llu total_after=%llu\n",static_cast<unsigned long long>(frontend),static_cast<unsigned long long>(focus),static_cast<unsigned long long>(protocol),static_cast<unsigned long long>(before_info.sent.total()),static_cast<unsigned long long>(after_info.sent.total()));
             if(before_info.sent.total()!=before || after_info.sent.total()!=after_info.bytes_sent || after_info.bytes_sent-before!=frontend+focus+protocol)return fail("Context inspection has unattributed transport bytes.");
             if(frontend || smoke_terminal_input_submissions_!=baseline || smoke_terminal_mouse_submissions_!=mouse_baseline)return fail("Read-only context inspection submitted frontend input.");
-            if(layout_.panes.size()!=geometry.size()||active_session()!=actor.get()||sessions_.size()!=count)return fail("Read-only context inspection changed pane or actor identity.");
+            if(layout_.panes.size()!=geometry.size()||active_session()!=actor.get()||actor_registry_.size()!=count)return fail("Read-only context inspection changed pane or actor identity.");
             const auto after=actor->frame();if(!frame||!after||frame->columns!=after->columns||frame->rows!=after->rows)return fail("Context inspection changed the terminal grid.");
             capture(L"context-inspect");key(VK_ESCAPE);
         }
@@ -5160,7 +5329,7 @@ bool NativeWindow::smoke_context_progress() {
 bool NativeWindow::smoke_palette_input_progress() {
     if(smoke_palette_input_stage_==2)return true;
     auto* actor=active_session();if(!actor){smoke_finish("Palette ownership smoke lost its actor.");return false;}
-    auto owned=sessions_.at(workspace().pane(workspace().active_pane())->session);
+    auto owned=actor_registry_.retain(workspace().pane(workspace().active_pane())->session);
     auto mode=[&](bool enable){
         if(!enable) {
             if(owned->text("q")!=SessionSendResult::accepted){smoke_finish("Palette fixture stop sentinel was not accepted.");return false;}
@@ -5207,8 +5376,22 @@ bool NativeWindow::smoke_palette_input_progress() {
 }
 
 bool NativeWindow::smoke_navigator_evidence() {
-    if(smoke_navigator_done_)return true;
-    const auto original_project=projects_.active_id();auto* original_actor=active_session();const auto actors=sessions_.size();
+    if (smoke_navigator_done_) return true;
+    if (!smoke_navigator_disposable_) {
+        smoke_navigator_disposable_ = new_session(session_profile_id());
+        return false;
+    }
+    // Provider verification applies to every created smoke actor, even retired
+    // ones. Let this real launch produce output before testing its disposal;
+    // never block the UI thread or exempt it from the final provider checks.
+    const auto* disposable_actor = actor_registry_.find(smoke_navigator_disposable_);
+    if (!disposable_actor) {
+        smoke_finish("Navigator disposable actor vanished before qualification.");
+        return false;
+    }
+    if (!disposable_actor->info().bytes_received) return false;
+    const auto original_pane = workspace().active_pane();
+    const auto original_project=projects_.active_id();auto* original_actor=active_session();const auto actors=actor_registry_.size();
     const auto baseline=smoke_terminal_input_submissions_;
     const auto fail=[&](std::string_view error){smoke_finish(error);return false;};
     const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_.reset();};
@@ -5230,15 +5413,37 @@ bool NativeWindow::smoke_navigator_evidence() {
     for(std::size_t i=0;i<navigator_.workspaces().size();++i)if(navigator_.entries()[navigator_.workspaces()[i]].project==smoke_secondary_project_)navigator_.select_workspace(i);
     const auto target=navigator_.target();if(!target||!target->session)return fail("Navigator cross-workspace target unavailable.");
     navigator_focus_=2;key(VK_RETURN);
-    if(navigator_open_||projects_.active_id()!=target->project||active_session()!=sessions_.at(target->session).get()||sessions_.size()!=actors)return fail("Navigator commit did not preserve the target actor.");
+    if(navigator_open_||projects_.active_id()!=target->project||active_session()!=actor_registry_.retain(target->session).get()||actor_registry_.size()!=actors)return fail("Navigator commit did not preserve the target actor.");
     activate_project(original_project);
-    open_navigator();const auto stale=navigator_.target();if(!stale||!stale->session)return fail("Navigator stale-target fixture unavailable.");
-    // Remove the exact actor association after taking the view, while retaining
-    // ownership locally so the fixture never kills or replaces the process.
-    auto retained=sessions_.at(stale->session);sessions_.erase(stale->session);commit_navigator();
-    const bool rejected=navigator_open_&&projects_.active_id()==original_project;
-    sessions_.emplace(stale->session,retained);
-    if(!rejected||active_session()!=original_actor||sessions_.size()!=actors)return fail("Navigator accepted a removed session identity.");
+    // A disposable extra actor exercises real removal after snapshot capture.
+    // Never unregister and reinsert a survivor just to manufacture stale state.
+    const auto disposable = smoke_navigator_disposable_;
+    auto survivors = actor_registry_.snapshot();
+    std::erase_if(survivors, [disposable](const auto& entry) {
+        return entry.id == disposable;
+    });
+    const auto disposable_tab = workspace().create_tab(disposable, session_profile_id());
+    if (!disposable_tab) {
+        application_.actors.dispose(disposable);
+        return fail("Navigator disposable actor placement failed.");
+    }
+    workspace().activate_tab(*disposable_tab.value);
+    open_navigator();
+    const auto stale = navigator_.target();
+    if (!stale || stale->session != disposable) {
+        workspace().close_tab(*disposable_tab.value);
+        application_.actors.dispose(disposable);
+        return fail("Navigator disposable stale-target snapshot unavailable.");
+    }
+    application_.actors.dispose(disposable);
+    commit_navigator();
+    const bool rejected = navigator_open_ && projects_.active_id() == original_project;
+    workspace().close_tab(*disposable_tab.value);
+    workspace().focus(original_pane);
+    if (!rejected || active_session() != original_actor ||
+        actor_registry_.snapshot() != survivors || actor_registry_.size() + 1 != actors) {
+        return fail("Navigator accepted a disposed identity or changed a survivor actor.");
+    }
     close_navigator();smoke_navigator_done_=true;
     std::fputs("Native navigator smoke: metadata-only filtering, preview without switching, narrow two-stage lists, empty result, Escape focus, zero frontend input, stable cross-workspace actor commit and stale identity rejection verified.\n",stderr);return true;
 }
@@ -5256,9 +5461,9 @@ bool NativeWindow::smoke_previous_terminal_evidence() {
     const auto other_project=original_project==smoke_secondary_project_?smoke_primary_project_:smoke_secondary_project_;
     auto* other=projects_.workspace(other_project);
     const auto other_pane=other->active_pane();const auto b=other->pane(other_pane)->session;
-    const auto actor_a=sessions_.at(a),actor_b=sessions_.at(b);
+    const auto actor_a=actor_registry_.retain(a),actor_b=actor_registry_.retain(b);
     const auto identity_a=watch_identity(a),identity_b=watch_identity(b);
-    const auto actors=sessions_.size(),keys=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
+    const auto actors=actor_registry_.size(),keys=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
     const auto before_a=actor_a->info(),before_b=actor_b->info();
     const auto fail=[&](std::string_view error){smoke_finish(error);return false;};
     const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_.reset();};
@@ -5296,11 +5501,34 @@ bool NativeWindow::smoke_previous_terminal_evidence() {
     if(previous_terminal_target().state!=PreviousTerminalState::missing)return fail("Return failed to reject closed placement.");
     return_to_previous_terminal();if(active_session()!=actor_b.get())return fail("Return fell back from a closed target.");
     *original=original_model;
-    sessions_.erase(a);const auto dormant=previous_terminal_target().state;sessions_.emplace(a,actor_a);
-    if(dormant!=PreviousTerminalState::dormant)return fail("Return accepted a dormant target without retained actor.");
-    const auto token=watch_actors_.at(a);watch_actors_.at(a)=token+1;
-    const auto stale=previous_terminal_target().state;return_to_previous_terminal();watch_actors_.at(a)=token;
-    if(stale!=PreviousTerminalState::stale||active_session()!=actor_b.get())return fail("Return accepted a recycled actor incarnation.");
+    // A restored/dormant placement has an allocated ID but no registered actor.
+    // Exercise that real state without detaching the surviving actor A.
+    const auto dormant_id = application_.actors.registry.allocate();
+    original->bind_session(original_pane, dormant_id);
+    auto dormant_identity = identity_a;
+    dormant_identity.session = dormant_id.value;
+    previous_terminal_ = PreviousTerminal{};
+    previous_terminal_.commit(dormant_identity);
+    previous_terminal_.commit(identity_b);
+    const auto dormant = previous_terminal_target().state;
+    *original = original_model;
+    if (dormant != PreviousTerminalState::dormant) {
+        return fail("Return accepted a dormant target without retained actor.");
+    }
+
+    auto stale_identity = identity_a;
+    ++stale_identity.actor;
+    previous_terminal_ = PreviousTerminal{};
+    previous_terminal_.commit(stale_identity);
+    previous_terminal_.commit(identity_b);
+    const auto stale = previous_terminal_target().state;
+    return_to_previous_terminal();
+    previous_terminal_ = PreviousTerminal{};
+    previous_terminal_.commit(identity_a);
+    previous_terminal_.commit(identity_b);
+    if (stale != PreviousTerminalState::stale || active_session() != actor_b.get()) {
+        return fail("Return accepted a recycled actor incarnation.");
+    }
     notice_.clear();
     // Move B into A's split with no spawn, then into a new tab. Identity, not
     // local pane/tab position or renamed metadata, must define the destination.
@@ -5318,7 +5546,7 @@ bool NativeWindow::smoke_previous_terminal_evidence() {
     if(active_session()!=actor_b.get()||workspace().active_tab()!=*tab.value)return fail("Return failed across moved tab identity.");
     *original=original_model;*other=other_model;
     projects_.activate(original_project);previous_terminal_=saved_history;reset_project_view();
-    if(sessions_.size()!=actors||sessions_.at(a)!=actor_a||sessions_.at(b)!=actor_b||watch_identity(a)!=identity_a||watch_identity(b)!=identity_b||
+    if(actor_registry_.size()!=actors||actor_registry_.retain(a)!=actor_a||actor_registry_.retain(b)!=actor_b||watch_identity(a)!=identity_a||watch_identity(b)!=identity_b||
        smoke_terminal_input_submissions_!=keys||smoke_terminal_mouse_submissions_!=mouse||focused_session_!=a)
         return fail("Return changed actor ownership, leaked frontend input, or failed immediate focus.");
     const auto after_a=actor_a->info(),after_b=actor_b->info();
@@ -5350,16 +5578,16 @@ bool NativeWindow::smoke_find_progress() {
         ProcessOptions process;process.executable=narrow(child.generic_wstring());process.arguments={"--native-find-child"};
         select_windows_console_provider(process,config_.windows_console_backend,options_.console_runtime_directory);
         const bool bundled=process.provider==ProcessProvider::windows_packaged_experimental;
-        smoke_find_fixture_session_=application_.actors.allocate();
-        auto owned=Session::start(std::move(process),TerminalOptions{},application_.actors.callback(smoke_find_fixture_session_,wake_),SessionRetentionPolicy::retain_document);
+        smoke_find_fixture_session_=application_.actors.registry.allocate();
+        auto owned=Session::start(std::move(process),TerminalOptions{},application_.actors.registry.callback(smoke_find_fixture_session_,wake_),SessionRetentionPolicy::retain_document);
         // Register ownership before exposing the tab: normal smoke failure and
         // exception teardown close every registered actor, including this one.
-        smoke_sessions_.emplace(smoke_find_fixture_session_,owned);
+        smoke_sessions_.emplace(smoke_find_fixture_session_, owned);
         if(bundled)smoke_bundled_sessions_.insert(smoke_find_fixture_session_);
-        sessions_.emplace(smoke_find_fixture_session_,owned);
+        application_.actors.registry.register_actor(smoke_find_fixture_session_, owned);
         smoke_find_original_tab_=workspace().active_tab();
         smoke_find_original_session_=workspace().pane(workspace().active_pane())->session;
-        smoke_find_original_actor_count_=sessions_.size()-1;
+        smoke_find_original_actor_count_=actor_registry_.size()-1;
         const auto tab=workspace().create_tab(smoke_find_fixture_session_,"default");
         if(!tab){retire_unused_sessions();smoke_finish("Find fixture tab unavailable.");return false;}
         smoke_find_fixture_tab_=*tab.value;workspace_model_changed();changed(true);
@@ -5415,13 +5643,13 @@ bool NativeWindow::smoke_find_progress() {
         const auto target=find_session_;activate_project(smoke_secondary_project_);
         if(find_session_||active_session()==actor){smoke_finish("Find crossed workspace/session ownership.");return false;}
         activate_project(smoke_primary_project_);
-        if(active_session()!=actor||!sessions_.contains(target)){smoke_finish("Find changed the terminal actor.");return false;}
+        if(active_session()!=actor||!actor_registry_.contains(target)){smoke_finish("Find changed the terminal actor.");return false;}
         if(!workspace().close_tab(smoke_find_fixture_tab_)||!workspace().activate_tab(smoke_find_original_tab_)){
             smoke_finish("Find fixture could not restore its original tab.");return false;
         }
         workspace_model_changed();retire_unused_sessions();changed(true);
-        if(sessions_.contains(smoke_find_fixture_session_)||sessions_.size()!=smoke_find_original_actor_count_||
-           !active_session()||active_session()!=sessions_.at(smoke_find_original_session_).get()||active_session()->process_finished()){
+        if(actor_registry_.contains(smoke_find_fixture_session_)||actor_registry_.size()!=smoke_find_original_actor_count_||
+           !active_session()||active_session()!=actor_registry_.retain(smoke_find_original_session_).get()||active_session()->process_finished()){
             smoke_finish("Find fixture did not restore its original live terminal.");return false;
         }
         smoke_find_stage_=7;std::fputs("Native Find smoke: drained exited-child retained document, asynchronous match selection/navigation, narrow strip, no-match replacement, rapid query coalescing, Escape focus, zero frontend query/key/paste submissions and workspace isolation verified.\n",stderr);return true;
@@ -5501,8 +5729,8 @@ void NativeWindow::smoke_palette_scroll_evidence() {
     } catch(...) {restore();throw;}
 }
 bool NativeWindow::smoke_palette_evidence(SessionId parked) {
-    const auto actor=sessions_.at(parked);
-    const auto actor_count=sessions_.size();
+    const auto actor=actor_registry_.retain(parked);
+    const auto actor_count=actor_registry_.size();
     const auto parked_context=actor->info().shell_context;
     const auto fail=[&](std::string_view message){smoke_finish(message); return false;};
     smoke_chrome_time_=GetTickCount64()+1000;
@@ -5542,12 +5770,12 @@ bool NativeWindow::smoke_palette_evidence(SessionId parked) {
     MSG key{}; key.hwnd=hwnd_; key.message=WM_KEYDOWN; key.wParam=VK_RETURN;
     if (!key_message(key)) return fail("Background picker did not consume Enter.");
     key.message=WM_KEYUP; key_message(key);
-    if (palette_open_ || active_session()!=actor.get() || sessions_.size()!=actor_count ||
+    if (palette_open_ || active_session()!=actor.get() || actor_registry_.size()!=actor_count ||
         !projects_.active()->parked_sessions.empty() || palette_availability(stale).enabled)
         return fail("Keyboard background restore restarted/replaced an actor or left a stale entry enabled.");
     // Repeated stale activation is rejected before touching placement or ownership.
     activate_palette_entry(stale); notice_.clear();
-    if (active_session()!=actor.get() || sessions_.size()!=actor_count) return fail("Stale palette activation changed session ownership.");
+    if (active_session()!=actor.get() || actor_registry_.size()!=actor_count) return fail("Stale palette activation changed session ownership.");
     if (parked_context && actor->info().shell_context!=parked_context) return fail("Restoring a background actor changed its owned shell context.");
     const auto footer=footer_layout();
     if (footer.directory.width<=0 || footer_presentation().directory.empty()) return fail("Restored terminal has no active footer context.");
@@ -5590,7 +5818,7 @@ void NativeWindow::smoke_pane_focus_scene(const WindowScene& actual) const {
 void NativeWindow::smoke_workspace_frame_evidence() {
     if(!options_.smoke_test || !options_.smoke_layout || layout_.panes.size()!=3 || focus_mode_ || fullscreen_ || smoke_workspace_frame_running_)
         throw std::runtime_error("Workspace frame evidence requires the owned three-pane fixture.");
-    const auto actors=sessions_;const auto original_config=config_;
+    const auto actors=actor_registry_.snapshot();const auto original_config=config_;
     const auto project=projects_.active_id();const auto tab=workspace().active_tab();const auto pane=workspace().active_pane();
     const auto original_sizes=sizes_;const auto expanded=navigation_expanded_;const auto contrast=high_contrast_;
     const auto first=navigation_first_;const auto zoom=workspace().tab(tab)->zoomed_pane;
@@ -5630,7 +5858,7 @@ void NativeWindow::smoke_workspace_frame_evidence() {
     };
     const auto key=[&](WPARAM vk){MSG m{};m.hwnd=hwnd_;m.message=WM_KEYDOWN;m.wParam=vk;key_message(m);m.message=WM_KEYUP;key_message(m);};
     const auto invariant=[&] {
-        if(sessions_!=actors || projects_.active_id()!=project || workspace().active_tab()!=tab || workspace().active_pane()!=pane ||
+        if(actor_registry_.snapshot()!=actors || projects_.active_id()!=project || workspace().active_tab()!=tab || workspace().active_pane()!=pane ||
            smoke_terminal_input_submissions_!=input || smoke_terminal_mouse_submissions_!=mouse ||
            navigation_.context.height!=0 || navigation_.viewport.y!=chrome_.tabs_band.y+chrome_.tabs_band.height ||
            navigation_.footer.x!=navigation_.viewport.x || chrome_.new_tab.x+chrome_.new_tab.width>navigation_.focus.x ||
@@ -5707,7 +5935,7 @@ void NativeWindow::smoke_focus_evidence(bool project) {
     } restore{*this,original_pane,!project,false,smoke_chrome_time_,old_clock,smoke_pane_reduced_motion_,old_policy,smoke_focus_running_};
     smoke_focus_running_=true;
     smoke_pane_reduced_motion_=project?std::nullopt:std::optional<bool>{false}; // Pane wash only, never global/caret/OS policy.
-    const auto actors=sessions_;const auto sizes=sizes_;const auto original_layout=layout_;
+    const auto actors=actor_registry_.snapshot();const auto sizes=sizes_;const auto original_layout=layout_;
     const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
     const auto original_config=config_;const bool original_reduced=reduced_motion_,original_contrast=high_contrast_;
     smoke_chrome_time_=GetTickCount64()+1000; motion_schedule();
@@ -5730,7 +5958,7 @@ void NativeWindow::smoke_focus_evidence(bool project) {
     };
     const auto invariant=[&] {
         if(project)return;
-        if(sessions_!=actors || sizes_!=sizes || projects_.active_id()!=original_project || workspace().active_tab()!=original_tab ||
+        if(actor_registry_.snapshot()!=actors || sizes_!=sizes || projects_.active_id()!=original_project || workspace().active_tab()!=original_tab ||
            config_!=original_config || reduced_motion_!=original_reduced || high_contrast_!=original_contrast ||
            smoke_terminal_input_submissions_!=input || smoke_terminal_mouse_submissions_!=mouse ||
            layout_.panes.size()!=original_layout.panes.size() || layout_.dividers.size()!=original_layout.dividers.size())
@@ -5826,7 +6054,7 @@ void NativeWindow::smoke_workspace_progress(bool presented) {
         if(hwnd_) destroy_window();
     };
     if(workspace_smoke_menu_) {
-        for(const auto& [id,actor]:sessions_) {
+        for(const auto& [id,actor]:actor_registry_.read()) {
             (void)id; const auto info=actor->info();
             if(info.state==SessionState::failed) { finish(info.error); return; }
             if(info.state!=SessionState::running || !info.bytes_received || !actor->frame()) return;
@@ -5848,7 +6076,7 @@ void NativeWindow::smoke_workspace_progress(bool presented) {
         workspace_menu({navigation_.rail.x+16,chrome_.band.height+44});
         changed();
     };
-    for(const auto& [id,actor]:sessions_) {
+    for(const auto& [id,actor]:actor_registry_.read()) {
         (void)id; const auto info=actor->info();
         if(info.state==SessionState::failed) { finish(info.error); return; }
         if(info.state!=SessionState::running || !info.bytes_received || !actor->frame()) return;
@@ -5897,7 +6125,7 @@ void NativeWindow::smoke_workspace_progress(bool presented) {
         finish("Boot restore changed metadata, durable identity, active selection or layout."); return;
     }
     // Hidden project panes must remain unbound: restoring does not eagerly replay sessions.
-    if(projects_.session_ids(projects_.entries()[0].id).size()!=0 || sessions_.size()!=1) {
+    if(projects_.session_ids(projects_.entries()[0].id).size()!=0 || actor_registry_.size()!=1) {
         finish("Hidden restored panes launched eagerly."); return;
     }
     if(!options_.capture_path.empty()) {
@@ -5905,14 +6133,15 @@ void NativeWindow::smoke_workspace_progress(bool presented) {
         if(GetTickCount64()-workspace_smoke_capture_at_<180) { changed(); return; }
         try { capture_frame(); } catch(const std::exception& error) { finish(error.what()); return; }
     }
-    const auto actors=sessions_; const auto previous=projects_.active_id();
+    const auto actors=actor_registry_.snapshot(); const auto previous=projects_.active_id();
     const auto previous_ids=projects_.session_ids(previous);
     open_workspace_preset(0);
     if(projects_.entries().size()!=4 || projects_.session_ids(previous)!=previous_ids) {
         finish("Preset replaced the existing workspace or session ownership."); return;
     }
-    for(const auto& [id,actor]:actors) {
-        if(!sessions_.contains(id) || sessions_.at(id)!=actor || actor->info().state!=SessionState::running) {
+    for (const auto& [id, actor, identity] : actors) {
+        if (!actor_registry_.contains(id) || actor_registry_.retain(id) != actor ||
+            actor_registry_.identity(id) != identity || actor->info().state != SessionState::running) {
             finish("Preset discarded or restarted a live actor."); return;
         }
     }
@@ -5932,7 +6161,7 @@ void NativeWindow::smoke_settings_stage(unsigned stage) {
 void NativeWindow::smoke_settings_scroll_evidence() {
     if (!options_.smoke_settings || !settings_panel_.is_open() || settings_panel_.saving() || smoke_settings_scroll_running_)
         throw std::runtime_error("Settings scroll evidence requires its owned editable smoke panel.");
-    const auto original_panel=settings_panel_; const auto original_config=config_; const auto actors=sessions_;
+    const auto original_panel=settings_panel_; const auto original_config=config_; const auto actors=actor_registry_.snapshot();
     const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
     const auto old_clock=smoke_chrome_time_; const auto old_policy=smoke_settings_scroll_reduced_motion_;
     const auto close_value=[](double a,double b){return std::abs(a-b)<.001;};
@@ -6014,7 +6243,7 @@ void NativeWindow::smoke_settings_scroll_evidence() {
         settings_wheel(inside,-120,3);
         require(!settings_panel_.scroll_active() && close_value(settings_panel_.scroll_offset(),216),"Reduced motion delayed a new Settings wheel event.");
         smoke_motion_capture(L"settings-scroll-reduced-motion-direct",0);
-        require(config_==original_config && sessions_==actors && !focused_session_ &&
+        require(config_==original_config && actor_registry_.snapshot()==actors && !focused_session_ &&
                 smoke_terminal_input_submissions_==input && smoke_terminal_mouse_submissions_==mouse,
                 "Settings scroll evidence changed config, terminal ownership or terminal input.");
     } catch(...) {restore();throw;}
@@ -6044,7 +6273,7 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
         throw std::runtime_error("Menu theme capture requires the owned Settings smoke window with terminal focus restored.");
     smoke_menu_theme_running_=true;
     struct Reset {bool& running;~Reset(){running=false;}} reset{smoke_menu_theme_running_};
-    const auto original_config=config_;const auto actors=sessions_;const auto focused=focused_session_;
+    const auto original_config=config_;const auto actors=actor_registry_.snapshot();const auto focused=focused_session_;
     const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
     const auto old_clock=smoke_chrome_time_;
     struct RestoreClock {std::optional<std::uint64_t>& clock;std::optional<std::uint64_t> old;~RestoreClock(){clock=old;}} restore_clock{smoke_chrome_time_,old_clock};
@@ -6075,7 +6304,7 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
     RECT restored{};
     if(!GetWindowRect(hwnd_,&restored) || restored.right-restored.left!=original.right-original.left || restored.bottom-restored.top!=original.bottom-original.top)
         throw std::runtime_error("Menu theme capture did not restore owned window dimensions.");
-    if(config_!=original_config || sessions_!=actors || focused_session_!=focused || context_menu_.is_open() ||
+    if(config_!=original_config || actor_registry_.snapshot()!=actors || focused_session_!=focused || context_menu_.is_open() ||
        smoke_terminal_input_submissions_!=input || smoke_terminal_mouse_submissions_!=mouse || GetCapture()==hwnd_)
         throw std::runtime_error("Menu theme capture changed config, actor or input ownership.");
     std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
@@ -6096,7 +6325,7 @@ void NativeApplication::windows_smoke_progress() {
     };
     if(windows_smoke_stage==0) {
         auto* first=view_for(smoke_first_window);
-        if(!first || first->hwnd_==survivor->hwnd_ || smoke_first_actor==smoke_survivor_actor || actors.sessions.size()!=2)throw std::runtime_error("Two native windows did not have distinct ownership.");
+        if(!first || first->hwnd_==survivor->hwnd_ || smoke_first_actor==smoke_survivor_actor || actors.registry.size()!=2)throw std::runtime_error("Two native windows did not have distinct ownership.");
         if(!first->first_exposed_frame_ || !survivor->first_exposed_frame_ || !smoke_first_session->info().bytes_received || !smoke_survivor_session->info().bytes_received)return;
         send(*first,smoke_first_session,"echo __STORMTTY_WINDOW_A__");send(*survivor,smoke_survivor_session,"echo __STORMTTY_WINDOW_B__");
         first->smoke_phase(SmokeDeadline::Phase::interaction);survivor->smoke_phase(SmokeDeadline::Phase::interaction);
@@ -6170,7 +6399,12 @@ void NativeApplication::windows_smoke_progress() {
             std::fputs("Native windows pending Settings: same survivor produced output before closed-view I/O was released.\n",stderr);
         }
         if(view_for(smoke_first_window) || !smoke_first_session->closed())return;
-        if(!smoke_settings_retired || projects.windows().size()!=1 || actors.sessions.size()!=1 || actors.sessions.at(smoke_survivor_actor)!=smoke_survivor_session ||
+        if (actors.registry.identity(smoke_first_actor) || actors.states.contains(smoke_first_actor) ||
+            actors.background_labels.contains(smoke_first_actor) ||
+            actors.parked_attention.contains(smoke_first_actor) || actors.watches.contains(smoke_first_actor)) {
+            throw std::runtime_error("Closed-window disposal retained actor metadata.");
+        }
+        if(!smoke_settings_retired || projects.windows().size()!=1 || actors.registry.size()!=1 || actors.registry.retain(smoke_survivor_actor)!=smoke_survivor_session ||
            survivor->active_session()!=smoke_survivor_session.get() || smoke_survivor_session->process_finished() || !projects.validate())
             throw std::runtime_error("Independent close replaced or retired the survivor actor.");
         send(*survivor,smoke_survivor_session,"echo __STORMTTY_SURVIVOR_AFTER_CLOSE__ & exit /b 0");
@@ -6195,13 +6429,13 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     // scenario actions/direct capture renders precede first-exposure evidence.
     if (!first_exposed_frame_) return;
     if (!options_.smoke_workspaces.empty()) { smoke_workspace_progress(presented); return; }
-    if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
-    for (const auto& [id,session]:sessions_) { (void)id; const auto info=session->info(); if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; } }
+    if (actor_registry_.empty()) { smoke_finish("Native smoke has no real session."); return; }
+    for (const auto& [id,session]:actor_registry_.read()) { (void)id; const auto info=session->info(); if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; } }
     if (smoke_deadline_.phase()==SmokeDeadline::Phase::startup) {
         // Managed context proves the preset reached precmd; negotiated paste
         // mode proves ZLE is accepting bulk input. First output bytes alone do
         // not prove either, and can arrive during completion/module startup.
-        for (const auto& [id,session]:sessions_) {
+        for (const auto& [id,session]:actor_registry_.read()) {
             const auto info=session->info(); const auto frame=session->frame();
             if (info.state!=SessionState::running || !info.bytes_received) return;
             if (smoke_managed_sessions_.contains(id) && (!info.shell_context || !frame || !frame->bracketed_paste)) return;
@@ -6320,7 +6554,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         };
         if (smoke_settings_stage_==0) {
             if (info.state!=SessionState::running || !info.bytes_received) return;
-            smoke_settings_original_=config_; smoke_settings_actor_=sessions_.at(workspace().pane(workspace().active_pane())->session);
+            smoke_settings_original_=config_; smoke_settings_actor_=actor_registry_.retain(workspace().pane(workspace().active_pane())->session);
             smoke_hold_settings_completion_ = true;
             open_settings();
             const auto operation = settings_document_->status().operation;
@@ -6491,7 +6725,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 smoke_finish("Terminal shortcut bypassed explicit confirmation."); return;
             }
             settings_panel_.key({{"TAB"}}); settings_panel_.key({{"ENTER"}}); settings_input_changed();
-            if (settings_panel_.capturing_shortcut() || config_.bindings!=smoke_settings_original_.bindings || sessions_.size()!=1) { smoke_finish("Shortcut capture executed an action or applied before Save."); return; }
+            if (settings_panel_.capturing_shortcut() || config_.bindings!=smoke_settings_original_.bindings || actor_registry_.size()!=1) { smoke_finish("Shortcut capture executed an action or applied before Save."); return; }
             if (session_launcher_.managed_profile() && !options_.shell_runtime_override) {
                 if (using_managed_shell() || !activate_setting("nav.shell") || !activate_setting("shell:stormtty-managed-zsh") ||
                     !has_managed_zsh_selection(settings_panel_.draft()) || using_managed_shell()) {
@@ -6528,7 +6762,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (settings_panel_.is_open() || !settings_document_->snapshot() || !settings_document_->snapshot()->existed || !smoke_settings_file_owned_) { smoke_finish("Isolated Settings Save did not commit successfully."); return; }
             const KeyChord expected{"]",CommandModifier::alt};
             if (std::none_of(config_.bindings.begin(),config_.bindings.end(),[&](const auto& b){return b.command=="pane.split_right" && b.chord==expected;}) ||
-                sessions_.size()!=1 || sessions_.begin()->second!=smoke_settings_actor_ || workspace().state().panes.size()!=1) {
+                actor_registry_.size()!=1 || actor_registry_.read().begin()->second!=smoke_settings_actor_ || workspace().state().panes.size()!=1) {
                 smoke_finish("Saved shortcut or original actor identity was not retained."); return;
             }
             if (!actor_has_theme(saved_custom())) return;
@@ -6538,7 +6772,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (session_launcher_.managed_profile() && !options_.shell_runtime_override) {
                 const auto saved=parse_config(settings_document_->snapshot()->bytes,Platform::windows);
                 if (!saved || !has_managed_zsh_selection(*saved.config) || !settings_baseline_matches(*saved.config,config_,Platform::windows) ||
-                    smoke_managed_sessions_.contains(sessions_.begin()->first)) {
+                    smoke_managed_sessions_.contains(actor_registry_.read().begin()->first)) {
                     smoke_finish("Managed shell reference did not persist or original Cmd actor was replaced."); return;
                 }
             }
@@ -6552,10 +6786,10 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if ((session_launcher_.managed_profile() && !options_.shell_runtime_override) || switch_console) {
                 new_tab();
                 const auto* pane=workspace().pane(workspace().active_pane());
-                if (sessions_.size()!=2 || !pane ||
+                if (actor_registry_.size()!=2 || !pane ||
                     (session_launcher_.managed_profile() && !options_.shell_runtime_override && !smoke_managed_sessions_.contains(pane->session)) ||
                     (switch_console && !smoke_bundled_sessions_.contains(pane->session)) ||
-                    std::none_of(sessions_.begin(),sessions_.end(),[&](const auto& entry){return entry.second==smoke_settings_actor_;})) {
+                    std::none_of(actor_registry_.read().begin(),actor_registry_.read().end(),[&](const auto& entry){return entry.second==smoke_settings_actor_;})) {
                     smoke_finish("Saved shell/backend did not launch a new actor while retaining the original actor."); return;
                 }
                 std::fprintf(stderr,"Settings smoke: saved shell/backend selected for new real actor without CLI; original System actor retained.\n");
@@ -6595,12 +6829,12 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (switch_console) {
                 const auto saved=parse_config(settings_document_->snapshot()->bytes,Platform::windows);
                 if (!saved || saved.config->windows_console_backend!=WindowsConsoleBackend::system ||
-                    config_.windows_console_backend!=WindowsConsoleBackend::system || smoke_bundled_sessions_.size()!=1 || sessions_.size()!=2) {
+                    config_.windows_console_backend!=WindowsConsoleBackend::system || smoke_bundled_sessions_.size()!=1 || actor_registry_.size()!=2) {
                     smoke_finish("System recovery did not persist or replaced an existing bundled actor."); return;
                 }
                 new_tab();
                 const auto* pane=workspace().pane(workspace().active_pane());
-                if (!pane || sessions_.size()!=3 || smoke_bundled_sessions_.contains(pane->session)) {
+                if (!pane || actor_registry_.size()!=3 || smoke_bundled_sessions_.contains(pane->session)) {
                     smoke_finish("Saved System choice did not create a new System actor."); return;
                 }
             }
@@ -6651,7 +6885,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!output) throw std::runtime_error("Could not write reload smoke fixture.");
         };
         if (!smoke_reload_stage_) {
-            smoke_reload_actors_=sessions_;
+            smoke_reload_actors_=actor_registry_.snapshot();
             smoke_reload_expected_=config_;
             smoke_reload_expected_.experimental_ai=true; // Reload must not enable the launch-time capability.
             smoke_reload_expected_.theme=*find_builtin_theme("ember");
@@ -6680,7 +6914,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             smoke_reload_stage_=1; return;
         }
         if (settings_document_->status().busy) return;
-        if (sessions_!=smoke_reload_actors_ ||
+        if (actor_registry_.snapshot()!=smoke_reload_actors_ ||
             smoke_settings_actor_->info().bytes_received<smoke_reload_received_ || !smoke_settings_actor_->frame()) {
             smoke_finish("Reload replaced the live actor or lost retained output."); return;
         }
@@ -6745,7 +6979,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             close_pane(original); key.wParam=VK_RETURN; key_message(key);
             if (modal_ || !workspace().pane(original)) { smoke_finish("Default Enter did not cancel destructive close."); return; }
             new_tab(); const auto disposable=workspace().pane(workspace().active_pane())->session;
-            smoke_disposable_=sessions_.at(disposable); park_pane(workspace().active_pane());
+            smoke_disposable_=actor_registry_.retain(disposable); park_pane(workspace().active_pane());
             close_parked({projects_.active_id(),disposable});
             if (!modal_) { smoke_finish("Disposable background terminal did not show styled close confirmation."); return; }
             smoke_modal_stage_=1; return;
@@ -6761,14 +6995,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if ((!options_.console_runtime_directory.empty() || config_.windows_console_backend==WindowsConsoleBackend::bundled_preview) && !diagnostic.bundled_provider) return;
             try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
             modal_focus_.select(ModalDecision::confirm); answer_modal(modal_focus_.activate());
-            if (modal_ || workspace().state().tabs.size()!=1 || sessions_.size()!=1) { smoke_finish("Explicit modal close did not retire only its background terminal."); return; }
+            if (modal_ || workspace().state().tabs.size()!=1 || actor_registry_.size()!=1) { smoke_finish("Explicit modal close did not retire only its background terminal."); return; }
             smoke_modal_stage_=2;
         } else return;
     }
     if (options_.smoke_modal && smoke_disposable_) {
         if(!smoke_disposable_->closed())return;
         if(smoke_modal_stage_==2) {
-            if(sessions_.size()!=1 || !active_session() || active_session()==smoke_disposable_.get() || active_session()->process_finished()) {
+            if(actor_registry_.size()!=1 || !active_session() || active_session()==smoke_disposable_.get() || active_session()->process_finished()) {
                 smoke_finish("Retired actor disposal changed the surviving modal terminal.");return;
             }
             smoke_modal_stage_=3;
@@ -6776,9 +7010,9 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         }
     }
     if (options_.smoke_projects && !smoke_projects_live_verified_) {
-        if (projects_.entries().size()!=2 || sessions_.size()!=2 || smoke_project_actors_.size()!=2) { smoke_finish("Workspace creation did not retain two distinct actors."); return; }
+        if (projects_.entries().size()!=2 || actor_registry_.size()!=2 || smoke_project_actors_.size()!=2) { smoke_finish("Workspace creation did not retain two distinct actors."); return; }
         for (const auto& [id,actor]:smoke_project_actors_) {
-            if (!sessions_.contains(id) || sessions_.at(id)!=actor) { smoke_finish("Workspace activation replaced an actor."); return; }
+            if (!actor_registry_.contains(id) || actor_registry_.retain(id)!=actor) { smoke_finish("Workspace activation replaced an actor."); return; }
             const auto info=actor->info(); if (info.state!=SessionState::running || !info.bytes_received) return;
             if (smoke_managed_sessions_.contains(id) && !info.shell_context) return;
         }
@@ -6790,19 +7024,19 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if (projects_.active_id()!=smoke_secondary_project_) { smoke_finish("Workspace navigation pointer did not activate its actual project."); return; }
         dispatch("workspace.previous"); retire_unused_sessions();
         if (projects_.active_id()!=smoke_primary_project_) { smoke_finish("Keyboard/palette workspace command did not restore the previous project."); return; }
-        if (sessions_.size()!=2 || !projects_.validate()) { smoke_finish("Hidden live actors were retired or workspace IDs collided."); return; }
+        if (actor_registry_.size()!=2 || !projects_.validate()) { smoke_finish("Hidden live actors were retired or workspace IDs collided."); return; }
         smoke_parked_session_=workspace().pane(workspace().active_pane())->session;
-        const auto actor=sessions_.at(smoke_parked_session_); smoke_parked_bytes_=actor->info().bytes_received;
+        const auto actor=actor_registry_.retain(smoke_parked_session_); smoke_parked_bytes_=actor->info().bytes_received;
         dispatch("pane.background"); retire_unused_sessions();
         if (!workspace().state().tabs.empty() || projects_.active()->parked_sessions.size()!=1 || focused_session_ ||
-            sessions_.at(smoke_parked_session_)!=actor || actor->process_finished() || !projects_.validate()) {
+            actor_registry_.retain(smoke_parked_session_)!=actor || actor->process_finished() || !projects_.validate()) {
             smoke_finish("Parking the final pane did not retain the original live actor in an empty workspace."); return;
         }
         if (!smoke_palette_evidence(smoke_parked_session_)) return;
         close_parked({smoke_primary_project_,smoke_parked_session_});
         if (!modal_ || modal_focus_.activate()!=ModalDecision::cancel) { smoke_finish("Background close did not show Cancel-default styled confirmation."); return; }
         answer_modal(ModalDecision::cancel);
-        if (!sessions_.contains(smoke_parked_session_) || projects_.active()->parked_sessions.size()!=1) { smoke_finish("Canceled background close changed ownership."); return; }
+        if (!actor_registry_.contains(smoke_parked_session_) || projects_.active()->parked_sessions.size()!=1) { smoke_finish("Canceled background close changed ownership."); return; }
         activate_project(smoke_secondary_project_);
         if (!projects_.active()->parked_sessions.empty()) { smoke_finish("Background footer leaked across projects."); return; }
         restore_parked({smoke_primary_project_,smoke_parked_session_});
@@ -6817,18 +7051,18 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if (chrome_.compact || chrome_.tabs.size()<3) { smoke_finish("Layout smoke task tabs unexpectedly compact."); return; }
         smoke_focus_evidence(false);
         const auto first=chrome_.tabs.front(), last=chrome_.tabs.back();
-        const auto original=workspace().active_pane(); const auto actor_count=sessions_.size();
+        const auto original=workspace().active_pane(); const auto actor_count=actor_registry_.size();
         const Point from{first.bounds.x+first.bounds.width/2,first.bounds.y+first.bounds.height/2};
         const Point to{last.bounds.x+last.bounds.width/2,last.bounds.y+last.bounds.height/2};
         pointer_down(from,false); pointer_move(to); pointer_up(to);
-        if (workspace().state().tabs.back().id!=first.tab || sessions_.size()!=actor_count || GetCapture()==hwnd_) {
+        if (workspace().state().tabs.back().id!=first.tab || actor_registry_.size()!=actor_count || GetCapture()==hwnd_) {
             smoke_finish("Workspace task drag did not reorder in its new band without changing actors."); return;
         }
         workspace().reorder_tab(first.tab,0); activate(original); changed(true); smoke_tab_drag_verified_=true;
         // Capture the actual background footer, not ordinary tabs named as if
         // they were parked. Preserve the accepted foreground split geometry.
         while (workspace().state().tabs.size()>1) park_pane(workspace().state().tabs.back().active_pane);
-        if (projects_.active()->parked_sessions.size()!=2 || sessions_.size()!=actor_count || layout_.panes.size()!=3) {
+        if (projects_.active()->parked_sessions.size()!=2 || actor_registry_.size()!=actor_count || layout_.panes.size()!=3) {
             smoke_finish("Layout smoke did not retain its real background actors and foreground splits."); return;
         }
         const auto footer=footer_layout();
@@ -6858,7 +7092,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         smoke_chrome_time_.reset();
     }
     if (options_.smoke_projects && smoke_projects_live_verified_ && !smoke_background_command_verified_) {
-        const auto actor=sessions_.at(smoke_parked_session_);
+        const auto actor=actor_registry_.retain(smoke_parked_session_);
         if (!smoke_background_command_sent_) {
             const auto ready_frame=actor->frame();
             if (smoke_managed_sessions_.contains(smoke_parked_session_) && (!ready_frame || !ready_frame->bracketed_paste)) return;
@@ -6913,7 +7147,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         close_parked({smoke_primary_project_,smoke_parked_session_});
         if (!modal_) { smoke_finish("Completed background terminal skipped close confirmation."); return; }
         answer_modal(ModalDecision::cancel);
-        if (!parked_attention_.at(smoke_parked_session_).unread_completion() || sessions_.at(smoke_parked_session_)!=actor) {
+        if (!parked_attention_.at(smoke_parked_session_).unread_completion() || actor_registry_.retain(smoke_parked_session_)!=actor) {
             smoke_finish("Canceled close lost command attention or actor ownership."); return;
         }
         activate_project(smoke_secondary_project_);
@@ -6921,7 +7155,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     }
     if (!options_.smoke_agent && !options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && (!frame_observed || !smoke_typing_progress())) return;
     bool all_closed=true;
-    for (const auto& [id,session]:sessions_) {
+    for (const auto& [id,session]:actor_registry_.read()) {
         const auto info=session->info();
         if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; }
         if (!smoke_commands_sent_.contains(id) && info.state==SessionState::running && info.bytes_received) {
@@ -6946,7 +7180,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if (presented && smoke_frame_ready() && !motion_timer_active_) smoke_marker_presented_=true;
     if (all_closed) {
         if (options_.smoke_projects && !smoke_background_restored_) {
-            const auto actor=sessions_.at(smoke_parked_session_);
+            const auto actor=actor_registry_.retain(smoke_parked_session_);
             if (actor!=smoke_project_actors_.at(smoke_parked_session_) || actor->info().bytes_received<=smoke_parked_bytes_ || !frame_has_smoke_marker(actor->frame()) || actor->closed()) {
                 smoke_finish("Parked actor lost identity, live output, final frame or retained document."); return;
             }
@@ -6957,13 +7191,13 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (!active_session() || active_session()!=actor.get() || !projects_.active()->parked_sessions.empty() || layout_.panes.empty() || parked_attention_.contains(smoke_parked_session_)) {
                 smoke_finish("Restore did not reattach the same exited actor and latest frame."); return;
             }
-            const auto return_actors=sessions_.size(),return_input=smoke_terminal_input_submissions_;
+            const auto return_actors=actor_registry_.size(),return_input=smoke_terminal_input_submissions_;
             dispatch("terminal.previous");
             if(projects_.active_id()!=smoke_secondary_project_||!active_session()||!active_session()->process_finished()) {
                 smoke_finish("Return did not accept the retained exited terminal in the other workspace.");return;
             }
             dispatch("terminal.previous");
-            if(active_session()!=actor.get()||focused_session_!=smoke_parked_session_||sessions_.size()!=return_actors||smoke_terminal_input_submissions_!=return_input) {
+            if(active_session()!=actor.get()||focused_session_!=smoke_parked_session_||actor_registry_.size()!=return_actors||smoke_terminal_input_submissions_!=return_input) {
                 smoke_finish("Return replaced or submitted input to a retained exited actor.");return;
             }
             std::fputs("Native previous-terminal retained exit: same exited actors navigable in both directions without spawn, input or restore.\n",stderr);
@@ -6974,7 +7208,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if(material_probe_requested_ || material_probe_running_)return;
             if(!material_probe_succeeded_) {smoke_finish("Alpha-only normal-frame diagnostic failed: "+material_probe_status_);return;}
             if (options_.smoke_projects) {
-                for (const auto& [id,actor]:smoke_project_actors_) if (!sessions_.contains(id) || sessions_.at(id)!=actor || !frame_has_smoke_marker(actor->frame())) {
+                for (const auto& [id,actor]:smoke_project_actors_) if (!actor_registry_.contains(id) || actor_registry_.retain(id)!=actor || !frame_has_smoke_marker(actor->frame())) {
                     smoke_finish("A hidden workspace lost its original actor or real shell output."); return;
                 }
                 try { capture_frame(); } catch (const std::exception& error) { smoke_finish(error.what()); return; }
@@ -6991,8 +7225,8 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 }
                 const Point close_point{close->bounds.x+close->bounds.width/2,close->bounds.y+close->bounds.height/2};
                 context_menu_.pointer_down(close_point); context_menu_.pointer_up(close_point); menu_input_changed();
-                if (projects_.entries().size()!=1 || projects_.active_id()!=smoke_primary_project_ || retained.size()!=1 || sessions_.size()!=1 ||
-                    !sessions_.contains(retained.front()) || sessions_.at(retained.front())!=smoke_project_actors_.at(retained.front())) {
+                if (projects_.entries().size()!=1 || projects_.active_id()!=smoke_primary_project_ || retained.size()!=1 || actor_registry_.size()!=1 ||
+                    !actor_registry_.contains(retained.front()) || actor_registry_.retain(retained.front())!=smoke_project_actors_.at(retained.front())) {
                     smoke_finish("Scoped project close affected the surviving workspace."); return;
                 }
                 smoke_finish(); return;
@@ -7027,7 +7261,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
             static_cast<unsigned long long>(renderer_?renderer_->stats().presents:0),pending_input_.size());
         // Only isolated smoke-owned shells are eligible for fixture text evidence.
         // Never dump a normal user session or inherited history/configuration.
-        if (!smoke_shell_state_root_.empty()) for (const auto& [id,session]:sessions_) {
+        if (!smoke_shell_state_root_.empty()) for (const auto& [id,session]:actor_registry_.read()) {
             const auto info=session->info(); const auto frame=session->frame();
             std::fprintf(stderr,"Native smoke failed actor=%llu modal_stage=%u modal_presented=%d command_sent=%d rx=%llu tx=%llu bracketed=%d\n",
                 static_cast<unsigned long long>(id.value),smoke_modal_stage_,smoke_modal_presented_,smoke_commands_sent_.contains(id),
@@ -7087,7 +7321,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
         if (options_.smoke_settings) std::fputs("Settings/menu CI smoke: async isolated snapshot/discovery, real styled frame, input trapping, midnight/custom ANSI hex and font preview rollback, Ribbon visibility/order Save/reopen, native Appearance/Ribbon captures, custom system menu/outside-click routing, confirmed Alt+], independent 25% opacity and extra blur 24 with WARP fallback, two atomic Save/reopen cycles, original live actor retained, explicit hot reload / repeat / draft refusal / invalid and missing file preservation. Not physical UI/accessibility QA.\n",stderr);
         if (options_.smoke_projects) std::fprintf(stderr,"Workspace CI smoke: two actual folder contexts; final-pane parking, canceled background close, cross-project isolation, live parked output and same retained actor restored after exit; scoped project close. Folder-picker interaction and physical UI remain manual QA.\n");
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
-        if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());
+        if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",actor_registry_.size(),workspace().state().tabs.size(),layout_.panes.size());
     } else std::fprintf(stderr,"Native CI smoke failed: %.*s Settings stage=%u elapsed_ms=%llu job_pending=%d saving=%d\n",
         static_cast<int>(error.size()),error.data(),smoke_settings_stage_,GetTickCount64()-smoke_started_at_,settings_document_->status().busy,settings_panel_.saving());
     if (hwnd_) destroy_window();
@@ -7313,8 +7547,8 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
                 if(now-workspace_smoke_diagnostic_at_>=1000) {
                     workspace_smoke_diagnostic_at_=now;
                     std::fprintf(stderr,"Workspace smoke progress: stage=%s seeded=%d menu=%d actors=%zu elapsed_ms=%llu\n",
-                        options_.smoke_workspaces.c_str(),workspace_smoke_seeded_,workspace_smoke_menu_,sessions_.size(),now-smoke_started_at_);
-                    for(const auto& [id,actor]:sessions_) {
+                        options_.smoke_workspaces.c_str(),workspace_smoke_seeded_,workspace_smoke_menu_,actor_registry_.size(),now-smoke_started_at_);
+                    for(const auto& [id,actor]:actor_registry_.read()) {
                         const auto info=actor->info();
                         std::fprintf(stderr,"Workspace smoke actor: id=%llu state=%d rx=%llu frame=%d\n",
                             static_cast<unsigned long long>(id.value),static_cast<int>(info.state),
@@ -7449,8 +7683,8 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         } else if (message==WM_MOUSEWHEEL) {
             UINT rows=3; SystemParametersInfoW(SPI_GETWHEELSCROLLLINES,0,&rows,0);
             if (rows==WHEEL_PAGESCROLL) rows=frame?frame->rows:24;
-            if (const auto* pane=workspace().pane(target); pane && sessions_.contains(pane->session)) {
-                auto owned=sessions_.at(pane->session); const auto amount=-static_cast<std::int64_t>(steps)*rows;
+            if (const auto* pane=workspace().pane(target); pane && actor_registry_.contains(pane->session)) {
+                auto owned=actor_registry_.retain(pane->session); const auto amount=-static_cast<std::int64_t>(steps)*rows;
                 submit([owned,amount] { return owned->scroll(amount); });
             }
         }
@@ -7490,7 +7724,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (context_menu_.is_open()) { context_menu_.cancel(); menu_input_changed(); }
         if (settings_input_blocked()) { settings_panel_.cancel(); settings_input_changed(); return 0; }
         const auto owned=projects_.all_session_ids();
-        const bool live=std::any_of(owned.begin(),owned.end(),[this](SessionId id) { const auto found=sessions_.find(id);return found!=sessions_.end()&&!found->second->process_finished(); });
+        const bool live=std::any_of(owned.begin(),owned.end(),[this](SessionId id) { const auto* actor = actor_registry_.find(id); return actor && !actor->process_finished(); });
         if (modal_) { answer_modal(ModalDecision::cancel); return 0; }
         if (!live && !(agent_controller_&&agent_controller_->any_active())) destroy_window();
         else show_modal("Close StormTTY?",{"Its terminals or agents may have running work.","Closing disconnects agents and can discard unsaved work."},"Close window",[this]{if (hwnd_) destroy_window();});
@@ -7503,7 +7737,11 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         KillTimer(hwnd_,typing_smoke_timer); KillTimer(hwnd_,typing_motion_timer); KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer); KillTimer(hwnd_,chrome_motion_timer); KillTimer(hwnd_,material_probe_timer);
         if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);
         tooltip_=nullptr; tooltip_texts_.clear();
-        for (auto& [id,session]:sessions_) if(projects_.contains_session(id))session->request_close();
+        for (const auto& [id, session] : actor_registry_.read()) {
+            if (projects_.contains_session(id)) {
+                session->request_close();
+            }
+        }
         application_.window_destroyed(*this,exit_code_); return 0;
     case WM_NCDESTROY: {
         const auto result=DefWindowProcW(hwnd_,message,wparam,lparam);
