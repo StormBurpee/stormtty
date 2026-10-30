@@ -471,6 +471,7 @@ elseif(APPLE)
         src/platform/macos/metal_texture_resources.mm
         src/platform/macos/metal_compositor.mm
         src/platform/macos/chrome_painter.mm
+        src/platform/macos/terminal_painter.mm
         src/platform/macos/png_decoder.mm)
     add_library(stormtty_renderer ${stormtty_macos_renderer_sources})
     target_include_directories(stormtty_renderer PUBLIC include)
@@ -501,6 +502,15 @@ elseif(APPLE)
         stormtty_copy_ghostty_runtime(macos_chrome_painter_tests)
         add_test(NAME macos_chrome_painter_tests COMMAND macos_chrome_painter_tests)
         set_tests_properties(macos_chrome_painter_tests PROPERTIES TIMEOUT 60 LABELS "macos;native")
+
+        add_executable(macos_terminal_painter_tests tests/macos_terminal_painter_tests.mm)
+        target_link_libraries(macos_terminal_painter_tests PRIVATE
+            stormtty_renderer stormtty_workspace ${STORMTTY_MACOS_FRAMEWORKS})
+        target_compile_options(macos_terminal_painter_tests PRIVATE -fobjc-arc)
+        stormtty_warnings(macos_terminal_painter_tests)
+        stormtty_copy_ghostty_runtime(macos_terminal_painter_tests)
+        add_test(NAME macos_terminal_painter_tests COMMAND macos_terminal_painter_tests)
+        set_tests_properties(macos_terminal_painter_tests PROPERTIES TIMEOUT 60 LABELS "macos;native")
 
         stormtty_test(macos_toolchain_probe tools/macos-toolchain-probe.cpp Threads::Threads)
         target_compile_definitions(macos_toolchain_probe PRIVATE STORMTTY_EXPECTED_LLVM_ROOT="${STORMTTY_LLVM_ROOT}")
