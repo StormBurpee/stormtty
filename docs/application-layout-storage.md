@@ -120,6 +120,24 @@ live bindings, mutation robustness and the whole-envelope size cap. The backup/f
 still require native runtime evidence; crash-marker timing, second-process routing
 and GPU wait lifetime behavior still need host implementation and Windows evidence.
 
+## Single-window envelope host adaptation (local qualification pending)
+
+The application coordinator now reads/writes the envelope through the guarded
+backup/migration service. Its existing library reference remains anchored to the
+same document member. Successful startup schedules a running checkpoint even when
+restoring panes caused no layout edit. Unchanged declarative checkpoint content is
+compared before advancing sequence; preset changes still save without fabricating
+a new arrangement. Normal last-window shutdown records a clean individual close
+before draining pending writes, so an older worker completion cannot overwrite
+that in-memory close state.
+
+This is still a single-persistent-window adapter. If the selected recovery record
+contains multiple windows, or an unclean envelope lacks a checkpoint, restore and
+autosave are disabled with a visible notice and original bytes remain untouched.
+It must not flatten an unsupported group. Full grouped startup and explicit Quit
+are separate next steps. The native workspace fixture extracts its own authored
+v1 library from a freshly saved envelope, then checks exact backup bytes and clean
+new-envelope output on the next real launch. No result is claimed before native CI.
 ### Migration source-handle lifetime
 
 After verifying backup bytes and DACL, migration releases its extra original-file

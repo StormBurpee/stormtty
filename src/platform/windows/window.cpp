@@ -8,6 +8,7 @@
 #include "stormtty/settings_reload.hpp"
 #include "stormtty/workspace_save_signal.hpp"
 #include "stormtty/window_workspace_view.hpp"
+#include "stormtty/application_layout_services.hpp"
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -63,6 +64,7 @@
 #include <deque>
 #include <mutex>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <map>
 #include <memory>
@@ -185,6 +187,7 @@ struct SettingsCompletion {
 struct WakeState {
     std::atomic<HWND> window{};
     std::atomic<DWORD> thread{}; // Application-only completion sink; never an HWND owner.
+    std::weak_ptr<WakeState> completion_fallback; // Immutable after view construction.
     std::atomic<bool> posted{};
     std::mutex mutex;
     std::optional<std::string> clipboard;
@@ -195,7 +198,7 @@ struct WakeState {
             if (!posted.exchange(true, std::memory_order_acq_rel) && !PostMessageW(hwnd, wake_message, 0, 0)) posted.store(false, std::memory_order_release);
         } else if(const auto owner=thread.load(std::memory_order_acquire)) {
             if(!posted.exchange(true,std::memory_order_acq_rel) && !PostThreadMessageW(owner,wake_message,0,0))posted.store(false,std::memory_order_release);
-        }
+        } else if(auto fallback=completion_fallback.lock())fallback->wake();
     }
 };
 struct ClipboardLock {
@@ -324,11 +327,12 @@ struct WorkspaceSaveMailbox {
     DWORD thread{}; // Initialized on the UI thread before any worker starts.
 };
 struct ApplicationWorkspacePersistence {
-    WorkspaceLibrary library;
+    ApplicationLayoutDocument document;
+    WorkspaceLibrary& library{document.library};
     std::optional<ConfigFileSnapshot> snapshot;
     std::filesystem::path file;
     std::thread worker;
-    bool busy{}, pending{}, enabled{}, autosave{};
+    bool busy{}, pending{}, enabled{}, autosave{}, finalizing{};
     UINT_PTR timer{};
     WorkspaceSaveSignal signal;
     std::shared_ptr<WorkspaceSaveMailbox> mailbox{std::make_shared<WorkspaceSaveMailbox>()};
@@ -346,6 +350,8 @@ public:
     NativeWindow& create_view(Config, NativeRunOptions, bool restore, unsigned injected_failure=0);
     void windows_smoke_progress();
     unsigned windows_smoke_stage{};
+    std::shared_ptr<std::promise<void>> smoke_settings_release;
+    bool smoke_settings_retired{};
     WindowId smoke_first_window{}, smoke_survivor_window{};
     SessionId smoke_first_actor{}, smoke_survivor_actor{};
     std::shared_ptr<Session> smoke_first_session, smoke_survivor_session;
@@ -373,6 +379,7 @@ public:
 class NativeWindow final {
 public:
     explicit NativeWindow(NativeApplication& application, WindowId window_id, Config config, NativeRunOptions options) : application_(application), config_(std::move(config)), options_(std::move(options)), projects_(application.projects,window_id), wake_(std::make_shared<WakeState>()) {
+        wake_->completion_fallback=application_.actor_completion;
         if (!options_.shell_runtime_directory.empty() && options_.shell_runtime_error.empty()) {
             const auto& root=options_.shell_runtime_directory;
             Profile managed;
@@ -970,7 +977,7 @@ void NativeWindow::create() {
     if (options_.smoke_test && !SetTimer(hwnd_,smoke_timeout_timer,250,nullptr)) throw std::runtime_error("Could not start the native smoke deadline.");
 }
 NativeApplication::NativeApplication()=default;
-NativeApplication::~NativeApplication(){actor_completion->thread=0;owned_windows.clear();}
+NativeApplication::~NativeApplication(){smoke_settings_release.reset();actor_completion->thread=0;owned_windows.clear();}
 NativeWindow& NativeApplication::create_view(Config config, NativeRunOptions options, bool restore, unsigned injected_failure) {
     if(injected_failure && !options.smoke_windows)throw std::runtime_error("Creation injection is fixture-only.");
     if(creating_view)throw std::runtime_error("A window is already being prepared.");
@@ -1017,13 +1024,14 @@ NativeWindow& NativeApplication::create_view(Config config, NativeRunOptions opt
     }
     // Post-commit notification must never enter candidate rollback.
     creating_view=false;
-    if(std::exchange(creation_dirty,false))workspace_model_changed();
+    const bool changed=std::exchange(creation_dirty,false);
+    if(changed || restore)workspace_model_changed(); // Restored runs also need a running checkpoint.
     return *committed_view;
 }
 int NativeApplication::run(Config config, NativeRunOptions options) {
     const bool diagnostics=options.smoke_test;
     WindowClass klass; klass.smoke=diagnostics;
-    struct ViewScope {NativeApplication& app;~ViewScope(){app.owned_windows.clear();}} views{*this};
+    struct ViewScope {NativeApplication& app;~ViewScope(){app.smoke_settings_release.reset();app.owned_windows.clear();}} views{*this};
     // Workers post to the application queue, never to a destructible HWND.
     MSG queued{};PeekMessageW(&queued,nullptr,0,0,PM_NOREMOVE);
     workspaces.mailbox->thread=GetCurrentThreadId();
@@ -1966,6 +1974,19 @@ void NativeApplication::retire_destroyed_views() {
     for(auto it=owned_windows.begin();it!=owned_windows.end();) {
         auto& view=**it;
         if(view.hwnd_ || !view.committed_view_){++it;continue;}
+        if(view.settings_worker_.joinable()) {
+            std::optional<SettingsCompletion> completion;
+            {std::lock_guard lock(view.wake_->mutex);completion.swap(view.wake_->settings);}
+            if(!completion){++it;continue;} // No join while file I/O/result publication is pending.
+            view.settings_worker_.join(); // Same completion contract as live Settings; I/O already ended.
+            view.settings_job_=view.settings_load_job_=false;
+            if(completion->kind==SettingsCompletion::Kind::save && !completion->saved)
+                workspace_error("Settings save for a closed window failed: "+completion->saved.error);
+            if(view.options_.smoke_windows) {
+                if(completion->kind!=SettingsCompletion::Kind::save || !completion->saved)throw std::runtime_error("Closed-window authored Settings save failed.");
+                smoke_settings_retired=true;
+            }
+        }
         auto preview=projects.preview_close_window(view.projects_.id());
         if(!preview){workspace_error(preview.error);++it;continue;}
         auto detached=projects.close_window(*preview.value);
@@ -1987,14 +2008,27 @@ void NativeApplication::load_workspaces(NativeWindow& window) {
     workspaces.autosave=workspaces.enabled && !options.smoke_test;
     if(!workspaces.enabled)return;
     workspaces.file=options.config_path.parent_path()/L"workspaces.stormtty";
-    WorkspaceLibrarySnapshotResult loaded;
+    ApplicationLayoutSnapshotResult loaded;
     // Before HWND creation. File I/O still never runs in a window callback.
-    std::thread reader([&]{loaded=load_workspace_library_snapshot(workspaces.file);});reader.join();
+    std::thread reader([&]{loaded=load_application_layout_snapshot(workspaces.file);});reader.join();
     if(!loaded){workspace_error("Workspaces were not restored: "+loaded.error+" The saved file was left unchanged.");return;}
     workspaces.snapshot=std::move(loaded.snapshot);
-    workspaces.library=std::move(*loaded.library);
-    if(!workspaces.library.restore_on_launch || workspaces.library.last_session.projects.empty())return;
-    const auto status=projects.restore_single_window(window.projects_.id(),workspaces.library.last_session);
+    workspaces.document=std::move(loaded.layout->document);
+    if(!workspaces.library.restore_on_launch)return;
+    const auto* resume=workspaces.document.history.choose(workspaces.document.clean_shutdown?RestoreEvent::cold_launch:RestoreEvent::crash_recovery);
+    if(!resume && !workspaces.document.clean_shutdown) {
+        workspace_error("Crash recovery has no saved checkpoint. The saved file was left unchanged.");workspaces.snapshot.reset();return;
+    }
+    if(!resume || resume->layout.windows.empty())return;
+    // Do not silently flatten or overwrite groups before full native recovery is
+    // enabled. Keep the loaded envelope and every unopened group intact on disk.
+    if(resume->layout.windows.size()!=1) {
+        workspace_error("Saved multi-window recovery needs the grouped host. The saved file was left unchanged.");
+        workspaces.snapshot.reset();return;
+    }
+    const auto& restored=resume->layout.windows.front();
+    if(restored.projects.empty())return;
+    const auto status=projects.restore_single_window(window.projects_.id(),restored);
     if(!status){workspace_error("Workspaces were not restored: "+status.error);workspaces.snapshot.reset();}
     else window.restored_workspaces_=true;
 }
@@ -2019,17 +2053,34 @@ void NativeApplication::save_workspaces() {
     WindowWorkspaceView view(projects,projects.windows().front().id);
     auto captured=view.snapshot();
     if(!captured){workspace_error(captured.error);return;}
-    workspaces.library.last_session=std::move(*captured.value);
-    auto bytes=serialize_workspace_library(workspaces.library);
+    auto document=workspaces.document;
+    document.library.last_session=std::move(*captured.value);
+    if(!workspaces.finalizing) {
+        bool changed=true;
+        if(const auto& checkpoint=document.history.last_checkpoint();checkpoint && checkpoint->layout.windows.size()==1) {
+            WorkspaceLibrary previous,current;
+            previous.last_session=checkpoint->layout.windows.front();current.last_session=document.library.last_session;
+            const auto old_bytes=serialize_workspace_library(previous),new_bytes=serialize_workspace_library(current);
+            if(!old_bytes || !new_bytes){workspace_error("Could not validate workspace checkpoint.");return;}
+            changed=*old_bytes.value!=*new_bytes.value;
+        }
+        if(changed || document.clean_shutdown) {
+            ApplicationLayout layout{{document.library.last_session},0};
+            if(auto recorded=document.history.checkpoint(std::move(layout));!recorded){workspace_error(recorded.error);return;}
+        }
+        document.clean_shutdown=false;
+    }
+    auto bytes=serialize_application_layout(document);
     if(!bytes){workspace_error(bytes.error);return;}
     if(workspaces.snapshot->existed && *bytes.value==workspaces.snapshot->bytes)return;
     if(workspaces.worker.joinable())workspaces.worker.join();
     const auto path=workspaces.file;const auto baseline=*workspaces.snapshot;
-    const auto library=workspaces.library;const auto mailbox=workspaces.mailbox;
+    workspaces.document=std::move(document);
+    const auto saved_document=workspaces.document;const auto mailbox=workspaces.mailbox;
     workspaces.busy=true;
     try {
-        workspaces.worker=std::thread([path,baseline,library,mailbox] {
-            auto result=save_workspace_library(path,library,baseline);
+        workspaces.worker=std::thread([path,baseline,saved_document,mailbox] {
+            auto result=save_application_layout(path,saved_document,baseline);
             {std::lock_guard lock(mailbox->mutex);mailbox->result=std::move(result);}
             PostThreadMessageW(mailbox->thread,workspace_saved_message,0,0);
         });
@@ -2053,6 +2104,13 @@ void NativeApplication::workspace_save_completed() {
 void NativeApplication::flush_workspaces() {
     if(workspaces.timer){KillTimer(nullptr,workspaces.timer);workspaces.timer=0;}
     if(!workspaces.enabled)return;
+    if(workspaces.snapshot && projects.windows().size()==1) {
+        WindowWorkspaceView view(projects,projects.windows().front().id);
+        auto closed=view.snapshot();
+        if(!closed){workspace_error(closed.error);workspaces.snapshot.reset();}
+        else if(auto recorded=workspaces.document.history.record_closed(std::move(*closed.value));!recorded){workspace_error(recorded.error);workspaces.snapshot.reset();}
+        else {workspaces.document.clean_shutdown=true;workspaces.finalizing=true;}
+    }
     if(workspaces.worker.joinable())workspaces.worker.join();
     workspace_save_completed();save_workspaces();
     if(workspaces.worker.joinable())workspaces.worker.join();
@@ -5860,7 +5918,7 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
     std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
 }
 void NativeApplication::windows_smoke_progress() {
-    if(windows_smoke_stage>=4)return;
+    if(windows_smoke_stage>=5)return;
     const auto view_for=[&](WindowId id)->NativeWindow*{for(auto* view:windows)if(view->projects_.id()==id)return view;return nullptr;};
     auto* survivor=view_for(smoke_survivor_window);
     if(!survivor || !survivor->hwnd_)throw std::runtime_error("Two-window survivor unexpectedly disappeared.");
@@ -5890,6 +5948,24 @@ void NativeApplication::windows_smoke_progress() {
             std::fprintf(stderr,"Native windows controlled actor provider: %s bundled=%d\n",evidence.provider.c_str(),evidence.bundled_provider);
         }
         first->capture_named_frame(L"two-window-first");survivor->capture_named_frame(L"two-window-survivor");
+        // Hold a real authored settings worker BEFORE disk I/O. Only survivor
+        // output later releases it: a hidden UI-thread join would deadlock this
+        // fixture instead of being mistaken for successful independent close.
+        if(first->settings_worker_.joinable())throw std::runtime_error("Unexpected Settings worker before fixture gate.");
+        const auto path=first->options_.smoke_window_fixture/L"pending-settings.stormtty";
+        ConfigFileSnapshot baseline;baseline.path=path;
+        smoke_settings_release=std::make_shared<std::promise<void>>();
+        auto release=smoke_settings_release->get_future().share();auto shared=first->wake_;auto candidate=first->config_;
+        first->settings_job_=true;
+        first->settings_worker_=std::thread([release,shared,path,baseline,candidate=std::move(candidate)]() mutable {
+            release.wait(); // Fixture gate; promise destruction also releases on failure cleanup.
+            SettingsCompletion result;result.kind=SettingsCompletion::Kind::save;result.candidate=std::move(candidate);
+            try {result.saved=save_settings_config(path,result.candidate,baseline);}
+            catch(const std::exception& error){result.saved.error=error.what();}
+            catch(...){result.saved.error="Authored pending settings save failed.";}
+            {std::lock_guard lock(shared->mutex);shared->settings=std::move(result);}
+            shared->wake();
+        });
         SendMessageW(first->hwnd_,WM_CLOSE,0,0);
         if(!first->modal_)throw std::runtime_error("Closing a live window bypassed confirmation.");
         first->answer_modal(ModalDecision::cancel);
@@ -5901,17 +5977,31 @@ void NativeApplication::windows_smoke_progress() {
         windows_smoke_stage=2;actor_completion->wake();return;
     }
     if(windows_smoke_stage==2) {
+        auto* closing=view_for(smoke_first_window);
+        if(!closing || closing->hwnd_ || !closing->settings_worker_.joinable() || !smoke_settings_release)
+            throw std::runtime_error("Pending Settings view was not deferred after HWND close.");
+        if(smoke_survivor_session->process_finished() || survivor->active_session()!=smoke_survivor_session.get())
+            throw std::runtime_error("Survivor changed while peer Settings work remained pending.");
+        send(*survivor,smoke_survivor_session,"echo __STORMTTY_SURVIVOR_PENDING_SETTINGS__");
+        windows_smoke_stage=3;return;
+    }
+    if(windows_smoke_stage==3) {
+        if(!marker(smoke_survivor_session,"__STORMTTY_SURVIVOR_PENDING_SETTINGS__"))return;
+        if(smoke_settings_release) {
+            smoke_settings_release->set_value();smoke_settings_release.reset();
+            std::fputs("Native windows pending Settings: same survivor produced output before closed-view I/O was released.\n",stderr);
+        }
         if(view_for(smoke_first_window) || !smoke_first_session->closed())return;
-        if(projects.windows().size()!=1 || actors.sessions.size()!=1 || actors.sessions.at(smoke_survivor_actor)!=smoke_survivor_session ||
+        if(!smoke_settings_retired || projects.windows().size()!=1 || actors.sessions.size()!=1 || actors.sessions.at(smoke_survivor_actor)!=smoke_survivor_session ||
            survivor->active_session()!=smoke_survivor_session.get() || smoke_survivor_session->process_finished() || !projects.validate())
             throw std::runtime_error("Independent close replaced or retired the survivor actor.");
         send(*survivor,smoke_survivor_session,"echo __STORMTTY_SURVIVOR_AFTER_CLOSE__ & exit /b 0");
-        survivor->smoke_phase(SmokeDeadline::Phase::exit);windows_smoke_stage=3;return;
+        survivor->smoke_phase(SmokeDeadline::Phase::exit);windows_smoke_stage=4;return;
     }
     if(!smoke_survivor_session->process_finished())return;
     if(!marker(smoke_survivor_session,"__STORMTTY_SURVIVOR_AFTER_CLOSE__") || smoke_survivor_session->info().exit_code!=0)
         throw std::runtime_error("Surviving actor did not produce output and exit cleanly after peer close.");
-    windows_smoke_stage=4;
+    windows_smoke_stage=5;
     std::fputs("Native windows ownership passed: two distinct HWNDs/actors, failed creation rollback, Cancel preserved both, first-window close disposed only its actor, same survivor produced new output and exit 0.\n",stderr);
     survivor->smoke_finish();
 }

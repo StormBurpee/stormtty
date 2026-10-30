@@ -54,9 +54,11 @@ def main():
         if (result.exit_code or not result.reaped or result.timed_out
                 or result.cleanup_error or result.output_truncated):
             raise RuntimeError('native windows ownership fixture failed')
-        for marker in ['Native windows rollback:', 'Native windows ownership passed:', 'Native CI loop exit: code=0']:
+        for marker in ['Native windows rollback:', 'Native windows pending Settings:', 'Native windows ownership passed:', 'Native CI loop exit: code=0']:
             if marker not in output:
                 raise RuntimeError('missing dedicated native ownership proof: ' + marker)
+        if not (root / 'pending-settings.stormtty').is_file():
+            raise RuntimeError('deferred authored Settings write did not finish')
         if (root / 'config.stormtty').exists() or (root / 'workspaces.stormtty').exists():
             raise RuntimeError('nonpersistent ownership fixture unexpectedly wrote a layout/config')
     if root.exists():

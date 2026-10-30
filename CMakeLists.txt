@@ -264,7 +264,7 @@ if(WIN32)
     stormtty_warnings(stormtty_settings_services)
     if(BUILD_TESTING)
         stormtty_test(settings_services_tests tests/settings_services_tests.cpp stormtty_settings_services)
-        stormtty_test(application_layout_services_tests tests/application_layout_services_tests.cpp stormtty_settings_services)
+        stormtty_test(application_layout_services_tests tests/application_layout_services_tests.cpp stormtty_settings_services Threads::Threads)
         stormtty_test(windows_shell_state_tests tests/windows_shell_state_tests.cpp stormtty_settings_services)
         # Runtime argument is supplied by native managed-shell qualification CI.
         add_executable(managed_shell_state_probe tests/managed_shell_state_probe.cpp)

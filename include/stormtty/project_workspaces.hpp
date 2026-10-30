@@ -132,7 +132,7 @@ public:
     Status replace_unbound(ProjectWorkspaceCatalog& prepared);
 
 private:
-    friend class ApplicationWorkspaces; // Allocation-free unpublished-window rollback only.
+    friend class ApplicationWorkspaces; // Staged candidate import and allocation-free unpublished rollback.
     ProjectWorkspace* mutable_project(ProjectWorkspaceId) noexcept;
     std::vector<ProjectWorkspace> entries_;
     ProjectWorkspaceId active_;

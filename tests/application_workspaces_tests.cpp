@@ -3,6 +3,24 @@
 #include "stormtty/window_workspace_view.hpp"
 #include <type_traits>
 #include <array>
+#include <new>
+
+// Test-only allocation fault injection. Disabled outside the candidate restore call.
+namespace {
+thread_local long allocations_before_failure=-1;
+struct AllocationFailureScope {
+    explicit AllocationFailureScope(long count) {allocations_before_failure=count;}
+    ~AllocationFailureScope() {allocations_before_failure=-1;}
+};
+}
+void* operator new(std::size_t size) {
+    if(allocations_before_failure==0)throw std::bad_alloc{};
+    if(allocations_before_failure>0)--allocations_before_failure;
+    if(void* p=std::malloc(size?size:1))return p;
+    throw std::bad_alloc{};
+}
+void operator delete(void* p) noexcept {std::free(p);}
+void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 using namespace stormtty;
 static_assert(!std::is_copy_constructible_v<ApplicationWorkspaces>);
 static_assert(!std::is_convertible_v<WindowId,ProjectWorkspaceId>);
@@ -182,6 +200,79 @@ void unpublished_creation_rollback() {
     ApplicationWorkspaces empty;const auto first=empty.begin_window_creation();CHECK(first);
     empty.abort_window_creation(*first.value);CHECK(empty.windows().empty());CHECK(empty.catalog().entries().empty());CHECK(empty.validate());
 }
+void restore_candidate_beside_live_window() {
+    ApplicationWorkspaces source;const auto source_window=window(source);
+    project(source,source_window,810,"Imported");const auto selected=project(source,source_window,812,"Selected");CHECK(source.activate(source_window,selected));const auto snapshot=WindowWorkspaceView(source,source_window).snapshot();CHECK(snapshot);
+    ApplicationWorkspaces app;const auto original=window(app);const auto retained=project(app,original,820,"Live");
+    const auto persistent=app.catalog().find(retained)->metadata.persistent_id;
+    const auto candidate=app.begin_window_creation();CHECK(candidate);
+    CHECK(app.create_workspace(*candidate.value,{"placeholder","",""}));
+    CHECK(!app.restore_creating_window(original,*snapshot.value));
+    auto malformed=*snapshot.value;malformed.active_index=99;
+    CHECK(!app.restore_creating_window(*candidate.value,malformed));CHECK(app.window(*candidate.value)->projects.size()==1);
+    CHECK(app.restore_creating_window(*candidate.value,*snapshot.value));CHECK(app.validate());
+    const auto restored=app.window(*candidate.value)->active;CHECK(restored!=retained);
+    CHECK(app.catalog().find(restored)->metadata.persistent_id==snapshot.value->projects[1].metadata.persistent_id);
+    CHECK(app.catalog().session_ids(restored).empty());CHECK(app.catalog().contains_session({820}));
+    CHECK(app.catalog().find(retained)->metadata.persistent_id==persistent);CHECK(app.window(original)->active==retained);CHECK(app.catalog().active_id()==retained);
+    CHECK(app.window(*candidate.value)->projects.size()==2);CHECK(app.window(*candidate.value)->projects[1]==restored);
+    CHECK(app.commit_window_creation(*candidate.value));
+    const auto duplicate=app.begin_window_creation();CHECK(duplicate);
+    CHECK(!app.restore_creating_window(*duplicate.value,*snapshot.value));CHECK(app.window(*duplicate.value)->projects.empty());
+    app.abort_window_creation(*duplicate.value);CHECK(app.validate());CHECK(app.owner(retained)==original);
+    const auto live_candidate=app.begin_window_creation();CHECK(live_candidate);project(app,*live_candidate.value,830);
+    CHECK(!app.restore_creating_window(*live_candidate.value,*snapshot.value));app.abort_window_creation(*live_candidate.value);CHECK(app.validate());
+    const auto empty=app.begin_window_creation();CHECK(empty);CHECK(app.create_workspace(*empty.value,{"discarded","",""}));
+    CHECK(app.restore_creating_window(*empty.value,WorkspaceSnapshot{}));CHECK(app.window(*empty.value)->projects.empty());
+    CHECK(app.commit_window_creation(*empty.value));CHECK(app.catalog().active_id()==retained);CHECK(app.validate());
+    ApplicationWorkspaces capped;const auto occupied=window(capped);
+    for(std::size_t i=0;i<ProjectWorkspaceCatalog::maximum_projects-1;++i)CHECK(capped.create_workspace(occupied,{"capacity","",""}));
+    const auto pending=capped.begin_window_creation();CHECK(pending);const auto placeholder=capped.create_workspace(*pending.value,{"keep","",""});CHECK(placeholder);
+    CHECK(!capped.restore_creating_window(*pending.value,*snapshot.value));CHECK(capped.window(*pending.value)->projects==std::vector<ProjectWorkspaceId>{*placeholder.value});
+    CHECK(capped.catalog().entries().size()==ProjectWorkspaceCatalog::maximum_projects);CHECK(capped.validate());capped.abort_window_creation(*pending.value);CHECK(capped.validate());
+}
+void candidate_restore_allocation_rollback() {
+    ApplicationWorkspaces source;const auto imported_window=window(source);
+    project(source,imported_window,900,"Imported");
+    const auto snapshot=WindowWorkspaceView(source,imported_window).snapshot();CHECK(snapshot);
+    ApplicationWorkspaces app;const auto original=window(app);
+    const auto first=project(app,original,910,"First survivor");
+    const auto second=project(app,original,920,"Second survivor");
+    CHECK(app.park({first,app.workspace(first)->active_pane()}));
+    CHECK(app.activate(original,second));
+    const auto pending=app.begin_window_creation();CHECK(pending);
+    CHECK(app.create_workspace(*pending.value,{"Candidate placeholder","",""}));
+    const auto before=app.catalog().entries();const auto windows=app.windows();
+    const auto active=app.catalog().active_id();const auto preview=app.preview_close(first);CHECK(preview);
+    bool completed=false;std::size_t failures=0;
+    for(long fail_after=0;fail_after<4096 && !completed;++fail_after) {
+        try {
+            Status result;
+            {const AllocationFailureScope inject(fail_after);result=app.restore_creating_window(*pending.value,*snapshot.value);}
+            CHECK(result);completed=true;
+        } catch(const std::bad_alloc&) {
+            ++failures;
+            CHECK(app.windows()==windows);CHECK(app.catalog().active_id()==active);
+            CHECK(app.catalog().entries().size()==before.size());
+            for(std::size_t i=0;i<before.size();++i) {
+                const auto& actual=app.catalog().entries()[i];const auto& expected=before[i];
+                CHECK(actual.id==expected.id);CHECK(actual.metadata==expected.metadata);
+                CHECK(actual.workspace.state()==expected.workspace.state());
+                CHECK(actual.parked_sessions==expected.parked_sessions);
+            }
+            const auto unchanged=app.preview_close(first);CHECK(unchanged);CHECK(unchanged.value->placement_revision==preview.value->placement_revision);CHECK(unchanged.value->sessions==preview.value->sessions);
+            CHECK(app.validate());
+        }
+    }
+    CHECK(completed);CHECK(failures>0);CHECK(app.validate());
+    CHECK(app.catalog().entries()[0].id==first);CHECK(app.catalog().entries()[1].id==second);
+    for(std::size_t i=0;i<2;++i) {
+        CHECK(app.catalog().entries()[i].workspace.state()==before[i].workspace.state());
+        CHECK(app.catalog().entries()[i].parked_sessions==before[i].parked_sessions);
+    }
+    CHECK(app.window(original)->active==second);CHECK(app.catalog().active_id()==active);
+    CHECK(app.commit_window_creation(*pending.value));
+}
 void limits_and_invalid_models() {
     ApplicationWorkspaces app;
     for(std::size_t i=0;i<ApplicationWorkspaces::maximum_windows;++i)CHECK(app.create_window());
@@ -197,4 +288,4 @@ void limits_and_invalid_models() {
     CHECK(!app.validate());CHECK(!app.move(p,a,b));CHECK(app.windows()==invalid_before);
 }
 }
-int main(){return run_core_tests("application_workspaces",[]{ownership_and_moves();explicit_close_and_stale_authorization();snapshots_and_policy();selection_and_nonreuse();scoped_views_and_bootstrap();atomic_window_close();unpublished_creation_rollback();limits_and_invalid_models();});}
+int main(){return run_core_tests("application_workspaces",[]{ownership_and_moves();explicit_close_and_stale_authorization();snapshots_and_policy();selection_and_nonreuse();scoped_views_and_bootstrap();atomic_window_close();unpublished_creation_rollback();restore_candidate_beside_live_window();candidate_restore_allocation_rollback();limits_and_invalid_models();});}

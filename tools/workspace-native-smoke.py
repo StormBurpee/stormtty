@@ -37,7 +37,23 @@ def main():
         seed = saved.read_bytes()
         if not seed or b'Fixture Alpha' not in seed or b'Fixture Beta' not in seed:
             raise RuntimeError('first actual app launch did not save both workspace metadata records')
+        if not seed.startswith(b'STORMTTY-APPLICATION-LAYOUT 1\nclean 1\n'):
+            raise RuntimeError('clean close did not write the application envelope')
+        # Reconstitute only the authored embedded v1 library to exercise an actual
+        # old-file -> new-file native migration, not a parser-only round trip.
+        header, clean, payload_header, payload = seed.split(b'\n', 3)
+        kind, length = payload_header.split(b' ')
+        if kind != b'library':
+            raise RuntimeError('missing embedded v1 library')
+        legacy = payload[:int(length)]
+        if not legacy.startswith(b'STORMTTY-WORKSPACES 1\n'):
+            raise RuntimeError('invalid authored v1 migration fixture')
+        saved.write_bytes(legacy)
         run('restore')
+        if (root / 'workspaces.stormtty.v1-backup').read_bytes() != legacy:
+            raise RuntimeError('migration failed to preserve exact original v1 bytes')
+        if not saved.read_bytes().startswith(b'STORMTTY-APPLICATION-LAYOUT 1\nclean 1\n'):
+            raise RuntimeError('restored app did not atomically migrate to clean envelope')
         if saved.read_bytes() == seed:
             raise RuntimeError('additive preset was not persisted on second app exit')
         corrupt = b'not a workspace library\x00\xff\r\nretain exactly\n'

@@ -257,3 +257,44 @@ This adapter is gated to nonpersistent fixtures: grouped storage, clean Quit ver
 individual close, crash recovery and second-executable ownership remain mandatory
 before exposing normal New Window commands. No native/physical pass is implied by
 portable tests or Windows-target compilation.
+
+`restore_creating_window` is the grouped-startup import primitive: it replaces
+only an unpublished, process-free candidate, prepares all records and capacity
+before committing, and rejects duplicate durable identities already owned by a
+surviving window. Existing actor bindings, runtime IDs and both selection layers
+remain intact. It accepts empty declarative groups; hosts must still guard empty
+window commands before exposing such a window. Grouped startup must retain the
+original file/recovery state if any later candidate fails, not autosave a truncated
+set of successfully opened windows.
+
+### Settings saves across views
+
+The existing guarded file service already serializes baseline validation through
+atomic rename with its process-global save mutex. Every view must keep using that
+service; an extra application mutex is unnecessary. Editor snapshots and drafts
+remain view-local: a second stale editor receives a conflict instead of silently
+rebasing or overwriting another view's save. The Windows service test races two
+authored saves from one missing-file baseline and requires exactly one winner,
+one conflict, and byte-identical winner preservation after a stale retry.
+
+This does not promise automatic cross-window theme/draft synchronization or
+cross-process coordination. Before persistent multiple windows are exposed, view
+retirement must not block survivors by joining pending file-I/O workers in the UI
+pump; defer disposal or transfer the job's ownership to the application.
+
+### Closing a view with pending Settings I/O
+
+The nonpersistent multi-window reaper now leaves a destroyed HWND's view object
+alive while its Settings worker has not published completion. The surviving view
+continues running; only a published result permits worker reap and view disposal.
+Closed-view results are not applied to abandoned UI/drafts, and failed saves are
+reported to surviving windows. The worker's immutable weak application fallback
+wakes the pump after its HWND is gone without retaining a native window.
+
+The authored two-window fixture holds a real Settings-save worker before I/O,
+closes the original HWND, and requires fresh survivor output before releasing the
+worker. It then requires the saved fixture file, closed-view retirement and the
+same survivor actor's final output/exit. Failure cleanup destroys the promise to
+release the worker before joining views. This is not a timing-based sleep test and
+not proof of persistent grouped-window behavior; that path remains gated pending
+its separate recovery/owner integration and native qualification.

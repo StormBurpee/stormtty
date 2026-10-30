@@ -38,6 +38,35 @@ WindowId ApplicationWorkspaces::owner(ProjectWorkspaceId id) const noexcept {
 Result<WindowId> ApplicationWorkspaces::begin_window_creation() {
     auto result=create_window();if(result)creating_=*result.value;return result;
 }
+Status ApplicationWorkspaces::restore_creating_window(WindowId id, const WorkspaceSnapshot& snapshot) {
+    if(!id || creating_!=id)return Status::failure("Restore requires an unpublished candidate window");
+    if(revision_==std::numeric_limits<std::uint64_t>::max())return Status::failure("Placement revision exhausted");
+    auto* candidate=&*std::find_if(windows_.begin(),windows_.end(),[&](const auto& w){return w.id==id;});
+    for(const auto project:candidate->projects)if(!catalog_.session_ids(project).empty())return Status::failure("Candidate already owns live sessions");
+    ProjectWorkspaceCatalog prepared;
+    if(auto result=restore_workspace_snapshot(prepared,snapshot);!result)return result;
+    const auto existing=catalog_.entries_.size()-candidate->projects.size();
+    if(prepared.entries_.size()>ProjectWorkspaceCatalog::maximum_projects-existing)return Status::failure("Application workspace limit reached");
+    for(const auto& restored:prepared.entries_)for(const auto& current:catalog_.entries_)
+        if(owner(current.id)!=id && current.metadata.persistent_id==restored.metadata.persistent_id)return Status::failure("Restored workspace already belongs to another window");
+    std::vector<ProjectWorkspaceId> placement;placement.reserve(prepared.entries_.size());
+    for(const auto& restored:prepared.entries_)placement.push_back(restored.id);
+    // MSVC's map move constructor may allocate sentinel nodes. Construct every
+    // destination slot before mutation, then commit only through noexcept move
+    // assignment and vector swap. Allocation failure leaves the old catalog intact.
+    std::vector<ProjectWorkspace> replacement(existing+prepared.entries_.size());
+    static_assert(std::is_nothrow_move_assignable_v<ProjectWorkspace>);
+    const bool replacing_active=owner(catalog_.active_)==id;
+    std::size_t next=0;
+    for(auto& current:catalog_.entries_)
+        if(std::find(candidate->projects.begin(),candidate->projects.end(),current.id)==candidate->projects.end())
+            replacement[next++]=std::move(current);
+    for(auto& restored:prepared.entries_)replacement[next++]=std::move(restored);
+    catalog_.entries_.swap(replacement);
+    candidate->projects.swap(placement);candidate->active=prepared.active_;
+    if(replacing_active || !catalog_.active_)catalog_.active_=prepared.active_?prepared.active_:(catalog_.entries_.empty()?ProjectWorkspaceId{}:catalog_.entries_.front().id);
+    ++revision_;return {};
+}
 Status ApplicationWorkspaces::commit_window_creation(WindowId id) {
     if(!id || creating_!=id)return Status::failure("Window is not being created");
     if(auto valid=validate();!valid)return valid;

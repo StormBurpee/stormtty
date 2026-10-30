@@ -9,6 +9,8 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <barrier>
+#include <thread>
 using namespace stormtty;
 namespace {
 struct Directory {
@@ -16,6 +18,23 @@ struct Directory {
     Directory(){CHECK(std::filesystem::create_directory(path));}
     ~Directory(){std::error_code error;std::filesystem::remove_all(path,error);}
 };
+void serialized_settings_windows(const Directory& directory) {
+    const auto path=directory.path/L"two-settings-editors.stormtty";
+    auto baseline=load_settings_snapshot(path);CHECK(baseline);CHECK(!baseline.snapshot->existed);
+    auto first=*baseline.config,second=first;first.font.size_dip=18;second.font.size_dip=22;
+    ConfigSaveResult results[2];std::barrier start(3);
+    std::thread a([&]{start.arrive_and_wait();results[0]=save_settings_config(path,first,*baseline.snapshot);});
+    std::thread b([&]{start.arrive_and_wait();results[1]=save_settings_config(path,second,*baseline.snapshot);});
+    start.arrive_and_wait();a.join();b.join();
+    CHECK(static_cast<bool>(results[0])!=static_cast<bool>(results[1]));
+    CHECK(results[0]?results[1].conflict:results[0].conflict);
+    auto saved=load_settings_snapshot(path);CHECK(saved);
+    CHECK(saved.config->font.size_dip==(results[0]?18:22));
+    // Stale editor is still stale after retry; coordinator never silently reloads.
+    const auto winner_bytes=saved.snapshot->bytes;
+    const auto retry=save_settings_config(path,results[0]?second:first,*baseline.snapshot);CHECK(!retry);CHECK(retry.conflict);
+    const auto unchanged=load_settings_snapshot(path);CHECK(unchanged);CHECK(unchanged.snapshot->bytes==winner_bytes);
+}
 void write(const std::filesystem::path& path,std::string_view bytes) {
     std::ofstream file(path,std::ios::binary|std::ios::trunc);CHECK(file.good());file.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));file.close();CHECK(file.good());
 }
@@ -127,7 +146,7 @@ void malformed_and_bounds(const Directory& directory) {
     for(const auto& item:std::filesystem::recursive_directory_iterator(directory.path))CHECK(!item.path().filename().wstring().starts_with(L".stormtty-save-"));
 }
 }
-int main(){return run_core_tests("application_layout_services (Windows native)",[]{Directory directory;migration_and_conflicts(directory);malformed_and_bounds(directory);permission_guards(directory);});}
+int main(){return run_core_tests("application_layout_services (Windows native)",[]{Directory directory;migration_and_conflicts(directory);malformed_and_bounds(directory);permission_guards(directory);serialized_settings_windows(directory);});}
 #else
 int main(){std::cout<<"SKIP application_layout_services: Windows runtime required\n";return 0;}
 #endif
