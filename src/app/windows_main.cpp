@@ -69,7 +69,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
         Arguments args;
         if (!args.values) throw std::runtime_error("Could not read command-line arguments.");
-        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-agent" || std::wstring_view(args.values[i])==L"--smoke-settings" || std::wstring_view(args.values[i])==L"--smoke-workspaces") smoke=true;
+        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-agent" || std::wstring_view(args.values[i])==L"--smoke-settings" || std::wstring_view(args.values[i])==L"--smoke-workspaces" || std::wstring_view(args.values[i])==L"--smoke-shell-startup") smoke=true;
         completed.enabled=smoke;
         stormtty::NativeRunOptions options; options.smoke_test=smoke;
         // Must precede creation of any HWND, including startup error dialogs.
@@ -92,6 +92,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 options.smoke_workspaces=std::string(stage.begin(),stage.end()); ++smoke_modes;
             }
             else if (argument == L"--workspace-fixture" && i + 1 < args.count) workspace_fixture=args.values[++i];
+            else if (argument == L"--smoke-shell-startup" && i+1<args.count) {
+                const std::wstring mode(args.values[++i]);
+                if(mode!=L"off" && mode!=L"ready" && mode!=L"disabled" && mode!=L"unavailable")
+                    throw std::invalid_argument("Invalid shell startup smoke mode.");
+                options.smoke_shell_startup=std::string(mode.begin(),mode.end()); ++smoke_modes;
+            }
+            else if (argument == L"--diagnose-shell-startup") { options.diagnose_shell_startup=true; }
             else if (argument == L"--smoke") { ++smoke_modes; }
             else if (argument == L"--smoke-layout") { options.smoke_layout=true; ++smoke_modes; }
             else if (argument == L"--smoke-modal") { options.smoke_modal=true; ++smoke_modes; }
@@ -146,6 +153,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                     "does not change the saved default shell. Smoke uses real Zsh, not cmd.\n"
                     "Windows app builds bundle managed Zsh and find\n"
                     "runtimes/zsh beside the executable; existing saved shell choices win.\n\n"
+                    "--diagnose-shell-startup prints fixed state/cache/timing diagnostics in managed Zsh.\n"
+                    "It measures owned shell source to line-init, not full app startup or input readiness.\n\n"
                     "Ctrl+Shift+P opens commands.\nCtrl+Shift+T creates a tab.\n"
                     "Ctrl+Tab changes tabs.\nCtrl+Shift+V pastes.\nAlt+Space opens the system menu.";
                 if (smoke) { std::fprintf(stdout,"%.*s\n",static_cast<int>(help.size()),help.data()); return 0; }
@@ -160,6 +169,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
 
         if(smoke && !options.codex_executable.empty()) throw std::invalid_argument("Native smoke cannot configure a live agent provider.");
+        if (!options.smoke_shell_startup.empty() &&
+            (options.diagnose_shell_startup != (options.smoke_shell_startup!="off")))
+            throw std::invalid_argument("Shell startup smoke requires matching explicit diagnostic flag.");
         if (smoke_modes>1) throw std::invalid_argument("Choose only one native smoke scenario.");
         if (smoke && required) throw std::runtime_error("Smoke mode does not load user configuration or profile scripts.");
         if (!smoke && !options.capture_path.empty()) throw std::runtime_error("--capture is available only with explicit --smoke mode.");

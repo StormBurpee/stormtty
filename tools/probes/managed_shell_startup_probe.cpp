@@ -227,6 +227,9 @@ void measure(const fs::path& runtime, const fs::path& provider, Fixture& fixture
         {"STORMTTY_ZOXIDE", std::nullopt}, {"_ZO_DATA_DIR", std::nullopt},
         {"STORMTTY_AUTOSUGGESTIONS", std::nullopt}, {"STORMTTY_HIGHLIGHTING", std::nullopt}, {"STORMTTY_PROMPT", std::nullopt}};
     process.environment.push_back(managed_shell_console_environment());
+    // Keep opt-in actual-app diagnostics out of benchmark/profile samples.
+    process.environment.push_back({"STORMTTY_NATIVE_STARTUP_DIAGNOSTIC",std::nullopt});
+    process.environment.push_back({"STORMTTY_NATIVE_STARTUP_STATE_MS",std::nullopt});
     process.environment.push_back({"STORMTTY_NATIVE_ZSH_NO_DUMP",std::nullopt});
     process.environment.push_back({"STORMTTY_NATIVE_ZSH_INIT_EVENT",std::nullopt});
 #ifdef STORMTTY_EXPERIMENTAL_COMPLETION_SEED

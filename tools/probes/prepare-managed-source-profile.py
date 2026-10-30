@@ -17,7 +17,7 @@ MARKERS = (
     ('if [[ $STORMTTY_EPHEMERAL == 1 ]]; then\n  unset HISTFILE', 'omz'),
     ('[[ -r $_stormtty_vendor/shell-tools/init.zsh ]]', 'defaults_config'),
     ('# Only packaged modules;', 'tools'),
-    ('zmodload zsh/datetime', 'autosuggestions'),
+    ('zmodload zsh/datetime\nzmodload zsh/stat', 'autosuggestions'),
     ('# Highlighting is loaded last,', 'context_hooks'),
     ('typeset +x STORMTTY_MANAGED_ZSH', 'highlighting'),
 )

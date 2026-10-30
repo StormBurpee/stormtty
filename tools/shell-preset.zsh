@@ -2,6 +2,19 @@
 # Clean managed profile only. Existing-user-configuration profiles preserve theirs.
 [[ -o interactive ]] || return
 [[ -n ${STORMTTY_SESSION_ID-} ]] || return
+# Opt-in observation only; consume host-authored bootstrap values, never print
+# paths, config, environment or shell content. No diagnostic subprocesses.
+typeset +x _stormtty_diag_state _stormtty_diag_native_ms
+typeset _stormtty_diag_state=${STORMTTY_NATIVE_STARTUP_DIAGNOSTIC-}
+typeset _stormtty_diag_native_ms=${STORMTTY_NATIVE_STARTUP_STATE_MS-}
+unset STORMTTY_NATIVE_STARTUP_DIAGNOSTIC STORMTTY_NATIVE_STARTUP_STATE_MS
+if [[ $_stormtty_diag_state == (ready|disabled|unavailable) &&
+      $_stormtty_diag_native_ms == <0-999999999> ]] && zmodload zsh/datetime; then
+  typeset -gF _stormtty_diag_start=$EPOCHREALTIME _stormtty_diag_omz_start=0 _stormtty_diag_omz_ms=0
+  typeset -gi _stormtty_diag_dump_before=0
+else
+  unset _stormtty_diag_state _stormtty_diag_native_ms
+fi
 # The host distinguishes absent HOME from an explicit empty value before the
 # MSYS2 Windows-path import. Do not substitute a home or rewrite explicit paths.
 [[ ${STORMTTY_EMPTY_HOME-} == 1 ]] && export HOME=''
@@ -146,7 +159,12 @@ if [[ -r $_stormtty_vendor/oh-my-zsh/oh-my-zsh.sh ]]; then
   # umask. Restore the user's setting immediately; never chmod existing files.
   typeset _stormtty_saved_umask=$(umask)
   umask 077
+  if [[ -n ${_stormtty_diag_state-} ]]; then
+    [[ $ZSH_COMPDUMP != /dev/null && -f $ZSH_COMPDUMP && -r $ZSH_COMPDUMP ]] && _stormtty_diag_dump_before=1
+    _stormtty_diag_omz_start=$EPOCHREALTIME
+  fi
   source "$ZSH/oh-my-zsh.sh"
+  [[ -z ${_stormtty_diag_state-} ]] || (( _stormtty_diag_omz_ms = (EPOCHREALTIME - _stormtty_diag_omz_start) * 1000 ))
   umask "$_stormtty_saved_umask"
   unset _stormtty_saved_umask
   typeset -g STORMTTY_OMZ_LOADED=1
@@ -171,6 +189,11 @@ export LS_COLORS='di=1;34:ln=36:ex=32:so=35:pi=33:bd=33:cd=33:su=31:tw=30;42:ow=
 alias ls='ls --color=auto'
 alias ll='ls -lh'
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+if [[ -n ${_stormtty_diag_state-} ]]; then
+  typeset -gi _stormtty_diag_persistent=$(( STORMTTY_EPHEMERAL == 0 )) _stormtty_diag_dump_after=0
+  [[ ${ZSH_COMPDUMP-} != /dev/null && -f ${ZSH_COMPDUMP-} && -r ${ZSH_COMPDUMP-} ]] && _stormtty_diag_dump_after=1
+  readonly _stormtty_diag_state _stormtty_diag_native_ms _stormtty_diag_start _stormtty_diag_omz_ms _stormtty_diag_dump_before _stormtty_diag_persistent _stormtty_diag_dump_after
+fi
 # A dedicated, opt-in user file; never create/overwrite or source ~/.zshrc.
 [[ -n $_stormtty_state && -f $_stormtty_state/config.zsh ]] && _stormtty_safe_file "$_stormtty_state/config.zsh" && _stormtty_safe_file "$_stormtty_state/config.zsh.zwc" && source "$_stormtty_state/config.zsh"
 [[ ${STORMTTY_PROMPT:-managed} == managed ]] && unsetopt PROMPT_SUBST
@@ -406,3 +429,28 @@ else
   unset _stormtty_init_helper _stormtty_init_event
 fi
 unset _stormtty_completion_uncached
+
+# Last registered diagnostic observer, not readiness authority. Other user hooks
+# can cancel/replace ZLE: absence of this line is not a successful timing sample.
+if [[ -n ${_stormtty_diag_state-} ]]; then
+  typeset -gF _stormtty_diag_source_ms=$(( (EPOCHREALTIME - _stormtty_diag_start) * 1000 ))
+  typeset -gi _stormtty_diag_emitted=0
+  readonly _stormtty_diag_source_ms
+  autoload -Uz add-zle-hook-widget
+  _stormtty_startup_diagnostic() {
+    emulate -L zsh
+    local LC_ALL=C
+    (( _stormtty_diag_emitted )) && return 0
+    _stormtty_diag_emitted=1
+    local -F elapsed=$(( (EPOCHREALTIME - _stormtty_diag_start) * 1000 ))
+    # Fixed format plus bounded enumerations/numbers only. Wall-clock movement
+    # can produce negative intervals; these are diagnostic, not benchmarks.
+    builtin printf '\nSTORMTTY_STARTUP schema=1 native_state=%s state_prepare_ms=%d persistent=%d dump_before=%d dump_after=%d shell_source_ms=%.3f omz_ms=%.3f source_to_line_init_ms=%.3f\n' \
+      "$_stormtty_diag_state" "$_stormtty_diag_native_ms" "$_stormtty_diag_persistent" \
+      "$_stormtty_diag_dump_before" "$_stormtty_diag_dump_after" "$_stormtty_diag_source_ms" "$_stormtty_diag_omz_ms" "$elapsed"
+    add-zle-hook-widget -d line-init _stormtty_startup_diagnostic
+    zle redisplay
+    return 0
+  }
+  add-zle-hook-widget line-init _stormtty_startup_diagnostic
+fi

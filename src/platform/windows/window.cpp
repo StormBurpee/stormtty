@@ -55,6 +55,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include "stormtty/startup_diagnostic_observation.hpp"
 #include <cstring>
 #include <cstdio>
 #include <functional>
@@ -311,6 +312,7 @@ public:
             std::error_code error;
             if (closed) std::filesystem::remove_all(smoke_shell_state_root_,error);
             std::fprintf(stderr,"Native smoke shell state cleanup: actors_closed=%d removed=%d\n",closed,closed&&!error);
+            if(!options_.smoke_shell_startup.empty()) std::fprintf(stderr,"STARTUP_APP_CLEANUP actors_closed=%d removed=%d\n",closed,closed&&!error);
         }
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor body end; member destruction begin");
     }
@@ -355,6 +357,7 @@ private:
     bool smoke_frame_ready() const;
     void smoke_progress(bool presented = false, bool frame_observed = false);
     void smoke_finish(std::string_view error = {});
+    void smoke_shell_startup_progress(bool presented);
     bool smoke_typing_progress();
     void smoke_typing_diagnostic(const char* event);
     void smoke_settings_stage(unsigned stage);
@@ -577,6 +580,10 @@ private:
     bool smoke_modal_presented_{};
     unsigned smoke_settings_input_stage_{}; // closed scene presented, then separate input dispatch
     std::filesystem::path smoke_shell_state_root_;
+    struct StartupSelection { std::atomic<bool> ready{}; std::string text; };
+    std::shared_ptr<StartupSelection> smoke_startup_selection_;
+    unsigned smoke_startup_sample_{1}, smoke_startup_stage_{};
+    std::shared_ptr<Session> smoke_startup_actor_;
     unsigned smoke_typing_stage_{};
     bool smoke_typing_handshake_sent_{}, smoke_typing_handshake_seen_{};
     int smoke_typing_input_result_{-1};
@@ -799,9 +806,22 @@ void NativeWindow::create() {
         const auto root=std::filesystem::path(temporary.data())/(std::wstring(L"StormTTY.ShellSmoke.")+token.data());
         if (!std::filesystem::create_directory(root)) throw std::runtime_error("Smoke shell state directory already exists.");
         smoke_shell_state_root_=root; // Only a directory this process created is owned.
-        if (!prepare_managed_shell_state_at(root,false)) throw std::runtime_error("Private smoke shell state validation failed.");
+        const auto prepared=prepare_managed_shell_state_at(root,false);
+        if (!prepared) throw std::runtime_error("Private smoke shell state validation failed.");
+        if (!options_.smoke_shell_startup.empty()) {
+            if(!std::filesystem::create_directory(root/L"home")) throw std::runtime_error("Startup smoke HOME collision.");
+            if(options_.smoke_shell_startup=="unavailable") {
+                // Owned hardlink fixture: exercise the real native rejection, no
+                // permission repair, status injection or user-path mutation.
+                { std::ofstream file(root/L"authored-history"); file<<"authored fixture\n"; if(!file)throw std::runtime_error("Startup smoke fixture write failed."); }
+                std::filesystem::create_hard_link(root/L"authored-history",prepared.directory/L"history");
+                if(prepare_managed_shell_state_at(root,false))throw std::runtime_error("Startup smoke hardlink was not rejected.");
+            }
+        }
         std::fputs("Native smoke shell state: unique owned root; user history/config excluded.\n",stderr);
     }
+    if (!options_.smoke_shell_startup.empty() && (!options_.smoke_test || !using_managed_shell() || smoke_shell_state_root_.empty()))
+        throw std::runtime_error("Startup smoke requires the isolated managed runtime.");
     if (restored_workspaces_) launch_restored_project(); else new_tab();
     if (options_.smoke_projects) {
         smoke_primary_project_=projects_.active_id();
@@ -1253,11 +1273,25 @@ SessionId NativeWindow::new_session(std::string profile_id) {
             if (entry.name == "STORMTTY_EMPTY_HOME") empty_home = entry.value == "1";
             process.environment.push_back(entry);
         }
+        if (!options_.smoke_shell_startup.empty() && options_.smoke_shell_startup!="disabled")
+            process.environment.push_back({"HOME",narrow((smoke_shell_state_root_/L"home").generic_wstring())});
         // Launch-scoped native DACL validation, never an ambient trust switch.
         // State validation overrides inherited data without a subprocess, HOME
         // replacement, or changes to an existing user's files/permissions.
+        const auto state_started = options_.diagnose_shell_startup ? GetTickCount64() : 0;
         const auto state = options_.smoke_test ? prepare_managed_shell_state_at(smoke_shell_state_root_,empty_home) : prepare_managed_shell_state(empty_home);
-        if (options_.smoke_test && !empty_home && !state) throw std::runtime_error("Private smoke shell state failed revalidation.");
+        const auto state_elapsed = options_.diagnose_shell_startup ? GetTickCount64()-state_started : 0;
+        // Reserved launch-only values: ambient variables cannot opt in or supply output.
+        process.environment.push_back({"STORMTTY_NATIVE_STARTUP_DIAGNOSTIC", options_.diagnose_shell_startup ?
+            std::optional<std::string>(state.status==ManagedShellStateStatus::ready ? "ready" :
+                state.status==ManagedShellStateStatus::disabled ? "disabled" : "unavailable") : std::nullopt});
+        process.environment.push_back({"STORMTTY_NATIVE_STARTUP_STATE_MS", options_.diagnose_shell_startup ?
+            std::optional<std::string>(std::to_string(state_elapsed)) : std::nullopt});
+        if (state.status==ManagedShellStateStatus::unavailable)
+            notice_="Managed Zsh persistence unavailable; history and completion cache are disabled for this session. Startup may be slower.";
+        const bool expected_rejection=options_.smoke_test && options_.smoke_shell_startup=="unavailable" && !smoke_shell_state_root_.empty();
+        if (options_.smoke_test && !empty_home && !state && !expected_rejection) throw std::runtime_error("Private smoke shell state failed revalidation.");
+        if(expected_rejection && state.status!=ManagedShellStateStatus::unavailable) throw std::runtime_error("Startup fixture unexpectedly accepted persistence.");
         process.environment.push_back({"STORMTTY_NATIVE_ZSH_STATE", state ?
             std::optional<std::string>(narrow(state.directory.generic_wstring())) : std::nullopt});
 #ifdef STORMTTY_EXPERIMENTAL_COMPLETION_SEED
@@ -5586,6 +5620,85 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
         throw std::runtime_error("Menu theme capture changed config, actor or input ownership.");
     std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
 }
+void NativeWindow::smoke_shell_startup_progress(bool presented) {
+    if(!presented)return;
+    if(!smoke_startup_actor_) {
+        const auto pane=workspace().active_pane();
+        if(!pane || !workspace().pane(pane)) {smoke_finish("Startup smoke missing active actor.");return;}
+        smoke_startup_actor_=sessions_.at(workspace().pane(pane)->session);
+    }
+    if(smoke_startup_stage_==2) {
+        if(!smoke_startup_actor_->process_finished())return;
+        const auto info=smoke_startup_actor_->info();
+        if(!info.exit_code || *info.exit_code!=0 || !info.error.empty()) {smoke_finish("Startup fixture shell did not exit cleanly.");return;}
+        std::fprintf(stderr,"STARTUP_APP_EXIT sample=%u code=0\n",smoke_startup_sample_);
+        smoke_startup_actor_->request_close();smoke_startup_stage_=3;return;
+    }
+    if(smoke_startup_stage_==3) {
+        if(!smoke_startup_actor_->closed())return;
+        if(options_.smoke_shell_startup=="ready" && smoke_startup_sample_==1) {
+            ++smoke_startup_sample_;smoke_startup_stage_=0;smoke_startup_actor_.reset();new_tab();return;
+        }
+        smoke_finish();return;
+    }
+    const auto frame=smoke_startup_actor_->frame();
+    if(!frame || !frame->bracketed_paste)return;
+    // Fixed-schema extraction stays in memory. Never print frame/user content.
+    std::string text;
+    for(const auto& row:frame->lines)if(row)for(const auto& cell:row->cells)if(cell.span)
+        text+=cell.grapheme.empty()?" ":cell.grapheme;
+    if(!smoke_startup_stage_) {
+        // Actual input round-trip is a separate check, not a readiness timing.
+        if(smoke_startup_actor_->text("print -r -- STARTUP_INPUT$((40+2))")!=SessionSendResult::accepted) {smoke_finish("Startup smoke input rejected.");return;}
+        KeyInput enter;enter.key=Key::enter;
+        if(smoke_startup_actor_->key(enter)!=SessionSendResult::accepted) {smoke_finish("Startup smoke Enter rejected.");return;}
+        smoke_startup_stage_=1;return;
+    }
+    if(smoke_startup_stage_==1) {
+        if(text.find("STARTUP_INPUT42")==std::string::npos)return;
+        smoke_startup_selection_=std::make_shared<StartupSelection>();
+        const auto capture=smoke_startup_selection_;
+        // Use the existing actor-owned Ghostty formatter: unwrap soft wraps,
+        // preserve hard newlines. Never infer wrap semantics from FrameRow.
+        if(smoke_startup_actor_->select(0,0,frame->columns-1,frame->rows-1)!=SessionSendResult::accepted ||
+           smoke_startup_actor_->copy_selection([capture](std::string selected) {
+               capture->text=selected.size()<=65536?std::move(selected):"STORMTTY_STARTUP oversized";
+               capture->ready.store(true,std::memory_order_release);
+           })!=SessionSendResult::accepted) {smoke_finish("Startup fixture selection rejected.");return;}
+        smoke_startup_stage_=4;return;
+    }
+    if(!smoke_startup_selection_ || !smoke_startup_selection_->ready.load(std::memory_order_acquire))return;
+    const auto observation=observe_startup_diagnostic(smoke_startup_selection_->text);
+    if(smoke_startup_actor_->clear_selection()!=SessionSendResult::accepted) {smoke_finish("Startup fixture selection cleanup rejected.");return;}
+    smoke_startup_selection_.reset();
+    const auto count=static_cast<unsigned>(observation.records.size());
+    const bool enabled=options_.diagnose_shell_startup;
+    if(!observation.valid || count!=(enabled?1u:0u)) {smoke_finish("Startup diagnostic observation count invalid.");return;}
+    const bool persistent=options_.smoke_shell_startup=="ready" || options_.smoke_shell_startup=="off";
+    if(enabled) {
+        const auto& record=observation.records.front();
+        if(record.native_state!=options_.smoke_shell_startup || record.persistent!=persistent ||
+           record.dump_before!=(persistent&&smoke_startup_sample_==2) || record.dump_after!=persistent) {
+            smoke_finish("Startup diagnostic state/cache observation invalid.");return;
+        }
+    }
+    const bool unavailable=options_.smoke_shell_startup=="unavailable";
+    const bool notice=notice_=="Managed Zsh persistence unavailable; history and completion cache are disabled for this session. Startup may be slower.";
+    if(notice!=unavailable || (notice && (notice_layout().panel.width<=0 || notice_layout().panel.height<=0))) {smoke_finish("Startup persistence notice invalid.");return;}
+    const auto observed_scene=scene();
+    const bool notice_drawn=std::any_of(observed_scene.texts.begin(),observed_scene.texts.end(),[&](const auto& label){return !notice_.empty() && label.text==notice_;});
+    if(notice_drawn!=unavailable) {smoke_finish("Startup persistence notice missing from native scene.");return;}
+    // Numeric status only. No measured times join the uninstrumented matrix.
+    std::fprintf(stderr,"STARTUP_APP_CHECK mode=%u sample=%u diagnostic=%u native_status=%u persistent=%u cache_expected=%u input_roundtrip=1 notice=%u code=0\n",
+        options_.smoke_shell_startup=="off"?0u:options_.smoke_shell_startup=="ready"?1u:options_.smoke_shell_startup=="disabled"?2u:3u,
+        smoke_startup_sample_,count,persistent?0u:options_.smoke_shell_startup=="disabled"?1u:2u,
+        unsigned(persistent),unsigned(persistent&&smoke_startup_sample_==2),unsigned(notice));
+    if(smoke_startup_actor_->text("exit 0")!=SessionSendResult::accepted) {smoke_finish("Startup fixture exit input rejected.");return;}
+    KeyInput enter;enter.key=Key::enter;
+    if(smoke_startup_actor_->key(enter)!=SessionSendResult::accepted) {smoke_finish("Startup fixture exit Enter rejected.");return;}
+    smoke_startup_stage_=2;
+}
+
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_ || smoke_settings_scroll_running_ || smoke_workspace_frame_running_ || smoke_activity_running_) return;
     if(!options_.smoke_agent&&projects_.active()) {
@@ -5610,6 +5723,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         }
         smoke_phase(SmokeDeadline::Phase::interaction);
     }
+    if (!options_.smoke_shell_startup.empty()) { smoke_shell_startup_progress(presented); return; }
     if (options_.smoke_layout && !smoke_palette_input_progress()) return;
     if (options_.smoke_layout && !smoke_context_progress()) return;
     if (options_.smoke_layout && !smoke_watch_progress()) return;
@@ -6433,7 +6547,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
                     static_cast<unsigned long long>(control.resize_failures));
             }
             std::fputc('\n',stderr);
-            if (frame) for (std::size_t row=0;row<frame->lines.size() && row<24;++row) {
+            if (frame && options_.smoke_shell_startup.empty()) for (std::size_t row=0;row<frame->lines.size() && row<24;++row) {
                 std::string text;
                 for (const auto& cell:frame->lines[row]->cells) { text+=cell.grapheme.empty()?" ":cell.grapheme; if(text.size()>512)break; }
                 while (!text.empty() && text.back()==' ') text.pop_back();
@@ -6662,6 +6776,11 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (wparam==smoke_timeout_timer) {
             const auto now=GetTickCount64();
             if (smoke_deadline_.expired(now)) smoke_finish("Native smoke phase deadline expired before real output, presentation and clean exit.");
+            else if(!options_.smoke_shell_startup.empty() && !smoke_finished_) {
+                // Bounded fixture progress also observes closed actors without
+                // requiring another terminal-byte wake or recursive render.
+                force_redraw_=true;changed();
+            }
             else if(!options_.smoke_workspaces.empty() && !smoke_finished_) {
                 // Hidden actor readiness can change without changing the visible
                 // scene. A normal unchanged render must not strand this explicit

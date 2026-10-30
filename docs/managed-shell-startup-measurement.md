@@ -215,3 +215,111 @@ hooks next. Do not optimize based on the POSIX numbers or disable audit/modules
 to manufacture improvement. Native profiled results remain pending until the
 reviewed workflow runs; local fixture/parser tests and cross-compilation are not
 native timing evidence.
+
+## Diagnosing repeated slow launches in the actual app
+
+From PowerShell, run the same installed/built executable you normally use:
+
+```powershell
+& .\StormTTY.exe --diagnose-shell-startup
+```
+
+This does not select a different shell, provider, configuration, runtime or seed
+policy. If your saved profile is not managed Zsh, select **Zsh · managed** in the
+app. Keep this instance open and open a second managed tab: compare the two
+`STORMTTY_STARTUP schema=1` lines in the terminals. No external Codex task,
+user-dotfile change, diagnostic file or environment-variable setup is needed.
+Only share those fixed diagnostic lines, not surrounding terminal contents.
+
+Each managed launch reports:
+
+- `native_state=ready|disabled|unavailable`: native private-state validation result.
+  `disabled` means explicitly empty HOME; `unavailable` means persistence could
+  not be safely prepared. Normal launches also show an app notice for unavailable
+  persistence. Nothing repairs permissions, deletes state or weakens validation.
+- `state_prepare_ms`: native preparation elapsed milliseconds (GetTickCount64
+  resolution); excludes shell launch. `persistent` says whether the loader actually
+  selected persistent state, not whether every subsequent file write succeeds.
+- `dump_before` / `dump_after`: readable regular completion dump present before
+  OMZ / after OMZ, before user configuration. Presence **does not prove a valid cache or cache hit**.
+  OMZ can rebuild a present dump when revision, absolute runtime/fpath metadata,
+  or completion inventory changes. Switching output/runtime directories can
+  therefore produce another cold launch without deleting private state.
+- `shell_source_ms`: owned `.zshrc` entry (after loading the builtin clock module)
+  to its final diagnostic setup; `omz_ms`: inclusive OMZ source interval;
+  `source_to_line_init_ms`: same source start to this one-shot ZLE line-init hook.
+  These use a wall clock, include diagnostic overhead, and can be affected by
+  clock adjustments. They are not comparable to uninstrumented benchmark samples.
+
+The last field is **not** process-spawn time, first transport byte, full app
+startup, physical display latency, or proof that all possible hooks finished and
+input is usable. User hooks can replace/cancel line initialization; no line means
+no observation, not zero latency. The normal prompt, modules and user hooks remain
+active. The diagnostic uses no subprocess or executable cache and prints only a
+fixed schema, bounded state enumeration, booleans and numeric times.
+
+If every launch has `persistent=0`, investigate unavailable/disabled state before
+optimizing completion. If the first launch has `dump_before=0` and the next has
+`dump_before=1` with much lower OMZ time, the difference is consistent with cold
+completion initialization. If both have a dump but OMZ is still slow, presence
+alone cannot distinguish invalidation from user/module work. If owned-source
+intervals are short while the observed app delay is long, this diagnostic has
+not measured that missing time; investigate host/transport startup separately.
+
+### Native actual-app qualification (separate from timings)
+
+The dedicated `shell-startup.yml` workflow runs only on root-published
+`diagnostic/shell-startup` commits. The completion-seed workflow and running
+qualification are unchanged. It stages the existing pinned runtime and builds
+the default-OFF actual app plus engine observation test, then invokes:
+
+`tools/probes/run-shell-startup-app.py --build <default-OFF-build> --output <evidence>`
+launches the actual app with the existing owned-process runner. Its explicit
+`--smoke-shell-startup off|ready|disabled|unavailable` selector is fixture-only,
+rejects mixed smoke modes and requires the diagnostic flag to match the mode.
+It cannot load user configuration. All state and hardlinks live inside a unique
+app-created smoke root removed by the existing owned cleanup.
+
+The four System-provider cases cover:
+
+- **off:** hostile inherited diagnostic values, but no flag and zero diagnostic
+  records after a real authored input round-trip;
+- **ready:** fresh and then sequential warm sessions in the same validated owned
+  state, expected dump presence changing from absent to present;
+- **disabled:** explicit empty HOME reaches the real home resolver and validator;
+  persistence is disabled, without the unavailable-state notice;
+- **unavailable:** an authored hardlinked history file triggers actual native
+  validation rejection. No injected status, permission repair or weakened check.
+  The expected notice must exist with nonzero layout and in the presented native
+  scene. Ordinary smoke validation failures still fail outside this exact case.
+
+Each case requires actual subsequent command input/output independently of the
+line-init observation. The host uses the existing actor-owned selection formatter
+to unwrap soft wraps while preserving hard newlines, then applies a full-line
+fixed grammar to bounded in-memory fixture text. Selection is cleared without
+writing the system clipboard. No frame text is logged in this smoke mode. The driver publishes only
+allowlisted `STARTUP_APP_CHECK`, `STARTUP_APP_EXIT`, `STARTUP_APP_CLEANUP` and
+`STARTUP_APP_RUN` numeric records. Malformed, missing and duplicate observations
+fail. Every shell receives authored `exit 0`, must actually exit successfully,
+and is closed before reuse or success. The driver also requires actor teardown,
+owned-root removal and successful app process exit/reaping.
+Each app process keeps the existing 120-second bound plus 10-second reap. The
+engine-only formatter test runs first with 30 seconds plus 10 seconds to reap;
+the separate
+workflow step has a 600-second outer bound and 11-minute workflow limit. Existing
+unprofiled startup/seed measurement commands and their timeouts remain untouched.
+No diagnostic timing values enter the baseline matrix.
+
+This new native gate is **not yet executed** merely because parser/source tests
+or Windows cross-compilation pass. It currently targets default-OFF builds only.
+Before enabling the completion seed with this loader, require a separate actual
+ON-app ready-path coexistence check with the exact rebuilt seed identity; a
+seeded fresh dump is already present before OMZ, unlike this OFF fixture's first
+sample. Do not relabel an OFF success as ON evidence or modify the timing baseline
+to obtain that check. This fixture verifies native scene submission, not physical
+display latency or human input feel.
+
+The engine-backed observation test covers widths 20, 40, 80 and 120 columns,
+rejects the same record split by a hard newline, and rejects malformed/extra text.
+It is registered in CTest, including native Windows builds. Viewport row
+concatenation is never diagnostic-record authority.

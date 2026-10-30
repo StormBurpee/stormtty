@@ -64,6 +64,62 @@ class ManagedTests(unittest.TestCase):
         self.assertFalse(sentinel.exists())
         for name,data in before.items():self.assertEqual((state/name).read_bytes(),data)
 
+    def test_startup_diagnostic_requires_valid_opt_in_and_consumes_values(self):
+        for status, milliseconds in [('', ''), ('path-secret', '2'), ('ready', 'not-a-number')]:
+            self.env.update(STORMTTY_NATIVE_STARTUP_DIAGNOSTIC=status, STORMTTY_NATIVE_STARTUP_STATE_MS=milliseconds)
+            result=self.run_shell('[[ -z ${STORMTTY_NATIVE_STARTUP_DIAGNOSTIC+x} && -z ${STORMTTY_NATIVE_STARTUP_STATE_MS+x} && ${+functions[_stormtty_startup_diagnostic]} == 0 ]]')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertNotIn('STORMTTY_STARTUP schema=',result.stdout+result.stderr)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX PTY observation; native ConPTY remains a separate gate')
+    def test_startup_diagnostic_one_shot_preserves_hooks_and_input(self):
+        if not args.assets_cache: self.skipTest('requires pinned modules')
+        try: import pexpect
+        except ImportError: self.skipTest('optional pexpect unavailable')
+        self.env.update(STORMTTY_NATIVE_STARTUP_DIAGNOSTIC='ready', STORMTTY_NATIVE_STARTUP_STATE_MS='3')
+        state=self.home/'.stormtty/zsh'; state.mkdir(parents=True,mode=0o700); state.parent.chmod(0o700)
+        (state/'config.zsh').write_text("function user_line_init() { print -r -- USER_HOOK; }; zle -N zle-line-init user_line_init\nfunction _stormtty_startup_diagnostic() { print WRONG_CALLBACK; }\nSTORMTTY_EPHEMERAL=authored_override\n")
+        pattern=r'STORMTTY_STARTUP schema=1 native_state=ready state_prepare_ms=3 persistent=1 dump_before=([01]) dump_after=1 shell_source_ms=[0-9.]+ omz_ms=[0-9.]+ source_to_line_init_ms=[0-9.]+'
+        for expected in ('0','1'):
+            child=pexpect.spawn(self.shell,['-di'],env=self.env,cwd=str(self.root),encoding='utf-8',timeout=15)
+            self.addCleanup(child.close,force=True)
+            capture=io.StringIO(); child.logfile_read=capture
+            child.expect_exact('USER_HOOK')
+            child.expect(pattern)
+            self.assertEqual(child.match.group(1),expected)
+            child.sendline("print -r -- DIAG_INPUT_OK")
+            child.expect_exact('DIAG_INPUT_OK\r\n')
+            child.expect_exact('USER_HOOK')
+            child.sendline('exit')
+            child.expect(pexpect.EOF)
+            self.assertNotIn('STORMTTY_STARTUP schema=',child.before)
+            child.close(); self.assertEqual(child.exitstatus,0)
+            self.assertEqual(capture.getvalue().count('STORMTTY_STARTUP schema='),1)
+            self.assertNotIn('WRONG_CALLBACK',capture.getvalue())
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX private-state fixture; native status propagation requires native gate')
+    def test_startup_diagnostic_ephemeral_status_is_not_cache_success(self):
+        try: import pexpect
+        except ImportError: self.skipTest('optional pexpect unavailable')
+        for status in ('disabled','unavailable'):
+            self.env.update(STORMTTY_NATIVE_STARTUP_DIAGNOSTIC=status, STORMTTY_NATIVE_STARTUP_STATE_MS='0')
+            self.env['HOME']='' if status=='disabled' else str(self.home)
+            if status=='unavailable': self.home.chmod(0o777)
+            child=pexpect.spawn(self.shell,['-di'],env=self.env,cwd=str(self.root),encoding='utf-8',timeout=15)
+            self.addCleanup(child.close,force=True)
+            child.expect_exact(f'STORMTTY_STARTUP schema=1 native_state={status} state_prepare_ms=0 persistent=0 dump_before=0 dump_after=0')
+            child.sendline('exit'); child.expect(pexpect.EOF); child.close()
+            self.assertEqual(child.exitstatus,0)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX fixture; no first line-init after config exits')
+    def test_startup_diagnostic_no_false_ready_when_config_exits(self):
+        self.env.update(STORMTTY_NATIVE_STARTUP_DIAGNOSTIC='ready', STORMTTY_NATIVE_STARTUP_STATE_MS='3')
+        state=self.home/'.stormtty/zsh'; state.mkdir(parents=True,mode=0o700); state.parent.chmod(0o700)
+        (state/'config.zsh').write_text('exit 7\n')
+        result=self.run_shell('true')
+        self.assertEqual(result.returncode,7)
+        self.assertNotIn('STORMTTY_STARTUP schema=',result.stdout+result.stderr)
+
     def run_shell(self, command, **kwargs):
         return subprocess.run([self.shell, '-dic', command], env=self.env, cwd=self.root, capture_output=True, text=True, timeout=15, **kwargs)
     @unittest.skipIf(os.name == 'nt', 'POSIX helper stub; actual sidecar tested in native ConPTY')

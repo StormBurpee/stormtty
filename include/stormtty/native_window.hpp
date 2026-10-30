@@ -138,6 +138,8 @@ private:
 // Enters the platform message loop. Called once, from the main UI thread.
 // Windows is implemented; other platforms provide their own native shell.
 struct NativeRunOptions {
+    std::string smoke_shell_startup; // Explicit owned fixture: off/ready/disabled/unavailable.
+    bool diagnose_shell_startup{}; // Opt-in fixed managed-shell status/timings, no user data.
     bool smoke_test{}; // Explicit CI mode; never enabled on a normal launch.
     std::string smoke_workspaces; // Dedicated isolated restart qualification: seed/restore/corrupt.
     std::filesystem::path agent_settings_path; // Machine-local only; never derived from portable config/workspaces.
