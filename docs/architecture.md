@@ -156,6 +156,19 @@ Ribbon paint composition: it appends scene primitives/text from supplied layout,
 content and style. It does not measure native text, inspect actors or own graphics
 resources. Change Ribbon appearance here; change hit testing or actions in the host.
 
+`WindowHeaderRenderer` (`window_header_renderer.hpp`,
+`src/core/window_header_renderer.cpp`) composes the native Windows crown, caption
+buttons and tabs into that scene. Its synchronous view borrows layout and a span
+of tab presentations with owned labels; resolved animation values carry no clock,
+model or transition authority. It appends base-layer primitives/text without
+clearing existing scene content or introducing clips. The host retains fullscreen
+admission, the backdrop alpha change used by later surfaces, stable tab identity,
+transition insertion/sampling, hover lookups, timers, hit testing and actions.
+Change header appearance here; change host state or input routing in the host.
+The independent emission oracle verifies resolved-value equivalence, not identical
+wall-clock hover sampling or physical frame pacing. See
+[header verification](../tests/window_header_renderer_verification.md).
+
 `SceneDamageTracker` (`scene_damage.hpp`, `src/core/scene_damage.cpp`) owns the scene
 represented by the persistent canvas, on the renderer thread. It retains immutable
 frames, not GPU resources or presentation state. Commit after successful `EndDraw`,
