@@ -44,6 +44,7 @@
 #include "stormtty/session_identities.hpp"
 #include <ranges>
 #include "stormtty/session_attention.hpp"
+#include "stormtty/session_observation_cache.hpp"
 #include "stormtty/settings_panel.hpp"
 #include "stormtty/windows_settings_wheel.hpp"
 #include <shellapi.h>
@@ -411,8 +412,7 @@ private:
 };
 
 struct ApplicationActors {
-    std::map<SessionId, SessionState> states;
-    std::map<SessionId, std::string> background_labels;
+    SessionObservationCache observations;
     SessionAttention attention;
     ActorLifetimeRegistry registry; // Closes before presentation metadata is destroyed.
 
@@ -420,8 +420,7 @@ struct ApplicationActors {
     // lifetime. One application operation coordinates their disposal cleanup.
     void dispose(SessionId id, const std::shared_ptr<WakeState>& completion = {}) {
         registry.dispose(id, completion);
-        states.erase(id);
-        background_labels.erase(id);
+        observations.forget(id);
         attention.forget(id);
     }
 };
@@ -440,8 +439,8 @@ void qualify_unregistered_actor_disposal() {
         const auto survivor = fixture.registry.allocate();
         retained_callback = fixture.registry.callback(abandoned, original);
         for (const auto id : {abandoned, survivor}) {
-            fixture.states.emplace(id, SessionState::starting);
-            fixture.background_labels.emplace(id, "retained metadata");
+            fixture.observations.observe_state(id, SessionState::starting);
+            fixture.observations.observe_background_label(id, "retained metadata");
             SessionInfo running;
             running.state = SessionState::running;
             running.command.phase = CommandPhase::running;
@@ -454,9 +453,9 @@ void qualify_unregistered_actor_disposal() {
         fixture.dispose(abandoned, completion);
         fixture.dispose(abandoned); // Missing registration must remain harmless.
         if (fixture.registry.contains(abandoned) || fixture.registry.identity(abandoned) ||
-            fixture.states.contains(abandoned) || fixture.background_labels.contains(abandoned) ||
+            fixture.observations.state(abandoned) || fixture.observations.background_label(abandoned) ||
             fixture.attention.parked(abandoned) || fixture.attention.stored_watch(abandoned) ||
-            !fixture.states.contains(survivor) || !fixture.background_labels.contains(survivor) ||
+            !fixture.observations.state(survivor) || !fixture.observations.background_label(survivor) ||
             !fixture.attention.parked(survivor) || !fixture.attention.stored_watch(survivor)) {
             throw std::runtime_error("Partial actor disposal leaked metadata or removed a survivor.");
         }
@@ -946,8 +945,7 @@ private:
     std::string context_label_;
     const ActorLifetimeRegistry& actor_registry_{application_.actors.registry};
     std::map<SessionId, TerminalSize> sizes_;
-    std::map<SessionId, SessionState>& session_states_{application_.actors.states};
-    std::map<SessionId, std::string>& background_labels_{application_.actors.background_labels};
+    SessionObservationCache& observations_{application_.actors.observations};
     SessionId focused_session_{};
     std::shared_ptr<WakeState> wake_;
     std::unique_ptr<SettingsDocumentSession> settings_document_;
@@ -2057,7 +2055,10 @@ void NativeWindow::update_sessions() {
             if (notice_batch.consider(ParkedNotice::process_failed)) batch_notice=info.error;
             ++chrome_generation_;
         }
-        if (!session_states_.contains(pane.session) || session_states_[pane.session]!=info.state) { session_states_[pane.session]=info.state; state_changed=true; ++chrome_generation_; }
+        if (observations_.observe_state(pane.session, info.state)) {
+            state_changed = true;
+            ++chrome_generation_;
+        }
     }
     for (const auto& project:projects_.entries()) for (const auto& parked:project.parked_sessions) {
         const auto* actor = actor_registry_.find(parked.session);
@@ -2068,10 +2069,14 @@ void NativeWindow::update_sessions() {
 
         // Normally inserted by park_pane; fallback baselines without inventing an alert.
         const auto event = attention_.observe_parked(parked.session, info);
-        const auto title=background_title(parked);
-        if (background_labels_[parked.session]!=title) { background_labels_[parked.session]=title; state_changed=true; ++chrome_generation_; }
-        if (!session_states_.contains(parked.session) || session_states_[parked.session]!=info.state) {
-            session_states_[parked.session]=info.state; state_changed=true; ++chrome_generation_;
+        const auto title = background_title(parked);
+        if (observations_.observe_background_label(parked.session, title)) {
+            state_changed = true;
+            ++chrome_generation_;
+        }
+        if (observations_.observe_state(parked.session, info.state)) {
+            state_changed = true;
+            ++chrome_generation_;
         }
         if (notice_batch.consider(event)) {
             const std::string destination=project.id==projects_.active_id()?" Restore it from the footer to inspect output.":" Switch to this workspace and restore it from its footer to inspect output.";
@@ -5083,7 +5088,8 @@ bool NativeWindow::smoke_activity_evidence() {
     }
     for (const auto& parked : saved_parked) fixture_sessions.push_back(parked.session);
     auto saved_attention = attention_.qualification_parked_checkpoint(fixture_sessions);
-    auto saved_labels=background_labels_;const auto saved_history=previous_terminal_;
+    auto saved_labels = observations_.qualification_background_labels_checkpoint();
+    const auto saved_history = previous_terminal_;
     const auto saved_watch_pane=smoke_watch_pane_;auto saved_notice=notice_;
     RECT saved_bounds{};
     if(!GetWindowRect(hwnd_,&saved_bounds))throw std::runtime_error("Activity fixture could not read original bounds.");
@@ -5119,7 +5125,8 @@ bool NativeWindow::smoke_activity_evidence() {
         });
         if (same_actors) attention_.restore_qualification_parked_checkpoint(std::move(saved_attention));
         else std::fputs("Activity rollback retained current attention after actor identity changed.\n", stderr);
-        background_labels_.swap(saved_labels);previous_terminal_=saved_history;
+        observations_.restore_qualification_background_labels_checkpoint(std::move(saved_labels));
+        previous_terminal_ = saved_history;
         if(!SetWindowPos(hwnd_,nullptr,0,0,saved_bounds.right-saved_bounds.left,saved_bounds.bottom-saved_bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE))
             std::fputs("Activity rollback could not restore native bounds; original fixture failure retained.\n",stderr);
         try {reset_project_view();refresh_tooltips();}catch(...){}
@@ -6498,8 +6505,8 @@ void NativeApplication::windows_smoke_progress() {
             std::fputs("Native windows pending Settings: same survivor produced output before closed-view I/O was released.\n",stderr);
         }
         if(view_for(smoke_first_window) || !smoke_first_session->closed())return;
-        if (actors.registry.identity(smoke_first_actor) || actors.states.contains(smoke_first_actor) ||
-            actors.background_labels.contains(smoke_first_actor) ||
+        if (actors.registry.identity(smoke_first_actor) || actors.observations.state(smoke_first_actor) ||
+            actors.observations.background_label(smoke_first_actor) ||
             actors.attention.parked(smoke_first_actor) || actors.attention.stored_watch(smoke_first_actor)) {
             throw std::runtime_error("Closed-window disposal retained actor metadata.");
         }
