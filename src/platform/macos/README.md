@@ -117,6 +117,12 @@ This is an initial **correctness backend**, not Ghostty performance parity:
   fallback fragments, all font-feature combinations and perfect IME preedit
   styling still need native qualification/iteration. Color-emoji glyphs are not
   recolored inside a block cursor.
+  Native row-rasterizer characterization found that the pre-existing dotted
+  underline's zero-length CoreGraphics dash produces no pixels in the tested
+  macOS 15 fixture at 96 DPI. The extracted and original CPU paths matched
+  byte-for-byte; this is a known visibility issue for a separate fix, not visual
+  qualification. All decoration styles/DPI cases retain original-pixel comparison;
+  non-dotted styles additionally require visible ink.
 - Shaping bounds: 4,096 cells, 64 KiB text and 131,072 output glyphs per row;
   individual graphemes above 4 KiB render as a replacement glyph. The original
   VT text is not discarded. Shared grapheme anchors preserve positions across
