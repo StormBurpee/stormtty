@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.24)
+project(StormTTYGlassOptics LANGUAGES CXX)
+# Independent authored-texture math tests. No terminal, capture or desktop dependency.
+add_library(stormtty_glass_optics STATIC ../../../src/core/glass_material.cpp)
+target_compile_features(stormtty_glass_optics PUBLIC cxx_std_20)
+target_include_directories(stormtty_glass_optics PUBLIC . ../../../include)
+add_executable(stormtty_glass_optics_tests tests.cpp)
+target_link_libraries(stormtty_glass_optics_tests PRIVATE stormtty_glass_optics)
+if(MSVC)
+    target_compile_options(stormtty_glass_optics PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(stormtty_glass_optics_tests PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(stormtty_glass_optics PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(stormtty_glass_optics_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+enable_testing()
+add_test(NAME glass_optics_reference COMMAND stormtty_glass_optics_tests)
+option(STORMTTY_GLASS_OPTICS_COMPILE_HLSL "Compile shaders only (requires Windows SDK fxc)" OFF)
+if(STORMTTY_GLASS_OPTICS_COMPILE_HLSL)
+    find_program(FXC fxc REQUIRED)
+    foreach(stage IN ITEMS ps vs)
+        add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/glass_${stage}.cso
+            COMMAND ${FXC} /nologo /Ges /WX /T ${stage}_5_0 /E $<IF:$<STREQUAL:${stage},ps>,glass_ps,fullscreen_vs>
+                /Fo ${CMAKE_CURRENT_BINARY_DIR}/glass_${stage}.cso ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/platform/windows/liquid_glass/material.hlsl
+            DEPENDS ../../../src/platform/windows/liquid_glass/material.hlsl VERBATIM)
+    endforeach()
+    add_custom_target(glass_optics_shaders ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/glass_ps.cso ${CMAKE_CURRENT_BINARY_DIR}/glass_vs.cso)
+endif()

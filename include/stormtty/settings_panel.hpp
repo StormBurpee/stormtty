@@ -11,7 +11,7 @@
 namespace stormtty {
 
 enum class SettingsSection { appearance, shell, shortcuts, ribbon };
-enum class SettingsActionKind { preview, save, cancel, import_theme, export_theme };
+enum class SettingsActionKind { preview, save, cancel, import_theme, export_theme, liquid_glass_start, liquid_glass_stop };
 struct SettingsAction {
     SettingsActionKind kind{};
     // Owned. Preview only reversible theme/font/appearance; commit profiles/bindings
@@ -70,6 +70,9 @@ public:
                            Color disabled_text = {128,128,128,255});
     // Host-observed material status; presentation only, never a saved setting.
     void set_material_status(std::string status);
+    // Session-only host state. Start is merely a request: host must confirm capture.
+    // No saved Config flag, startup action, or consent is represented by this model.
+    void set_liquid_glass_status(bool active, bool available, std::string status);
     // Host-observed availability/override information only; never changes a draft.
     // An unavailable saved choice remains visible, with System always selectable.
     void set_console_backend_status(bool bundled_available, std::string status);
@@ -128,6 +131,9 @@ private:
     double scroll_{}, document_height_{};
     FiniteScroll scroll_motion_;
     bool bundled_console_available_{};
+    bool liquid_glass_active_{}, liquid_glass_available_{};
+    std::string liquid_glass_status_;
+    std::optional<SettingsActionKind> liquid_glass_action_;
     bool open_{}, saving_{}, dragging_opacity_{}, dragging_blur_{}, high_contrast_{}, loaded_changes_{};
     Color high_background_{0,0,0,255}, high_foreground_{255,255,255,255};
     Color high_highlight_{0,120,215,255}, high_highlight_text_{255,255,255,255};

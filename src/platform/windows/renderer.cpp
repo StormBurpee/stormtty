@@ -14,6 +14,7 @@
 #include <dcomp.h>
 #include "smoke_teardown_trace.hpp"
 #include "host_backdrop.hpp"
+#include "liquid_glass/session.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -413,6 +414,13 @@ constexpr Color selection_foreground{236,238,242,255};
 struct Renderer::Impl {
     Apartment apartment;
     windows::HostBackdrop host_backdrop;
+    windows::liquid_glass::Session liquid_glass;
+    Com<ID2D1Bitmap1> glass_bitmap;
+    Com<ID2D1BitmapBrush1> glass_brush;
+    ID3D11Texture2D* glass_key{}; // Identity only; bitmap owns the surface while used.
+    std::uint64_t glass_generation{};
+    bool glass_paint{},glass_canvas_tainted{};
+
     float additional_blur{};
     HWND window{};
     OpaquePresentationWindow opaque_window;
@@ -498,7 +506,35 @@ struct Renderer::Impl {
             !std::isfinite(font.size_dip) || font.size_dip < 4 || font.size_dip > 128)
             throw std::invalid_argument("Invalid terminal font");
     }
+    void stop_glass(const char* reason) noexcept {
+        glass_paint=false;glass_key=nullptr;glass_brush.reset();glass_bitmap.reset();
+        liquid_glass.stop(reason);invalid=true;
+    }
+    bool update_glass() {
+        if(!liquid_glass.active())return false;
+        if(dc)dc->SetTarget(nullptr);
+        auto* texture=liquid_glass.background(dpi/96.f);
+        try {
+            if(texture!=glass_key) {
+                glass_brush.reset();glass_bitmap.reset();glass_key=nullptr;
+                if(texture) {
+                    Com<IDXGISurface> surface;
+                    check(texture->QueryInterface(__uuidof(IDXGISurface),reinterpret_cast<void**>(surface.put())),"Glass surface");
+                    const auto properties=D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE,
+                        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_IGNORE),96,96);
+                    check(dc->CreateBitmapFromDxgiSurface(surface.get(),&properties,glass_bitmap.put()),"Glass bitmap");
+                    const auto bitmap_properties=D2D1::BitmapBrushProperties1(D2D1_EXTEND_MODE_CLAMP,D2D1_EXTEND_MODE_CLAMP,D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                    check(dc->CreateBitmapBrush(glass_bitmap.get(),bitmap_properties,D2D1::BrushProperties(),glass_brush.put()),"Glass brush");
+                    glass_key=texture;
+                }
+            }
+        }catch(...) {stop_glass("Experimental glass surface failed; original material restored.");}
+        const bool changed=glass_generation!=liquid_glass.generation();
+        glass_generation=liquid_glass.generation();if(changed)invalid=true;
+        return changed;
+    }
     void release_swapchain(bool replacing = true) noexcept {
+        stop_glass("Stopped for renderer surface replacement. Start again explicitly in Settings.");
         host_backdrop.detach();counters.host_backdrop=false;
         composition_visual.reset(); composition_target.reset(); composition.reset();
         windows::smoke_teardown_trace(tracing_teardown,"renderer latency handle close begin");
@@ -540,6 +576,7 @@ struct Renderer::Impl {
         // deadline still fails qualification if normal driver release stalls.
     }
     void release_gpu(bool final_shutdown = false) noexcept {
+        stop_glass("Stopped for graphics device replacement. Start again explicitly in Settings.");
         if(final_shutdown) finish_submitted_work();
         windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null begin");
         if (dc) dc->SetTarget(nullptr);
@@ -853,7 +890,8 @@ struct Renderer::Impl {
     void fill(PixelRect r, Color c, float opacity = 1, bool replace = false) {
         if (!nonempty(r)) return;
         brush->SetColor(color(c, opacity));
-        if (replace) dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+        if(replace && glass_paint) dc->FillRectangle(rect(r),glass_brush.get());
+        if (replace && !glass_paint) dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
         dc->FillRectangle(rect(r), brush.get());
         if (replace) dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
     }
@@ -1141,7 +1179,8 @@ struct Renderer::Impl {
                         auto fill_color=primitive.fill;
                         if(primitive.background_replace && !material_enabled())fill_color.a=255;
                         brush->SetColor(color(fill_color));
-                        if(primitive.background_replace)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+                        if(primitive.background_replace && glass_paint)dc->FillRoundedRectangle(rounded,glass_brush.get());
+                        if(primitive.background_replace && !glass_paint)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
                         dc->FillRoundedRectangle(rounded,brush.get());
                         if(primitive.background_replace)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
                     }
@@ -1258,10 +1297,13 @@ struct Renderer::Impl {
     }
     RenderResult render(const WindowScene& scene) {
         if (!width || !height || !canvas) return RenderResult::suspended;
+        update_glass();glass_paint=bool(glass_brush);
         ++tick;
         const auto dirty=damage(scene);
         if(dirty.empty() && !pending_present) {previous=scene;previous.force_redraw=false;return RenderResult::unchanged;}
         if(!dirty.empty()) {
+            const bool full_repaint=dirty.size()==1 && dirty[0].x<=0 && dirty[0].y<=0 && dirty[0].x+dirty[0].width>=float(width) && dirty[0].y+dirty[0].height>=float(height);
+            if(glass_paint)glass_canvas_tainted=true; // Before any desktop pixels enter canvas.
             const auto chrome_order=chrome_paint_order(scene);
             dc->SetTarget(canvas.get());
             dc->BeginDraw();
@@ -1279,6 +1321,7 @@ struct Renderer::Impl {
                 }
             } catch (...) { dc->EndDraw(); invalid=true; throw; }
             check(dc->EndDraw(),"Render canvas");
+            if(!glass_paint&&full_repaint)glass_canvas_tainted=false;
             counters.dirty_rectangles+=dirty.size();
             previous=scene; previous.force_redraw=false; invalid=false; pending_present=true;
         }
@@ -1323,6 +1366,7 @@ void Renderer::resize(std::uint32_t width,std::uint32_t height,float dpi) {
     auto& p=*impl_;
     if(p.dpi!=dpi) { p.dpi=dpi;p.measure_font(); }
     if(width==p.width && height==p.height && p.canvas) return;
+    p.stop_glass("Stopped for resize. Start again explicitly in Settings.");
     p.width=width;p.height=height;
     p.dc->SetTarget(nullptr);p.canvas.reset();p.canvas_texture.reset();p.invalid=true;
     if(!width || !height) { p.opaque_window.resize(width,height); return; }
@@ -1355,6 +1399,23 @@ void Renderer::set_additional_blur(float sigma) {
     p.dc->SetTarget(nullptr);p.canvas.reset();p.canvas_texture.reset();
     p.release_swapchain();p.create_surfaces();p.invalid=true;
 }
+bool Renderer::liquid_glass_available() const noexcept {
+#ifdef _MSC_VER
+    return impl_->window && impl_->counters.composition && !impl_->counters.warp;
+#else
+    return false;
+#endif
+}
+bool Renderer::start_liquid_glass(void* monitor) {
+    if(!liquid_glass_available())return false;
+    auto& p=*impl_;p.stop_glass("Starting experimental glass.");
+    const bool started=p.liquid_glass.start(p.window,monitor,p.device.get(),p.immediate.get());
+    p.invalid=true;return started;
+}
+void Renderer::stop_liquid_glass(const char* reason) noexcept {impl_->stop_glass(reason);}
+bool Renderer::liquid_glass_active()const noexcept{return impl_->liquid_glass.active();}
+std::string Renderer::liquid_glass_status()const{return impl_->liquid_glass.status();}
+bool Renderer::poll_liquid_glass(){return impl_->update_glass();}
 CellMetrics Renderer::metrics() const noexcept {return impl_->cell;}
 RenderResult Renderer::render(const WindowScene& scene) {
     try {return impl_->render(scene);}
@@ -1373,6 +1434,7 @@ void Renderer::recreate_device() {
 }
 void Renderer::cancel_alpha_probe() noexcept { impl_->alpha_staging.reset(); }
 bool Renderer::begin_alpha_probe(PixelRect area) {
+    if(impl_->liquid_glass.active()||impl_->glass_canvas_tainted)return false; // Includes stale post-Stop canvas.
     auto& p=*impl_;p.alpha_staging.reset();
     if(!p.canvas_texture || !std::isfinite(area.x) || !std::isfinite(area.y) || !std::isfinite(area.width) || !std::isfinite(area.height) ||
         area.x<0 || area.y<0 || area.width<1 || area.height<1 || area.x>=p.width || area.y>=p.height) return false;
@@ -1389,6 +1451,7 @@ bool Renderer::begin_alpha_probe(PixelRect area) {
     return true;
 }
 std::optional<RendererAlphaProbe> Renderer::poll_alpha_probe() {
+    if(impl_->liquid_glass.active()||impl_->glass_canvas_tainted){impl_->alpha_staging.reset();return std::nullopt;}
     auto& p=*impl_;if(!p.alpha_staging)return std::nullopt;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     const auto hr=p.immediate->Map(p.alpha_staging.get(),0,D3D11_MAP_READ,D3D11_MAP_FLAG_DO_NOT_WAIT,&mapped);
@@ -1445,6 +1508,7 @@ std::vector<std::string> Renderer::wrap_chrome_text(const ChromeText& label) con
     return lines;
 }
 std::vector<std::uint8_t> Renderer::read_pixels() {
+    if(impl_->liquid_glass.active()||impl_->glass_canvas_tainted)throw std::runtime_error("Desktop glass is GPU-only; readback stays blocked until a clean non-glass repaint.");
     auto& p=*impl_;if(!p.canvas_texture) return {};
     D3D11_TEXTURE2D_DESC desc{};p.canvas_texture->GetDesc(&desc);
     desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;

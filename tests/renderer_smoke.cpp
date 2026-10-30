@@ -360,6 +360,24 @@ std::shared_ptr<RenderFrame> frame() {
     }
     return result;
 }
+void liquid_glass_off_test() {
+    // App-owned offscreen pixels only: never call Start or acquire a desktop source.
+    // This contract also applies when the optional capture service is stubbed out.
+    RendererOptions options;options.force_warp=true;options.font.family="Consolas";
+    Renderer renderer(nullptr,options);
+    require(!renderer.liquid_glass_active(),"New renderer started Liquid Glass without consent");
+    renderer.resize(96,48);
+    WindowScene scene;scene.panes.push_back({1,{0,0,96,48},frame()});
+    require(renderer.render(scene)==RenderResult::presented,"Glass-off fixture did not render");
+    const auto original=renderer.read_pixels();
+    require(original.size()==96*48*4,"Glass-off fixture readback unavailable");
+    renderer.stop_liquid_glass();
+    renderer.stop_liquid_glass(); // Inactive Stop must be safe and idempotent.
+    require(!renderer.liquid_glass_active(),"Inactive Stop activated Liquid Glass");
+    require(renderer.read_pixels()==original,"Inactive Stop blocked or altered app-only readback");
+    renderer.render(scene);
+    require(renderer.read_pixels()==original,"Inactive Stop changed normal rendering");
+}
 void native_render_test() {
     RendererOptions options;options.force_warp=true;options.image_cache_bytes=4096;
     Renderer renderer(nullptr,options);renderer.resize(256,160);
@@ -698,7 +716,7 @@ int main(int argc,char** argv) {
             save_motion_png(captures/std::string(name),pixels,width,height);
         });
         cursor_motion_raster_test();
-        native_host_surface_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();chrome_notice_measurement_test();
+        native_host_surface_test();liquid_glass_off_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();chrome_notice_measurement_test();
         std::cout<<"PASS Windows WARP renderer: HWND/DComp style lifecycle and fallback, private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
         return 0;
     } catch(const std::exception& error) { std::cerr<<"FAIL renderer smoke: "<<error.what()<<'\n';return 1; }

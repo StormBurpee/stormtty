@@ -1,0 +1,4 @@
+#pragma once
+namespace stormtty::windows::liquid_glass {
+inline constexpr char shader_source[] = R"STGLASS(@STORMTTY_GLASS_HLSL@)STGLASS";
+}

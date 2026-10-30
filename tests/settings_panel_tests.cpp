@@ -82,6 +82,72 @@ int main() {return run_core_tests("settings panel",[] {
     SettingsPanel mac_exchange(Platform::macos);mac_exchange.open(default_config(Platform::macos));
     for(const auto& c:mac_exchange.layout().controls)CHECK(c.id!="appearance.import" && c.id!="appearance.export");
     }
+    // Experimental glass is an explicit session action, never a draft preference.
+    {
+        SettingsPanel glass; glass.resize({1000,800}); glass.open(defaults);
+        CHECK(!glass.take_action()); CHECK(!item(glass,"appearance.liquid_glass").enabled);
+        glass.set_liquid_glass_status(false,true,"Off · local GPU-only capture starts only after confirmation.");
+        CHECK(!glass.take_action()); CHECK(glass.draft()==defaults && !glass.dirty());
+        activate(glass,"appearance.liquid_glass");
+        auto start=glass.take_action(); CHECK(start && start->kind==SettingsActionKind::liquid_glass_start);
+        CHECK(start->config==defaults && glass.draft()==defaults && !glass.dirty() && !glass.saving());
+        CHECK(!glass.take_action());
+        // Declining host consent leaves the model off and emits no retry.
+        glass.set_liquid_glass_status(false,true,"Capture declined. Off."); CHECK(!glass.take_action());
+        activate(glass,"appearance.liquid_glass");
+        glass.set_liquid_glass_status(true,true,"Active");glass.set_liquid_glass_status(false,true,"Off");
+        CHECK(!glass.take_action()); // An off/on/off cycle cannot revive stale Start intent.
+        CHECK(serialize_config(glass.draft(),Platform::windows)==serialize_config(defaults,Platform::windows));
+        // A queued preview survives a subsequent session-only Start request.
+        activate(glass,"font.decrease"); const auto changed=glass.draft();
+        activate(glass,"appearance.liquid_glass");
+        const auto preview=glass.take_action(); CHECK(preview && preview->kind==SettingsActionKind::preview);
+        CHECK(preview->config==changed);
+        start=glass.take_action();CHECK(start && start->kind==SettingsActionKind::liquid_glass_start);
+        CHECK(glass.draft()==changed && glass.draft().appearance.additional_blur==defaults.appearance.additional_blur);
+        glass.set_liquid_glass_status(true,false,"Active · local GPU capture. Stop remains available.");
+        CHECK(item(glass,"appearance.liquid_glass").enabled);
+        activate(glass,"appearance.liquid_glass");
+        auto stop=glass.take_action();CHECK(stop && stop->kind==SettingsActionKind::liquid_glass_stop);
+        CHECK(glass.draft()==changed);
+        const auto pressed_bounds=item(glass,"appearance.liquid_glass").hit_bounds;
+        const Point pressed_point{pressed_bounds.x+pressed_bounds.width/2,pressed_bounds.y+pressed_bounds.height/2};
+        CHECK(glass.pointer_down(pressed_point));
+        glass.set_liquid_glass_status(false,true,"Stopped by host");
+        CHECK(glass.pointer_up(pressed_point));CHECK(!glass.take_action());
+        glass.set_liquid_glass_status(false,true,"Off");
+        activate(glass,"appearance.liquid_glass");glass.cancel();
+        const auto cancel=glass.take_action();CHECK(cancel && cancel->kind==SettingsActionKind::cancel);
+        CHECK(!glass.take_action());glass.open(defaults);CHECK(!glass.take_action());
+        activate(glass,"appearance.liquid_glass");activate(glass,"save");
+        const auto saved=glass.take_action();CHECK(saved && saved->kind==SettingsActionKind::save);
+        CHECK(!glass.take_action());glass.persistence_result(true);glass.open(defaults);CHECK(!glass.take_action());
+        glass.set_high_contrast(true);CHECK(!item(glass,"appearance.liquid_glass").enabled);
+        glass.set_liquid_glass_status(true,false,"Stopping due to accessibility policy.");
+        CHECK(item(glass,"appearance.liquid_glass").enabled);
+        activate(glass,"appearance.liquid_glass");stop=glass.take_action();CHECK(stop && stop->kind==SettingsActionKind::liquid_glass_stop);
+        glass.set_high_contrast(false);glass.set_liquid_glass_status(false,true,"Off");
+        activate(glass,"appearance.liquid_glass");glass.set_liquid_glass_status(false,false,"Unavailable");
+        CHECK(!glass.take_action());CHECK(!item(glass,"appearance.liquid_glass").enabled);
+        glass.set_liquid_glass_status(false,true,std::string(400,'x'));
+        for(const Size size:std::array<Size,3>{{{420,360},{640,480},{1400,1000}}}) {
+            glass.resize(size);focus(glass,"appearance.liquid_glass");
+            CHECK(item(glass,"appearance.liquid_glass").visible);
+            WindowScene scene;glass.append_scene(scene,1.25f);validate_scene(scene,size.width,size.height,1.25);
+            CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](const auto& text){return text.text=="Start Liquid Glass";}));
+            CHECK(std::any_of(scene.texts.begin(),scene.texts.end(),[](const auto& text){return text.wrap;}));
+        }
+        // Pointer activation emits the same request without touching the draft.
+        click(glass,"appearance.liquid_glass");start=glass.take_action();
+        CHECK(start && start->kind==SettingsActionKind::liquid_glass_start);CHECK(glass.draft()==defaults);
+        SettingsPanel mac(Platform::macos);mac.set_liquid_glass_status(false,true,"Unavailable");mac.open(default_config(Platform::macos));
+        CHECK(std::none_of(mac.layout().controls.begin(),mac.layout().controls.end(),[](const auto& control){return control.id=="appearance.liquid_glass";}));
+        CHECK(!mac.take_action());
+        auto disk=defaults;disk.font.size_dip+=1;
+        SettingsPanel reopened;reopened.set_liquid_glass_status(false,true,"Off");reopened.open(defaults,disk);
+        const auto disk_preview=reopened.take_action();CHECK(disk_preview && disk_preview->kind==SettingsActionKind::preview);
+        CHECK(!reopened.take_action());
+    }
     // Backend is a stable draft preference, not a process launch or live preview.
     SettingsPanel backend;
     backend.set_console_backend_status(true,"Diagnostic CLI override active; saved choice applies without the override.");
