@@ -67,6 +67,12 @@ if(STORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE)
     target_link_libraries(stormtty_host_backdrop_probe PRIVATE windowsapp CoreMessaging d3d11 dxgi d2d1 dxguid dwrite dwmapi user32 gdi32 advapi32 ole32)
 endif()
 
+# Source-only desktop-glass experiment. Never installed or linked into StormTTY.
+option(STORMTTY_EXPERIMENTAL_DESKTOP_GLASS_PROBE "Build opt-in Windows desktop-capture feasibility probe" OFF)
+if(STORMTTY_EXPERIMENTAL_DESKTOP_GLASS_PROBE)
+    add_subdirectory(tools/probes/desktop_glass)
+endif()
+
 add_library(stormtty_workspace src/core/theme_exchange.cpp src/core/agent_provider_settings.cpp src/core/agent_panel.cpp src/core/settings_panel.cpp src/core/context_menu.cpp src/core/project_workspaces.cpp src/core/application_workspaces.cpp src/core/application_layout_codec.cpp src/core/workspace_presets.cpp src/core/workspace.cpp src/core/workspace_serialization.cpp src/core/commands.cpp src/core/config.cpp)
 target_include_directories(stormtty_workspace PUBLIC include)
 stormtty_warnings(stormtty_workspace)

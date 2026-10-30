@@ -1,0 +1,86 @@
+# Compile-only source feasibility. Never starts a capture session or runs the probe.
+name: Desktop glass source compile only
+on:
+  push:
+    branches: [diagnostic/desktop-glass-source]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: desktop-glass-source-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compile:
+    if: github.ref == 'refs/heads/diagnostic/desktop-glass-source'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record exact source and scope
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          $commit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $commit -ne $env:GITHUB_SHA) { throw 'Checkout does not match event commit' }
+          $tree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot identify source tree' }
+          [ordered]@{commit=$commit; tree=$tree; ref=$env:GITHUB_REF; run_id=$env:GITHUB_RUN_ID; scope='compile-only; no execution/capture; no binary upload'} | ConvertTo-Json | Set-Content -Encoding utf8 evidence/source.json
+          Copy-Item tools/probes/desktop_glass/README.md evidence/source-gates.md
+      - name: Initialize existing native compiler environment
+        run: ./tools/ci-msvc-env.ps1
+      - name: Record compiler and Windows SDK evidence
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          $version = (Get-Item -LiteralPath $compiler).VersionInfo.FileVersion
+          $sdk = $env:WindowsSDKVersion.TrimEnd('\')
+          if (!$sdk -or [version]$sdk -lt [version]'10.0.22621.0') { throw 'Windows SDK 10.0.22621+ required' }
+          $include = Join-Path $env:WindowsSdkDir "Include/$sdk"
+          $headers = @(
+            (Join-Path $include 'cppwinrt/winrt/base.h'),
+            (Join-Path $include 'cppwinrt/winrt/Windows.Graphics.Capture.h'),
+            (Join-Path $include 'um/windows.graphics.capture.interop.h')
+          )
+          [ordered]@{compiler=$compiler; compiler_file_version=$version; sdk_directory=$env:WindowsSdkDir; sdk_version=$sdk; target_arch=$env:VSCMD_ARG_TGT_ARCH} | ConvertTo-Json | Set-Content -Encoding utf8 evidence/toolchain.json
+          $hashes = @($headers | ForEach-Object { Get-FileHash -LiteralPath $_ -Algorithm SHA256 | Select-Object Path,Hash })
+          $hashes | ConvertTo-Json | Set-Content -Encoding utf8 evidence/sdk-headers.json
+          cmake --version 2>&1 | Tee-Object evidence/cmake-version.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ninja --version 2>&1 | Tee-Object evidence/ninja-version.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Configure standalone probe (no terminal engine)
+        run: |
+          cmake -S tools/probes/desktop_glass -B build-desktop-glass -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=Release -DSTORMTTY_EXPERIMENTAL_DESKTOP_GLASS_PROBE=ON 2>&1 | Tee-Object evidence/configure.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile and link only; do not run executable
+        run: |
+          cmake --build build-desktop-glass --target stormtty_desktop_glass_probe --parallel 2 --verbose 2>&1 | Tee-Object evidence/build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash -LiteralPath build-desktop-glass/stormtty_desktop_glass_probe.exe -Algorithm SHA256 | Select-Object Path,Hash | ConvertTo-Json | Set-Content -Encoding utf8 evidence/binary-hash.json
+          'COMPILE/LINK ONLY. Capture, background freshness, exclusion, performance and optics remain UNVERIFIED.' | Set-Content -Encoding utf8 evidence/result.txt
+      - name: Retain compile evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-glass-compile-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            evidence/source.json
+            evidence/source-gates.md
+            evidence/toolchain.json
+            evidence/sdk-headers.json
+            evidence/cmake-version.txt
+            evidence/ninja-version.txt
+            evidence/configure.log
+            evidence/build.log
+            evidence/binary-hash.json
+            evidence/result.txt
+            build-desktop-glass/CMakeCache.txt
+            build-desktop-glass/CMakeFiles/CMakeConfigureLog.yaml
