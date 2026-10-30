@@ -377,26 +377,51 @@ public:
 
 class NativeWindow final {
 public:
-    explicit NativeWindow(NativeApplication& application, WindowId window_id, Config config, NativeRunOptions options)
-        : application_(application), config_(std::move(config)), options_(std::move(options)),
-          session_launcher_({.shell_runtime_directory=options_.shell_runtime_directory,
-              .shell_runtime_error=options_.shell_runtime_error,
-              .shell_runtime_override=options_.shell_runtime_override,
-              .console_runtime_directory=options_.console_runtime_directory,
-              .smoke_test=options_.smoke_test, .smoke_projects=options_.smoke_projects,
-              .smoke_windows=options_.smoke_windows}),
-          projects_(application.projects,window_id), wake_(std::make_shared<WakeState>()) {
-        wake_->completion_fallback=application_.actor_completion;
-        if (!options_.shell_runtime_error.empty()) notice_="Managed Zsh unavailable. Close StormTTY and rebuild to restore runtimes/zsh. Your saved shell is unchanged.";
+    explicit NativeWindow(
+        NativeApplication& application,
+        WindowId window_id,
+        Config config,
+        NativeRunOptions options
+    ) : application_(application),
+        config_(std::move(config)),
+        options_(std::move(options)),
+        session_launcher_({
+            .shell_runtime_directory = options_.shell_runtime_directory,
+            .shell_runtime_error = options_.shell_runtime_error,
+            .shell_runtime_override = options_.shell_runtime_override,
+            .console_runtime_directory = options_.console_runtime_directory,
+            .smoke_test = options_.smoke_test,
+            .smoke_projects = options_.smoke_projects,
+            .smoke_windows = options_.smoke_windows
+        }),
+        projects_(application.projects, window_id),
+        wake_(std::make_shared<WakeState>()) {
+        wake_->completion_fallback = application_.actor_completion;
+        if (!options_.shell_runtime_error.empty()) {
+            notice_ = "Managed Zsh unavailable. Close StormTTY and rebuild to restore runtimes/zsh. "
+                "Your saved shell is unchanged.";
+        }
+
         std::string directory;
-        for (const auto& profile:config_.profiles) if (profile.id==config_.default_profile) { directory=profile.working_directory; break; }
-        if (directory.empty()) directory=narrow(std::filesystem::current_path().wstring());
-        const auto path=std::filesystem::path(widen(directory));
-        auto name=project_name(path);
-        auto project=projects_.create({name,directory,"Local"});
-        if (!project) throw std::runtime_error(project.error);
+        for (const auto& profile : config_.profiles) {
+            if (profile.id == config_.default_profile) {
+                directory = profile.working_directory;
+                break;
+            }
+        }
+        if (directory.empty()) {
+            directory = narrow(std::filesystem::current_path().wstring());
+        }
+
+        const auto path = std::filesystem::path(widen(directory));
+        auto name = project_name(path);
+        auto project = projects_.create({name, directory, "Local"});
+        if (!project) {
+            throw std::runtime_error(project.error);
+        }
         application_.windows.push_back(this);
     }
+
     ~NativeWindow() {
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor body begin");
         wake_->window.store(nullptr, std::memory_order_release);
@@ -1459,23 +1484,46 @@ Session* NativeWindow::session_for(PaneId pane) const {
 }
 Session* NativeWindow::active_session() const { return session_for(workspace().active_pane()); }
 SessionId NativeWindow::new_session(std::string profile_id) {
-    const auto* project=projects_.active();
-    auto launch=session_launcher_.prepare(config_,std::move(profile_id),
-        project?project->metadata.preferred_profile:std::string_view{},
-        project?project->metadata.working_directory:std::string_view{},smoke_shell_state_root_);
-    auto& process=launch.process;
-    auto& terminal=launch.terminal;
-    const bool managed=launch.managed;
-    const SessionId id=application_.actors.allocate();
-    if(!committed_view_)creation_sessions_.push_back(id); // Allocate ledger before launching.
-    const bool bundled=process.provider==ProcessProvider::windows_packaged_experimental;
-    auto session = Session::start(std::move(process), terminal, application_.actors.callback(id,wake_), SessionRetentionPolicy::retain_document);
-    if (options_.smoke_test) { smoke_sessions_.emplace(id,session); if (bundled) smoke_bundled_sessions_.insert(id); if (managed) smoke_managed_sessions_.insert(id); }
+    const auto* project = projects_.active();
+    auto launch = session_launcher_.prepare(
+        config_,
+        std::move(profile_id),
+        project ? project->metadata.preferred_profile : std::string_view{},
+        project ? project->metadata.working_directory : std::string_view{},
+        smoke_shell_state_root_);
+    auto& process = launch.process;
+    auto& terminal = launch.terminal;
+    const bool managed = launch.managed;
+
+    const SessionId id = application_.actors.allocate();
+    if (!committed_view_) {
+        creation_sessions_.push_back(id); // Allocate ledger before launching.
+    }
+
+    const bool bundled = process.provider == ProcessProvider::windows_packaged_experimental;
+    auto session = Session::start(
+        std::move(process),
+        terminal,
+        application_.actors.callback(id, wake_),
+        SessionRetentionPolicy::retain_document);
+
+    if (options_.smoke_test) {
+        smoke_sessions_.emplace(id, session);
+        if (bundled) {
+            smoke_bundled_sessions_.insert(id);
+        }
+        if (managed) {
+            smoke_managed_sessions_.insert(id);
+        }
+    }
     sessions_.emplace(id, std::move(session));
-    const auto token=next_watch_actor_==std::numeric_limits<std::uint64_t>::max()?0:next_watch_actor_++;
-    watch_actors_.emplace(id,token);
+
+    const auto token = next_watch_actor_ == std::numeric_limits<std::uint64_t>::max()
+        ? 0 : next_watch_actor_++;
+    watch_actors_.emplace(id, token);
     return id;
 }
+
 void NativeWindow::new_tab() {
     const auto profile=projects_.active()->metadata.preferred_profile=="@default"?session_profile_id():projects_.active()->metadata.preferred_profile;
     SessionId id;
