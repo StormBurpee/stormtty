@@ -32,11 +32,8 @@
 #include "stormtty/terminal_find.hpp"
 #include "stormtty/workspace_navigator.hpp"
 #include "stormtty/agent_display_text.hpp"
-#include "stormtty/windows_managed_shell.hpp"
 #include "stormtty/windows_shell_state.hpp"
-#ifdef STORMTTY_EXPERIMENTAL_COMPLETION_SEED
-#include "stormtty/windows_completion_seed.hpp"
-#endif
+#include "stormtty/windows_session_launcher.hpp"
 #include "stormtty/windows_console_runtime.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/cursor_motion.hpp"
@@ -380,29 +377,16 @@ public:
 
 class NativeWindow final {
 public:
-    explicit NativeWindow(NativeApplication& application, WindowId window_id, Config config, NativeRunOptions options) : application_(application), config_(std::move(config)), options_(std::move(options)), projects_(application.projects,window_id), wake_(std::make_shared<WakeState>()) {
+    explicit NativeWindow(NativeApplication& application, WindowId window_id, Config config, NativeRunOptions options)
+        : application_(application), config_(std::move(config)), options_(std::move(options)),
+          session_launcher_({.shell_runtime_directory=options_.shell_runtime_directory,
+              .shell_runtime_error=options_.shell_runtime_error,
+              .shell_runtime_override=options_.shell_runtime_override,
+              .console_runtime_directory=options_.console_runtime_directory,
+              .smoke_test=options_.smoke_test, .smoke_projects=options_.smoke_projects,
+              .smoke_windows=options_.smoke_windows}),
+          projects_(application.projects,window_id), wake_(std::make_shared<WakeState>()) {
         wake_->completion_fallback=application_.actor_completion;
-        if (!options_.shell_runtime_directory.empty() && options_.shell_runtime_error.empty()) {
-            const auto& root=options_.shell_runtime_directory;
-            Profile managed;
-            managed.id=managed_zsh_profile_id; managed.label="Zsh · managed";
-            managed.executable=narrow((root/L"usr"/L"bin"/L"zsh.exe").wstring());
-            managed.arguments={"-d","-i"}; // Skip optional global rc files; actual interactive Zsh.
-            std::string child_path=narrow((root/L"usr"/L"bin").wstring());
-            const auto count=GetEnvironmentVariableW(L"PATH",nullptr,0);
-            if (count) {
-                if (count>32767) throw std::runtime_error("Inherited PATH exceeds the supported child environment bound.");
-                std::wstring inherited(count,L'\0');
-                const auto written=GetEnvironmentVariableW(L"PATH",inherited.data(),count);
-                if (written>=count) throw std::runtime_error("Inherited PATH changed while preparing the managed shell.");
-                inherited.resize(written);
-                if (!inherited.empty()) child_path+=';'+narrow(inherited);
-            }
-            managed.environment={{"ZDOTDIR",narrow((root/L"stormtty"/L"zsh").generic_wstring())},
-                {"STORMTTY_SESSION_ID","managed"},{"TERM","xterm-256color"},{"COLORTERM","truecolor"},
-                {"LANG","C.UTF-8"},{"MSYSTEM","MSYS"},{"PATH",std::move(child_path)}};
-            managed_shell_profile_=std::move(managed);
-        }
         if (!options_.shell_runtime_error.empty()) notice_="Managed Zsh unavailable. Close StormTTY and rebuild to restore runtimes/zsh. Your saved shell is unchanged.";
         std::string directory;
         for (const auto& profile:config_.profiles) if (profile.id==config_.default_profile) { directory=profile.working_directory; break; }
@@ -522,8 +506,8 @@ private:
     std::uint64_t& next_watch_actor_{application_.actors.next_watch_actor};
     std::map<SessionId,std::uint64_t>& watch_actors_{application_.actors.watch_actors};
     std::map<SessionId,CommandWatch>& watches_{application_.actors.watches};
-    bool using_managed_shell() const { return managed_shell_profile_ && (options_.shell_runtime_override || has_managed_zsh_selection(config_)); }
-    const std::string& session_profile_id() const { return using_managed_shell()?managed_shell_profile_->id:config_.default_profile; }
+    bool using_managed_shell() const { return session_launcher_.using_managed_shell(config_); }
+    const std::string& session_profile_id() const { return session_launcher_.default_profile_id(config_); }
     void new_tab();
     void split(Direction);
     void close_pane(PaneId, bool approved = false);
@@ -681,7 +665,7 @@ private:
     std::string find_error_;
     bool ai_enabled_{}; // Launch-time feature capability; never changed by reload/preview.
     NativeRunOptions options_;
-    std::optional<Profile> managed_shell_profile_; // Resolved launch profile; only a stable marker is ever saved.
+    const WindowsSessionLauncher session_launcher_;
     SettingsPanel settings_panel_{Platform::windows};
     bool liquid_glass_policy_{},liquid_glass_timer_active_{},liquid_glass_stop_pending_{};
     std::uint64_t liquid_glass_display_generation_{};
@@ -921,7 +905,7 @@ void NativeWindow::create() {
             throw std::runtime_error("Could not create a unique settings smoke path.");
         options_.config_path=std::filesystem::path(temporary.data())/(std::wstring(L"StormTTY.SettingsSmoke.")+token.data())/L"config.stormtty";
     }
-    if (options_.smoke_test && managed_shell_profile_) {
+    if (options_.smoke_test && session_launcher_.managed_profile()) {
         std::array<wchar_t,32768> temporary{};
         const auto length=GetTempPathW(static_cast<DWORD>(temporary.size()),temporary.data());
         GUID guid{}; std::array<wchar_t,40> token{};
@@ -1475,71 +1459,13 @@ Session* NativeWindow::session_for(PaneId pane) const {
 }
 Session* NativeWindow::active_session() const { return session_for(workspace().active_pane()); }
 SessionId NativeWindow::new_session(std::string profile_id) {
-    if (profile_id.empty()) profile_id = projects_.active()->metadata.preferred_profile;
-    if (profile_id == "@default") profile_id = session_profile_id();
-    const bool managed = profile_id == managed_zsh_profile_id;
-    ProcessOptions process;
-    select_windows_console_provider(process,config_.windows_console_backend,options_.console_runtime_directory);
-    // One factory covers tabs, splits and projects. Each Process owns its chosen
-    // provider for life; only a successfully saved choice affects new sessions.
-    if (managed && !managed_shell_profile_)
-        throw std::runtime_error("Managed Zsh is selected but no app-owned runtime is available. Build with STORMTTY_BUNDLE_ZSH=ON or use --shell-runtime; no fallback was launched.");
-    const Profile* selected=managed?&*managed_shell_profile_:nullptr;
-    if (!selected) for (const auto& profile:config_.profiles) if (profile.id==profile_id) { selected=&profile; break; }
-    if (!selected) throw std::runtime_error("Saved shell profile is unavailable. Choose a shell in the workspace menu.");
-    if (selected) {
-        process.executable=selected->executable; process.arguments=selected->arguments; process.working_directory=selected->working_directory;
-        for (const auto& [name,value]:selected->environment) process.environment.push_back({name,value});
-    }
-    if (managed) {
-        // Resolve only an absent HOME through wide APIs; explicit/empty HOME wins.
-        process.environment.push_back(managed_shell_console_environment());
-        const auto home_environment = managed_shell_home_environment();
-        bool empty_home = false;
-        for (const auto& entry : home_environment) {
-            if (entry.name == "STORMTTY_EMPTY_HOME") empty_home = entry.value == "1";
-            process.environment.push_back(entry);
-        }
-        // Launch-scoped native DACL validation, never an ambient trust switch.
-        // State validation overrides inherited data without a subprocess, HOME
-        // replacement, or changes to an existing user's files/permissions.
-        const auto state = options_.smoke_test ? prepare_managed_shell_state_at(smoke_shell_state_root_,empty_home) : prepare_managed_shell_state(empty_home);
-        if (options_.smoke_test && !empty_home && !state) throw std::runtime_error("Private smoke shell state failed revalidation.");
-        process.environment.push_back({"STORMTTY_NATIVE_ZSH_STATE", state ?
-            std::optional<std::string>(narrow(state.directory.generic_wstring())) : std::nullopt});
-#ifdef STORMTTY_EXPERIMENTAL_COMPLETION_SEED
-        if (state) {
-            const auto runtime=std::filesystem::path(widen(process.executable)).parent_path().parent_path().parent_path();
-            // Every opted-in managed launch participates, even warm/custom state.
-            // Heavy integrity work, if fresh, runs on the controller before child launch.
-            process.initialization=completion_seed_launch(state.directory.parent_path().parent_path(),runtime).initialization;
-        }
-#endif
-        // Child environment only: user startup hooks must not override this preset.
-        for (const char* name:{"MSYS","ENV","BASH_ENV"}) process.environment.push_back({name,std::nullopt});
-    }
-    if (const auto* project=projects_.active(); project && !project->metadata.working_directory.empty()) process.working_directory=project->metadata.working_directory;
-    // The built-in alias is resolved only against the trusted system directory,
-    // never the current directory/PATH. Other configured executables must be
-    // absolute and are validated by the process transport.
-    std::string alias=process.executable;
-    for (auto& character:alias) if (character>='A' && character<='Z') character=static_cast<char>(character-'A'+'a');
-    if (!managed && (options_.smoke_test || alias.empty() || alias=="cmd.exe" || alias=="cmd")) {
-        std::array<wchar_t, MAX_PATH + 1> directory{};
-        const UINT length = GetSystemDirectoryW(directory.data(), static_cast<UINT>(directory.size()));
-        if (!length || length >= directory.size()) throw std::runtime_error("Could not discover the Windows system shell.");
-        process.executable = narrow(std::wstring(directory.data(), length) + L"\\cmd.exe");
-        if (options_.smoke_test) { process.arguments={"/d","/q"}; process.environment.clear(); if (!options_.smoke_projects && !options_.smoke_windows) process.working_directory.clear(); }
-        else if (std::find(process.arguments.begin(),process.arguments.end(),"/d")==process.arguments.end()) process.arguments.insert(process.arguments.begin(),"/d"); // Do not unexpectedly run cmd AutoRun registry code.
-    }
-    TerminalOptions terminal;
-    terminal.scrollback_lines=config_.scrollback_lines;
-    // VT default colors belong to the engine, including OSC queries/resets.
-    // Translucency is exclusively a renderer policy; terminal colors stay opaque.
-    terminal.default_foreground=color_hex(config_.theme.foreground,{236,238,242,255});
-    terminal.ansi.emplace();
-    for (std::size_t i=0;i<16;++i) (*terminal.ansi)[i]=color_hex(config_.theme.ansi[i],{0,0,0,255});
-    terminal.default_background=color_hex(config_.theme.background,{23,25,29,255});
+    const auto* project=projects_.active();
+    auto launch=session_launcher_.prepare(config_,std::move(profile_id),
+        project?project->metadata.preferred_profile:std::string_view{},
+        project?project->metadata.working_directory:std::string_view{},smoke_shell_state_root_);
+    auto& process=launch.process;
+    auto& terminal=launch.terminal;
+    const bool managed=launch.managed;
     const SessionId id=application_.actors.allocate();
     if(!committed_view_)creation_sessions_.push_back(id); // Allocate ledger before launching.
     const bool bundled=process.provider==ProcessProvider::windows_packaged_experimental;
@@ -1689,7 +1615,7 @@ void NativeWindow::open_watch(ProjectSessionReference target,WatchIdentity ident
 }
 std::string NativeWindow::background_title(const ParkedSession& parked, bool status) const {
     std::string profile;
-    if (managed_shell_profile_ && managed_shell_profile_->id==parked.profile) profile=managed_shell_profile_->label;
+    if (session_launcher_.managed_profile() && session_launcher_.managed_profile()->id==parked.profile) profile=session_launcher_.managed_profile()->label;
     else for (const auto& candidate:config_.profiles) if (candidate.id==parked.profile) { profile=candidate.label; break; }
     std::string title=background_session_title(parked.user_title,parked.title,profile);
     if (auto found=sessions_.find(parked.session); found!=sessions_.end()) {
@@ -1901,7 +1827,7 @@ NativeWindow::FooterPresentation NativeWindow::footer_presentation() const {
     if (!actor) return result;
     const auto info=actor->info();
     const auto* active_pane=workspace().pane(workspace().active_pane());
-    const bool managed=active_pane && managed_shell_profile_ && active_pane->profile==managed_shell_profile_->id;
+    const bool managed=active_pane && session_launcher_.managed_profile() && active_pane->profile==session_launcher_.managed_profile()->id;
     if (info.shell_context) {
         result.directory=info.shell_context->display_directory;
         result.head=info.shell_context->head;
@@ -1918,7 +1844,7 @@ NativeWindow::FooterPresentation NativeWindow::footer_presentation() const {
     if(result.directory.empty()) {
         if(const auto* pane=workspace().pane(workspace().active_pane())) {
             result.directory=pane->profile;
-            if(managed_shell_profile_ && managed_shell_profile_->id==pane->profile) result.directory=managed_shell_profile_->label;
+            if(session_launcher_.managed_profile() && session_launcher_.managed_profile()->id==pane->profile) result.directory=session_launcher_.managed_profile()->label;
             else for(const auto& profile:config_.profiles) if(profile.id==pane->profile) {result.directory=profile.label;break;}
         }
     }
@@ -1963,7 +1889,7 @@ std::string NativeWindow::directory_context() const {
     if (auto* session=active_session()) {
         const auto info=session->info();
         const auto* pane=workspace().pane(workspace().active_pane());
-        managed_without_context=!info.shell_context && pane && managed_shell_profile_ && pane->profile==managed_shell_profile_->id;
+        managed_without_context=!info.shell_context && pane && session_launcher_.managed_profile() && pane->profile==session_launcher_.managed_profile()->id;
         if(!managed_without_context) path=info.shell_context?info.shell_context->display_directory:info.working_directory;
     }
     if (path.empty() && !managed_without_context) if (const auto* project=projects_.active()) path=project->metadata.working_directory;
@@ -2260,7 +2186,7 @@ void NativeWindow::workspace_menu(Point point, ProjectWorkspaceId target) {
     };
     shell("@default","App default");
     for (const auto& profile:config_.profiles) shell(profile.id,profile.label.empty()?profile.id:profile.label);
-    if (managed_shell_profile_ && std::none_of(config_.profiles.begin(),config_.profiles.end(),[](const auto& p){return p.id==managed_zsh_profile_id;})) shell(managed_shell_profile_->id,managed_shell_profile_->label);
+    if (session_launcher_.managed_profile() && std::none_of(config_.profiles.begin(),config_.profiles.end(),[](const auto& p){return p.id==managed_zsh_profile_id;})) shell(session_launcher_.managed_profile()->id,session_launcher_.managed_profile()->label);
     items.push_back(std::move(shells));
     items.push_back({"workspace.retry","Start restored panes",{},{},true,false,{}});
     actions["workspace.retry"]=[this,id]{
@@ -2371,7 +2297,7 @@ std::string NativeWindow::pane_title(PaneId id, bool full) const {
     const auto* pane = workspace().pane(id);
     if (!pane) return {};
     std::string result = pane->title;
-    const Profile* profile = managed_shell_profile_ && pane->profile==managed_shell_profile_->id?&*managed_shell_profile_:nullptr;
+    const Profile* profile = session_launcher_.managed_profile() && pane->profile==session_launcher_.managed_profile()->id?&*session_launcher_.managed_profile():nullptr;
     if (!profile) for (const auto& candidate : config_.profiles) if (candidate.id == pane->profile) { profile = &candidate; break; }
     if (result.empty()) result = profile && !profile->label.empty() ? profile->label : "Terminal";
     (void)full;
@@ -2382,7 +2308,7 @@ std::string NativeWindow::pane_title(PaneId id, bool full) const {
     return result;
 }
 PaneContextPresentation NativeWindow::context_for(const Pane& pane,std::string_view start,const SessionInfo& info) const {
-    const Profile* profile=managed_shell_profile_ && pane.profile==managed_shell_profile_->id?&*managed_shell_profile_:nullptr;
+    const Profile* profile=session_launcher_.managed_profile() && pane.profile==session_launcher_.managed_profile()->id?&*session_launcher_.managed_profile():nullptr;
     if(!profile)for(const auto& candidate:config_.profiles)if(candidate.id==pane.profile){profile=&candidate;break;}
     // Preserve the existing model-resolved title and its validation bound; raw
     // actor titles rejected by the workspace must not bypass that UI contract.
@@ -2392,7 +2318,7 @@ PaneContextPresentation NativeWindow::context_for(const Pane& pane,std::string_v
     if(exited)title+=" · exited";
     const auto configured=start.empty() && profile?std::string_view(profile->working_directory):start;
     return make_pane_context({title,profile?profile->label:pane.profile,info.working_directory,configured,
-        info.shell_context?&*info.shell_context:nullptr,managed_shell_profile_ && pane.profile==managed_shell_profile_->id,exited});
+        info.shell_context?&*info.shell_context:nullptr,session_launcher_.managed_profile() && pane.profile==session_launcher_.managed_profile()->id,exited});
 }
 PaneContextPresentation NativeWindow::pane_context(PaneId id) const {
     const auto* pane=workspace().pane(id);
@@ -2632,7 +2558,7 @@ void NativeWindow::settings_completed() {
         cancel_drag(); context_menu_.cancel(); menu_actions_.clear(); palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false; text_input_.reset();
         palette_transition_=ChromeTransition{}; closing_palette_primitives_.clear(); closing_palette_texts_.clear();
         if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
-        if (managed_shell_profile_) completion->shells.profiles.push_back(managed_zsh_profile_reference());
+        if (session_launcher_.managed_profile()) completion->shells.profiles.push_back(managed_zsh_profile_reference());
         // Edit the latest valid disk value, but Cancel restores the running
         // presentation. Keep the exact token from this read for atomic Save.
         // Missing files retain running defaults (including managed shell setup).
@@ -2663,7 +2589,7 @@ void NativeWindow::settings_completed() {
             catch (const std::exception& error) { apply_error=error.what(); }
             config_=std::move(completion->candidate);
             notice_=apply_error.empty()?(!options_.console_runtime_directory.empty()?
-                "Settings saved. Console launch override is still active.":managed_shell_profile_ && options_.shell_runtime_override?
+                "Settings saved. Console launch override is still active.":session_launcher_.managed_profile() && options_.shell_runtime_override?
                 "Settings saved. Shell launch override is still active.":
                 "Settings saved."):
                 "Settings saved, but presentation could not update. Restart to apply: "+apply_error;
@@ -2835,7 +2761,7 @@ void NativeWindow::refresh_navigator() {
             const auto actor=sessions_.find(id);if(actor==sessions_.end())return;
             const auto info=actor->second->info();
             std::string profile_label(profile);for(const auto& p:config_.profiles)if(p.id==profile)profile_label=p.label;
-            if(managed_shell_profile_&&managed_shell_profile_->id==profile)profile_label=managed_shell_profile_->label;
+            if(session_launcher_.managed_profile()&&session_launcher_.managed_profile()->id==profile)profile_label=session_launcher_.managed_profile()->label;
             auto title=background_session_title(user_title,info.title,profile_label);if(title.empty())title="Terminal";
             std::string state=terminal_status_label(info);
             if(!watch_label(id).empty())state+=" · "+watch_label(id);
@@ -2845,7 +2771,7 @@ void NativeWindow::refresh_navigator() {
                 const auto generation=attention!=parked_attention_.end()?attention->second.unread_generation():std::nullopt;
                 if(generation && !(watch && watch->status()==WatchStatus::completed && watch->generation()==*generation))state+=" · Unread background completion";
             }
-            const bool managed=managed_shell_profile_&&managed_shell_profile_->id==profile;
+            const bool managed=session_launcher_.managed_profile()&&session_launcher_.managed_profile()->id==profile;
             const auto directory=info.shell_context?info.shell_context->display_directory:managed?std::string{}:info.working_directory;
             if(navigator_activity_project_) {const auto attention=parked_attention_.find(id);activity_ranks[id]=activity_priority(current_watch(id),info.state,attention!=parked_attention_.end()&&attention->second.unread_completion());}
             item.terminals.push_back({id,text(title),text(directory),state,parked,active_session()==actor->second.get(),watch_identity(id)});
@@ -3025,11 +2951,11 @@ std::vector<NativeWindow::PaletteEntry> NativeWindow::palette_commands() const {
         auto context=projects_.active()->metadata.name;
         if (const auto actor=sessions_.find(parked.session); actor!=sessions_.end()) {
             const auto info=actor->second->info();
-            const bool managed=managed_shell_profile_ && parked.profile==managed_shell_profile_->id;
+            const bool managed=session_launcher_.managed_profile() && parked.profile==session_launcher_.managed_profile()->id;
             // Match the footer: typed context is display data; a managed clear
             // must not resurrect the previous raw OSC 7 URI in search results.
             auto cwd=info.shell_context?info.shell_context->display_directory:
-                managed?managed_shell_profile_->label:info.working_directory;
+                managed?session_launcher_.managed_profile()->label:info.working_directory;
             std::erase_if(cwd,[](unsigned char c){return c<0x20 || c==0x7f;});
             if (!cwd.empty() && cwd!=context) context+=(context.empty()?"":" · ")+cwd;
         }
@@ -6358,7 +6284,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             }
             settings_panel_.key({{"TAB"}}); settings_panel_.key({{"ENTER"}}); settings_input_changed();
             if (settings_panel_.capturing_shortcut() || config_.bindings!=smoke_settings_original_.bindings || sessions_.size()!=1) { smoke_finish("Shortcut capture executed an action or applied before Save."); return; }
-            if (managed_shell_profile_ && !options_.shell_runtime_override) {
+            if (session_launcher_.managed_profile() && !options_.shell_runtime_override) {
                 if (using_managed_shell() || !activate_setting("nav.shell") || !activate_setting("shell:stormtty-managed-zsh") ||
                     !has_managed_zsh_selection(settings_panel_.draft()) || using_managed_shell()) {
                     smoke_finish("Configured Settings did not offer managed Zsh while preserving the old shell before Save."); return;
@@ -6401,7 +6327,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if (config_.theme!=saved_custom() || config_.appearance.background_opacity!=.25 || config_.appearance.additional_blur!=24 || !smoke_menu_has_theme(config_.theme)) {
                 smoke_finish("Saved theme or opacity did not remain applied."); return;
             }
-            if (managed_shell_profile_ && !options_.shell_runtime_override) {
+            if (session_launcher_.managed_profile() && !options_.shell_runtime_override) {
                 const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
                 if (!saved || !has_managed_zsh_selection(*saved.config) || !settings_baseline_matches(*saved.config,config_,Platform::windows) ||
                     smoke_managed_sessions_.contains(sessions_.begin()->first)) {
@@ -6415,11 +6341,11 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                     smoke_finish("Bundled backend did not persist, or replaced an existing System actor."); return;
                 }
             }
-            if ((managed_shell_profile_ && !options_.shell_runtime_override) || switch_console) {
+            if ((session_launcher_.managed_profile() && !options_.shell_runtime_override) || switch_console) {
                 new_tab();
                 const auto* pane=workspace().pane(workspace().active_pane());
                 if (sessions_.size()!=2 || !pane ||
-                    (managed_shell_profile_ && !options_.shell_runtime_override && !smoke_managed_sessions_.contains(pane->session)) ||
+                    (session_launcher_.managed_profile() && !options_.shell_runtime_override && !smoke_managed_sessions_.contains(pane->session)) ||
                     (switch_console && !smoke_bundled_sessions_.contains(pane->session)) ||
                     std::none_of(sessions_.begin(),sessions_.end(),[&](const auto& entry){return entry.second==smoke_settings_actor_;})) {
                     smoke_finish("Saved shell/backend did not launch a new actor while retaining the original actor."); return;
