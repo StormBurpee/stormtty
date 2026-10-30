@@ -2,28 +2,17 @@
 #include "cf_owner.hpp"
 #include "core_text_font_resources.hpp"
 #include "metal_texture_resources.hpp"
+#include "metal_compositor.hpp"
 #import <AppKit/AppKit.h>
 #import <CoreText/CoreText.h>
-#import <Metal/Metal.h>
-#import <QuartzCore/CAMetalLayer.h>
 #include <algorithm>
-#include <atomic>
 #include <cmath>
-#include <chrono>
-#include <compare>
-#include <condition_variable>
-#include <mutex>
-#include <map>
-#include <limits>
 #include <stdexcept>
-#include <sstream>
-#include <tuple>
 #include <utility>
 
 namespace stormtty {
 namespace {
 using macos::CfOwner;
-constexpr std::size_t max_surface_bytes=128u*1024u*1024u;
 NSString* string(std::string_view text) {
     return [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSUTF8StringEncoding] ?: @"\uFFFD";
 }
@@ -42,40 +31,6 @@ struct Bitmap {
         CGContextSetShouldSmoothFonts(context.get(),false); // Grayscale AA: translucent-safe, not LCD subpixels.
     }
 };
-struct alignas(16) Quad { float destination[4],uv[4],viewport[2]; };
-static_assert(sizeof(Quad)==48,"Metal constant-buffer ABI requires 16-byte rounded alignment");
-struct Tint { float value[4]; };
-constexpr const char* shader_source=R"metal(
-#include <metal_stdlib>
-using namespace metal;
-struct Quad { float4 destination; float4 uv; float2 viewport; };
-struct Vertex { float4 position [[position]]; float2 uv; };
-vertex Vertex quad_vertex(uint n [[vertex_id]],constant Quad& q [[buffer(0)]]) {
-    const float2 corners[6]={float2(0,0),float2(1,0),float2(0,1),float2(0,1),float2(1,0),float2(1,1)};
-    float2 p=q.destination.xy+corners[n]*q.destination.zw;
-    Vertex v;v.position=float4(p.x/q.viewport.x*2-1,1-p.y/q.viewport.y*2,0,1);
-    v.uv=q.uv.xy+corners[n]*q.uv.zw;return v;
-}
-fragment float4 quad_fragment(Vertex v [[stage_in]],texture2d<float> t [[texture(0)]],
-    constant float4& tint [[buffer(0)]]) {
-    constexpr sampler s(coord::normalized,filter::nearest,address::clamp_to_edge);
-    return t.sample(s,v.uv)*tint;
-}
-fragment float4 quad_replace_fragment(Vertex v [[stage_in]],texture2d<float> t [[texture(0)]],
-    constant float4& tint [[buffer(0)]]) {
-    constexpr sampler s(coord::normalized,filter::nearest,address::clamp_to_edge);
-    const float4 pixel=t.sample(s,v.uv);
-    // Bounded CoreGraphics overlays include transparent padding. COPY applies
-    // to their covered shape, not its otherwise-transparent bounding rectangle.
-    if(pixel.a==0)discard_fragment();
-    return pixel*tint;
-}
-)metal";
-struct Presentation {
-    std::mutex mutex;std::condition_variable changed;
-    std::uint64_t serial{},submitted{},scheduled{},completed{},callbacks{},zero_time_callbacks{};
-    double last_time{};bool gpu_error{};std::string surface;
-};
 struct PaneStamp {
     std::uint64_t id{},generation{},images{};PixelRect content;bool focused{},cursor{},blink{};
     bool operator==(const PaneStamp&) const = default;
@@ -83,66 +38,47 @@ struct PaneStamp {
 
 }
 struct Renderer::Impl {
-    __weak NSView* view;
-    CAMetalLayer* layer;
-    id<MTLDevice> device;
-    id<MTLCommandQueue> queue;
-    id<MTLRenderPipelineState> pipeline,replace_pipeline;
-    id<MTLTexture> target,white;
+    // Early storage keeps native resources alive until texture/font destruction.
+    // Deferred emplacement preserves the original shared-state allocation phase.
+    std::optional<macos::MetalCompositor> compositor;
     RendererOptions options;
     RendererStats statistics;
     macos::CoreTextFontResources font_resources;
     std::uint32_t width{},height{};float dpi{96};
-    std::uint64_t font_generation{1},serial{},chrome_generation{};
+    std::uint64_t font_generation{1},chrome_generation{};
     std::vector<PaneStamp> previous;
     Color previous_background{};bool have_previous{};
     macos::MetalTextureResources textures;
-    std::shared_ptr<std::atomic<unsigned>> in_flight=std::make_shared<std::atomic<unsigned>>(0);
-    std::shared_ptr<std::atomic<bool>> gpu_failed=std::make_shared<std::atomic<bool>>(false);
-    std::shared_ptr<Presentation> presented=std::make_shared<Presentation>();
     explicit Impl(void* handle, RendererOptions settings)
-        : view((__bridge NSView*)handle),
-          options(std::move(settings)),
+        : options(std::move(settings)),
           textures({options.shape_cache_bytes, options.image_cache_bytes,
                     options.maximum_image_dimension}) {
-        if(options.force_warp) throw std::invalid_argument("WARP is Windows-only; macOS native tests require a Metal device");
-        if(!std::isfinite(options.background_opacity)||options.background_opacity<0.f||options.background_opacity>1.f)throw std::invalid_argument("Invalid default background opacity");
-        create_device();measure();
-    }
-    void create_device() {
-        textures.begin_upload_batch();in_flight=std::make_shared<std::atomic<unsigned>>(0);gpu_failed=std::make_shared<std::atomic<bool>>(false);presented=std::make_shared<Presentation>();device=MTLCreateSystemDefaultDevice();check(device!=nil,"A supported Metal device is required");
-        queue=[device newCommandQueue];check(queue!=nil,"Cannot create Metal command queue");
-        NSError* error=nil;
-        id<MTLLibrary> library=[device newLibraryWithSource:string(shader_source) options:nil error:&error];
-        if(!library)throw std::runtime_error("Metal shader compile: "+std::string(error.localizedDescription.UTF8String ?: "unknown error"));
-        MTLRenderPipelineDescriptor* descriptor=[MTLRenderPipelineDescriptor new];
-        descriptor.vertexFunction=[library newFunctionWithName:@"quad_vertex"];
-        descriptor.fragmentFunction=[library newFunctionWithName:@"quad_fragment"];
-        descriptor.colorAttachments[0].pixelFormat=MTLPixelFormatBGRA8Unorm;
-        auto attachment=descriptor.colorAttachments[0];attachment.blendingEnabled=YES;
-        attachment.sourceRGBBlendFactor=MTLBlendFactorOne;attachment.destinationRGBBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
-        attachment.sourceAlphaBlendFactor=MTLBlendFactorOne;attachment.destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
-        pipeline=[device newRenderPipelineStateWithDescriptor:descriptor error:&error];
-        check(pipeline!=nil,"Cannot create Metal composition pipeline");
-        attachment.blendingEnabled=NO;
-        descriptor.fragmentFunction=[library newFunctionWithName:@"quad_replace_fragment"];
-        replace_pipeline=[device newRenderPipelineStateWithDescriptor:descriptor error:&error];
-        check(replace_pipeline!=nil,"Cannot create Metal replacement pipeline");
-        const std::uint8_t pixel[4]={255,255,255,255};white=textures.upload_bgra(device, 1, 1, pixel);
-        if(view) {
-            layer=[CAMetalLayer layer];layer.device=device;layer.pixelFormat=MTLPixelFormatBGRA8Unorm;
-            layer.framebufferOnly=NO;layer.opaque=NO;layer.maximumDrawableCount=3;
-            layer.allowsNextDrawableTimeout=YES;layer.displaySyncEnabled=YES;
-            CfOwner<CGColorSpaceRef> color(CGColorSpaceCreateWithName(kCGColorSpaceSRGB));layer.colorspace=color.get();
-            // Layer-hosting NSViews do not promise AppKit-managed layer geometry.
-            // A valid drawable with a zero-size/unattached layer can execute on
-            // the GPU but never acquire an onscreen presentedTime.
-            layer.frame=view.bounds;
-            view.layer=layer;view.wantsLayer=YES;
+        compositor.emplace(handle);
+        try {
+            if (options.force_warp) {
+                throw std::invalid_argument("WARP is Windows-only; macOS native tests require a Metal device");
+            }
+            if (!std::isfinite(options.background_opacity) ||
+                options.background_opacity < 0.f || options.background_opacity > 1.f) {
+                throw std::invalid_argument("Invalid default background opacity");
+            }
+            create_device();
+            measure();
+        } catch (...) {
+            compositor->release_generation_references_for_unwind();
+            throw;
         }
-        statistics.composition=true;statistics.color_fonts=true;
-        textures.clear_device_textures();
-        target=nil;have_previous=false;gpu_failed->store(false);
+    }
+
+    ~Impl() {
+        compositor->release_generation_references_for_unwind();
+    }
+
+    void create_device() {
+        compositor->create_device(textures);
+        statistics.composition = true;
+        statistics.color_fonts = true;
+        have_previous = false;
     }
     void measure() {
         font_resources.reset(options.font, dpi);
@@ -150,41 +86,28 @@ struct Renderer::Impl {
         textures.clear_rows();
         have_previous = false;
     }
-    void resize(std::uint32_t w,std::uint32_t h,float new_dpi) {
-        if(!std::isfinite(new_dpi)||new_dpi<48||new_dpi>768)throw std::invalid_argument("Invalid renderer DPI");
-        if(w>16384||h>16384||std::uint64_t(w)*h*4>max_surface_bytes)throw std::invalid_argument("Metal window surface exceeds 128 MiB budget");
-        if(new_dpi!=dpi){dpi=new_dpi;measure();}
-        if(layer){layer.contentsScale=dpi/96.;if(view)layer.frame=view.bounds;}
-        if(width==w&&height==h&&target)return;
-        width=w;height=h;target=nil;have_previous=false;
-        if(layer){layer.contentsScale=dpi/96.;layer.drawableSize=CGSizeMake(w,h);}
-        if(!w||!h)return;
-        auto desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
-        desc.storageMode=MTLStorageModePrivate;desc.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
-        target=[device newTextureWithDescriptor:desc];check(target!=nil,"Cannot allocate Metal composition surface");
+    void resize(std::uint32_t w, std::uint32_t h, float new_dpi) {
+        if (!std::isfinite(new_dpi) || new_dpi < 48 || new_dpi > 768) {
+            throw std::invalid_argument("Invalid renderer DPI");
+        }
+        macos::MetalCompositor::validate_surface_size(w, h);
+        if (new_dpi != dpi) {
+            dpi = new_dpi;
+            measure();
+        }
+        compositor->update_layer_geometry(dpi);
+        if (compositor->surface_matches(w, h)) {
+            return;
+        }
+        width = w;
+        height = h;
+        have_previous = false;
+        compositor->replace_surface(w, h, dpi);
     }
-    void draw(id<MTLRenderCommandEncoder> encoder,id<MTLTexture> image,PixelRect rect,
-              Color tint={255,255,255,255},bool replace=false,PixelRect uv={0,0,1,1}) {
-        if(!finite(rect)||!finite(uv)||rect.width<=0||rect.height<=0)return;
-        Quad quad{{rect.x,rect.y,rect.width,rect.height},{uv.x,uv.y,uv.width,uv.height},{float(width),float(height)}};
-        const float a=tint.a/255.f;Tint color{{tint.r/255.f*a,tint.g/255.f*a,tint.b/255.f*a,a}};
-        [encoder setRenderPipelineState:replace?replace_pipeline:pipeline];
-        [encoder setVertexBytes:&quad length:sizeof(quad) atIndex:0];
-        [encoder setFragmentBytes:&color length:sizeof(color) atIndex:0];
-        [encoder setFragmentTexture:image atIndex:0];[encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
-    }
-    bool clip(id<MTLRenderCommandEncoder> encoder,PixelRect r) {
-        if(!finite(r)||r.width<=0||r.height<=0)return false;
-        const auto x=std::clamp(std::floor(r.x),0.f,float(width));
-        const auto y=std::clamp(std::floor(r.y),0.f,float(height));
-        const auto right=std::clamp(std::ceil(r.x+r.width),0.f,float(width));
-        const auto bottom=std::clamp(std::ceil(r.y+r.height),0.f,float(height));
-        if(right<=x||bottom<=y)return false;
-        [encoder setScissorRect:MTLScissorRect{std::size_t(x),std::size_t(y),std::size_t(right-x),std::size_t(bottom-y)}];return true;
-    }
-    id<MTLTexture> raster_row(const RenderPane& pane, const FrameRow& row,
-                             std::uint32_t width, std::uint32_t height,
-                             std::uint32_t variant = 0) {
+
+    void draw_row(macos::MetalFrame& paint, const RenderPane& pane, const FrameRow& row,
+                  std::uint32_t width, std::uint32_t height, PixelRect destination,
+                  std::uint32_t variant = 0) {
         const auto cell = font_resources.metrics();
         const macos::RowRasterOptions raster_options{
             width, height, pane.frame->cell_width ? pane.frame->cell_width : float(cell.width),
@@ -192,11 +115,10 @@ struct Renderer::Impl {
             textures.remaining_upload_bytes()
         };
         const macos::RowTextureIdentity identity{pane.id, font_generation, variant};
-        return textures.row_texture(device, identity, row, font_resources.borrow_font(),
-                                    raster_options, serial);
+        paint.draw_row(identity, row, font_resources.borrow_font(), raster_options, destination);
     }
 
-    void draw_images(id<MTLRenderCommandEncoder> encoder,const RenderPane& pane,ImageLayer which) {
+    void draw_images(macos::MetalFrame& paint,const RenderPane& pane,ImageLayer which) {
         const auto cell = font_resources.metrics();
         const auto& f=*pane.frame;const float cw=f.cell_width?f.cell_width:cell.width,ch=f.cell_height?f.cell_height:cell.height;
         for(const auto& placement:f.images) {
@@ -209,66 +131,54 @@ struct Renderer::Impl {
             const float h=placement.pixel_height?placement.pixel_height:placement.rows?placement.rows*ch:sh;
             const PixelRect destination{pane.content.x+placement.column*cw+placement.offset_x,pane.content.y+placement.row*ch+placement.offset_y,w,h};
             if(destination.x+destination.width<=pane.content.x||destination.y+destination.height<=pane.content.y||destination.x>=pane.content.x+pane.content.width||destination.y>=pane.content.y+pane.content.height)continue;
-            id<MTLTexture> image_tex=textures.image_texture(device, pane.id, image, serial);if(!image_tex)continue;
-            draw(encoder,image_tex,destination,
-                {255,255,255,255},false,{float(placement.source_x)/image.width,float(placement.source_y)/image.height,float(sw)/image.width,float(sh)/image.height});
+            paint.draw_image(pane.id, image, destination,
+                {float(placement.source_x)/image.width, float(placement.source_y)/image.height,
+                 float(sw)/image.width, float(sh)/image.height});
         }
     }
     RenderResult render(const WindowScene& scene) {
         const auto cell = font_resources.metrics();
-        if(!width||!height||!target)return RenderResult::suspended;
+        if(!width||!height||!compositor->has_surface())return RenderResult::suspended;
         if(scene.panes.size()>4096||scene.primitives.size()>16384||scene.texts.size()>4096)throw std::runtime_error("Metal scene exceeds bounded primitive counts");
-        if(gpu_failed->load())throw std::runtime_error("Metal command buffer failed; renderer reconstruction is required");
-        if(view&&(!view.window.visible||(view.window.occlusionState&NSWindowOcclusionStateVisible)==0))return RenderResult::occluded;
+        compositor->check_gpu_health();
+        if (compositor->is_occluded()) return RenderResult::occluded;
         std::vector<PaneStamp> stamps;
         for(const auto& p:scene.panes)if(p.frame)stamps.push_back({p.id,p.frame->generation,p.frame->image_placements_generation,p.content,p.focused,p.cursor_on,p.text_blink_on});
         if(have_previous&&!scene.force_redraw&&chrome_generation==scene.chrome_generation&&stamps==previous&&scene.background==previous_background)return RenderResult::unchanged;
-        if(in_flight->load()>=2)return RenderResult::busy;
+        if(compositor->submission_busy())return RenderResult::busy;
         @autoreleasepool {
             // Do not retain CAMetalDrawable across frames. Apple may briefly wait
             // inside nextDrawable; two in-flight buffers plus a three-drawable pool
             // avoid saturating it. This is not a proven nonblocking present path.
-            id<CAMetalDrawable> drawable=layer?[layer nextDrawable]:nil;
-            if(layer&&!drawable)return RenderResult::busy;
-            ++serial;textures.begin_upload_batch();
-            if(layer){std::ostringstream details;const auto frame=layer.frame,bounds=layer.bounds;
-                details<<"attached="<<(layer.superlayer!=nil)<<" hidden="<<bool(layer.hidden)
-                    <<" opacity="<<layer.opacity<<" frame="<<frame.origin.x<<','<<frame.origin.y<<','<<frame.size.width<<','<<frame.size.height
-                    <<" bounds="<<bounds.origin.x<<','<<bounds.origin.y<<','<<bounds.size.width<<','<<bounds.size.height
-                    <<" drawable="<<layer.drawableSize.width<<'x'<<layer.drawableSize.height<<" scale="<<layer.contentsScale;
-                std::lock_guard lock(presented->mutex);presented->submitted=serial;presented->surface=details.str();}
-            id<MTLCommandBuffer> command=[queue commandBuffer];check(command!=nil,"Cannot create Metal command buffer");
-            auto pass=[MTLRenderPassDescriptor renderPassDescriptor];pass.colorAttachments[0].texture=target;
-            pass.colorAttachments[0].loadAction=MTLLoadActionClear;pass.colorAttachments[0].storeAction=MTLStoreActionStore;
-            pass.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,0);
-            id<MTLRenderCommandEncoder> encoder=[command renderCommandEncoderWithDescriptor:pass];check(encoder!=nil,"Cannot create Metal render encoder");
+            auto paint = compositor->begin_frame(textures);
+            if (!paint) return RenderResult::busy;
             Color canvas=scene.background;canvas.a=static_cast<std::uint8_t>(std::lround(options.background_opacity*255));
-            draw(encoder,white,{0,0,float(width),float(height)},canvas);
+            paint.fill({0,0,float(width),float(height)},canvas);
             for(const auto& pane:scene.panes) {
-                if(!pane.frame||!clip(encoder,pane.content))continue;
+                if(!pane.frame||!paint.clip(pane.content))continue;
                 const auto& frame=*pane.frame;
                 if(frame.lines.size()>4096||frame.images.size()>1024)throw std::runtime_error("Terminal frame exceeds renderer row/placement limits");
                 const float cw=frame.cell_width?frame.cell_width:cell.width,ch=frame.cell_height?frame.cell_height:cell.height;
                 // Reset the pane first; source-overing translucent backgrounds on
                 // a previous/global background would accumulate opacity.
-                draw(encoder,white,pane.content,{0,0,0,0},true);
+                paint.fill(pane.content,{0,0,0,0},true);
                 Color background=frame.background;background.a=static_cast<std::uint8_t>(std::lround(options.background_opacity*255));
-                draw(encoder,white,pane.content,background);
-                draw_images(encoder,pane,ImageLayer::below_background);
+                paint.fill(pane.content,background);
+                draw_images(paint,pane,ImageLayer::below_background);
                 for(std::size_t r=0;r<frame.lines.size();++r)if(frame.lines[r]) {
                     const auto& row=*frame.lines[r];
                     for(std::size_t c=0;c<row.cells.size();++c) {
                         const auto& cell_value=row.cells[c];Color bg=cell_value.style.inverse?cell_value.foreground:cell_value.background;
                         if(cell_value.selected)bg={58,79,91,255};
-                        if(!cell_value.background_is_default||cell_value.style.inverse||cell_value.selected){bg.a=255;draw(encoder,white,{pane.content.x+c*cw,pane.content.y+r*ch,cw,ch},bg);}
+                        if(!cell_value.background_is_default||cell_value.style.inverse||cell_value.selected){bg.a=255;paint.fill({pane.content.x+c*cw,pane.content.y+r*ch,cw,ch},bg);}
                     }
                 }
-                draw_images(encoder,pane,ImageLayer::below_text);
+                draw_images(paint,pane,ImageLayer::below_text);
                 for(std::size_t r=0;r<frame.lines.size();++r)if(frame.lines[r]&&pane.content.y+r*ch<pane.content.y+pane.content.height) {
                     const auto rw=static_cast<std::uint32_t>(std::ceil(frame.columns*cw));const auto rh=static_cast<std::uint32_t>(std::ceil(ch));
-                    if(rw&&rh)draw(encoder,raster_row(pane,*frame.lines[r],rw,rh),{pane.content.x,pane.content.y+r*ch,float(rw),float(rh)});
+                    if(rw&&rh)draw_row(paint,pane,*frame.lines[r],rw,rh,{pane.content.x,pane.content.y+r*ch,float(rw),float(rh)});
                 }
-                draw_images(encoder,pane,ImageLayer::above_text);
+                draw_images(paint,pane,ImageLayer::above_text);
                 const auto& cursor=frame.cursor;
                 if(cursor.visible&&pane.cursor_on&&cursor.column<frame.columns&&cursor.row<frame.rows) {
                     auto column=cursor.column;
@@ -280,32 +190,32 @@ struct Renderer::Impl {
                     if(cursor.shape==CursorShape::bar)rect.width=line;
                     else if(cursor.shape==CursorShape::underline){rect.y+=rect.height-line;rect.height=line;}
                     if(!pane.focused||cursor.shape==CursorShape::hollow_block){
-                        draw(encoder,white,{rect.x,rect.y,rect.width,line},color);draw(encoder,white,{rect.x,rect.y+rect.height-line,rect.width,line},color);
-                        draw(encoder,white,{rect.x,rect.y,line,rect.height},color);draw(encoder,white,{rect.x+rect.width-line,rect.y,line,rect.height},color);
+                        paint.fill({rect.x,rect.y,rect.width,line},color);paint.fill({rect.x,rect.y+rect.height-line,rect.width,line},color);
+                        paint.fill({rect.x,rect.y,line,rect.height},color);paint.fill({rect.x+rect.width-line,rect.y,line,rect.height},color);
                     }else{
-                        draw(encoder,white,rect,color);
+                        paint.fill(rect,color);
                         if(cursor.shape==CursorShape::block&&cursor_row&&column<cursor_row->cells.size()){
                             FrameRow inverted=*cursor_row;auto& c=inverted.cells[column];
                             c.foreground=c.style.inverse?c.foreground:c.background;c.style.inverse=false;c.selected=false;c.style.blink=false;
                             RenderPane cursor_pane=pane;cursor_pane.text_blink_on=true;
                             const auto right=std::min(rect.x+rect.width,pane.content.x+pane.content.width),bottom=std::min(rect.y+rect.height,pane.content.y+pane.content.height);
                             PixelRect clipped{std::max(rect.x,pane.content.x),std::max(rect.y,pane.content.y),0,0};clipped.width=right-clipped.x;clipped.height=bottom-clipped.y;
-                            if(clip(encoder,clipped))draw(encoder,raster_row(cursor_pane,inverted,static_cast<std::uint32_t>(std::ceil(frame.columns*cw)),static_cast<std::uint32_t>(std::ceil(ch)),column+1),
-                                {pane.content.x,pane.content.y+cursor.row*ch,frame.columns*cw,ch});
+                            if(paint.clip(clipped))draw_row(paint,cursor_pane,inverted,static_cast<std::uint32_t>(std::ceil(frame.columns*cw)),static_cast<std::uint32_t>(std::ceil(ch)),
+                                {pane.content.x,pane.content.y+cursor.row*ch,frame.columns*cw,ch},column+1);
                         }
                     }
                 }
             }
-            clip(encoder,{0,0,float(width),float(height)});
+            paint.clip({0,0,float(width),float(height)});
             for(const auto& item:chrome_paint_order(scene)) {
                 if(item.kind==ChromeDrawKind::primitive) {
                     const auto& primitive=scene.primitives[item.index];
                     // Reset for every item, including the first fixed item after
                     // scroll content. Raster textures keep their original bounds.
-                    if(!clip(encoder,primitive.clip.value_or(PixelRect{0,0,float(width),float(height)})))continue;
+                    if(!paint.clip(primitive.clip.value_or(PixelRect{0,0,float(width),float(height)})))continue;
                     if(!finite(primitive.rect)||!std::isfinite(primitive.stroke_width)||!std::isfinite(primitive.radius))continue;
                     const bool line=primitive.kind==ChromePrimitiveKind::line;
-                    if(!line&&primitive.radius<=0&&primitive.stroke_width<=0){draw(encoder,white,primitive.rect,primitive.fill,primitive.background_replace);continue;}
+                    if(!line&&primitive.radius<=0&&primitive.stroke_width<=0){paint.fill(primitive.rect,primitive.fill,primitive.background_replace);continue;}
                     const float pad=std::clamp(primitive.stroke_width,1.f,256.f)+1;
                     PixelRect bounds{std::min(primitive.rect.x,primitive.rect.x+primitive.rect.width)-pad,
                         std::min(primitive.rect.y,primitive.rect.y+primitive.rect.height)-pad,std::abs(primitive.rect.width)+2*pad,std::abs(primitive.rect.height)+2*pad};
@@ -320,12 +230,12 @@ struct Renderer::Impl {
                         std::max(0.f,primitive.radius),std::max(0.f,primitive.radius),nullptr));CGContextAddPath(ctx,path.get());}
                     CGContextSetRGBStrokeColor(ctx,stroke.r/255.,stroke.g/255.,stroke.b/255.,stroke.a/255.);CGContextSetLineWidth(ctx,std::max(1.f,primitive.stroke_width));
                     CGContextDrawPath(ctx,line?kCGPathStroke:primitive.stroke_width>0?kCGPathFillStroke:kCGPathFill);
-                    draw(encoder,textures.upload_bgra(device, w, h, bitmap.bytes),{bounds.x,bounds.y,float(w),float(h)},
+                    paint.draw_bgra(w,h,bitmap.bytes,{bounds.x,bounds.y,float(w),float(h)},
                         {255,255,255,255},primitive.background_replace);
                 } else {
                     // Chrome text is small and infrequent; row text is the bounded cache.
                     const auto& label=scene.texts[item.index];
-                    if(!clip(encoder,label.clip.value_or(PixelRect{0,0,float(width),float(height)})))continue;
+                    if(!paint.clip(label.clip.value_or(PixelRect{0,0,float(width),float(height)})))continue;
                     if(!finite(label.rect)||label.text.empty()||!label.color.a||label.text.size()>65536||!std::isfinite(label.size_dip)||label.size_dip<1||label.size_dip>256)continue;
                     const auto w=static_cast<std::uint32_t>(std::max(0.f,std::ceil(label.rect.width))),h=static_cast<std::uint32_t>(std::max(0.f,std::ceil(label.rect.height)));
                     if(!w||!h||std::uint64_t(w)*h*4>4u*1024u*1024u||std::uint64_t(w)*h*4>textures.remaining_upload_bytes())continue;
@@ -339,28 +249,15 @@ struct Renderer::Impl {
                     const CGFloat flush=label.alignment==ChromeTextAlignment::center?.5:label.alignment==ChromeTextAlignment::trailing?1:0;
                     const double pen=std::max(0.,CTLineGetPenOffsetForFlush(line.get(),flush,label.rect.width));
                     CGContextSetTextPosition(bitmap.context.get(),pen,std::max(0.,(h-label_font.ascender+label_font.descender)/2.));
-                    CTLineDraw(line.get(),bitmap.context.get());draw(encoder,textures.upload_bgra(device, w, h, bitmap.bytes),label.rect,{255,255,255,fg.a});
+                    CTLineDraw(line.get(),bitmap.context.get());paint.draw_bgra(w,h,bitmap.bytes,label.rect,{255,255,255,fg.a});
                 }
             }
-            [encoder endEncoding];
-            if(drawable){auto presentation=presented;const auto frame_serial=serial;
-                [drawable addPresentedHandler:^(id<MTLDrawable> shown){
-                    {std::lock_guard lock(presentation->mutex);++presentation->callbacks;presentation->last_time=shown.presentedTime;
-                        if(shown.presentedTime>0)presentation->serial=std::max(presentation->serial,frame_serial);
-                        else ++presentation->zero_time_callbacks;}
-                    presentation->changed.notify_all();
-                }];
-                [command addScheduledHandler:^(id<MTLCommandBuffer> scheduled){(void)scheduled;std::lock_guard lock(presentation->mutex);presentation->scheduled=std::max(presentation->scheduled,frame_serial);}];
-                id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];
-                [blit copyFromTexture:target sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(width,height,1)
-                    toTexture:drawable.texture destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];[blit endEncoding];[command presentDrawable:drawable];}
-            auto count=in_flight;auto failure=gpu_failed;auto presentation=presented;const auto frame_serial=serial;count->fetch_add(1);
-            [command addCompletedHandler:^(id<MTLCommandBuffer> buffer){
-                const bool failed=buffer.status==MTLCommandBufferStatusError;if(failed)failure->store(true);count->fetch_sub(1);
-                {std::lock_guard lock(presentation->mutex);presentation->completed=std::max(presentation->completed,frame_serial);presentation->gpu_error|=failed;}
-                presentation->changed.notify_all();
-            }];
-            [command commit];++statistics.presents;previous=std::move(stamps);chrome_generation=scene.chrome_generation;previous_background=scene.background;have_previous=true;
+            paint.submit();
+            ++statistics.presents;
+            previous = std::move(stamps);
+            chrome_generation = scene.chrome_generation;
+            previous_background = scene.background;
+            have_previous = true;
             return RenderResult::presented;
         }
     }
@@ -394,29 +291,8 @@ RendererStats Renderer::stats() const noexcept {
 bool Renderer::begin_alpha_probe(PixelRect) { return false; }
 std::optional<RendererAlphaProbe> Renderer::poll_alpha_probe() { return std::nullopt; }
 void Renderer::cancel_alpha_probe() noexcept {}
-std::vector<std::uint8_t> Renderer::read_pixels(){
-    if(!impl_->target)return {};
-    const auto stride=(std::size_t(impl_->width)*4+255)&~std::size_t(255);
-    const bool shared=[impl_->device supportsFamily:MTLGPUFamilyApple1];
-    auto buffer=[impl_->device newBufferWithLength:stride*impl_->height options:shared?MTLResourceStorageModeShared:MTLResourceStorageModeManaged];check(buffer!=nil,"Cannot allocate Metal readback buffer");
-    auto command=[impl_->queue commandBuffer];auto blit=[command blitCommandEncoder];
-    [blit copyFromTexture:impl_->target sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(impl_->width,impl_->height,1)
-        toBuffer:buffer destinationOffset:0 destinationBytesPerRow:stride destinationBytesPerImage:stride*impl_->height];if(!shared)[blit synchronizeResource:buffer];[blit endEncoding];[command commit];[command waitUntilCompleted];
-    check(command.status==MTLCommandBufferStatusCompleted,"Metal readback failed");
-    if(impl_->layer){std::unique_lock lock(impl_->presented->mutex);auto& observed=*impl_->presented;
-        const bool signalled=observed.changed.wait_for(lock,std::chrono::seconds(3),[&]{return observed.serial>=impl_->serial||observed.gpu_error;});
-        if(!signalled||observed.gpu_error||observed.serial<impl_->serial){std::ostringstream error;
-            error<<"Metal drawable was not observed presented onscreen: requested="<<impl_->serial<<" submitted="<<observed.submitted
-                <<" scheduled="<<observed.scheduled<<" completed="<<observed.completed<<" presented="<<observed.serial
-                <<" callbacks="<<observed.callbacks<<" zeroTimeCallbacks="<<observed.zero_time_callbacks<<" lastPresentedTime="<<observed.last_time
-                <<" gpuError="<<observed.gpu_error<<" layer{"<<observed.surface<<'}';
-            throw std::runtime_error(error.str());}
-    }
-    std::vector<std::uint8_t> rgba(std::size_t(impl_->width)*impl_->height*4);auto source=static_cast<const std::uint8_t*>(buffer.contents);
-    for(std::uint32_t y=0;y<impl_->height;++y)for(std::uint32_t x=0;x<impl_->width;++x){const auto s=std::size_t(y)*stride+x*4,d=(std::size_t(y)*impl_->width+x)*4;
-        const unsigned a=source[s+3];rgba[d+3]=static_cast<std::uint8_t>(a);
-        const unsigned components[3]={source[s+2],source[s+1],source[s]};
-        for(unsigned c=0;c<3;++c)rgba[d+c]=a?static_cast<std::uint8_t>(std::min(255u,(components[c]*255+a/2)/a)):0;}return rgba;
+std::vector<std::uint8_t> Renderer::read_pixels() {
+    return impl_->compositor->read_pixels();
 }
 void Renderer::recreate_device(){const auto w=impl_->width,h=impl_->height;impl_->create_device();impl_->resize(w,h,impl_->dpi);++impl_->statistics.device_recoveries;}
 }

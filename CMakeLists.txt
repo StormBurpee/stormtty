@@ -454,17 +454,34 @@ elseif(APPLE)
         find_library(STORMTTY_${framework}_FRAMEWORK NAMES ${framework} REQUIRED)
         list(APPEND STORMTTY_MACOS_FRAMEWORKS "${STORMTTY_${framework}_FRAMEWORK}")
     endforeach()
-    add_library(stormtty_renderer
+    set(stormtty_macos_renderer_sources
         src/platform/macos/renderer.mm
         src/platform/macos/core_text_font_resources.mm
         src/platform/macos/core_text_row_rasterizer.mm
         src/platform/macos/metal_texture_resources.mm
+        src/platform/macos/metal_compositor.mm
         src/platform/macos/png_decoder.mm)
+    add_library(stormtty_renderer ${stormtty_macos_renderer_sources})
     target_include_directories(stormtty_renderer PUBLIC include)
     target_link_libraries(stormtty_renderer PUBLIC stormtty_terminal PRIVATE ${STORMTTY_MACOS_FRAMEWORKS})
     target_compile_options(stormtty_renderer PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
     stormtty_warnings(stormtty_renderer)
     if(BUILD_TESTING)
+        # Test-only failure checkpoints and held-command injection are absent
+        # from the production renderer objects.
+        add_executable(macos_metal_compositor_tests
+            tests/macos_metal_compositor_tests.mm
+            ${stormtty_macos_renderer_sources})
+        target_include_directories(macos_metal_compositor_tests PRIVATE include)
+        target_compile_definitions(macos_metal_compositor_tests PRIVATE STORMTTY_METAL_COMPOSITOR_TESTS=1)
+        target_compile_options(macos_metal_compositor_tests PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+        target_link_libraries(macos_metal_compositor_tests PRIVATE
+            stormtty_terminal stormtty_workspace ${STORMTTY_MACOS_FRAMEWORKS})
+        stormtty_warnings(macos_metal_compositor_tests)
+        stormtty_copy_ghostty_runtime(macos_metal_compositor_tests)
+        add_test(NAME macos_metal_compositor_tests COMMAND macos_metal_compositor_tests)
+        set_tests_properties(macos_metal_compositor_tests PROPERTIES TIMEOUT 45 LABELS "macos;native")
+
         stormtty_test(macos_toolchain_probe tools/macos-toolchain-probe.cpp Threads::Threads)
         target_compile_definitions(macos_toolchain_probe PRIVATE STORMTTY_EXPECTED_LLVM_ROOT="${STORMTTY_LLVM_ROOT}")
         set_tests_properties(macos_toolchain_probe PROPERTIES TIMEOUT 10 LABELS "macos;toolchain")
