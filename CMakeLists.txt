@@ -119,7 +119,7 @@ add_library(stormtty_scene_damage src/core/scene_damage.cpp)
 target_include_directories(stormtty_scene_damage PUBLIC include)
 stormtty_warnings(stormtty_scene_damage)
 
-add_library(stormtty_terminal src/terminal/terminal.cpp src/core/shell_context.cpp)
+add_library(stormtty_terminal src/terminal/terminal.cpp src/terminal/terminal_search.cpp src/core/shell_context.cpp)
 target_include_directories(stormtty_terminal PUBLIC include)
 target_link_libraries(stormtty_terminal PUBLIC stormtty::ghostty Threads::Threads)
 stormtty_warnings(stormtty_terminal)

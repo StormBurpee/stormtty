@@ -125,12 +125,23 @@ or paused features.
 
 ### 5. Terminal search and frame materialization
 
-`src/terminal/terminal.cpp` combines the VT adapter with incremental search
-allocation/handles/results and frame/image snapshot materialization. Give those
-algorithms focused collaborators while `TerminalCore` remains the single mutation
-and actor-thread authority. Preserve search budgets and stale-token rejection,
-owned immutable frames, callback failure behavior and borrowed Ghostty lifetimes.
-Do not introduce another terminal model, actor, lock or unbounded snapshot copy.
+`TerminalSearch` now owns incremental search allocation/handles, query validation,
+work budgets, coordinate materialization, immutable results and navigation policy.
+`TerminalCore` remains the single mutation and actor-thread authority: thread and
+callback checks, content revisions, actual selection, viewport reveal and held-output
+release stay there. Dependencies are a synchronously borrowed Ghostty terminal,
+a revision value and owned selection candidates, not a shared host context.
+
+The original Linux real-Ghostty search suite passed 14/14 before extraction;
+extended lifecycle characterization passed 17/17 both before and after. A private
+public-Core trace including snapshot metadata, pointer stability, selection and
+visible viewport matched byte-for-byte. These are Linux/core results, not native
+Windows/macOS or physical UI qualification. See [verification and limits](../tests/terminal_search_ownership_verification.md).
+
+Group 5 remains open: frame/image snapshot materialization is still in
+`src/terminal/terminal.cpp`. Give that algorithm a focused collaborator while
+preserving owned immutable frames, callback failure behavior and borrowed Ghostty
+lifetimes. Do not introduce another terminal model, actor, lock or unbounded copy.
 
 ### 6. Windows document-service modules
 
