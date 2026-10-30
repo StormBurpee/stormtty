@@ -15,6 +15,7 @@
 #include <d3d11.h>
 #include <dxgi1_3.h>
 #include <dcomp.h>
+#include "../src/platform/windows/graphics_error.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -361,6 +362,113 @@ std::shared_ptr<RenderFrame> frame() {
     }
     return result;
 }
+// The retained Windows shape is CPU data, unlike the GPU image cache. Keep
+// these lifetime assertions ahead of any typography-owner migration.
+WindowScene single_shape_scene() {
+    auto source = frame();
+    source->rows = 1;
+    source->lines.resize(1);
+    auto row = std::make_shared<FrameRow>(*source->lines.front());
+    row->cells.front().grapheme = "A";
+    source->lines.front() = std::move(row);
+
+    WindowScene scene;
+    scene.panes.push_back({100, {0, 0, 192, 24}, source});
+    scene.panes.front().cursor_on = false;
+    return scene;
+}
+
+void shape_cache_lifetime_test() {
+    RendererOptions options;
+    options.force_warp = true;
+    options.font.family = "Consolas";
+    Renderer renderer(nullptr, options);
+    renderer.resize(256, 96);
+    auto scene = single_shape_scene();
+    require(renderer.render(scene) == RenderResult::presented, "Shape lifetime fixture did not render");
+
+    const auto warm = renderer.stats();
+    const auto pixels = renderer.read_pixels();
+    require(warm.shaped_rows == 1 && warm.shape_cache_bytes > 0, "Shape fixture did not retain one row");
+
+    renderer.recreate_device();
+    require(renderer.stats().shape_cache_bytes == warm.shape_cache_bytes,
+            "Device recreation discarded CPU shapes before repaint");
+    require(renderer.render(scene) == RenderResult::presented, "Device recreation did not repaint");
+    const auto recovered = renderer.stats();
+    require(recovered.shaped_rows == warm.shaped_rows && recovered.shape_cache_hits == warm.shape_cache_hits + 1,
+            "Device recreation rebuilt a retained CPU shape");
+    require(recovered.shape_cache_bytes == warm.shape_cache_bytes && recovered.device_recoveries == 1,
+            "Device recreation changed retained shape accounting");
+    require(renderer.read_pixels() == pixels, "Device recreation changed text pixels");
+
+    renderer.set_font(options.font);
+    require(renderer.render(scene) == RenderResult::unchanged, "Identical font invalidated the scene");
+    require(renderer.stats().shaped_rows == recovered.shaped_rows &&
+            renderer.stats().shape_cache_hits == recovered.shape_cache_hits,
+            "Identical font touched the shape cache");
+
+    renderer.resize(272, 96);
+    require(renderer.render(scene) == RenderResult::presented, "Surface-only resize did not repaint");
+    const auto resized = renderer.stats();
+    require(resized.shaped_rows == recovered.shaped_rows && resized.shape_cache_hits == recovered.shape_cache_hits + 1,
+            "Surface-only resize rebuilt a retained CPU shape");
+
+    const auto previous_metrics = renderer.metrics();
+    renderer.resize(272, 96, 144);
+    require(renderer.stats().shape_cache_bytes == 0, "DPI-only resize retained stale CPU shapes");
+    require(renderer.metrics().width > previous_metrics.width, "DPI-only resize did not remeasure text");
+    require(renderer.render(scene) == RenderResult::presented, "DPI-only resize did not invalidate the scene");
+    require(renderer.stats().shaped_rows == resized.shaped_rows + 1, "DPI change did not rebuild the row");
+
+    auto font = options.font;
+    for (unsigned change = 0; change < 3; ++change) {
+        if (change == 0) font.size_dip += 2;
+        if (change == 1) font.ligatures = !font.ligatures;
+        if (change == 2) font.locale = "en-GB";
+        const auto before = renderer.stats();
+        renderer.set_font(font);
+        require(renderer.stats().shape_cache_bytes == 0, "Font change retained stale CPU shapes");
+        require(renderer.render(scene) == RenderResult::presented, "Font change did not invalidate the scene");
+        require(renderer.stats().shaped_rows == before.shaped_rows + 1, "Font change did not rebuild the row");
+    }
+}
+
+void uncached_shape_lifetime_test() {
+    // Both disabled and too-small retained budgets use caller-owned scratch.
+    for (const std::size_t budget : {std::size_t{0}, std::size_t{1}}) {
+        RendererOptions options;
+        options.force_warp = true;
+        options.font.family = "Consolas";
+        options.shape_cache_bytes = budget;
+        Renderer renderer(nullptr, options);
+        renderer.resize(256, 96);
+        auto scene = single_shape_scene();
+        scene.force_redraw = true;
+        renderer.render(scene);
+        const auto pixels = renderer.read_pixels();
+        renderer.render(scene);
+        const auto stats = renderer.stats();
+        require(stats.shaped_rows == 2 && stats.shape_cache_hits == 0 && stats.shape_cache_bytes == 0,
+                "Uncached row escaped its scratch lifetime or retained budget");
+        require(renderer.read_pixels() == pixels, "Uncached shape changed across repeated draws");
+    }
+}
+
+void graphics_error_identity_test() {
+    windows::check(S_OK, "Successful graphics call");
+    windows::check(S_FALSE, "Successful graphics status");
+    try {
+        windows::check(DXGI_ERROR_DEVICE_REMOVED, "Device loss fixture");
+    } catch (const windows::GraphicsError& error) {
+        require(error.result == DXGI_ERROR_DEVICE_REMOVED, "GraphicsError lost the recovery HRESULT");
+        require(std::string(error.what()) == "Device loss fixture failed (0x887a0005)",
+                "GraphicsError changed the native diagnostic");
+        return;
+    }
+    throw std::runtime_error("GraphicsError did not propagate device loss");
+}
+
 void liquid_glass_off_test() {
     // App-owned offscreen pixels only: never acquire a desktop source.
     // This contract also applies when the optional capture service is stubbed out.
@@ -721,6 +829,9 @@ int main(int argc,char** argv) {
         stormtty::test::settings_viewport_raster_tests(layer_options,[&](std::string_view name,unsigned width,unsigned height,const auto& pixels) {
             save_motion_png(captures/std::string(name),pixels,width,height);
         });
+        graphics_error_identity_test();
+        shape_cache_lifetime_test();
+        uncached_shape_lifetime_test();
         cursor_motion_raster_test();
         native_host_surface_test();liquid_glass_off_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();chrome_notice_measurement_test();
         std::cout<<"PASS Windows WARP renderer: HWND/DComp style lifecycle and fallback, private Cascadia/overrides, pixels, Unicode path, damage/cache, images, alpha, DPI, recovery\n";
