@@ -5,7 +5,7 @@
 #include "stormtty/command_watch.hpp"
 #include "stormtty/previous_terminal.hpp"
 #include "stormtty/smoke_commands.hpp"
-#include "stormtty/settings_reload.hpp"
+#include "stormtty/settings_document_session.hpp"
 #include "stormtty/workspace_save_signal.hpp"
 #include "stormtty/window_workspace_view.hpp"
 #include "stormtty/application_layout_services.hpp"
@@ -175,15 +175,7 @@ std::string chord_key(WPARAM key) {
     case VK_OEM_6: return "]"; case VK_OEM_7: return "'"; default: return {};
     }
 }
-struct SettingsCompletion {
-    enum class Kind { load, save, reload } kind{};
-    std::uint64_t generation{};
-    SettingsSnapshotResult loaded;
-    ShellDiscoveryResult shells;
-    ConfigSaveResult saved;
-    Config candidate;
-};
-struct WakeState {
+struct WakeState : SettingsDocumentWake {
     std::atomic<HWND> window{};
     std::atomic<DWORD> thread{}; // Application-only completion sink; never an HWND owner.
     std::weak_ptr<WakeState> completion_fallback; // Immutable after view construction.
@@ -191,8 +183,7 @@ struct WakeState {
     std::mutex mutex;
     std::optional<std::string> clipboard;
     std::optional<std::string> error;
-    std::optional<SettingsCompletion> settings;
-    void wake() noexcept {
+    void wake() noexcept override {
         if (auto hwnd = window.load(std::memory_order_acquire)) {
             if (!posted.exchange(true, std::memory_order_acq_rel) && !PostMessageW(hwnd, wake_message, 0, 0)) posted.store(false, std::memory_order_release);
         } else if(const auto owner=thread.load(std::memory_order_acquire)) {
@@ -200,6 +191,32 @@ struct WakeState {
         } else if(auto fallback=completion_fallback.lock())fallback->wake();
     }
 };
+// Qualification decorator: the real guarded save remains authoritative. The
+// future holds it before I/O, without giving the fixture access to a worker.
+class GatedSettingsDocumentServices final : public SettingsDocumentServices {
+public:
+    explicit GatedSettingsDocumentServices(std::shared_future<void> release)
+        : release_(std::move(release)), native_(windows_settings_document_services()) {}
+
+    SettingsSnapshotResult load(const std::filesystem::path& path) override {
+        return native_->load(path);
+    }
+
+    ShellDiscoveryResult discover(std::span<const Profile> profiles) override {
+        return native_->discover(profiles);
+    }
+
+    ConfigSaveResult save(const std::filesystem::path& path, const Config& candidate,
+                          const ConfigFileSnapshot& baseline) override {
+        release_.wait(); // Promise destruction also releases failure cleanup.
+        return native_->save(path, candidate, baseline);
+    }
+
+private:
+    std::shared_future<void> release_;
+    std::shared_ptr<SettingsDocumentServices> native_;
+};
+
 struct ClipboardLock {
     bool open{};
     explicit ClipboardLock(HWND window) : open(OpenClipboard(window) != FALSE) {}
@@ -395,7 +412,9 @@ public:
             .smoke_windows = options_.smoke_windows
         }),
         projects_(application.projects, window_id),
-        wake_(std::make_shared<WakeState>()) {
+        wake_(std::make_shared<WakeState>()),
+        settings_document_(std::make_unique<SettingsDocumentSession>(
+            windows_settings_document_services(), wake_)) {
         wake_->completion_fallback = application_.actor_completion;
         if (!options_.shell_runtime_error.empty()) {
             notice_ = "Managed Zsh unavailable. Close StormTTY and rebuild to restore runtimes/zsh. "
@@ -430,9 +449,9 @@ public:
         if (hwnd_) destroy_window();
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor HWND destruction complete");
         // The window is gone: never wait for local file I/O in a WndProc.
-        if (settings_worker_.joinable()) {
+        if (settings_document_->status().worker_joinable) {
             if (options_.smoke_test) std::fprintf(stderr,"Native CI settings worker reap begin after window destruction\n");
-            settings_worker_.join();
+            settings_document_->join_after_window_destroyed();
             if (options_.smoke_test) std::fprintf(stderr,"Native CI settings worker reap end\n");
         }
         windows::smoke_teardown_trace(options_.smoke_test,"window settings file cleanup begin");
@@ -482,7 +501,10 @@ private:
     void refresh_agent_panel();
     AgentPanelView current_agent_view() const;
     bool settings_input_blocked() const { return settings_panel_.is_open(); }
-    bool settings_loading() const { return settings_job_ && settings_open_requested_ && !settings_input_blocked(); }
+    bool settings_loading() const {
+        const auto document = settings_document_->status();
+        return document.busy && document.open_requested && !settings_input_blocked();
+    }
     bool overlay_open() const { return agent_panel_.is_open() || settings_input_blocked() || settings_loading() || context_menu_.is_open(); }
     void open_menu(std::vector<ContextMenuItem>, Point, std::map<std::string,std::function<void()>>, bool keyboard = false);
     void menu_input_changed();
@@ -694,7 +716,6 @@ private:
     SettingsPanel settings_panel_{Platform::windows};
     bool liquid_glass_policy_{},liquid_glass_timer_active_{},liquid_glass_stop_pending_{};
     std::uint64_t liquid_glass_display_generation_{};
-    SettingsReload settings_reload_;
     AgentPanel agent_panel_;
     std::unique_ptr<AgentPanelController> agent_controller_;
     std::unique_ptr<AgentSetupService> agent_setup_;
@@ -702,11 +723,8 @@ private:
     std::string agent_setup_error_;
     bool agent_setup_reload_requested_{};
     unsigned smoke_agent_stage_{};
-    std::thread settings_worker_;
-    bool settings_job_{}, settings_open_requested_{}, settings_load_job_{}, smoke_hold_settings_completion_{};
+    bool smoke_hold_settings_completion_{};
     std::string settings_draft_notice_;
-    std::string settings_binding_;
-    std::optional<ConfigFileSnapshot> settings_snapshot_;
     bool overlay_pointer_sequence_{};
     std::uint64_t settings_seen_generation_{}, menu_seen_generation_{};
     ContextMenu context_menu_;
@@ -788,6 +806,7 @@ private:
     std::map<SessionId, ParkedAttention>& parked_attention_{application_.actors.parked_attention};
     SessionId focused_session_{};
     std::shared_ptr<WakeState> wake_;
+    std::unique_ptr<SettingsDocumentSession> settings_document_;
     HWND hwnd_{}, tooltip_{};
     bool tooltip_active_{true};
     std::map<UINT_PTR, std::wstring> tooltip_texts_;
@@ -1107,7 +1126,7 @@ int NativeApplication::run(Config config, NativeRunOptions options) {
                         if(!session->wait_closed(std::chrono::seconds(5)))code=3;
                         std::fprintf(stderr,"Native CI cleanup end: session=%llu code=%d\n",static_cast<unsigned long long>(id.value),code);
                     }
-                    const bool settings_worker=std::any_of(windows.begin(),windows.end(),[](const auto* view){return view->settings_worker_.joinable();});
+                    const bool settings_worker=std::any_of(windows.begin(),windows.end(),[](const auto* view){return view->settings_document_->status().worker_joinable;});
                     std::fprintf(stderr,"Native CI loop exit: code=%d settings_worker_joinable=%d\n",code,settings_worker);
                 }
                 flush_workspaces();
@@ -1963,17 +1982,20 @@ void NativeApplication::retire_destroyed_views() {
     for(auto it=owned_windows.begin();it!=owned_windows.end();) {
         auto& view=**it;
         if(view.hwnd_ || !view.committed_view_){++it;continue;}
-        if(view.settings_worker_.joinable()) {
-            std::optional<SettingsCompletion> completion;
-            {std::lock_guard lock(view.wake_->mutex);completion.swap(view.wake_->settings);}
-            if(!completion){++it;continue;} // No join while file I/O/result publication is pending.
-            view.settings_worker_.join(); // Same completion contract as live Settings; I/O already ended.
-            view.settings_job_=view.settings_load_job_=false;
-            if(completion->kind==SettingsCompletion::Kind::save && !completion->saved)
-                workspace_error("Settings save for a closed window failed: "+completion->saved.error);
-            if(view.options_.smoke_windows) {
-                if(completion->kind!=SettingsCompletion::Kind::save || !completion->saved)throw std::runtime_error("Closed-window authored Settings save failed.");
-                smoke_settings_retired=true;
+        auto retirement = view.settings_document_->poll_retirement();
+        if (retirement.pending) {
+            ++it;
+            continue; // File I/O is still pending; never join it from retirement.
+        }
+        if (const auto& completion = retirement.completion) {
+            if (completion->kind == SettingsDocumentCompletion::Kind::save && !completion->saved) {
+                workspace_error("Settings save for a closed window failed: " + completion->saved.error);
+            }
+            if (view.options_.smoke_windows) {
+                if (completion->kind != SettingsDocumentCompletion::Kind::save || !completion->saved) {
+                    throw std::runtime_error("Closed-window authored Settings save failed.");
+                }
+                smoke_settings_retired = true;
             }
         }
         auto preview=projects.preview_close_window(view.projects_.id());
@@ -2512,140 +2534,223 @@ void NativeWindow::settings_wheel(Point position, short delta, UINT lines) {
     settings_input_changed();
 }
 void NativeWindow::reload_settings() {
-    if (modal_) { show_error("Finish the current confirmation before reloading settings."); return; }
-    if (options_.config_path.empty()) { show_error("No settings file path is available."); return; }
-    const auto allowed=settings_reload_.begin(settings_panel_.is_open(),settings_job_);
-    if (!allowed) { show_error(allowed.error); if(settings_panel_.is_open())settings_draft_notice_=notice_; return; }
-    if (settings_worker_.joinable()) settings_worker_.join(); // Completed jobs only.
-    settings_job_=true;
-    try {
-        settings_worker_=std::thread([shared=wake_,path=options_.config_path,generation=settings_reload_.generation()] {
-            SettingsCompletion result; result.kind=SettingsCompletion::Kind::reload; result.generation=generation;
-            try { result.loaded=load_settings_snapshot(path); }
-            catch (const std::exception& e) { result.loaded.error=e.what(); }
-            catch (...) { result.loaded.error="Settings could not be reloaded."; }
-            { std::lock_guard lock(shared->mutex); shared->settings=std::move(result); }
-            shared->wake();
-        });
-    } catch (...) { settings_job_=false; settings_reload_.cancel(); show_error("Could not start settings reload; current settings were kept."); return; }
-    notice_="Reloading settings…"; changed();
-}
-void NativeWindow::open_settings(std::string binding) {
-    if(navigator_open_)close_navigator();
-    if(find_session_)close_find();
-    if (modal_ || settings_input_blocked() || (settings_job_&&!settings_load_job_)) return;
-    if (options_.config_path.empty()) { show_error("No settings file path is available. Start with --config and an absolute local path."); return; }
-    if (!settings_job_&&settings_worker_.joinable()) settings_worker_.join(); // Prior completed worker only.
-    if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
-    cancel_drag();
-    const auto path=options_.config_path;
-    auto shared=wake_;
-    settings_binding_=std::move(binding); settings_open_requested_=true;
-    if(!settings_job_) {
-    settings_job_=settings_load_job_=true;
-    try {
-        settings_worker_=std::thread([shared,path,configured=config_.profiles] {
-            SettingsCompletion result; result.kind=SettingsCompletion::Kind::load;
-            try {
-                result.loaded=load_settings_snapshot(path);
-                if (result.loaded) result.shells=discover_windows_shells(
-                    result.loaded.snapshot->existed?result.loaded.config->profiles:configured);
-            }
-            catch (const std::exception& e) { result.loaded.error=e.what(); }
-            catch (...) { result.loaded.error="Settings discovery failed unexpectedly."; }
-            { std::lock_guard lock(shared->mutex); shared->settings=std::move(result); }
-            shared->wake();
-        });
-    } catch (...) { settings_job_=settings_load_job_=false; settings_open_requested_=false; throw; }
-    }
-    context_menu_.cancel(); menu_actions_.clear();
-    palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false; text_input_.reset();
-    palette_transition_=ChromeTransition{}; closing_palette_primitives_.clear(); closing_palette_texts_.clear();
-    if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
-    notice_.clear(); caret_schedule(); changed();
-}
-void NativeWindow::settings_completed() {
-    if(options_.smoke_settings&&smoke_hold_settings_completion_)return;
-    std::optional<SettingsCompletion> completion;
-    { std::lock_guard lock(wake_->mutex); completion.swap(wake_->settings); }
-    if (!completion) return;
-    if (settings_worker_.joinable()) settings_worker_.join(); // I/O ended before result publication.
-    settings_job_=settings_load_job_=false;
-    if (completion->kind==SettingsCompletion::Kind::reload) {
-        auto result=settings_reload_.complete(completion->generation,std::move(completion->loaded));
-        if (result.ignored) return;
-        if (!result.config) { show_error(result.error); return; }
-        // No editor can open/save during this serialized read. Keep the old
-        // value on a presentation failure; no session lifecycle calls here.
-        const auto previous=config_;
-        try { preview_settings(*result.config); }
-        catch (const std::exception& e) {
-            // A renderer may have installed its font before measurement failed.
-            // Force the rollback path to restore it even if Config was not yet updated.
-            config_.font=result.config->font;
-            try { preview_settings(previous); } catch (...) {}
-            config_=previous; show_error(std::string("Reload failed; previous settings retained. Presentation may need a restart: ")+e.what()); return;
-        }
-        config_=std::move(*result.config);
-        settings_snapshot_.reset(); // The next editor obtains its own exact baseline.
-        notice_="Settings reloaded.";
-        if(config_.experimental_ai!=ai_enabled_)notice_+=" Restart StormTTY to apply the feature change.";
-        caret_schedule(true); changed(true);
+    if (modal_) {
+        show_error("Finish the current confirmation before reloading settings.");
         return;
     }
-    if (completion->kind==SettingsCompletion::Kind::load) {
-        if (!settings_open_requested_) return;
-        settings_open_requested_=false;
-        if (!completion->loaded) { show_error(completion->loaded.error); return; }
-        if (modal_) { show_error("Settings are ready. Finish the current confirmation, then open Settings again."); return; }
-        if (options_.smoke_settings && smoke_settings_stage_==1 && completion->loaded.snapshot->existed) {
-            smoke_finish("The isolated Settings smoke path unexpectedly already exists."); return;
-        }
-        settings_snapshot_=std::move(completion->loaded.snapshot);
-        if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
-        cancel_drag(); context_menu_.cancel(); menu_actions_.clear(); palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false; text_input_.reset();
-        palette_transition_=ChromeTransition{}; closing_palette_primitives_.clear(); closing_palette_texts_.clear();
-        if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
-        if (session_launcher_.managed_profile()) completion->shells.profiles.push_back(managed_zsh_profile_reference());
-        // Edit the latest valid disk value, but Cancel restores the running
-        // presentation. Keep the exact token from this read for atomic Save.
-        // Missing files retain running defaults (including managed shell setup).
-        const auto& editor=settings_snapshot_->existed?*completion->loaded.config:config_;
-        settings_panel_.open(config_,editor,completion->shells.profiles);
-        if (!settings_binding_.empty()) settings_panel_.open_for_binding(config_,settings_binding_,completion->shells.profiles);
-        settings_panel_.set_console_backend_status(bundled_console_runtime_present(),
-            !options_.console_runtime_directory.empty()?
-                "CLI override active · saved choice applies without flag · resize unqualified":
-            !native_amd64_console_supported()?
-                "Preview requires native AMD64 · resize unqualified":
-            bundled_console_runtime_present()?
-                "Preview · native AMD64 · resize unqualified · ConPTY 1.25.260930003":
-                "Bundle unavailable · select System to recover · preview resize unqualified");
-        agent_panel_.resize({width_,height_}); settings_panel_.resize({width_,height_}); context_menu_.resize({width_,height_}); settings_binding_.clear(); notice_.clear();
-        if (tooltip_) SendMessageW(tooltip_,TTM_POP,0,0);
-        SetFocus(hwnd_); settings_input_changed(); caret_schedule(); changed();
-    } else {
-        if (completion->saved) {
-            if (options_.smoke_settings) smoke_settings_file_owned_=true;
-            settings_snapshot_=std::move(completion->saved.snapshot);
-            settings_panel_.persistence_result(true);
-            settings_draft_notice_.clear();
-            // Persistence succeeded. A later GPU/font failure must not strand
-            // the editor in Saving or imply that the file write was rolled back.
-            std::string apply_error;
-            try { preview_settings(completion->candidate); }
-            catch (const std::exception& error) { apply_error=error.what(); }
-            config_=std::move(completion->candidate);
-            notice_=apply_error.empty()?(!options_.console_runtime_directory.empty()?
-                "Settings saved. Console launch override is still active.":session_launcher_.managed_profile() && options_.shell_runtime_override?
-                "Settings saved. Shell launch override is still active.":
-                "Settings saved."):
-                "Settings saved, but presentation could not update. Restart to apply: "+apply_error;
-            if(config_.experimental_ai!=ai_enabled_)notice_+=" Restart StormTTY to apply the feature change.";
-        } else settings_panel_.persistence_result(false,completion->saved.error);
-        caret_schedule(true); changed(true);
+    if (options_.config_path.empty()) {
+        show_error("No settings file path is available.");
+        return;
     }
+
+    const auto allowed = settings_document_->request_reload(options_.config_path, settings_panel_.is_open());
+    if (!allowed) {
+        show_error(allowed.error);
+        if (settings_panel_.is_open()) {
+            settings_draft_notice_ = notice_;
+        }
+        return;
+    }
+
+    notice_ = "Reloading settings…";
+    changed();
 }
+
+void NativeWindow::open_settings(std::string binding) {
+    if (navigator_open_) {
+        close_navigator();
+    }
+    if (find_session_) {
+        close_find();
+    }
+    const auto document = settings_document_->status();
+    if (modal_ || settings_input_blocked() || (document.busy && !document.loading)) {
+        return;
+    }
+    if (options_.config_path.empty()) {
+        show_error("No settings file path is available. Start with --config and an absolute local path.");
+        return;
+    }
+
+    if (mouse_capture_pane_) {
+        terminal_mouse(hover_, MouseAction::release, mouse_capture_button_, false);
+    }
+    cancel_drag();
+    settings_document_->request_open(options_.config_path, config_.profiles, std::move(binding));
+
+    context_menu_.cancel();
+    menu_actions_.clear();
+    palette_open_ = false;
+    rename_open_ = false;
+    query_.clear();
+    preedit_.clear();
+    composing_ = false;
+    text_input_.reset();
+    palette_transition_ = ChromeTransition{};
+    closing_palette_primitives_.clear();
+    closing_palette_texts_.clear();
+    if (ImmContext context(hwnd_); context.context) {
+        ImmNotifyIME(context.context, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+    }
+
+    notice_.clear();
+    caret_schedule();
+    changed();
+}
+
+void NativeWindow::settings_completed() {
+    if (smoke_hold_settings_completion_) {
+        return;
+    }
+    auto completion = settings_document_->poll_completion(!modal_);
+    if (!completion) {
+        return;
+    }
+
+    if (completion->kind == SettingsDocumentCompletion::Kind::reload) {
+        auto result = std::move(completion->reloaded);
+        if (result.ignored) {
+            return;
+        }
+        if (!result.config) {
+            show_error(result.error);
+            return;
+        }
+
+        // No editor can open/save during this serialized read. Keep the old
+        // value on a presentation failure; no session lifecycle calls here.
+        const auto previous = config_;
+        try {
+            preview_settings(*result.config);
+        } catch (const std::exception& error) {
+            // A renderer may install its font before measurement fails. Force
+            // rollback even if Config had not yet recorded the new font.
+            config_.font = result.config->font;
+            try {
+                preview_settings(previous);
+            } catch (...) {
+                // Retain the old declarative value even if presentation fails.
+            }
+            config_ = previous;
+            show_error(std::string("Reload failed; previous settings retained. Presentation may need a restart: ") + error.what());
+            return;
+        }
+
+        config_ = std::move(*result.config);
+        settings_document_->accept_reload_application(completion->operation);
+        notice_ = "Settings reloaded.";
+        if (config_.experimental_ai != ai_enabled_) {
+            notice_ += " Restart StormTTY to apply the feature change.";
+        }
+        caret_schedule(true);
+        changed(true);
+        return;
+    }
+
+    if (completion->kind == SettingsDocumentCompletion::Kind::load) {
+        if (!completion->open_requested) {
+            return;
+        }
+        if (!completion->loaded) {
+            show_error(completion->loaded.error);
+            return;
+        }
+        if (completion->open_blocked) {
+            show_error("Settings are ready. Finish the current confirmation, then open Settings again.");
+            return;
+        }
+        if (options_.smoke_settings && smoke_settings_stage_ == 1 && completion->loaded.existed) {
+            smoke_finish("The isolated Settings smoke path unexpectedly already exists.");
+            return;
+        }
+
+        if (mouse_capture_pane_) {
+            terminal_mouse(hover_, MouseAction::release, mouse_capture_button_, false);
+        }
+        cancel_drag();
+        context_menu_.cancel();
+        menu_actions_.clear();
+        palette_open_ = false;
+        rename_open_ = false;
+        query_.clear();
+        preedit_.clear();
+        composing_ = false;
+        text_input_.reset();
+        palette_transition_ = ChromeTransition{};
+        closing_palette_primitives_.clear();
+        closing_palette_texts_.clear();
+        if (ImmContext context(hwnd_); context.context) {
+            ImmNotifyIME(context.context, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+        }
+        if (session_launcher_.managed_profile()) {
+            completion->shells.profiles.push_back(managed_zsh_profile_reference());
+        }
+
+        // Edit the latest valid disk value, but Cancel restores the running
+        // presentation. The document retains this read's exact atomic-Save token.
+        // Missing files retain running defaults (including managed shell setup).
+        const auto& editor = completion->loaded.existed ? *completion->loaded.config : config_;
+        settings_panel_.open(config_, editor, completion->shells.profiles);
+        if (!completion->binding.empty()) {
+            settings_panel_.open_for_binding(config_, completion->binding, completion->shells.profiles);
+        }
+        settings_panel_.set_console_backend_status(bundled_console_runtime_present(),
+            !options_.console_runtime_directory.empty()
+                ? "CLI override active · saved choice applies without flag · resize unqualified"
+                : !native_amd64_console_supported()
+                    ? "Preview requires native AMD64 · resize unqualified"
+                    : bundled_console_runtime_present()
+                        ? "Preview · native AMD64 · resize unqualified · ConPTY 1.25.260930003"
+                        : "Bundle unavailable · select System to recover · preview resize unqualified");
+        agent_panel_.resize({width_, height_});
+        settings_panel_.resize({width_, height_});
+        context_menu_.resize({width_, height_});
+        notice_.clear();
+        if (tooltip_) {
+            SendMessageW(tooltip_, TTM_POP, 0, 0);
+        }
+        SetFocus(hwnd_);
+        settings_input_changed();
+        caret_schedule();
+        changed();
+        return;
+    }
+
+    if (completion->saved) {
+        if (options_.smoke_settings) {
+            smoke_settings_file_owned_ = true;
+        }
+        settings_panel_.persistence_result(true);
+        settings_draft_notice_.clear();
+
+        // Persistence succeeded. A later GPU/font failure must not strand
+        // the editor in Saving or imply that the file write was rolled back.
+        std::string apply_error;
+        try {
+            preview_settings(completion->candidate);
+        } catch (const std::exception& error) {
+            apply_error = error.what();
+        }
+        config_ = std::move(completion->candidate);
+        if (!apply_error.empty()) {
+            notice_ = "Settings saved, but presentation could not update. Restart to apply: " + apply_error;
+        } else if (!options_.console_runtime_directory.empty()) {
+            notice_ = "Settings saved. Console launch override is still active.";
+        } else if (session_launcher_.managed_profile() && options_.shell_runtime_override) {
+            notice_ = "Settings saved. Shell launch override is still active.";
+        } else {
+            notice_ = "Settings saved.";
+        }
+        if (config_.experimental_ai != ai_enabled_) {
+            notice_ += " Restart StormTTY to apply the feature change.";
+        }
+    } else {
+        settings_panel_.persistence_result(false, completion->saved.error);
+    }
+    caret_schedule(true);
+    changed(true);
+}
+
 void NativeWindow::preview_settings(const Config& candidate) {
     const bool font_changed=config_.font!=candidate.font;
     if (renderer_ && font_changed) {
@@ -2733,20 +2838,10 @@ void NativeWindow::settings_actions() {
                 settings_draft_notice_.clear();text_input_.reset(); caret_schedule(true);
             }
         } else {
-            if (settings_job_ || !settings_snapshot_) { settings_panel_.persistence_result(false,"A settings snapshot is not ready. Close and reopen Settings."); continue; }
-            if (settings_worker_.joinable()) settings_worker_.join();
-            try {
-                const auto path=options_.config_path; const auto baseline=*settings_snapshot_; auto candidate=std::move(action->config); auto shared=wake_;
-                settings_job_=true;
-                settings_worker_=std::thread([shared,path,baseline,candidate=std::move(candidate)]() mutable {
-                    SettingsCompletion result; result.kind=SettingsCompletion::Kind::save; result.candidate=std::move(candidate);
-                    try { result.saved=save_settings_config(path,result.candidate,baseline); }
-                    catch (const std::exception& e) { result.saved.error=e.what(); }
-                    catch (...) { result.saved.error="Settings could not be saved."; }
-                    { std::lock_guard lock(shared->mutex); shared->settings=std::move(result); }
-                    shared->wake();
-                });
-            } catch (const std::exception& e) { settings_job_=false; settings_panel_.persistence_result(false,e.what()); }
+            const auto saved = settings_document_->request_save(std::move(action->config));
+            if (!saved) {
+                settings_panel_.persistence_result(false, saved.error);
+            }
         }
     }
 }
@@ -3909,9 +4004,15 @@ bool NativeWindow::key_message(MSG& message) {
     }
     // Preserve other OS-reserved shortcuts before application or terminal routing.
     if ((modifiers & Modifier::super) || ((modifiers & Modifier::alt) && !altgr && (vk == VK_F4 || vk == VK_SPACE))) return false;
-    if (down && vk==VK_ESCAPE && settings_job_ && settings_open_requested_ && !settings_input_blocked()) {
-        settings_open_requested_=false; settings_binding_.clear(); notice_.clear(); caret_schedule(true); changed();
-        if (vk<consumed_keys_.size()) consumed_keys_[vk]=true; return true;
+    if (down && vk == VK_ESCAPE && settings_loading()) {
+        settings_document_->cancel_open();
+        notice_.clear();
+        caret_schedule(true);
+        changed();
+        if (vk < consumed_keys_.size()) {
+            consumed_keys_[vk] = true;
+        }
+        return true;
     }
     if (up && vk < consumed_keys_.size() && consumed_keys_[vk]) { consumed_keys_[vk] = false; return true; }
     if (overlay_open()) {
@@ -5802,7 +5903,7 @@ void NativeWindow::smoke_workspace_progress(bool presented) {
 void NativeWindow::smoke_settings_stage(unsigned stage) {
     smoke_settings_stage_=stage;
     if (options_.smoke_settings) std::fprintf(stderr,"Native CI settings stage=%u elapsed_ms=%llu job_pending=%d panel_open=%d saving=%d\n",
-        stage,GetTickCount64()-smoke_started_at_,settings_job_,settings_panel_.is_open(),settings_panel_.saving());
+        stage,GetTickCount64()-smoke_started_at_,settings_document_->status().busy,settings_panel_.is_open(),settings_panel_.saving());
 }
 void NativeWindow::smoke_settings_scroll_evidence() {
     if (!options_.smoke_settings || !settings_panel_.is_open() || settings_panel_.saving() || smoke_settings_scroll_running_)
@@ -5956,7 +6057,7 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
     std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
 }
 void NativeApplication::windows_smoke_progress() {
-    if(windows_smoke_stage>=5)return;
+    if(windows_smoke_stage>=6)return;
     const auto view_for=[&](WindowId id)->NativeWindow*{for(auto* view:windows)if(view->projects_.id()==id)return view;return nullptr;};
     auto* survivor=view_for(smoke_survivor_window);
     if(!survivor || !survivor->hwnd_)throw std::runtime_error("Two-window survivor unexpectedly disappeared.");
@@ -5986,24 +6087,39 @@ void NativeApplication::windows_smoke_progress() {
             std::fprintf(stderr,"Native windows controlled actor provider: %s bundled=%d\n",evidence.provider.c_str(),evidence.bundled_provider);
         }
         first->capture_named_frame(L"two-window-first");survivor->capture_named_frame(L"two-window-survivor");
-        // Hold a real authored settings worker BEFORE disk I/O. Only survivor
-        // output later releases it: a hidden UI-thread join would deadlock this
-        // fixture instead of being mistaken for successful independent close.
-        if(first->settings_worker_.joinable())throw std::runtime_error("Unexpected Settings worker before fixture gate.");
-        const auto path=first->options_.smoke_window_fixture/L"pending-settings.stormtty";
-        ConfigFileSnapshot baseline;baseline.path=path;
-        smoke_settings_release=std::make_shared<std::promise<void>>();
-        auto release=smoke_settings_release->get_future().share();auto shared=first->wake_;auto candidate=first->config_;
-        first->settings_job_=true;
-        first->settings_worker_=std::thread([release,shared,path,baseline,candidate=std::move(candidate)]() mutable {
-            release.wait(); // Fixture gate; promise destruction also releases on failure cleanup.
-            SettingsCompletion result;result.kind=SettingsCompletion::Kind::save;result.candidate=std::move(candidate);
-            try {result.saved=save_settings_config(path,result.candidate,baseline);}
-            catch(const std::exception& error){result.saved.error=error.what();}
-            catch(...){result.saved.error="Authored pending settings save failed.";}
-            {std::lock_guard lock(shared->mutex);shared->settings=std::move(result);}
-            shared->wake();
-        });
+        // Acquire the exact token through the owner before the gated real save.
+        if (first->settings_document_->status().worker_joinable) {
+            throw std::runtime_error("Unexpected Settings worker before fixture gate.");
+        }
+        smoke_settings_release = std::make_shared<std::promise<void>>();
+        auto services = std::make_shared<GatedSettingsDocumentServices>(
+            smoke_settings_release->get_future().share());
+        first->settings_document_ = std::make_unique<SettingsDocumentSession>(
+            std::move(services), first->wake_);
+        first->smoke_hold_settings_completion_ = true;
+        const auto path = first->options_.smoke_window_fixture / L"pending-settings.stormtty";
+        first->settings_document_->request_open(path, first->config_.profiles);
+        windows_smoke_stage = 2;
+        return;
+    }
+    if (windows_smoke_stage == 2) {
+        auto* first = view_for(smoke_first_window);
+        if (!first) {
+            throw std::runtime_error("Source window vanished before Settings token acquisition.");
+        }
+        const auto loaded = first->settings_document_->poll_completion(true);
+        if (!loaded) {
+            return;
+        }
+        if (!loaded->loaded || !loaded->open_requested || loaded->loaded.existed) {
+            throw std::runtime_error("Pending Settings fixture did not acquire an absent-file token.");
+        }
+        // Hold real file I/O until output from the surviving window releases it.
+        const auto saved = first->settings_document_->request_save(first->config_);
+        if (!saved) {
+            throw std::runtime_error(saved.error);
+        }
+        first->smoke_hold_settings_completion_ = false;
         SendMessageW(first->hwnd_,WM_CLOSE,0,0);
         if(!first->modal_)throw std::runtime_error("Closing a live window bypassed confirmation.");
         first->answer_modal(ModalDecision::cancel);
@@ -6012,18 +6128,18 @@ void NativeApplication::windows_smoke_progress() {
         if(!first->modal_)throw std::runtime_error("Second close lost confirmation.");
         first->answer_modal(ModalDecision::confirm);
         if(first->hwnd_)throw std::runtime_error("Authorized first-window close left its HWND alive.");
-        windows_smoke_stage=2;actor_completion->wake();return;
+        windows_smoke_stage=3;actor_completion->wake();return;
     }
-    if(windows_smoke_stage==2) {
+    if(windows_smoke_stage==3) {
         auto* closing=view_for(smoke_first_window);
-        if(!closing || closing->hwnd_ || !closing->settings_worker_.joinable() || !smoke_settings_release)
+        if(!closing || closing->hwnd_ || !closing->settings_document_->status().worker_joinable || !smoke_settings_release)
             throw std::runtime_error("Pending Settings view was not deferred after HWND close.");
         if(smoke_survivor_session->process_finished() || survivor->active_session()!=smoke_survivor_session.get())
             throw std::runtime_error("Survivor changed while peer Settings work remained pending.");
         send(*survivor,smoke_survivor_session,"echo __STORMTTY_SURVIVOR_PENDING_SETTINGS__");
-        windows_smoke_stage=3;return;
+        windows_smoke_stage=4;return;
     }
-    if(windows_smoke_stage==3) {
+    if(windows_smoke_stage==4) {
         if(!marker(smoke_survivor_session,"__STORMTTY_SURVIVOR_PENDING_SETTINGS__"))return;
         if(smoke_settings_release) {
             smoke_settings_release->set_value();smoke_settings_release.reset();
@@ -6034,12 +6150,12 @@ void NativeApplication::windows_smoke_progress() {
            survivor->active_session()!=smoke_survivor_session.get() || smoke_survivor_session->process_finished() || !projects.validate())
             throw std::runtime_error("Independent close replaced or retired the survivor actor.");
         send(*survivor,smoke_survivor_session,"echo __STORMTTY_SURVIVOR_AFTER_CLOSE__ & exit /b 0");
-        survivor->smoke_phase(SmokeDeadline::Phase::exit);windows_smoke_stage=4;return;
+        survivor->smoke_phase(SmokeDeadline::Phase::exit);windows_smoke_stage=5;return;
     }
     if(!smoke_survivor_session->process_finished())return;
     if(!marker(smoke_survivor_session,"__STORMTTY_SURVIVOR_AFTER_CLOSE__") || smoke_survivor_session->info().exit_code!=0)
         throw std::runtime_error("Surviving actor did not produce output and exit cleanly after peer close.");
-    windows_smoke_stage=5;
+    windows_smoke_stage=6;
     std::fputs("Native windows ownership passed: two distinct HWNDs/actors, failed creation rollback, Cancel preserved both, first-window close disposed only its actor, same survivor produced new output and exit 0.\n",stderr);
     survivor->smoke_finish();
 }
@@ -6181,17 +6297,37 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if (smoke_settings_stage_==0) {
             if (info.state!=SessionState::running || !info.bytes_received) return;
             smoke_settings_original_=config_; smoke_settings_actor_=sessions_.at(workspace().pane(workspace().active_pane())->session);
-            smoke_hold_settings_completion_=true;
-            open_settings();const auto worker=settings_worker_.get_id();
-            MSG escape{};escape.hwnd=hwnd_;escape.message=WM_KEYDOWN;escape.wParam=VK_ESCAPE;key_message(escape);escape.message=WM_KEYUP;key_message(escape);
-            if(settings_open_requested_||!settings_job_||!settings_load_job_){smoke_finish("Settings loading cancel lost its owned worker.");return;}
-            open_settings("terminal.find");open_settings();
-            if(!settings_open_requested_||!settings_binding_.empty()||settings_worker_.get_id()!=worker){smoke_finish("Settings reopen did not reattach latest intent to same load.");return;}
-            smoke_settings_stage(1);smoke_hold_settings_completion_=false;settings_completed();
-            std::fputs("Native Settings loading intent: held completion, Escape, immediate reopen and latest binding reuse same owned worker.\n",stderr);return;
+            smoke_hold_settings_completion_ = true;
+            open_settings();
+            const auto operation = settings_document_->status().operation;
+            MSG escape{};
+            escape.hwnd = hwnd_;
+            escape.message = WM_KEYDOWN;
+            escape.wParam = VK_ESCAPE;
+            key_message(escape);
+            escape.message = WM_KEYUP;
+            key_message(escape);
+            const auto canceled = settings_document_->status();
+            if (canceled.open_requested || !canceled.busy || !canceled.loading) {
+                smoke_finish("Settings loading cancel lost its owned worker.");
+                return;
+            }
+
+            open_settings("terminal.find");
+            open_settings();
+            const auto reopened = settings_document_->status();
+            if (!reopened.open_requested || !reopened.binding.empty() || reopened.operation != operation) {
+                smoke_finish("Settings reopen did not reattach latest intent to same load.");
+                return;
+            }
+            smoke_settings_stage(1);
+            smoke_hold_settings_completion_ = false;
+            settings_completed();
+            std::fputs("Native Settings loading intent: held completion, Escape, immediate reopen and latest binding reuse same owned worker.\n", stderr);
+            return;
         }
         if (smoke_settings_stage_==1) {
-            if (settings_job_) return;
+            if (settings_document_->status().busy) return;
             if (!settings_panel_.is_open() || focused_session_ || settings_panel_.draft()!=smoke_settings_original_) { smoke_finish("Settings did not open from its owned snapshot and remove terminal focus."); return; }
             smoke_chrome_time_=GetTickCount64()+1000;
             settings_transition_=ChromeTransition{}; motion_schedule();
@@ -6323,7 +6459,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             open_settings("pane.split_right"); smoke_settings_stage(3); return;
         }
         if (smoke_settings_stage_==3) {
-            if (settings_job_) return;
+            if (settings_document_->status().busy) return;
             if (!settings_panel_.is_open() || !settings_panel_.capturing_shortcut()) { smoke_finish("Shortcut editor did not capture its selected palette action."); return; }
             if (!actor_has_theme(smoke_settings_original_.theme)) return; // Cancel has reached the same actor.
             settings_panel_.key({{"]",CommandModifier::alt}}); settings_input_changed();
@@ -6358,14 +6494,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             if(!set_blur(24) || config_.appearance.background_opacity!=.25) {smoke_finish("Blur preview changed independent opacity.");return;}
             capture_settings(L"appearance-blur-before-save");
             settings_panel_.key({{"ENTER",CommandModifier::control},false,false,true}); settings_input_changed();
-            if (!settings_panel_.saving() || !settings_job_) { smoke_finish("Settings Save did not enter nonblocking pending state."); return; }
+            if (!settings_panel_.saving() || !settings_document_->status().busy) { smoke_finish("Settings Save did not enter nonblocking pending state."); return; }
             message(WM_CLOSE,0,0);
             if (!hwnd_ || !settings_panel_.saving()) { smoke_finish("Pending Save allowed stale close/cancel."); return; }
             smoke_settings_stage(4); return;
         }
         if (smoke_settings_stage_==4) {
-            if (settings_job_) return;
-            if (settings_panel_.is_open() || !settings_snapshot_ || !settings_snapshot_->existed || !smoke_settings_file_owned_) { smoke_finish("Isolated Settings Save did not commit successfully."); return; }
+            if (settings_document_->status().busy) return;
+            if (settings_panel_.is_open() || !settings_document_->snapshot() || !settings_document_->snapshot()->existed || !smoke_settings_file_owned_) { smoke_finish("Isolated Settings Save did not commit successfully."); return; }
             const KeyChord expected{"]",CommandModifier::alt};
             if (std::none_of(config_.bindings.begin(),config_.bindings.end(),[&](const auto& b){return b.command=="pane.split_right" && b.chord==expected;}) ||
                 sessions_.size()!=1 || sessions_.begin()->second!=smoke_settings_actor_ || workspace().state().panes.size()!=1) {
@@ -6376,14 +6512,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
                 smoke_finish("Saved theme or opacity did not remain applied."); return;
             }
             if (session_launcher_.managed_profile() && !options_.shell_runtime_override) {
-                const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
+                const auto saved=parse_config(settings_document_->snapshot()->bytes,Platform::windows);
                 if (!saved || !has_managed_zsh_selection(*saved.config) || !settings_baseline_matches(*saved.config,config_,Platform::windows) ||
                     smoke_managed_sessions_.contains(sessions_.begin()->first)) {
                     smoke_finish("Managed shell reference did not persist or original Cmd actor was replaced."); return;
                 }
             }
             if (switch_console) {
-                const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
+                const auto saved=parse_config(settings_document_->snapshot()->bytes,Platform::windows);
                 if (!saved || saved.config->windows_console_backend!=WindowsConsoleBackend::bundled_preview ||
                     config_.windows_console_backend!=WindowsConsoleBackend::bundled_preview || !smoke_bundled_sessions_.empty()) {
                     smoke_finish("Bundled backend did not persist, or replaced an existing System actor."); return;
@@ -6404,11 +6540,11 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             open_settings(); smoke_settings_stage(5); return;
         }
         if (smoke_settings_stage_==5) {
-            if (settings_job_) return;
+            if (settings_document_->status().busy) return;
             if (!settings_panel_.is_open() || !settings_baseline_matches(settings_panel_.draft(),config_,Platform::windows)) {
                 smoke_finish("Settings Save-to-reopen falsely rejected its canonical saved baseline."); return;
             }
-            const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
+            const auto saved=parse_config(settings_document_->snapshot()->bytes,Platform::windows);
             if (!saved || saved.config->theme!=saved_custom() || settings_panel_.draft().theme!=saved_custom() ||
                 config_.ribbon.order[1]!=RibbonBinding::status ||
                 config_.ribbon.hidden[ribbon_index(RibbonBinding::git)]==smoke_settings_original_.ribbon.hidden[ribbon_index(RibbonBinding::git)]) {
@@ -6426,14 +6562,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             }
             if (!activate_setting("nav.appearance") || !activate_setting("font.increase")) {smoke_finish("Reopened Settings could not edit font size.");return;}
             settings_panel_.key({{"ENTER",CommandModifier::control}});settings_input_changed();
-            if (!settings_panel_.saving() || !settings_job_) {smoke_finish("Second Save did not start.");return;}
+            if (!settings_panel_.saving() || !settings_document_->status().busy) {smoke_finish("Second Save did not start.");return;}
             smoke_settings_stage(6);return;
         }
         if (smoke_settings_stage_==6) {
-            if (settings_job_) return;
+            if (settings_document_->status().busy) return;
             if (settings_panel_.is_open()) {smoke_finish("Second Save failed.");return;}
             if (switch_console) {
-                const auto saved=parse_config(settings_snapshot_->bytes,Platform::windows);
+                const auto saved=parse_config(settings_document_->snapshot()->bytes,Platform::windows);
                 if (!saved || saved.config->windows_console_backend!=WindowsConsoleBackend::system ||
                     config_.windows_console_backend!=WindowsConsoleBackend::system || smoke_bundled_sessions_.size()!=1 || sessions_.size()!=2) {
                     smoke_finish("System recovery did not persist or replaced an existing bundled actor."); return;
@@ -6447,7 +6583,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             open_settings();smoke_settings_stage(7);return;
         }
         if (smoke_settings_stage_==7) {
-            if (settings_job_) return;
+            if (settings_document_->status().busy) return;
             if (!settings_panel_.is_open() || !settings_baseline_matches(settings_panel_.draft(),config_,Platform::windows)) {
                 smoke_finish("Second Save-to-reopen rejected its saved baseline.");return;
             }
@@ -6459,7 +6595,7 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             }
             const auto unsaved=settings_panel_.draft(); const auto preview=config_;
             reload_settings();
-            if (settings_job_ || settings_panel_.draft()!=unsaved || config_!=preview || notice_.empty()) {
+            if (settings_document_->status().busy || settings_panel_.draft()!=unsaved || config_!=preview || notice_.empty()) {
                 smoke_finish("Reload did not preserve/refuse the unsaved Settings draft."); return;
             }
             settings_panel_.cancel(); settings_input_changed();
@@ -6510,12 +6646,16 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             smoke_reload_expected_=*canonical.config;
             write_fixture(bytes);
             dispatch("settings.reload");
-            const auto generation=settings_reload_.generation();
+            const auto generation = settings_document_->status().reload_generation;
             reload_settings(); // Repeated activation must not enqueue or supersede.
-            if (!settings_job_ || generation!=settings_reload_.generation()) { smoke_finish("Repeated reload was not serialized."); return; }
+            const auto pending = settings_document_->status();
+            if (!pending.busy || generation != pending.reload_generation) {
+                smoke_finish("Repeated reload was not serialized.");
+                return;
+            }
             smoke_reload_stage_=1; return;
         }
-        if (settings_job_) return;
+        if (settings_document_->status().busy) return;
         if (sessions_!=smoke_reload_actors_ ||
             smoke_settings_actor_->info().bytes_received<smoke_reload_received_ || !smoke_settings_actor_->frame()) {
             smoke_finish("Reload replaced the live actor or lost retained output."); return;
@@ -6925,7 +7065,7 @@ void NativeWindow::smoke_finish(std::string_view error) {
         if (options_.smoke_modal) std::fprintf(stderr,"Modal CI smoke: real styled confirmation frame, synthetic key trapping/Cancel/Escape/focus restoration and disposable actor close; not physical DWM activation/Snap proof.\n");
         if (options_.smoke_layout) std::fprintf(stderr,"Layout CI smoke: %zu real sessions, %zu tabs, %zu visible panes; settled chrome framebuffer, not desktop blur/corner proof.\n",sessions_.size(),workspace().state().tabs.size(),layout_.panes.size());
     } else std::fprintf(stderr,"Native CI smoke failed: %.*s Settings stage=%u elapsed_ms=%llu job_pending=%d saving=%d\n",
-        static_cast<int>(error.size()),error.data(),smoke_settings_stage_,GetTickCount64()-smoke_started_at_,settings_job_,settings_panel_.saving());
+        static_cast<int>(error.size()),error.data(),smoke_settings_stage_,GetTickCount64()-smoke_started_at_,settings_document_->status().busy,settings_panel_.saving());
     if (hwnd_) destroy_window();
 }
 
@@ -7316,7 +7456,13 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_CLOSE: {
         if(agent_panel_.is_open()) {agent_panel_.close();agent_input_changed();return 0;}
-        if (settings_loading()) { settings_open_requested_=false; settings_binding_.clear(); notice_.clear(); caret_schedule(true); changed(); return 0; }
+        if (settings_loading()) {
+            settings_document_->cancel_open();
+            notice_.clear();
+            caret_schedule(true);
+            changed();
+            return 0;
+        }
         if (context_menu_.is_open()) { context_menu_.cancel(); menu_input_changed(); }
         if (settings_input_blocked()) { settings_panel_.cancel(); settings_input_changed(); return 0; }
         const auto owned=projects_.all_session_ids();
