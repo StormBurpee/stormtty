@@ -21,6 +21,8 @@ enum class MetalTestPoint {
     before_cache_clear,
     before_command,
     before_encoder,
+    after_encoder,
+    after_render_encoding,
     generation_released,
     native_owner_unwind
 };

@@ -102,6 +102,8 @@ private:
 #endif
     MetalFrame(MetalCompositor& owner, MetalTextureResources& textures);
 
+    void end_encoding() noexcept;
+
     void draw(id<MTLTexture> texture, PixelRect destination, Color tint,
               bool replace, PixelRect uv = {0, 0, 1, 1});
 
@@ -110,6 +112,7 @@ private:
     id<CAMetalDrawable> drawable_;
     id<MTLCommandBuffer> command_;
     id<MTLRenderCommandEncoder> encoder_;
+    bool encoding_ended_{};
     bool submitted_{};
 };
 

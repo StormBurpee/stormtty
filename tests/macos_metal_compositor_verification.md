@@ -35,8 +35,11 @@ not reset accounting. The renderer retains its original autorelease-pool scope.
 
 Explicit submit ends encoding, installs generation-only handlers, copies the
 composition target into an onscreen drawable, presents, increments in-flight and
-commits. Renderer commits history/counters afterward. Frame destruction releases
-ARC references only: no hidden endEncoding, commit, wait or upload rollback.
+commits. Renderer commits history/counters afterward. Frame destruction closes
+an active render encoder before releasing ARC references, but never submits,
+presents, increments in-flight, waits or rolls back uploads. The ended state is
+tracked separately from submission so failure after encoding ends cannot end it
+twice.
 Ordinary command buffers retain encoded resources through completion.
 
 Readback retains 256-byte row alignment, shared Apple-family versus managed
@@ -62,7 +65,10 @@ Native tests cover:
 - unconditional RAII signaling of every held event on failure/unwind;
 - admitted paint abandonment after upload: no submission, no budget rollback,
   followed by successful fresh-frame rendering;
-- pre-command/pre-encoder failure progress and partial reconstruction state;
+- failure after render encoding ends: no double-end, no submission or rollback,
+  followed by successful fresh-frame rendering;
+- pre-command/pre-encoder failure progress, post-acquisition constructor unwind
+  with subsequent successful rendering, and partial reconstruction state;
 - option/acquisition/late-font failure and normal release-boundary traces.
 
 The trace records the owner-reference release and native-owner unwind boundaries;
@@ -75,3 +81,20 @@ SDK plus the project's matching LLVM/libc++ toolchain and actual Metal device ar
 required to run these gates. These offscreen tests do not qualify real onscreen
 presentation, physical UI, IME/accessibility, Intel/AMD hardware, or performance.
 Held footer/presentation investigations and paused features remain unchanged.
+
+## Explicit exceptional-cleanup correction
+
+This cleanup is a separate robustness change, not pure ownership extraction.
+Native diagnostic run `41089324910` on macOS 15 passed composition/readback and
+held-generation fixtures, then aborted immediately after the abandonment
+fixture's upload/throw marker: Metal asserted `Command encoder released without
+endEncoding`, before the catch marker. The original pre-extraction renderer also
+ended its local encoder only on the normal path; CPU exceptions could bypass it.
+
+The correction ends only a still-active render encoder during frame destruction
+or constructor catch after encoder acquisition (where no frame destructor runs).
+It preserves advanced serials and consumed upload bytes, leaves scene history and
+public counters untouched, and does not commit abandoned commands. All original
+abandonment assertions and real next-frame recovery remain mandatory; a separate
+post-end failure checkpoint covers double-end prevention. Native execution of
+this correction is pending; the diagnostic failure is not evidence of recovery.

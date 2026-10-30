@@ -206,6 +206,77 @@ void abandoned_frame_test() {
     wait_for_zero(Access::generation(owner).count);
 }
 
+void ended_frame_failure_test() {
+    Access::reset();
+    auto cache = textures();
+    MetalCompositor owner(nullptr);
+    owner.create_device(cache);
+    resize(owner, 8, 8);
+    const auto initial = Access::snapshot(owner);
+    Access::fail_at(MetalTestPoint::after_render_encoding);
+    bool failed = false;
+    @autoreleasepool {
+        try {
+            auto paint = owner.begin_frame(cache);
+            const std::uint8_t bgra[] = {0, 255, 0, 255};
+            paint.draw_bgra(1, 1, bgra, {0, 0, 8, 8});
+            paint.submit();
+        } catch (const std::runtime_error& error) {
+            failed = std::string_view(error.what()) == "Injected Metal acquisition failure";
+        }
+    }
+    Access::fail_at(MetalTestPoint::none);
+    const auto after = Access::snapshot(owner);
+    require(failed && after.serial == initial.serial + 1 && after.in_flight == 0 &&
+            after.completed == initial.completed && cache.remaining_upload_bytes() == upload_limit - 4,
+            "Post-encoding failure submitted work or rolled back progress");
+    {
+        auto paint = owner.begin_frame(cache);
+        require(bool(paint) && cache.remaining_upload_bytes() == upload_limit,
+                "Post-encoding failure blocked fresh admission/accounting");
+        paint.fill({0, 0, 8, 8}, {0, 255, 0, 255});
+        paint.submit();
+    }
+    require_pixel(owner.read_pixels(), 8, 3, 3, {0, 255, 0, 255});
+    wait_for_zero(Access::generation(owner).count);
+}
+
+void constructor_encoder_failure_test() {
+    Access::reset();
+    auto cache = textures();
+    MetalCompositor owner(nullptr);
+    owner.create_device(cache);
+    resize(owner, 8, 8);
+    Access::fail_at(MetalTestPoint::after_encoder);
+    const auto before_encoder_failure = Access::snapshot(owner);
+    bool failed = false;
+    @autoreleasepool {
+        try {
+            auto paint = owner.begin_frame(cache);
+            (void)paint;
+        } catch (const std::runtime_error& error) {
+            failed = std::string_view(error.what()) == "Injected Metal acquisition failure";
+        }
+    }
+    const auto after_encoder_failure = Access::snapshot(owner);
+    require(failed && after_encoder_failure.serial == before_encoder_failure.serial + 1 &&
+            after_encoder_failure.in_flight == 0 && after_encoder_failure.completed == 0 &&
+            cache.remaining_upload_bytes() == upload_limit,
+            "Post-acquisition constructor failure submitted work or rolled back progress");
+    Access::fail_at(MetalTestPoint::none);
+    @autoreleasepool {
+        {
+            auto paint = owner.begin_frame(cache);
+            require(bool(paint), "Constructor cleanup blocked subsequent admission");
+            paint.fill({0, 0, 8, 8}, {255, 0, 0, 255});
+            paint.submit();
+        }
+        require_pixel(owner.read_pixels(), 8, 3, 3, {255, 0, 0, 255});
+        wait_for_zero(Access::generation(owner).count);
+    }
+
+}
+
 void failure_order_test() {
     Access::reset();
     auto cache = textures();
@@ -343,6 +414,12 @@ int main() {
             std::cerr << "BEGIN abandoned_frame" << std::endl;
             abandoned_frame_test();
             std::cerr << "PASS abandoned_frame" << std::endl;
+            std::cerr << "BEGIN ended_frame_failure" << std::endl;
+            ended_frame_failure_test();
+            std::cerr << "PASS ended_frame_failure" << std::endl;
+            std::cerr << "BEGIN constructor_encoder_failure" << std::endl;
+            constructor_encoder_failure_test();
+            std::cerr << "PASS constructor_encoder_failure" << std::endl;
             std::cerr << "BEGIN failure_order" << std::endl;
             failure_order_test();
             std::cerr << "PASS failure_order" << std::endl;

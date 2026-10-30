@@ -310,12 +310,28 @@ MetalFrame::MetalFrame(MetalCompositor& owner, MetalTextureResources& textures)
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
     STORMTTY_METAL_CHECKPOINT(before_encoder);
     encoder_ = [command_ renderCommandEncoderWithDescriptor:pass];
-    check(encoder_ != nil, "Cannot create Metal render encoder");
+    try {
+        check(encoder_ != nil, "Cannot create Metal render encoder");
+        STORMTTY_METAL_CHECKPOINT(after_encoder);
+    } catch (...) {
+        // A throwing constructor does not run the frame destructor.
+        end_encoding();
+        throw;
+    }
 }
 
-// Abandonment only releases native references. Do not silently end encoding,
-// submit, wait, restore upload accounting or update renderer scene history.
-MetalFrame::~MetalFrame() = default;
+// Exceptional CPU paint abandonment must close an active encoder before ARC
+// releases it. This does not submit work or roll back admission/upload progress.
+MetalFrame::~MetalFrame() {
+    end_encoding();
+}
+
+void MetalFrame::end_encoding() noexcept {
+    if (encoder_ && !encoding_ended_) {
+        encoding_ended_ = true;
+        [encoder_ endEncoding];
+    }
+}
 
 MetalFrame::operator bool() const noexcept {
     return encoder_ != nil;
@@ -378,8 +394,9 @@ void MetalFrame::draw_bgra(std::uint32_t width, std::uint32_t height,
 }
 
 void MetalFrame::submit() {
-    check(encoder_ != nil && !submitted_, "Metal frame must be admitted and submitted only once");
-    [encoder_ endEncoding];
+    check(encoder_ != nil && !encoding_ended_ && !submitted_, "Metal frame must be admitted and submitted only once");
+    end_encoding();
+    STORMTTY_METAL_CHECKPOINT(after_render_encoding);
     if (drawable_) {
         auto presentation = owner_.presented_;
         const auto frame_serial = owner_.serial_;
