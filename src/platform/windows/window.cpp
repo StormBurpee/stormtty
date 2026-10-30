@@ -23,6 +23,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include "application_actors.hpp"
+#include "native_wake.hpp"
 #include <windowsx.h>
 #include <dwmapi.h>
 #include <imm.h>
@@ -79,7 +81,11 @@
 
 namespace stormtty {
 namespace {
-constexpr UINT wake_message = WM_APP + 41;
+using windows::ApplicationActors;
+using windows::ActorLifetimeRegistry;
+using windows::WakeState;
+using windows::RendererReadyWake;
+using windows::wake_message;
 constexpr UINT workspace_saved_message = WM_APP + 45;
 constexpr UINT deferred_layout_message = WM_APP + 42;
 constexpr UINT smoke_settings_input_message = WM_APP + 43;
@@ -175,22 +181,6 @@ std::string chord_key(WPARAM key) {
     case VK_OEM_6: return "]"; case VK_OEM_7: return "'"; default: return {};
     }
 }
-struct WakeState : SettingsDocumentWake {
-    std::atomic<HWND> window{};
-    std::atomic<DWORD> thread{}; // Application-only completion sink; never an HWND owner.
-    std::weak_ptr<WakeState> completion_fallback; // Immutable after view construction.
-    std::atomic<bool> posted{};
-    std::mutex mutex;
-    std::optional<std::string> clipboard;
-    std::optional<std::string> error;
-    void wake() noexcept override {
-        if (auto hwnd = window.load(std::memory_order_acquire)) {
-            if (!posted.exchange(true, std::memory_order_acq_rel) && !PostMessageW(hwnd, wake_message, 0, 0)) posted.store(false, std::memory_order_release);
-        } else if(const auto owner=thread.load(std::memory_order_acquire)) {
-            if(!posted.exchange(true,std::memory_order_acq_rel) && !PostThreadMessageW(owner,wake_message,0,0))posted.store(false,std::memory_order_release);
-        } else if(auto fallback=completion_fallback.lock())fallback->wake();
-    }
-};
 // Qualification decorator: the real guarded save remains authoritative. The
 // future holds it before I/O, without giving the fixture access to a worker.
 class GatedSettingsDocumentServices final : public SettingsDocumentServices {
@@ -274,157 +264,6 @@ void enforce_custom_frame_style(HWND window, bool diagnostics) {
     if ((actual&WS_CAPTION) || missing) throw std::runtime_error("Windows did not retain the required caption-free resize/system-control styles; see frame-style diagnostic.");
 }
 
-using ActorWakeRouter=SessionWakeRouter<WakeState>;
-// One-shot waits scale beyond MsgWaitForMultipleObjects' 63-renderer limit.
-// Callbacks touch only this stable wait object and its cleared-on-destroy wake endpoint.
-// The UI thread cancels/drains before destroying or replacing the latency handle.
-class RendererReadyWake final {
-public:
-    explicit RendererReadyWake(std::shared_ptr<WakeState> endpoint):endpoint_(std::move(endpoint)) {
-        wait_=CreateThreadpoolWait(callback,this,nullptr);
-        if(!wait_)throw std::runtime_error("Could not create renderer readiness wait.");
-    }
-    ~RendererReadyWake(){cancel();if(wait_)CloseThreadpoolWait(wait_);}
-    RendererReadyWake(const RendererReadyWake&)=delete;
-    RendererReadyWake& operator=(const RendererReadyWake&)=delete;
-    void arm(HANDLE handle) noexcept {
-        if(fired_.exchange(false,std::memory_order_acq_rel))armed_=nullptr;
-        if(handle==armed_)return;
-        SetThreadpoolWait(wait_,nullptr,nullptr);
-        armed_=handle;
-        if(handle)SetThreadpoolWait(wait_,handle,nullptr);
-    }
-    void cancel() noexcept {
-        if(!wait_)return;
-        SetThreadpoolWait(wait_,nullptr,nullptr);
-        WaitForThreadpoolWaitCallbacks(wait_,TRUE);
-        armed_=nullptr;fired_.store(false,std::memory_order_release);
-    }
-private:
-    static void CALLBACK callback(PTP_CALLBACK_INSTANCE,void* context,PTP_WAIT,TP_WAIT_RESULT) noexcept {
-        auto* self=static_cast<RendererReadyWake*>(context);
-        self->fired_.store(true,std::memory_order_release);
-        self->endpoint_->wake();
-    }
-    std::shared_ptr<WakeState> endpoint_;
-    PTP_WAIT wait_{};
-    HANDLE armed_{}; // UI thread only.
-    std::atomic<bool> fired_{};
-};
-// UI-thread owner of actor registration and wake-route discoverability. Actors
-// and retained callbacks may outlive registration; neither disposal nor this
-// destructor joins an actor. Starting processes remains the host's transaction.
-class ActorLifetimeRegistry final {
-public:
-    struct SnapshotEntry {
-        SessionId id;
-        std::shared_ptr<Session> actor;
-        WatchIdentity identity;
-
-        bool operator==(const SnapshotEntry&) const = default;
-    };
-
-    ~ActorLifetimeRegistry() {
-        for (const auto& [id, actor] : sessions_) {
-            (void)id;
-            actor->request_close();
-        }
-    }
-
-    [[nodiscard]] SessionId allocate() {
-        return identities_.allocate();
-    }
-
-    Session::Wake callback(SessionId id, const std::shared_ptr<WakeState>& endpoint) {
-        auto route = wakes_.bind(id, endpoint);
-        return [route = std::move(route)] { route->wake(); };
-    }
-
-    void register_actor(SessionId id, std::shared_ptr<Session> actor) {
-        sessions_.emplace(id, std::move(actor));
-        identities_.register_actor(id);
-    }
-
-    // Borrowed lookup/range: UI thread only. Do not retain an actor reference
-    // after its registration is erased, or across reentrant host operations.
-    // Removal passes advance their iterator before disposing its former entry.
-    // These hot-path queries allocate nothing and copy no shared ownership.
-    [[nodiscard]] Session* find(SessionId id) const noexcept {
-        const auto found = sessions_.find(id);
-        return found == sessions_.end() ? nullptr : found->second.get();
-    }
-
-    [[nodiscard]] auto read() const noexcept {
-        return std::ranges::subrange(sessions_.cbegin(), sessions_.cend());
-    }
-
-    // Explicit ownership for queued actions and other uses that outlive lookup.
-    // Like the former checked map lookup, a missing registration is an error.
-    [[nodiscard]] std::shared_ptr<Session> retain(SessionId id) const {
-        return sessions_.at(id);
-    }
-
-    [[nodiscard]] bool contains(SessionId id) const noexcept {
-        return sessions_.contains(id);
-    }
-
-    [[nodiscard]] std::size_t size() const noexcept {
-        return sessions_.size();
-    }
-
-    [[nodiscard]] bool empty() const noexcept {
-        return sessions_.empty();
-    }
-
-    [[nodiscard]] WatchIdentity identity(SessionId id) const noexcept {
-        return identities_.find(id);
-    }
-
-    // Owned qualification snapshot, never a per-frame view.
-    [[nodiscard]] std::vector<SnapshotEntry> snapshot() const {
-        std::vector<SnapshotEntry> result;
-        result.reserve(sessions_.size());
-        for (const auto& [id, actor] : sessions_) {
-            result.push_back({id, actor, identities_.find(id)});
-        }
-        return result;
-    }
-
-    void dispose(SessionId id, const std::shared_ptr<WakeState>& completion = {}) {
-        if (completion) {
-            // Rebind BEFORE close: even a synchronous/final actor wake must
-            // target application completion rather than a destroyed HWND.
-            wakes_.bind(id, completion);
-        }
-        if (const auto found = sessions_.find(id); found != sessions_.end()) {
-            found->second->request_close();
-            sessions_.erase(found);
-        }
-        identities_.forget(id);
-        // A failed start may have a route but no registered actor. Forget only
-        // discoverability: callbacks retain their route and last weak endpoint.
-        wakes_.erase(id);
-    }
-
-private:
-    SessionIdentities identities_;
-    std::map<SessionId, std::shared_ptr<Session>> sessions_;
-    ActorWakeRouter wakes_;
-};
-
-struct ApplicationActors {
-    SessionObservationCache observations;
-    SessionAttention attention;
-    ActorLifetimeRegistry registry; // Closes before presentation metadata is destroyed.
-
-    // Attention policy and presentation caches remain separate from actor
-    // lifetime. One application operation coordinates their disposal cleanup.
-    void dispose(SessionId id, const std::shared_ptr<WakeState>& completion = {}) {
-        registry.dispose(id, completion);
-        observations.forget(id);
-        attention.forget(id);
-    }
-};
 // Native qualification of the actual partial-registration path: a callback
 // exists, but Session::start has not returned a handle. Real actor close/reap
 // remains covered separately by the two-window and project scenarios.
