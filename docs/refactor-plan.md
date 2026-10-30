@@ -143,10 +143,19 @@ passed. All 29 application/repeat receipts recorded reaped processes without
 outer timeout or cleanup error. The full Windows job is not green; no shell fix,
 physical UI Find or performance qualification is claimed. See [verification and limits](../tests/terminal_search_ownership_verification.md).
 
-Group 5 remains open: frame/image snapshot materialization is still in
-`src/terminal/terminal.cpp`. Give that algorithm a focused collaborator while
-preserving owned immutable frames, callback failure behavior and borrowed Ghostty
-lifetimes. Do not introduce another terminal model, actor, lock or unbounded copy.
+`TerminalFrameMaterializer` now owns frame/image snapshot materialization and
+its render-state/iterator resources. Core retains actor authority, terminal
+mutation, callback failure handling, hold transitions and animation timing. The
+boundary accepts a synchronous terminal borrow plus geometry/image-budget values;
+no shared context, second model, actor or lock was introduced. Initial-color
+sampling remains a specific value result used by Core during ordered setup.
+
+Before production movement, the original Linux real-Ghostty terminal suite passed
+33/33 and extended frame/image characterization passed 36/36. Group 5 remains
+open pending qualification of the resulting materializer source on affected native
+platforms. See [frame ownership verification](../tests/terminal_frame_materializer_verification.md)
+for before/after evidence and exceptional-path limits. This does not qualify
+physical UI, performance, native decoding or paused presentation features.
 
 ### 6. Windows document-service modules
 

@@ -7,6 +7,13 @@ throw. Renderers only receive `FramePtr` (`shared_ptr<const RenderFrame>`).
 
 ## Ownership and incremental work
 
+Private `TerminalFrameMaterializer` owns render-state and iteration resources,
+last-frame reuse, row generations and image copying. `TerminalCore` remains the
+actor-thread/mutation authority and invokes it synchronously, including inside
+the permitted render-hold callback. Initial palette sampling is a specific owned
+value result, not a raw render-state accessor. The materializer does not schedule
+work, tick animation or decide when held output may advance.
+
 - `feed` parses bytes without constructing a host frame on every input. A
   requested `snapshot` materializes dirty rows and shares unchanged immutable
   rows. Content generations do not advance for cursor-only row invalidations. Cheap
