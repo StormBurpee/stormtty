@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #include "../src/platform/macos/core_text_font_resources.hpp"
 #include "../src/platform/macos/core_text_row_rasterizer.hpp"
+#include "macos_row_raster_reference.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -122,6 +123,20 @@ void decorations_test() {
             if (decoration == 5) cell.style.overline = true;
             if (decoration == 6) cell.style.strikethrough = true;
             const auto empty = draw_cell(fixture, cell);
+            const auto reference = test::original_core_text_row::rasterize(
+                std::span<const Cell>(&cell, 1), fixture.font.borrow_font(), fixture.options);
+            std::cerr << "DECORATION dpi=" << dpi << " style=" << decoration
+                      << " underline=" << unsigned(cell.style.underline)
+                      << " overline=" << cell.style.overline
+                      << " strike=" << cell.style.strikethrough
+                      << " width=" << fixture.options.width
+                      << " height=" << fixture.options.height
+                      << " cell_width=" << fixture.options.cell_width
+                      << " baseline=" << fixture.options.metrics.baseline
+                      << " extracted_ink=" << ink(empty)
+                      << " original_ink=" << ink(reference)
+                      << " pixels_equal=" << (empty.bgra == reference.bgra) << '\n';
+            require(empty.bgra == reference.bgra, "Decoration differs from pre-extraction pixels");
             require(ink(empty) > 0, "Empty cell lost its decoration");
             cell.image_placeholder = true;
             cell.grapheme = "A";
