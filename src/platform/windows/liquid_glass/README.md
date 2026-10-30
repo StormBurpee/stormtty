@@ -17,7 +17,9 @@ capture action; native AppKit glass is a separate future implementation.
 - `consent`: selected display warning and identity checks; host additionally rejects
   consent across Settings lifetime or display/policy generation changes.
 - `CaptureSource`: checked own-window exclusion, exact SDR/same-adapter display,
-  two-frame WGC pool and a retained GPU snapshot. Geometry changes recrop the latest
+  two-frame WGC pool and a retained GPU snapshot. Owns a balanced matching-thread
+  WinRT initialization independent of HostBackdrop/blur; releases capture objects
+  before uninitializing. Geometry changes recrop the latest
   frame even if WGC has no new frame; frame timestamp/count only advance on delivery.
 - `Session`: capture/material lifetime, bounded crop/output, first-frame timeout,
   error/status reporting and affinity restoration. Stops before renderer replacement.

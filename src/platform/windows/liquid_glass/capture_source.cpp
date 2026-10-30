@@ -1,5 +1,6 @@
 #include "capture_source.hpp"
 #include <dxgi1_6.h>
+#include <roapi.h>
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <winrt/Windows.Foundation.h>
@@ -48,6 +49,7 @@ struct CaptureSource::Impl {
     winrt::com_ptr<IDXGIOutput6> output;
     DWORD previous_affinity{};
     bool affinity_changed{};
+    bool runtime_initialized{}; // Own balanced WinRT reference; never borrowed from HostBackdrop.
     capture::GraphicsCaptureItem item{nullptr};
     capture::Direct3D11CaptureFramePool pool{nullptr};
     capture::GraphicsCaptureSession session{nullptr};
@@ -68,6 +70,13 @@ void CaptureSource::start(HWND window, HMONITOR monitor, ID3D11Device* device) {
     require(stop(), "Previous display affinity could not be restored; close the probe.");
     auto& p = *impl_;
     try {
+        // The UI thread can already be MTA (renderer) or STA (standalone probe).
+        // Acquire our own matching WinRT reference; a changed-mode HRESULT is
+        // never treated as success, and ordinary blur need not be attached.
+        auto initialized=RoInitialize(RO_INIT_MULTITHREADED);
+        if(initialized==RPC_E_CHANGED_MODE)initialized=RoInitialize(RO_INIT_SINGLETHREADED);
+        check_hresult(initialized);
+        p.runtime_initialized=true;
         require(winrt::Windows::Foundation::Metadata::ApiInformation::IsApiContractPresent(
             L"Windows.Foundation.UniversalApiContract", 10), "Windows 10 2004 or newer is required for capture exclusion.");
         require(capture::GraphicsCaptureSession::IsSupported(), "Windows Graphics Capture is unavailable.");
@@ -170,6 +179,9 @@ bool CaptureSource::stop() noexcept {
     if (p.session) { try { p.session.Close(); } catch (...) {} p.session = nullptr; }
     if (p.pool) { try { p.pool.Close(); } catch (...) {} p.pool = nullptr; }
     p.item = nullptr; p.crop = nullptr; p.latest = nullptr; p.output = nullptr; p.device_name.clear(); p.context = nullptr; p.device = nullptr; p.closed.reset();
+    // All capture/WinRT objects and callbacks are released before apartment unwind.
+    // Stop/destruction runs on the same renderer/UI thread as Start.
+    if(p.runtime_initialized) {RoUninitialize();p.runtime_initialized=false;}
     p.frames = 0; p.timestamp = 0; p.width = p.height = 0;
     if (p.affinity_changed) {
         if (!SetWindowDisplayAffinity(p.window, p.previous_affinity)) return false;
