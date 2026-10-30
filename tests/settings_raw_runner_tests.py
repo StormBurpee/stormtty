@@ -3,6 +3,12 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest import mock
+import contextlib
+import io
+import json
+import tempfile
+import types
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('raw_runner', ROOT / 'tools/probes/run_settings_raw_boundary.py')
@@ -104,6 +110,56 @@ class AssessmentTests(unittest.TestCase):
         output = OUTPUT.replace(ROW, ROW.replace('verdict=PASS', 'verdict=INCONCLUSIVE').replace('child_exit=0', 'child_exit=93'))
         output = output.replace(FINAL, FINAL.replace('verdict=PASS', 'verdict=INCONCLUSIVE_OR_MISMATCH'))
         self.inconclusive(output, returncode=2)
+
+
+class FreshOutputTests(unittest.TestCase):
+    def test_shared_artifacts_coexist_but_diagnostic_directory_is_exclusive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = root / 'build'; build.mkdir()
+            shared = build / 'artifacts'; shared.mkdir()
+            sentinel = shared / 'existing.txt'; sentinel.write_bytes(b'keep existing build artifact')
+            (build / 'stormtty_settings_raw_probe.exe').write_bytes(b'not executable: synthetic identity only')
+            runtime = root / 'runtime'; (runtime / 'usr/bin').mkdir(parents=True)
+            for name in ('zsh.exe', 'msys-2.0.dll'):
+                (runtime / 'usr/bin' / name).write_bytes(b'synthetic identity only')
+            provider = root / 'provider'; provider.mkdir()
+            calls = []
+            def owned(command, **kwargs):
+                calls.append((command, kwargs))
+                output = OUTPUT if len(calls) == 1 else OUTPUT.replace('Windows ConPTY (system)', 'Windows ConPTY (packaged experimental 1.25.260930003; OpenConsole identity verified)')
+                return types.SimpleNamespace(metadata=meta, output_tail=output.encode())
+            module = types.SimpleNamespace()
+            loader = types.SimpleNamespace(exec_module=lambda target: setattr(target, 'run_owned', owned))
+            spec = types.SimpleNamespace(name='settings_owned_runner', loader=loader)
+            argv = ['runner', '--build-dir', str(build), '--shell-runtime', str(runtime), '--console-runtime', str(provider)]
+            with mock.patch.object(runner.sys, 'argv', argv), mock.patch.object(runner.sys, 'platform', 'win32'), \
+                 mock.patch.object(runner.importlib.util, 'spec_from_file_location', return_value=spec), \
+                 mock.patch.object(runner.importlib.util, 'module_from_spec', return_value=module), \
+                 mock.patch.dict(runner.sys.modules), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(runner.main(), 0)
+                destination = build / 'settings-raw-artifacts'
+                self.assertTrue(destination.is_dir())
+                self.assertEqual(len(calls), 2)
+                self.assertNotIn('--console-runtime', calls[0][0])
+                self.assertIn('--console-runtime', calls[1][0])
+                for command, kwargs in calls:
+                    self.assertEqual(kwargs, dict(timeout=60, reap_timeout=10, tail_bytes=65536, output_dir=destination))
+                    self.assertEqual(command.count('--smoke-settings-raw'), 1)
+                self.assertEqual(sentinel.read_bytes(), b'keep existing build artifact')
+                self.assertEqual(list(shared.iterdir()), [sentinel])
+                before = {p.name: p.read_bytes() for p in destination.iterdir()}
+                self.assertEqual(set(before), {'settings-raw-inbox.log', 'settings-raw-packaged.log', 'owned-processes.json'})
+                self.assertEqual(len(json.loads(before['owned-processes.json'])['records']), 2)
+                with self.assertRaises(FileExistsError): runner.main()
+                self.assertEqual(len(calls), 2)  # refusal precedes any additional launch
+                self.assertEqual(before, {p.name: p.read_bytes() for p in destination.iterdir()})
+
+    def test_workflow_upload_paths_match_exclusive_directory(self):
+        workflow = (ROOT / '.github/workflows/settings-raw-boundary.yml').read_text()
+        self.assertIn('build-settings-raw/settings-raw-artifacts/settings-raw-*.log', workflow)
+        self.assertIn('build-settings-raw/settings-raw-artifacts/owned-processes.json', workflow)
+        self.assertNotIn('build-settings-raw/artifacts/', workflow)
 
 
 if __name__ == '__main__':

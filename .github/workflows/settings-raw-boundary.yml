@@ -69,8 +69,8 @@ jobs:
         with:
           name: settings-raw-boundary-${{ github.sha }}
           path: |
-            build-settings-raw/artifacts/settings-raw-*.log
-            build-settings-raw/artifacts/owned-processes.json
+            build-settings-raw/settings-raw-artifacts/settings-raw-*.log
+            build-settings-raw/settings-raw-artifacts/owned-processes.json
             build-settings-raw/Testing/Temporary/LastTest.log
             build-settings-raw/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: warn

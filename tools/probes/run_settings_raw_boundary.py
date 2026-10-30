@@ -46,7 +46,7 @@ def main():
     build=args.build_dir.resolve(strict=True);runtime=args.shell_runtime.resolve(strict=True);provider=args.console_runtime.resolve(strict=True)
     app=build/'stormtty_settings_raw_probe.exe'
     if not app.is_file():raise ValueError('missing separate diagnostic executable')
-    artifacts=build/'artifacts';artifacts.mkdir(exist_ok=False)
+    artifacts=build/'settings-raw-artifacts';artifacts.mkdir(exist_ok=False)
     spec=importlib.util.spec_from_file_location('settings_owned_runner',HERE.parent/'run-owned-process.py')
     runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
     def digest(path):
