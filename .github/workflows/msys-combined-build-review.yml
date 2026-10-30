@@ -74,7 +74,7 @@ jobs:
           install: >-
             base-devel autotools cocom docbook-xsl gcc gettext-devel git
             libzstd-devel libiconv-devel mingw-w64-cross-crt mingw-w64-cross-gcc
-            mingw-w64-cross-zlib perl xmlto zlib-devel zstd texinfo
+            mingw-w64-cross-zlib perl python xmlto zlib-devel zstd texinfo
       - name: Verify unchanged private GCC15 package toolchain
         shell: msys2 {0}
         run: |

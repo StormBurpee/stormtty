@@ -87,6 +87,18 @@ class BuildReview(unittest.TestCase):
         self.assertTrue(actions);self.assertTrue(all(re.fullmatch(r'[^@]+@[0-9a-f]{40}',a) for a in actions))
         self.assertIn('path: ${{ runner.temp }}/combined-review-text/',text)
         self.assertNotIn('path: ${{ env.EXPERIMENT_ROOT }}',text)
+    def test_minimal_msys_path_has_native_python_dependency(self):
+        # setup-python configures Windows Python; msys2 path-type:minimal does
+        # not inherit that PATH. build.sh invokes python3 inside MSYS.
+        import re
+        template=(HERE/'workflow.yml.template').read_text()
+        self.assertIn('path-type: minimal',template)
+        packages=re.search(r'install: >-\n((?: +[^\n]+\n)+?)(?=      - name:)',template)
+        self.assertIsNotNone(packages)
+        self.assertIn('python',packages.group(1).split())
+        active=HERE.parents[4]/'.github/workflows/msys-combined-build-review.yml'
+        if active.exists():self.assertEqual(active.read_text(),template)
+
     def test_verified_epoch_and_metadata_only_controls(self):
         bare=SOURCE.parent/'msys2-runtime/msys2-runtime'
         commit=subprocess.check_output(['git','--git-dir='+str(bare),'rev-parse','refs/tags/cygwin-3.6.11^{commit}'],text=True).strip()
