@@ -125,7 +125,7 @@ struct ManagedSessionProbe {
     std::shared_ptr<Session> session;
     unsigned sequence{};
     long long startup_ms{};
-    ManagedSessionProbe(const fs::path& runtime, const fs::path& provider, const Fixture& fixture) {
+    ManagedSessionProbe(const fs::path& runtime, const fs::path& provider, const Fixture& fixture, const fs::path& npm_path = {}) {
         // Every fresh launch calls the real native validator. No spoofed trust
         // assertion, ambient path, PowerShell subprocess, or POSIX mode bypass.
         const auto state = prepare_managed_shell_state_at(fixture.root, false);
@@ -143,6 +143,8 @@ struct ManagedSessionProbe {
             {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"}, {"MSYSTEM", "MSYS"},
             {"MSYS", std::nullopt}, {"ENV", std::nullopt}, {"BASH_ENV", std::nullopt},
             {"STORMTTY_MSYS_RESIZE_TRACE_DIR", std::nullopt}};
+        if (!npm_path.empty()) for (auto& entry : process.environment)
+            if (entry.name == "PATH") entry.value = utf8(fixture.root / L"bin") + ";" + utf8(npm_path) + ";" + utf8(runtime / L"usr/bin");
         process.environment.push_back({"STORMTTY_NATIVE_CONSOLE_SETUP", "ambient-untrusted-helper.exe"});
         process.environment.push_back(managed_shell_console_environment());
         TerminalOptions terminal; terminal.size = {160, 40, 8, 16};
@@ -253,6 +255,90 @@ _qual_line_init() { PROMPT="QZLE_${_qual_seq} > "; zle reset-prompt; }
 add-zle-hook-widget line-init _qual_line_init
 _qual_next() { local last=$?; (( ++_qual_seq )); print -r -- "QREADY_${_qual_seq}_${last}"; return 0; }
 )ZSH";
+
+int qualify_npm(const fs::path& runtime, const fs::path& node_directory) {
+    phase = 200;
+    check(fs::is_regular_file(node_directory / L"node.exe"));
+    check(fs::is_regular_file(node_directory / L"npm"));
+    Fixture fixture;
+    check(fs::create_directory(fixture.root / L"bin"));
+    // The spy delegates every invocation to the actual installed npm. Its log
+    // contains only fixed environment fields/command names, never user data.
+    write(fixture.root / L"bin/npm", "#!/bin/zsh\nprint -r -- \"$TERM|$MSYSTEM|$1\" >> " +
+        shell_quote(posix(fixture.cwd / L"calls")) + "\nexec " + shell_quote(posix(node_directory / L"npm")) + " \"$@\"\n");
+    write(fixture.cwd / L"package.json", R"JSON({"name":"stormtty-npm-fixture","version":"1.0.0","scripts":{"build":"node -e \"require('fs').writeFileSync('EXECUTED','bad')\"","dev":"node -e \"require('fs').writeFileSync('EXECUTED','bad')\"","test":"node -e \"require('fs').writeFileSync('EXECUTED','bad')\"","lint:fix":"node -e \"require('fs').writeFileSync('EXECUTED','bad')\"","two words":"node -e \"require('fs').writeFileSync('EXECUTED','bad')\"","$(touch EXECUTED)":"node -e \"require('fs').writeFileSync('EXECUTED','bad')\""}})JSON");
+    const auto state = prepare_managed_shell_state_at(fixture.root, false);
+    check(static_cast<bool>(state));
+    write(state.directory / L"config.zsh", config);
+    write(fixture.cwd / L"qualify.zsh", R"ZSH(
+[[ $_comps[npm] == _stormtty_npm_completion && ! -e calls ]] || return 71
+[[ $TERM == xterm-256color && $MSYSTEM == MSYS ]] || return 72
+# Capture literal candidates while still invoking the real native npm backend.
+_qual_candidates() {
+  local BUFFER='npm run bu' CURRENT=3
+  local -a words=(npm run bu)
+  compadd() { shift; print -rl -- "$@" > candidates; }
+  _stormtty_npm_completion
+  local result=$?
+  unfunction compadd
+  return $result
+}
+_qual_candidates || return 73
+local -a names
+names=("${(@f)$(<candidates)}")
+(( ${#names} == 6 )) || return 74
+for name in build dev test lint:fix 'two words' '$(touch EXECUTED)'; do
+  (( ${names[(Ie)$name]} )) || return 75
+done
+[[ $(<calls) == 'cygwin|MSYS|completion' && ! -e EXECUTED ]] || return 76
+command node --version > node-version
+command npm --version > npm-version || return 77
+[[ $TERM == xterm-256color && $MSYSTEM == MSYS && ! -v COMP_POINT ]] || return 78
+[[ ${${(f)"$(<calls)"}[-1]} == 'xterm-256color|MSYS|--version' ]] || return 79
+_qual_capture_buffer() { print -r -- "$BUFFER" > captured; BUFFER=''; zle reset-prompt; }
+zle -N _qual_capture_buffer
+bindkey '^X^B' _qual_capture_buffer
+print -r -- QNPM_PROTOCOL_OK
+)ZSH");
+    ManagedSessionProbe shell(runtime, {}, fixture, node_directory);
+    phase = 201;
+    shell.command("source ./qualify.zsh"); shell.ready(0); shell.expect("QNPM_PROTOCOL_OK");
+    phase = 202;
+    auto tab = [&](const std::string& input, const std::string& expected) {
+        std::error_code ignored; fs::remove(fixture.cwd / L"captured", ignored);
+        shell.text(input); shell.key(Key::tab);
+        // Wait for the completed text, then use an authored ZLE widget to read
+        // the actual buffer without pressing Enter or running any package script.
+        shell.expect(expected);
+        shell.text(std::string("\x18\x02", 2));
+        check(until([&] {
+            std::ifstream in(fixture.cwd / L"captured", std::ios::binary);
+            std::string actual((std::istreambuf_iterator<char>(in)), {});
+            return actual == expected + "\n";
+        }));
+        shell.zle_idle();
+    };
+    tab("npm run bu", "npm run build ");
+    tab("npm run two", "npm run two\\ words ");
+    check(!fs::exists(fixture.cwd / L"EXECUTED"));
+    phase = 203;
+    shell.command("[[ $TERM == xterm-256color && $MSYSTEM == MSYS && ! -v COMP_POINT ]] && print -r -- QNPM_SCOPE_OK");
+    shell.ready(0); shell.expect("QNPM_SCOPE_OK");
+    shell.finish();
+    // A new managed shell must preserve the dedicated user's compdef override.
+    write(state.directory / L"config.zsh", std::string(config) + "\ncompdef _qual_user_npm npm\n");
+    const auto call_bytes = fs::file_size(fixture.cwd / L"calls");
+    ManagedSessionProbe overridden(runtime, {}, fixture, node_directory);
+    check(fs::file_size(fixture.cwd / L"calls") == call_bytes);
+    overridden.command("[[ $_comps[npm] == _qual_user_npm ]] && print -r -- QNPM_OVERRIDE_OK");
+    overridden.ready(0); overridden.expect("QNPM_OVERRIDE_OK"); overridden.finish();
+    check(screen(shell.session).find("ENOTSUP") == std::string::npos);
+    check(!fs::exists(fixture.cwd / L"EXECUTED"));
+    check(fs::remove_all(fixture.root) > 0);
+    check(!fs::exists(fixture.root));
+    std::cout << "NPM_COMPLETION_RESULT code=0 phase=204 checks=" << checks << " native_zle=1 scripts_executed=0 cleanup=1\n";
+    return 0;
+}
 }
 int main() {
     long long cold_ms{}, warm_ms{};
@@ -263,6 +349,8 @@ int main() {
         if (args && count == 3 && std::wstring_view(args[1]) == L"--native-read") return native_read(std::wstring_view(args[2]) == L"utf8", std::wstring_view(args[2]) == L"after" ? "A" : std::wstring_view(args[2]) == L"utf8" ? "U" : "D");
         if (args && count >= 2 && std::wstring_view(args[1]) == L"--console-pages") return native_setup(count, args);
         if (args && count == 2 && std::wstring_view(args[1]) == L"--console-hold") return native_hold();
+        if (args && count == 4 && std::wstring_view(args[1]) == L"--npm")
+            return qualify_npm(fs::absolute(args[2]), fs::absolute(args[3]));
         check(args && (count == 2 || count == 3));
         const fs::path self = fs::absolute(args[0]);
         const fs::path runtime = fs::absolute(args[1]);

@@ -171,6 +171,25 @@ export LS_COLORS='di=1;34:ln=36:ex=32:so=35:pi=33:bd=33:cd=33:su=31:tw=30;42:ow=
 alias ls='ls --color=auto'
 alias ll='ls -lh'
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+# Native npm rejects MSYSTEM=MSYS even though this Zsh supports its completion
+# protocol. Opt only the completion query into npm's Cygwin-compatible path;
+# never change the shell's TERM/MSYSTEM or wrap ordinary npm commands. Query
+# candidates directly instead of evaluating npm's generated shell program.
+if [[ $OSTYPE == (msys*|cygwin*) ]]; then
+  _stormtty_npm_completion() {
+    emulate -L zsh
+    local output
+    local -a candidates
+    # Match npm's own Zsh protocol: POINT=0 leaves prefix filtering to compadd.
+    output=$(TERM=cygwin NPM_CONFIG_UPDATE_NOTIFIER=false \
+      COMP_CWORD=$((CURRENT-1)) COMP_LINE=$BUFFER COMP_POINT=0 \
+      command npm completion -- "${words[@]}" 2>/dev/null) || return 1
+    [[ -n $output ]] || return 1
+    candidates=("${(@f)output}")
+    compadd -- "${candidates[@]}"
+  }
+  compdef _stormtty_npm_completion npm
+fi
 # A dedicated, opt-in user file; never create/overwrite or source ~/.zshrc.
 [[ -n $_stormtty_state && -f $_stormtty_state/config.zsh ]] && _stormtty_safe_file "$_stormtty_state/config.zsh" && _stormtty_safe_file "$_stormtty_state/config.zsh.zwc" && source "$_stormtty_state/config.zsh"
 [[ ${STORMTTY_PROMPT:-managed} == managed ]] && unsetopt PROMPT_SUBST

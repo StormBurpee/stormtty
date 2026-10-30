@@ -41,6 +41,116 @@ class ManagedTests(unittest.TestCase):
         self.shell = str(args.zsh.resolve()) if args.zsh else shutil.which('zsh')
         if not self.shell: self.skipTest('zsh unavailable')
         if args.zsh: self.env['PATH'] = str(args.zsh.resolve().parent) + os.pathsep + self.env.get('PATH', '')
+    def npm_completion(self, setup='', query='npm run bu', words='npm run bu'):
+        # Source once with simulated host kind; this is not Windows runtime proof.
+        if os.name != 'nt': self.env['STORMTTY_NATIVE_CONSOLE_SETUP'] = shutil.which('true')
+        code = '''OSTYPE=msys
+source "$ZDOTDIR/.zshrc"
+[[ $_comps[npm] == _stormtty_npm_completion ]] || exit 91
+compadd() { [[ $1 == -- ]] || return 92; shift; printf '%s\\0' "$@"; }
+''' + setup + '\n' + f'''BUFFER={json.dumps(query)}
+words=({words})
+CURRENT=${{#words}}
+_stormtty_npm_completion
+'''
+        return subprocess.run([self.shell, '-dfic', code], env=self.env, cwd=self.root,
+                              capture_output=True, text=True, timeout=15)
+
+    def fake_npm(self, output, status=0):
+        import sys
+        bindir = self.root / 'bin'; bindir.mkdir()
+        record = self.root / 'npm-call.json'
+        npm = bindir / 'npm'
+        npm.write_text(f'''#!{sys.executable}
+import json, os, sys
+with open({str(record)!r}, 'w') as f:
+    json.dump({{'args': sys.argv[1:], 'term': os.getenv('TERM'),
+               'msystem': os.getenv('MSYSTEM'), 'point': os.getenv('COMP_POINT'),
+               'line': os.getenv('COMP_LINE'), 'word': os.getenv('COMP_CWORD'),
+               'notifier': os.getenv('NPM_CONFIG_UPDATE_NOTIFIER')}}, f)
+sys.stdout.write({output!r})
+sys.stderr.write('npm diagnostic must not corrupt the prompt\\n')
+sys.exit({status})
+''')
+        npm.chmod(0o700)
+        self.env.update(PATH=str(bindir) + os.pathsep + self.env['PATH'], MSYSTEM='MSYS')
+        return record
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX npm executable stub; native probe separately required')
+    def test_npm_completion_is_scoped_literal_and_lazy(self):
+        names = ['build', 'build:watch', 'two words', '路径', '$(touch SHOULD_NOT_EXIST)', '*']
+        record = self.fake_npm('\n'.join(names) + '\n')
+        result = self.npm_completion('''[[ ! -e npm-call.json && $TERM == xterm-256color && $MSYSTEM == MSYS ]] || exit 93
+alias npm='false'
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split('\0')[:-1], names)
+        self.assertEqual(result.stderr, '')
+        self.assertFalse((self.root / 'SHOULD_NOT_EXIST').exists())
+        self.assertEqual(json.loads(record.read_text()), dict(args=['completion', '--', 'npm', 'run', 'bu'],
+            term='cygwin', msystem='MSYS', point='0', line='npm run bu', word='2', notifier='false'))
+        # The subsequent ordinary command sees the real inherited terminal type.
+        code = '''OSTYPE=msys; source "$ZDOTDIR/.zshrc"
+compadd() { :; }; BUFFER='npm run bu'; words=(npm run bu); CURRENT=3
+_stormtty_npm_completion
+[[ $TERM == xterm-256color && $MSYSTEM == MSYS && ! -v COMP_POINT && ! -v NPM_CONFIG_UPDATE_NOTIFIER ]] || exit 94
+command npm --version >/dev/null 2>/dev/null
+'''
+        result = subprocess.run([self.shell, '-dfic', code], env=self.env, cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(record.read_text())['term'], 'xterm-256color')
+        self.assertEqual(json.loads(record.read_text())['args'], ['--version'])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX npm executable stub')
+    def test_npm_completion_failure_does_not_offer_partial_output(self):
+        self.fake_npm('not a valid candidate\n', status=1)
+        result = self.npm_completion()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(result.stderr, '')
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX npm executable stub')
+    def test_npm_completion_empty_output_is_not_a_match(self):
+        self.fake_npm('')
+        result = self.npm_completion()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+
+    def test_npm_completion_posix_untouched(self):
+        if os.name == 'nt': self.skipTest('POSIX profile assertion')
+        result = self.run_shell('[[ $_comps[npm] != _stormtty_npm_completion && ${+functions[_stormtty_npm_completion]} == 0 ]]')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_npm_completion_inactive_managed_profile_untouched(self):
+        self.env.pop('STORMTTY_SESSION_ID', None)
+        code = 'OSTYPE=msys; source "$ZDOTDIR/.zshrc"; [[ ${+functions[_stormtty_npm_completion]} == 0 ]]'
+        result = subprocess.run([self.shell, '-dfic', code], env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == 'nt', 'synthetic native-state contract, not ACL qualification')
+    def test_npm_completion_user_config_can_override(self):
+        state = self.root / 'native-state'; state.mkdir(mode=0o700)
+        (state / 'config.zsh').write_text('compdef _user_npm_completion npm\n')
+        self.env['STORMTTY_NATIVE_ZSH_STATE'] = '/' + str(state)
+        code = 'OSTYPE=msys; source "$ZDOTDIR/.zshrc"; [[ $_comps[npm] == _user_npm_completion ]]'
+        result = subprocess.run([self.shell, '-dfic', code], env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_npm_completion_installed_npm_protocol(self):
+        if not shutil.which('npm'): self.skipTest('npm unavailable')
+        names = ['build', 'dev', 'test', 'build:watch', 'two words', '路径', '$(touch SHOULD_NOT_EXIST)']
+        (self.root / 'package.json').write_text(json.dumps({'name': 'completion-fixture', 'version': '1.0.0',
+            'scripts': {name: 'touch SHOULD_NOT_EXECUTE' for name in names}}))
+        result = self.npm_completion()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(result.stdout.split('\0')[:-1]), set(names))
+        self.assertFalse((self.root / 'SHOULD_NOT_EXECUTE').exists())
+        self.assertFalse((self.root / 'SHOULD_NOT_EXIST').exists())
+        # Options and aliases remain npm-owned, rather than a hand-maintained list.
+        result = self.npm_completion(query='npm run-script bu', words='npm run-script bu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(result.stdout.split('\0')[:-1]), set(names))
+
     @unittest.skipIf(os.name == 'nt', 'POSIX state fixture; native lease separately qualified')
     def test_no_dump_keeps_private_config_history_and_custom_completions(self):
         if not args.assets_cache: self.skipTest('requires pinned modules')

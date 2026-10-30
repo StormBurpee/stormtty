@@ -121,6 +121,40 @@ rather than thousands of unused plugins/themes. Full original source archives
 are retained in the build cache and included in the corresponding-source ZIP;
 upstream copyright/license files remain next to each runtime component.
 
+The managed MSYS/Cygwin profile registers a narrow npm completion adapter after
+`compinit` and before the optional user config. The bundled Zsh `_npm` otherwise
+asks npm to generate shell code; native npm rejects the real `MSYSTEM=MSYS`
+environment with `ENOTSUP`. Our adapter queries candidates directly using npm's
+own `COMP_*` Zsh protocol, with `TERM=cygwin` **only for that child query** to
+select npm's supported Cygwin-compatible completion path. It does not evaluate
+returned code, launch npm at startup, wrap normal npm commands, alter `MSYSTEM`,
+or change the shell's terminal type. Newline-separated candidates preserve spaces
+and punctuation and Zsh performs prefix filtering/quoting. Query failures return
+no matches, with stderr suppressed as in npm's own Zsh integration. Ordinary npm
+errors remain visible. No cache location, permissions or logging configuration is
+changed; an npm-cache log-write error still needs separate diagnosis if it occurs
+on a normal command. POSIX and non-managed profiles keep their original behavior;
+private user config can replace the managed completion with `compdef`.
+
+`tools/shell-managed-tests.py` covers the adapter with executable spies and the
+available real npm, including script names, non-execution, child-only environment,
+failure/empty results and opt-out/profile boundaries. Linux protocol tests are
+not native Windows qualification. Before claiming native support verified, test
+on the bundled Windows Zsh with the user's native Node/npm: tab `npm run bu`
+against `build`, `dev`, `test`, `build:watch` and a spaced script name; verify the
+buffer gets a properly quoted completion without executing scripts or printing
+errors, and confirm ordinary `npm --version` and `npm run` still see the original
+`TERM=xterm-256color` and `MSYSTEM=MSYS`.
+
+An isolated native check is available through the root-owned
+`diagnostic/npm-completion` push workflow. It records the exact commit and
+preinstalled Node/npm versions, stages the pinned runtime, and runs
+`shell_navigation_probe --npm <runtime> <node-directory>` with inbox ConPTY.
+It checks real ZLE Tab buffers, literal script candidates, no script execution,
+startup laziness, unchanged ordinary-command environment, user overrides and
+fixture cleanup. It uploads only fixed result fields, process metadata and tool
+versions; no HOME, package cache, history or terminal transcript is retained.
+
 Three explicit distribution changes to OMZ are applied by the build recipe:
 1. The loader's revision lookup is replaced with the pinned commit, eliminating
    a pointless Git process against an archive without `.git` metadata.
