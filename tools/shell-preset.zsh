@@ -449,7 +449,8 @@ if [[ -n ${_stormtty_diag_state-} ]]; then
       "$_stormtty_diag_state" "$_stormtty_diag_native_ms" "$_stormtty_diag_persistent" \
       "$_stormtty_diag_dump_before" "$_stormtty_diag_dump_after" "$_stormtty_diag_source_ms" "$_stormtty_diag_omz_ms" "$elapsed"
     add-zle-hook-widget -d line-init _stormtty_startup_diagnostic
-    zle redisplay
+    # Return to the normal line-init redraw. Forcing redisplay here reuses
+    # pre-output cursor bookkeeping and can overwrite the wrapped record.
     return 0
   }
   add-zle-hook-widget line-init _stormtty_startup_diagnostic

@@ -323,3 +323,35 @@ The engine-backed observation test covers widths 20, 40, 80 and 120 columns,
 rejects the same record split by a hard newline, and rejects malformed/extra text.
 It is registered in CTest, including native Windows builds. Viewport row
 concatenation is never diagnostic-record authority.
+
+### Rendered line-init regression
+
+The first actual-app diagnostic run (`41000306316`, commit `ccf21f3`) passed
+OFF mode and the engine-only formatter test, but all enabled modes exited 2
+before their success records. Cleanup passed; there were no runner timeouts.
+The numeric artifact did not retain the failed assertion, so it cannot establish
+an exact native cause. A separate local POSIX PTY reproduction demonstrated a
+matching source defect: the explicit `zle redisplay` after diagnostic output
+repainted the prompt over the end of the wrapped record. Raw substring tests
+missed this because the complete record had already passed through the PTY.
+
+The loader now returns to normal line-init processing without forcing that extra
+redisplay. Zsh documents `zle-line-init` as the start-of-input hook and `redisplay`
+as repainting the edit buffer; `zle -I` is a separate display-invalidation API,
+not a required extra redraw here. See the
+[primary Zsh ZLE documentation](https://zsh.sourceforge.io/Doc/Release/Zsh-Line-Editor.html).
+
+Run the regression against the current built engine test:
+
+```
+python tools/probes/shell-startup-rendered-tests.py --observer <build>/startup_diagnostic_observation_tests
+```
+
+This requires local POSIX Zsh and Python `pexpect`. It replays actual PTY output
+into current `TerminalCore` at widths 20/40/80/120, then applies the unchanged
+selection formatter and strict diagnostic parser after a real input round-trip.
+It checks both an empty HOME and an authored persistent HOME with a user
+line-init hook, preserving hook calls, one-shot output and successful `exit 0`.
+Capture is bounded and in memory; only fixed status records are printed. This is
+not Windows/MSYS2 qualification: the changed source still requires its separate
+actual-app native gate. No native timeouts or diagnostic grammar were relaxed.
