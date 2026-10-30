@@ -32,6 +32,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot identify source tree' }
           [ordered]@{commit=$commit; tree=$tree; ref=$env:GITHUB_REF; run_id=$env:GITHUB_RUN_ID; scope='compile-only; no execution/capture; no binary upload'} | ConvertTo-Json | Set-Content -Encoding utf8 evidence/source.json
           Copy-Item tools/probes/desktop_glass/README.md evidence/source-gates.md
+          Copy-Item tools/probes/glass_optics/README.md evidence/optics-gates.md
       - name: Initialize existing native compiler environment
         run: ./tools/ci-msvc-env.ps1
       - name: Record compiler and Windows SDK evidence
@@ -54,6 +55,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ninja --version 2>&1 | Tee-Object evidence/ninja-version.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Require and identify exact native shader compiler
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdk = $env:WindowsSDKVersion.TrimEnd('\')
+          $fxc = Join-Path $env:WindowsSdkDir "bin/$sdk/x64/fxc.exe"
+          if (!(Test-Path -LiteralPath $fxc -PathType Leaf)) { throw 'Required native SDK fxc compiler is unavailable; no shader skip permitted' }
+          $version = (Get-Item -LiteralPath $fxc).VersionInfo.FileVersion
+          $hash = (Get-FileHash -LiteralPath $fxc -Algorithm SHA256).Hash
+          [ordered]@{path=$fxc; file_version=$version; sha256=$hash; sdk_version=$sdk; shader_model='5.0'; execution_scope='compiler only; no GPU or application execution'} | ConvertTo-Json | Set-Content -Encoding utf8 evidence/shader-compiler.json
+          "GLASS_FXC=$fxc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Configure standalone probe (no terminal engine)
         run: |
           cmake -S tools/probes/desktop_glass -B build-desktop-glass -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=Release -DSTORMTTY_EXPERIMENTAL_DESKTOP_GLASS_PROBE=ON 2>&1 | Tee-Object evidence/configure.log
@@ -64,6 +75,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-FileHash -LiteralPath build-desktop-glass/stormtty_desktop_glass_probe.exe -Algorithm SHA256 | Select-Object Path,Hash | ConvertTo-Json | Set-Content -Encoding utf8 evidence/binary-hash.json
           'COMPILE/LINK ONLY. Capture, background freshness, exclusion, performance and optics remain UNVERIFIED.' | Set-Content -Encoding utf8 evidence/result.txt
+      - name: Configure independent authored-texture optics (no source connection)
+        run: |
+          cmake -S tools/probes/glass_optics -B build-glass-optics -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=Release -DSTORMTTY_GLASS_OPTICS_COMPILE_HLSL=ON "-DFXC=$env:GLASS_FXC" 2>&1 | Tee-Object evidence/optics-configure.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile reference tests and HLSL; execute neither tests nor shaders
+        run: |
+          cmake --build build-glass-optics --target stormtty_glass_optics_tests glass_optics_shaders --parallel 2 --verbose 2>&1 | Tee-Object evidence/optics-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $outputs = @('build-glass-optics/stormtty_glass_optics_tests.exe', 'build-glass-optics/glass_ps.cso', 'build-glass-optics/glass_vs.cso')
+          $hashes = @($outputs | ForEach-Object { Get-FileHash -LiteralPath $_ -Algorithm SHA256 | Select-Object Path,Hash })
+          $hashes | ConvertTo-Json | Set-Content -Encoding utf8 evidence/optics-output-hashes.json
+          'COMPILE/LINK ONLY. Reference tests not executed in CI; shaders not executed. Desktop integration, GPU parity, appearance and performance remain UNVERIFIED.' | Set-Content -Encoding utf8 evidence/optics-result.txt
       - name: Retain compile evidence only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -74,6 +97,12 @@ jobs:
           path: |
             evidence/source.json
             evidence/source-gates.md
+            evidence/optics-gates.md
+            evidence/shader-compiler.json
+            evidence/optics-configure.log
+            evidence/optics-build.log
+            evidence/optics-output-hashes.json
+            evidence/optics-result.txt
             evidence/toolchain.json
             evidence/sdk-headers.json
             evidence/cmake-version.txt
@@ -84,3 +113,5 @@ jobs:
             evidence/result.txt
             build-desktop-glass/CMakeCache.txt
             build-desktop-glass/CMakeFiles/CMakeConfigureLog.yaml
+            build-glass-optics/CMakeCache.txt
+            build-glass-optics/CMakeFiles/CMakeConfigureLog.yaml
