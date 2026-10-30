@@ -16,11 +16,12 @@ Host data stays host-owned and workspace-qualified. Agent availability/attention
 enters geometry through `RibbonHostData`; it never starts or restores a task.
 
 Width admission uses host-defined priorities: agent, background, session status,
-directory, Git, clock. After admission, user order determines placement. Hidden
-and omitted items have empty rectangles shared by drawing, tooltips and hit tests.
+directory, Git, clock. The background binding is presented as **Activity &
+background terminals** on Windows. After admission, user order determines
+placement. Hidden and omitted items have empty rectangles shared by drawing, tooltips and hit tests.
 Agent attention and active session errors override hiding. Background restore remains reachable through
-Commands (`Ctrl+Shift+P` → Restore background terminal), even when its ribbon
-item is hidden or omitted. Agent approval sheets remain owned by the agent host,
+Commands (`Ctrl+Shift+P` → Workspace activity… or Restore background terminal…),
+even when its ribbon item is hidden or omitted. Agent approval sheets remain owned by the agent host,
 not by customization. macOS can reuse registry/config/geometry; native macOS
 footer wiring is not claimed by this change.
 
@@ -32,11 +33,12 @@ for widths 0–1499. Linux tests are not physical native verification.
 
 On Windows, capture these states at 100% and 150% DPI:
 
-1. Settings → Ribbon, toggle Git off and move Directory below Background; observe
-   immediate footer preview. Cancel and confirm exact original order/visibility.
+1. Settings → Ribbon, toggle Git off and move Directory below Activity &
+   background terminals; observe immediate footer preview. Cancel and confirm exact original order/visibility.
 2. Repeat and Save, close/reopen the app, and confirm persistence.
-3. Park two terminals, hide Background, then restore one using the command palette.
-   Click the old chip location and confirm no hidden restore target remains.
+3. Park two quiet terminals, hide Activity & background terminals, then restore
+   one using the command palette. Click the old target location and confirm no
+   hidden restore target remains. Unread attention deliberately overrides hiding.
 4. Resize through 1200, 640, 400 and minimum width; inspect clipping and hit targets.
 5. Hide Clock with the old appearance control; enable it through Ribbon and check
    both controls agree and the displayed minute updates, including narrow widths.
@@ -47,7 +49,26 @@ On Windows, capture these states at 100% and 150% DPI:
 
 No live Codex process, authentication or task is needed or authorized by this test.
 
-## Compact workspace summary contract
+## Current Windows activity summary
+
+The Windows host supplies `WorkspaceActivitySummary` from the active workspace's
+watched-or-parked union, deduplicated by retained actor. It uses the existing
+`workspace.background` preference and compact target, not a new binding or band.
+Clicking opens the Navigator scoped to the opening workspace's activity. Status
+labels are whole measured tokens; unknown or unavailable Watch results are not
+successful completions. Full details remain in the tooltip and list.
+
+Unread results and failed terminals receive attention priority; quiet running
+Watches obey hiding. Switch/Restore validates workspace, incarnation and placement
+without acknowledging a Watch. A successful restore clears only the separate
+parked-completion attention. Explicit Open result and Dismiss watched result retain
+Watch acknowledgment semantics. See [workspace activity](workspace-ribbon.md) and
+[Command Watch](command-watch.md#workspace-activity-ribbon).
+
+## Portable parked-only summary contract
+
+The following `WorkspaceBackgroundSummary` remains available for parked-only
+consumers; it is not the current Windows host's complete activity model.
 
 Hosts can opt into `RibbonHostData::compact_background` without changing any
 saved binding ID, order, visibility or legacy chip layout. In this mode
@@ -82,6 +103,7 @@ this portable change does not itself change native typography or animations.
 Focused portable tests additionally cover empty/one/many summaries, very long
 untrusted titles, unknown integration, completion followed by a new command,
 repark baseline, lifecycle precedence, hidden/unread overrides and both saved
-orders across widths 1–1499 with zero/one/10,000 parked terminals. Native Windows
-rendering, DPI, keyboard and mouse behavior still require host integration and
-native verification.
+orders across widths 1–1499 with zero/one/10,000 parked terminals. These portable
+checks alone do not qualify native rendering, DPI, keyboard or mouse behavior. Current Windows Activity fixtures are described in the
+[Watch contract](command-watch.md#workspace-activity-ribbon); physical verification
+remains separate.

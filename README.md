@@ -122,18 +122,23 @@ proof. [Context fields and platform boundaries →](docs/pane-context.md)
 
 ### A quieter frame, with controls that belong to it
 
-Tabs, dividers, menus, Settings and the command palette share the native renderer.
-The footer ribbon can show directory, Git, session status, background terminals,
+On Windows, tabs, dividers, menus, Settings and the command palette share the
+native renderer. The footer ribbon can show directory, Git, session status, activity,
 and a clock. Reorder or hide the built-in items in Settings;
 preview is immediate, Cancel restores the old arrangement, and Save persists it.
 Errors cannot be hidden by customization. This is a small
 closed set of data bindings, not an executable plugin system.
 
-Parked terminals share one **Background N** entry instead of filling the ribbon
-with individual chips. It opens their Navigator view. Unread command completions
-remain marked through preview and cancellation, and clear only after a successful
-restore. An open shell is labelled separately from an observed running command.
-[Background terminal behavior →](docs/workspace-ribbon.md)
+One footer entry brings together watched commands and parked terminals in the
+current workspace, counting each terminal once. Open it—or choose **Commands →
+Workspace activity…**—to switch to or restore the same retained terminal. Activity
+uses the existing footer rather than taking another row from the terminal.
+
+Previewing, switching and restoring do not acknowledge watched results;
+**Open result** and **Dismiss watched result** remain explicit actions. Separately,
+restoring clears that terminal's parked-completion attention. An open shell is
+labelled separately from an observed running command, and missing exit status
+stays unknown. [Workspace activity and background terminals →](docs/workspace-ribbon.md)
 
 Appearance has eight complete palettes: **Graphite, Instrument, Daylight,
 Midnight, Evergreen, Aubergine, Ember and Ink**. A Custom palette edits the canvas,
@@ -143,7 +148,9 @@ their meaning; the theme does not recolor everything a TUI draws.
 
 The gallery previews each palette's canvas, chrome and ANSI colors before you
 choose it. Cards adapt to the available width; arrow keys move through the grid,
-and keyboard focus scrolls the rest of Appearance into view.
+and keyboard focus scrolls the rest of Appearance into view. Windows Settings
+respects wheel-scroll preferences, eases discrete wheel steps and keeps scrolling
+content clipped to its viewport. Reduced motion removes the transition.
 
 **Import** brings a StormTTY palette or a Ghostty color theme into the Settings
 draft. Try it against your open terminals, then Save or Cancel. **Export** shares
@@ -370,7 +377,8 @@ require **Use shortcut** confirmation before they can override shell input.
 
 Choose **Move to background** in the pane menu or command palette to park a
 terminal in its workspace's footer without restarting its process. Use the
-footer’s **Background N** entry to open the Navigator and restore a terminal;
+footer’s activity entry (or **Commands → Workspace activity…**) to open the
+workspace-scoped Navigator and restore a terminal;
 background actions also include confirmed close. Parking the last pane
 leaves **New terminal** available. Exit indicators report the terminal process's
 exit code—not command readiness or service health. Background sessions are not
@@ -445,8 +453,11 @@ pass, including normal launches without a shell-runtime flag. Resize qualificati
 remains intermittent: the native console can report the new grid while Zsh still
 reports the previous dimensions, and an input-loss case has also been observed.
 Compact alternate-screen Ink layouts retain a separate resize-redraw failure.
-The full Windows suite is not green; passing CI smoke checks are not physical
-keyboard/UI qualification.
+The [automatic native baseline at `de291258`](https://github.com/StormBurpee/stormtty/actions/runs/40977429855)
+passed on Linux, macOS and Windows; full compatibility qualification remains
+incomplete. Settings dismissal with Escape can still corrupt managed-Zsh input:
+repeated checks remain intermittent, and the bundled-console Settings case fails.
+Passing baseline or smoke checks are not physical keyboard/UI qualification.
 
 The bundled Microsoft console backend is a separate Settings → Shell preview;
 System remains the default. `--console-runtime <absolute-directory>` is an
