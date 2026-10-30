@@ -502,6 +502,9 @@ private:
     bool smoke_workspace_frame_running_{};
     void smoke_pane_focus_scene(const WindowScene&) const;
     void smoke_settings_scroll_evidence();
+    void smoke_palette_scroll_evidence();
+    void palette_wheel(Point,short,UINT);
+    std::optional<bool> smoke_palette_scroll_reduced_motion_;
     std::optional<std::uint64_t> smoke_chrome_time_; // Explicit native CI presentation clock only.
     bool smoke_focus_running_{};
     std::optional<bool> smoke_pane_reduced_motion_; // Owned layout fixture: pane wash only, never caret/global policy.
@@ -689,6 +692,10 @@ private:
     WPARAM caption_pressed_{};
     std::string footer_signature_;
     std::size_t palette_index_{};
+    mutable FiniteScroll palette_scroll_;
+    mutable std::string palette_scroll_identity_;
+    mutable bool palette_reveal_{true};
+    mutable std::size_t palette_scroll_selection_{};
     bool palette_background_only_{};
     TabId rename_tab_{};
     Utf16Input text_input_;
@@ -2148,7 +2155,13 @@ void NativeWindow::motion_schedule() {
         if (item.first&(1ull<<62)) return !projects_.find(ProjectWorkspaceId{item.first&~(1ull<<62)});
         return item.first>=16 && !workspace().tab(TabId{(item.first-16)/2});
     });
-    bool running=settings_panel_.scroll_active();
+    if(!palette_open_) {palette_scroll_.reset();palette_scroll_identity_.clear();palette_reveal_=true;}
+    else {
+        (void)palette_layout(palette_commands()); // Invalidate changed results before sampling.
+        if(smoke_palette_scroll_reduced_motion_.value_or(reduced_motion_) || minimized_ || !IsWindowVisible(hwnd_))palette_scroll_.finish();
+        else palette_scroll_.tick(now);
+    }
+    bool running=settings_panel_.scroll_active() || palette_scroll_.active;
     auto check=[&](ChromeTransition& transition) { if (reduced_motion_ || minimized_) transition.finish(); running=running||transition.active(now); };
     check(palette_transition_); check(settings_transition_); check(menu_transition_); check(navigator_transition_);
     for (auto& [id,t]:workspace_focus_) { (void)id; check(t); }
@@ -2158,7 +2171,7 @@ void NativeWindow::motion_schedule() {
     if (running && !motion_timer_active_) {
         motion_timer_active_=SetTimer(hwnd_,chrome_motion_timer,16,nullptr)!=0;
         if (!motion_timer_active_) { // Resource pressure must never leave chrome half-hidden.
-            settings_panel_.finish_scroll();
+            settings_panel_.finish_scroll();palette_scroll_.finish();
             palette_transition_.finish(); settings_transition_.finish(); menu_transition_.finish(); navigator_transition_.finish();
             for (auto& [id,t]:workspace_focus_) { (void)id; t.finish(); }
             for (auto& [id,t]:pane_focus_) { (void)id; t.finish(); }
@@ -2167,6 +2180,13 @@ void NativeWindow::motion_schedule() {
         }
     }
     else if (!running && motion_timer_active_) { KillTimer(hwnd_,chrome_motion_timer); motion_timer_active_=false; }
+}
+void NativeWindow::palette_wheel(Point position,short delta,UINT lines) {
+    const auto layout=palette_layout(palette_commands());
+    if(!palette_open_ || !layout.viewport.contains(position))return;
+    palette_scroll_.wheel(settings_wheel_distance(delta,lines,lines==WHEEL_PAGESCROLL,layout.viewport.height),layout.maximum_scroll,chrome_now(),
+        settings_wheel_packet_is_discrete(delta)&&!smoke_palette_scroll_reduced_motion_.value_or(reduced_motion_)&&!minimized_);
+    changed();
 }
 void NativeWindow::settings_wheel(Point position, short delta, UINT lines) {
     const bool discrete=settings_wheel_packet_is_discrete(delta);
@@ -2575,6 +2595,7 @@ void NativeWindow::toggle_palette() {
     if(find_session_)close_find();
     palette_background_only_=false; inspected_context_.reset();
     if(!palette_open_)acquire_text_overlay_input();
+    palette_scroll_.reset();palette_scroll_identity_.clear();palette_reveal_=true;
     palette_open_ = !palette_open_; rename_open_ = false; query_.clear(); palette_index_ = 0;
     composing_ = false; preedit_.clear();
     if (ImmContext context(hwnd_); context.context) ImmNotifyIME(context.context, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
@@ -2641,7 +2662,31 @@ NativeWindow::PaletteLayout NativeWindow::palette_layout(std::span<const Palette
     std::vector<double> heights;
     heights.reserve(entries.size());
     for (const auto& entry:entries) heights.push_back(entry.session || !palette_availability(entry).enabled?48.0:36.0);
-    return layout_command_palette(width_,height_,heights,palette_index_,rename_open_);
+    std::string identity=query_+"\n"+std::to_string(width_)+":"+std::to_string(height_)+":"+std::to_string(rename_open_);
+    for(std::size_t i=0;i<entries.size();++i) {
+        const auto& entry=entries[i];
+        for(const auto* value:{&entry.id,&entry.label,&entry.description})identity+="\n"+std::to_string(value->size())+":"+*value;
+        identity+=":"+std::to_string(heights[i]);
+        if(entry.session)identity+=":"+std::to_string(entry.session->project.value)+":"+std::to_string(entry.session->local.value);
+        if(entry.watch)identity+=":"+std::to_string(entry.watch->host)+":"+std::to_string(entry.watch->session)+":"+std::to_string(entry.watch->actor);
+    }
+    if(identity!=palette_scroll_identity_) {
+        palette_scroll_identity_=std::move(identity);palette_scroll_.reset();palette_reveal_=true;
+    }
+    auto layout=layout_command_palette(width_,height_,heights,palette_index_,rename_open_,palette_scroll_.display);
+    if(palette_reveal_ || palette_scroll_selection_!=palette_index_) {
+        palette_scroll_.cancel();
+        double top=0;for(std::size_t i=0;i<std::min(palette_index_,heights.size());++i)top+=heights[i];
+        if(palette_index_<heights.size()) {
+            const double bottom=top+heights[palette_index_];
+            if(top<palette_scroll_.display)palette_scroll_.reset(top);
+            else if(bottom>palette_scroll_.display+layout.viewport.height)palette_scroll_.reset(bottom-layout.viewport.height);
+        }
+        palette_scroll_.reset(std::clamp(palette_scroll_.display,0.0,layout.maximum_scroll));
+        palette_scroll_selection_=palette_index_;palette_reveal_=false;
+        layout=layout_command_palette(width_,height_,heights,palette_index_,rename_open_,palette_scroll_.display);
+    }
+    return layout;
 }
 CommandAvailability NativeWindow::palette_availability(const PaletteEntry& entry) const {
     if (inspecting_context()) return {true,{}};
@@ -3176,6 +3221,7 @@ WindowScene NativeWindow::scene() {
         const double caret_x=std::min(x+w-66,search_left+renderer_->measure_chrome_text(query_measure).width/scale_);
         if (caret_x>=search_left) line(caret_x,y+18,caret_x,y+36,accent,1.25);
         line(x+1,y+50,x+w-1,y+50,seam);
+        const auto row_primitives=result.primitives.size(),row_texts=result.texts.size();
         for (std::size_t row=0;row<layout.rows;++row) {
             const auto index=layout.first+row; const auto& command=commands[index];
             const auto available=palette_availability(command);
@@ -3219,6 +3265,9 @@ WindowScene NativeWindow::scene() {
                 label({x+w-12-key_width,top+3,key_width-16,15},shortcut,secondary,10);
             }
         }
+        const PixelRect row_clip{static_cast<float>(layout.viewport.x*scale_),static_cast<float>(layout.viewport.y*scale_),static_cast<float>(layout.viewport.width*scale_),static_cast<float>(layout.viewport.height*scale_)};
+        for(auto i=row_primitives;i<result.primitives.size();++i)result.primitives[i].clip=row_clip;
+        for(auto i=row_texts;i<result.texts.size();++i)result.texts[i].clip=row_clip;
         if (!rename_open_ && commands.empty()) {
             label({x+20,y+60,w-40,21},inspecting_context()?"No matching fields":palette_background_only_ && query_.empty()?"No background terminals":"No matching commands",text,14);
             label({x+20,y+83,w-40,18},query_.empty()?"Move a terminal to background to keep it running here.":inspecting_context()?"Try fewer letters or clear the filter.":"Try fewer letters or a different action name.",secondary,11);
@@ -3596,6 +3645,7 @@ bool NativeWindow::key_message(MSG& message) {
             caret_schedule(); return true;
         }
         if (!rename_open_ && (vk==VK_HOME || vk==VK_END || vk==VK_PRIOR || vk==VK_NEXT)) {
+            palette_reveal_=true;
             const auto commands=palette_commands();
             if (!commands.empty()) {
                 const auto last=commands.size()-1, step=palette_layout(commands).rows;
@@ -3608,6 +3658,7 @@ bool NativeWindow::key_message(MSG& message) {
             changed(); return true;
         }
         if (!rename_open_ && (vk == VK_UP || vk == VK_DOWN)) {
+            palette_reveal_=true;
             const auto commands = palette_commands();
             if (!commands.empty()) palette_index_ = (palette_index_ + commands.size() + (vk == VK_UP ? commands.size()-1 : 1)) % commands.size();
             changed(); return true;
@@ -3878,8 +3929,9 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
         const auto commands=palette_commands(); const auto layout=palette_layout(commands);
         const auto& panel=layout.panel;
         if (!rename_open_) for (std::size_t row=0;row<layout.row_bounds.size();++row) {
-            if (layout.row_bounds[row].contains(point)) {
-                palette_index_=layout.first+row; activate_palette_entry(commands[palette_index_]);
+            if (layout.viewport.contains(point) && layout.row_bounds[row].contains(point)) {
+                palette_scroll_.cancel();
+                palette_index_=layout.first+row;palette_scroll_selection_=palette_index_;palette_reveal_=false; activate_palette_entry(commands[palette_index_]);
                 changed(); return;
             }
         }
@@ -4882,6 +4934,78 @@ bool NativeWindow::smoke_find_progress() {
     }
     return false;
 }
+void NativeWindow::smoke_palette_scroll_evidence() {
+    const auto saved_clock=smoke_chrome_time_;const auto saved_policy=smoke_palette_scroll_reduced_motion_;
+    const auto input=smoke_terminal_input_submissions_,mouse=smoke_terminal_mouse_submissions_;
+    const auto require=[](bool okay,const char* error){if(!okay)throw std::runtime_error(error);};
+    const auto close=[](double a,double b){return std::abs(a-b)<.001;};
+    const auto restore=[&]{inspected_context_.reset();smoke_chrome_time_=saved_clock;smoke_palette_scroll_reduced_motion_=saved_policy;query_.clear();palette_index_=0;palette_scroll_.reset();palette_reveal_=true;changed();};
+    try {
+        smoke_palette_scroll_reduced_motion_=false;
+        const auto layout=palette_layout(palette_commands());
+        const Point inside{layout.viewport.x+layout.viewport.width/2,layout.viewport.y+layout.viewport.height/2};
+        palette_wheel(inside,-120,3);
+        require(palette_scroll_.display>0 && palette_scroll_.display<108 && close(palette_scroll_.target,108) && palette_scroll_.active,"Palette wheel lacks immediate finite response.");
+        smoke_motion_capture(L"palette-scroll-immediate",0);
+        *smoke_chrome_time_+=30;motion_schedule();
+        smoke_motion_capture(L"palette-scroll-mid",30);
+        require(palette_scroll_.display>8 && palette_scroll_.display<108,"Palette wheel skipped intermediate presentation.");
+        const auto partial=palette_layout(palette_commands());
+        require(partial.row_bounds.front().y<partial.viewport.y,"Palette scroll lost its partially visible first row.");
+        const auto actual=scene();
+        require(std::any_of(actual.texts.begin(),actual.texts.end(),[&](const auto& text){return text.z.layer==ChromeLayer::palette && text.clip && close(text.clip->y,partial.viewport.y*scale_) && close(text.clip->height,partial.viewport.height*scale_);}) &&
+            std::any_of(actual.primitives.begin(),actual.primitives.end(),[&](const auto& item){return item.z.layer==ChromeLayer::palette && item.clip && close(item.clip->y,partial.viewport.y*scale_) && close(item.clip->height,partial.viewport.height*scale_);}),"Palette scroll lost native text/primitive clip masks.");
+        palette_wheel(inside,-120,3);require(close(palette_scroll_.target,216),"Palette burst lost accumulated distance.");
+        const auto before=palette_scroll_.display;palette_wheel(inside,120,1);
+        require(palette_scroll_.display<before && close(palette_scroll_.target,std::max(0.0,before-36)),"Palette reversal pulled toward old target.");
+        smoke_motion_capture(L"palette-scroll-reverse",0);
+        *smoke_chrome_time_+=90;motion_schedule();
+        smoke_motion_capture(L"palette-scroll-settled",90);
+        require(!palette_scroll_.active && close(palette_scroll_.display,palette_scroll_.target),"Palette wheel failed to settle.");
+        palette_scroll_.reset();palette_wheel(inside,-120,0);require(palette_scroll_.display==0,"Zero wheel-lines preference moved palette.");
+        palette_wheel(inside,-15,3);require(close(palette_scroll_.display,13.5)&&!palette_scroll_.active,"Palette quantized fractional wheel input.");
+        smoke_motion_capture(L"palette-scroll-fractional",0);
+        POINT screen{static_cast<LONG>(inside.x*scale_),static_cast<LONG>(inside.y*scale_)};ClientToScreen(hwnd_,&screen);
+        message(WM_MOUSEHWHEEL,MAKEWPARAM(0,WHEEL_DELTA),MAKELPARAM(screen.x,screen.y));
+        require(close(palette_scroll_.display,13.5),"Palette horizontal wheel became vertical input.");
+        palette_scroll_.reset();palette_wheel(inside,-120,WHEEL_PAGESCROLL);
+        require(close(palette_scroll_.target,std::min(layout.maximum_scroll,std::max(48.0,layout.viewport.height-48))),"Palette ignored page-scroll wheel policy.");
+        palette_wheel(inside,-120,3);query_="zzzzzzzzzzzzzzzz";(void)palette_layout(palette_commands());
+        require(!palette_scroll_.active && palette_scroll_.display==0,"Palette query replacement retained stale motion.");
+        query_.clear();(void)palette_layout(palette_commands());palette_wheel(inside,-120,3);
+        MSG key{};key.hwnd=hwnd_;key.message=WM_KEYDOWN;key.wParam=VK_END;key_message(key);
+        const auto end=palette_layout(palette_commands());
+        require(!palette_scroll_.active && end.first+end.rows==palette_commands().size(),"Keyboard reveal did not interrupt palette wheel.");
+        key.wParam=VK_HOME;key_message(key);(void)palette_layout(palette_commands());
+        palette_wheel(inside,-120,3);smoke_palette_scroll_reduced_motion_=true;motion_schedule();
+        require(!palette_scroll_.active && close(palette_scroll_.display,108),"Reduced-motion change did not finish palette wheel.");
+        smoke_motion_capture(L"palette-scroll-reduced",0);
+        palette_wheel(inside,-120,3);require(!palette_scroll_.active && close(palette_scroll_.display,216),"Reduced motion delayed a new palette wheel event.");
+        smoke_palette_scroll_reduced_motion_=false;
+        key.wParam=VK_HOME;key_message(key);(void)palette_layout(palette_commands());
+        palette_wheel(inside,-120,3);key_message(key);(void)palette_layout(palette_commands());
+        require(palette_index_==0 && palette_scroll_.display==0 && !palette_scroll_.active,"Home at unchanged selection did not reveal first row.");
+        palette_wheel(inside,-120,3);toggle_palette();toggle_palette();(void)palette_layout(palette_commands());
+        require(palette_scroll_.display==0 && !palette_scroll_.active,"Close/reopen retained stale palette motion.");
+        palette_wheel(inside,-120,3);const auto saved_width=width_;width_=std::max(1.0,width_-1);(void)palette_layout(palette_commands());width_=saved_width;
+        require(!palette_scroll_.active,"Resize retained stale palette motion.");
+        (void)palette_layout(palette_commands());
+        // Read-only context rows exercise the actual pointer route without
+        // executing a command or changing a terminal actor.
+        inspected_context_=pane_context(workspace().active_pane());inspected_context_->detail.clear();
+        for(int i=0;i<30;++i)inspected_context_->detail+="Scroll fixture row "+std::to_string(i)+"\n";
+        (void)palette_layout(palette_commands());palette_wheel(inside,-55,3);palette_wheel(inside,-120,3);
+        const auto hit_layout=palette_layout(palette_commands());const auto displayed=palette_scroll_.display;
+        pointer_down({inside.x,hit_layout.viewport.y-1},false);
+        require(palette_index_==0 && palette_open_,"Clipped-away row accepted a header click.");
+        pointer_down({inside.x,hit_layout.viewport.y+1},false);
+        require(palette_index_==hit_layout.first && !palette_scroll_.active && close(palette_scroll_.display,displayed),"Partial-row hit used target geometry or moved on press.");
+        inspected_context_.reset();palette_index_=0;palette_scroll_identity_.clear();
+        require(input==smoke_terminal_input_submissions_ && mouse==smoke_terminal_mouse_submissions_,"Palette wheel leaked terminal input.");
+        std::fputs("Native palette scroll: finite burst/reversal, partial-row clip masks, fractional input, zero-lines policy, horizontal consumption, query cancellation, keyboard reveal and reduced motion verified; controlled_clock=1 synthetic_motion_policy=1 native_present=1 physical_frame_pacing_verified=0.\n",stderr);
+        restore();
+    } catch(...) {restore();throw;}
+}
 bool NativeWindow::smoke_palette_evidence(SessionId parked) {
     const auto actor=sessions_.at(parked);
     const auto actor_count=sessions_.size();
@@ -4890,6 +5014,7 @@ bool NativeWindow::smoke_palette_evidence(SessionId parked) {
     smoke_chrome_time_=GetTickCount64()+1000;
     toggle_palette(); palette_transition_.finish();
     smoke_motion_capture(L"palette-commands",0);
+    smoke_palette_scroll_evidence();
     MSG navigation{}; navigation.hwnd=hwnd_; navigation.message=WM_KEYDOWN; navigation.wParam=VK_END;
     const auto transmitted=actor->info().bytes_sent;
     if (!key_message(navigation)) return fail("Palette End was not consumed.");
@@ -6638,7 +6763,16 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         terminal_mouse(point(lparam),MouseAction::press,MouseButton::middle,true); return 0;
     case WM_MBUTTONUP: if (navigator_open_ || palette_open_ || rename_open_ || overlay_open()) return 0; terminal_mouse(point(lparam),MouseAction::release,MouseButton::middle,false); return 0;
     case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL: {
-        if(palette_open_||rename_open_)return 0;
+        if(palette_open_||rename_open_) {
+            if(palette_open_ && message==WM_MOUSEWHEEL) {
+                const auto layout=palette_layout(palette_commands());
+                if(layout.viewport.contains(point(lparam,true))) {
+                    UINT lines=3;SystemParametersInfoW(SPI_GETWHEELSCROLLLINES,0,&lines,0);
+                    palette_wheel(point(lparam,true),GET_WHEEL_DELTA_WPARAM(wparam),lines);
+                }
+            }
+            return 0; // Modal owns both axes, including outside its viewport.
+        }
         if(navigator_open_){const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);if(!nav.panel.contains(point(lparam,true)))return 0;const bool left=nav.workspace_body.contains(point(lparam,true));const int delta=GET_WHEEL_DELTA_WPARAM(wparam);for(int i=0;i<std::min(12,std::abs(delta)/WHEEL_DELTA);++i)navigator_.move(left,delta>0?-1:1);changed();return 0;}
 
         if(agent_panel_.is_open()) {agent_panel_.scroll(static_cast<double>(GET_WHEEL_DELTA_WPARAM(wparam))/WHEEL_DELTA*3);agent_input_changed();return 0;}

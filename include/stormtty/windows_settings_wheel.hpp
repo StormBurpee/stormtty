@@ -4,7 +4,7 @@
 
 namespace stormtty {
 
-// Win32 Settings-only input policy, portable so units and accessibility choices
+// Win32 Settings/palette chrome input policy, portable so units and accessibility choices
 // can be tested without an HWND. Callers supply SPI_GETWHEELSCROLLLINES and mark
 // WHEEL_PAGESCROLL explicitly. No terminal-row or hardware-device inference.
 inline double settings_wheel_distance(int delta, unsigned lines, bool page_scroll,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stormtty/config.hpp"
+#include "stormtty/finite_scroll.hpp"
 #include "stormtty/renderer.hpp"
 #include <optional>
 #include <span>
@@ -84,9 +85,9 @@ public:
     // wheel packets animate; fractional wheel packets remain direct.
     bool wheel_pixels(Point, double delta_dip, std::uint64_t now_ms, bool animate_discrete);
     bool tick_scroll(std::uint64_t now_ms); // Cheap geometry translation, no previews/layout rebuild.
-    bool scroll_active() const noexcept { return scroll_animating_; }
+    bool scroll_active() const noexcept { return scroll_motion_.active; }
     double scroll_offset() const noexcept { return scroll_; }
-    double scroll_target() const noexcept { return scroll_target_; }
+    double scroll_target() const noexcept { return scroll_motion_.target; }
     void finish_scroll(); // Reduced motion/keyboard: land exactly, then stop scheduling.
     void cancel_scroll_at_display() noexcept; // Pointer interruption: never jump to target.
     // Coalesced previews keep rapid slider input bounded. A save/cancel action
@@ -125,9 +126,7 @@ private:
     SettingsSection section_{SettingsSection::appearance};
     std::string focus_{"nav.appearance"}, hover_, pressed_, error_, theme_notice_, capture_command_, material_status_, console_backend_status_;
     double scroll_{}, document_height_{};
-    double scroll_target_{}, scroll_start_{};
-    std::uint64_t scroll_started_ms_{}, scroll_sampled_ms_{};
-    bool scroll_animating_{};
+    FiniteScroll scroll_motion_;
     bool bundled_console_available_{};
     bool open_{}, saving_{}, dragging_opacity_{}, dragging_blur_{}, high_contrast_{}, loaded_changes_{};
     Color high_background_{0,0,0,255}, high_foreground_{255,255,255,255};
