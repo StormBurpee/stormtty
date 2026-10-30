@@ -63,7 +63,7 @@ tool_snapshot > "$output/provenance/tool-binaries-before.txt"
 selected_ld=$("$CC" -print-prog-name=ld)
 [[ $selected_ld == */* ]] || selected_ld=$(command -v "$selected_ld")
 "$selected_ld" --help > "$output/provenance/reader-linker-help.txt"
-grep -F -- '--no-insert-timestamp' "$output/provenance/reader-linker-help.txt" > /dev/null
+grep -E -- '^[[:space:]]+--(no-|\[no-\])insert-timestamp([[:space:]]|$)' "$output/provenance/reader-linker-help.txt" > /dev/null
 cp "$EXPERIMENT_TOOLCHAIN/provenance/compiler-packages.txt" "$output/provenance/"
 cxx_command=(stormtty-gxx-15 -std=gnu++17 -DSTORMTTY_COMBINED_CONSOLE_TRACE=1)
 export CXX="${cxx_command[*]}"

@@ -99,6 +99,22 @@ class BuildReview(unittest.TestCase):
         active=HERE.parents[4]/'.github/workflows/msys-combined-build-review.yml'
         if active.exists():self.assertEqual(active.read_text(),template)
 
+    def test_linker_timestamp_help_accepts_explicit_and_optional_no(self):
+        import shlex
+        shell=(HERE/'build.sh').read_text()
+        line=next(line for line in shell.splitlines() if line.startswith('grep -E -- '))
+        pattern=shlex.split(line)[3]
+        for text,accepted in (
+            ('  --no-insert-timestamp   Omit timestamp',True),
+            ('  --[no-]insert-timestamp   Use real timestamp rather than zero',True),
+            ('  --insert-timestamp   Use real timestamp',False),
+            ('  --no-insert-timestamp-extra Wrong option',False),
+            ('description mentions --no-insert-timestamp only',False),
+            ('',False)):
+            result=subprocess.run(['grep','-E','--',pattern],input=text+'\n',text=True,capture_output=True)
+            self.assertEqual(result.returncode==0,accepted,text)
+        self.assertIn('-Wl,--no-insert-timestamp',shell)
+
     def test_verified_epoch_and_metadata_only_controls(self):
         bare=SOURCE.parent/'msys2-runtime/msys2-runtime'
         commit=subprocess.check_output(['git','--git-dir='+str(bare),'rev-parse','refs/tags/cygwin-3.6.11^{commit}'],text=True).strip()
