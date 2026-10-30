@@ -51,14 +51,18 @@ Status ApplicationWorkspaces::restore_creating_window(WindowId id, const Workspa
         if(owner(current.id)!=id && current.metadata.persistent_id==restored.metadata.persistent_id)return Status::failure("Restored workspace already belongs to another window");
     std::vector<ProjectWorkspaceId> placement;placement.reserve(prepared.entries_.size());
     for(const auto& restored:prepared.entries_)placement.push_back(restored.id);
-    catalog_.entries_.reserve(existing+prepared.entries_.size());
-    // No allocation follows: prepared records are moved, not catalog identities
-    // copied. Preserve the legacy catalog selection if it belongs to a survivor.
-    static_assert(std::is_nothrow_move_constructible_v<ProjectWorkspace>);
+    // MSVC's map move constructor may allocate sentinel nodes. Construct every
+    // destination slot before mutation, then commit only through noexcept move
+    // assignment and vector swap. Allocation failure leaves the old catalog intact.
+    std::vector<ProjectWorkspace> replacement(existing+prepared.entries_.size());
     static_assert(std::is_nothrow_move_assignable_v<ProjectWorkspace>);
     const bool replacing_active=owner(catalog_.active_)==id;
-    std::erase_if(catalog_.entries_,[&](const auto& entry){return std::find(candidate->projects.begin(),candidate->projects.end(),entry.id)!=candidate->projects.end();});
-    for(auto& restored:prepared.entries_)catalog_.entries_.push_back(std::move(restored));
+    std::size_t next=0;
+    for(auto& current:catalog_.entries_)
+        if(std::find(candidate->projects.begin(),candidate->projects.end(),current.id)==candidate->projects.end())
+            replacement[next++]=std::move(current);
+    for(auto& restored:prepared.entries_)replacement[next++]=std::move(restored);
+    catalog_.entries_.swap(replacement);
     candidate->projects.swap(placement);candidate->active=prepared.active_;
     if(replacing_active || !catalog_.active_)catalog_.active_=prepared.active_?prepared.active_:(catalog_.entries_.empty()?ProjectWorkspaceId{}:catalog_.entries_.front().id);
     ++revision_;return {};
