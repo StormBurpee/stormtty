@@ -279,8 +279,10 @@ The renderer requests row invalidation on font reset (even the same font) and DP
 changes. Same-DPI resize and opacity changes preserve both caches. Successful
 device reconstruction clears both at its existing late boundary after white/layer
 creation; partial setup failure does not gain an early cache clear. The renderer
-still owns geometry, serial advancement, scene comparison, device/pipelines/layer,
-submission and asynchronous completion/presentation state—not texture cache policy.
+retains font/DPI geometry, scene comparison, paint policy and public counters.
+`MetalCompositor` now owns serial advancement, device/queue/pipelines/layer,
+composition target, readback and shared completion/presentation generations—not
+texture cache or scene policy.
 
 Cached textures and encoding locals are strong ARC references. Ordinary retained-
 resource command buffers retain encoded textures through GPU completion even if
@@ -288,6 +290,25 @@ the cache is evicted, cleared or destroyed. Completion blocks must not borrow th
 texture owner; existing shared completion-generation state stays separate. These
 are resource-lifetime contracts, not proof of onscreen or physical presentation.
 See [Metal texture verification](../tests/macos_metal_texture_resources_verification.md).
+
+`MetalFrame` is a noncopyable, synchronous paint borrow of the compositor and
+texture owner. Concrete fill/row/image/BGRA calls upload and encode immediately;
+no raw device getter or general callback context is exposed. Admission retains
+the suspended/bounds/error/occluded/unchanged/busy ordering, two in-flight commands
+per generation and monotonic serials across nontransactional reconstruction.
+Callbacks capture only shared generation state; the view remains weak. An early
+optional compositor slot plus explicit owner-generation release preserves the
+external texture/font owners' teardown position before the native graph.
+
+Explicit submit ends encoding and commits; renderer history follows submission.
+A separately disclosed robustness correction also ends an active encoder during
+CPU-exception abandonment or failed construction, exactly once. Cleanup never
+submits, presents, waits, increments in-flight or rolls back charged upload bytes.
+Native tests exercise actual subsequent-frame recovery, not merely process-exit
+acceptance. Readback retains aligned shared/managed storage and its own wait;
+onscreen readback still requires positive `presentedTime`. These are not Windows
+pending-present semantics. See [compositor verification](../tests/macos_metal_compositor_verification.md)
+for the diagnostic failure and later native recovery evidence.
 
 Native CPU characterization compares all decoration styles at 96/192 DPI against
 the pre-extraction row algorithm, separately from Metal renderer integration tests.
@@ -395,7 +416,7 @@ gates. Useful starting points:
   scenarios. Include immutable full-versus-incremental terminal pixel comparisons
   at multiple DPIs, resize, font/DPI changes, occlusion and resource recovery.
 - macOS typography/rendering: `macos_font_resources_tests`, `macos_row_rasterizer_tests`,
-  `macos_metal_texture_resources_tests`,
+  `macos_metal_texture_resources_tests`, `macos_metal_compositor_tests`,
   `macos_renderer_tests` and `macos_png_tests`; Windows graphics checks do not qualify
   this backend.
 - Actor/VT changes: `session_tests`, `terminal_tests`, `terminal_search_tests`,

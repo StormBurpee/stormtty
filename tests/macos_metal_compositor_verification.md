@@ -96,5 +96,48 @@ or constructor catch after encoder acquisition (where no frame destructor runs).
 It preserves advanced serials and consumed upload bytes, leaves scene history and
 public counters untouched, and does not commit abandoned commands. All original
 abandonment assertions and real next-frame recovery remain mandatory; a separate
-post-end failure checkpoint covers double-end prevention. Native execution of
-this correction is pending; the diagnostic failure is not evidence of recovery.
+post-end failure checkpoint covers double-end prevention. At the correction's
+source-review stage, native recovery was still pending; the later evidence below
+supersedes that pending status without treating the diagnostic failure as success.
+
+## Later native recovery evidence
+
+Run `41091838736`, macOS job `124190006594`, built remote source
+`df357d6dc86eb53e07367b4db9debd07543c1707` at merge checkout
+`c6fbae8ca13304c9d38c0de4d4a3634d9fc72815`, tree
+`5d0944522dc7d39ab661e1cf694ed61410fbbb7b`. The actual macOS 15 runner used
+Clang/Objective-C++ 20.1.8 with the official Xcode 16.4 macOS 15.5 SDK.
+All 57 blocking native baseline tests passed, including fonts, CPU row parity,
+texture residency, renderer and PNG integration.
+
+Baseline artifact `12994902773` contains all eight compositor fixture passes:
+composition/readback, held generations, active-frame abandonment, post-end failure,
+post-acquisition constructor failure, failure ordering, renderer unwind and
+unattached-view status. Abandonment reached its catch and drained its pool before
+passing the unchanged no-submit/no-rollback and real next-frame recovery checks.
+The two new failure fixtures also passed subsequent rendering/readback.
+
+This qualifies the tested native/offscreen boundary, not onscreen capture,
+physical presentation, GUI interaction or Intel/AMD hardware. The wider workflow's
+Windows tail is separate; this receipt makes no full-workflow-green claim.
+Later integration preserves these macOS source/target bytes while adding the
+independently reviewed navigator changes; it is not whole-tree identity.
+
+### Wider workflow result
+
+Run `41091838736` ultimately failed its Windows job; Linux and macOS succeeded.
+The Windows bundled-Zsh layout case reported that a controlled shell exited
+without its expected marker. Bundled artifact `12996036152` records all five
+actors finished with exit code 0, but actor 5 lacked the marker; the same log
+includes `history: is a directory`. That diagnostic is recorded, not established
+as the cause. The application reached its final CRT-return log. The other four
+bundled smoke logs, including Settings, passed. These application logs do not
+establish runner-level reap results.
+
+The separate repeated Settings step also failed. Its exact cases, output and
+runner reap metadata remain unclassified because the job-log connector repeatedly
+failed. The available final archive exceeds the supported transfer cap; it was
+not downloaded, and no repeat result is inferred from the bundled application
+logs. This macOS slice changes no Windows production source. Its native macOS
+qualification remains valid for the tested boundary, but the complete workflow
+is not green and repeated Windows teardown is not claimed as verified.

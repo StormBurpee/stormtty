@@ -43,10 +43,11 @@ context or own native resources.
 
 ### 4. macOS painters and host
 
-The Metal compositor candidate remains pending while exceptional-frame cleanup is
-corrected and requalified natively; it is not an integrated owner or a completed gate.
-After that boundary lands,
-separate remaining terminal/chrome paint policy in
+`MetalCompositor` and scoped `MetalFrame` implement the device/submission boundary;
+the separate exceptional-encoder cleanup correction passed the native macOS gate.
+See [compositor verification](../tests/macos_metal_compositor_verification.md) for
+exact source/run evidence and limits; this does not qualify physical presentation.
+Separate remaining terminal/chrome paint policy in
 `src/platform/macos/renderer.mm` from device submission and presentation. Keep
 `CoreTextFontResources`, `CoreTextRowRasterizer` and `MetalTextureResources` as their
 existing owners. In `src/platform/macos/window.mm`, separate application/session,
