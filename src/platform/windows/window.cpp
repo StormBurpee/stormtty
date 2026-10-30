@@ -7,6 +7,7 @@
 #include "stormtty/smoke_commands.hpp"
 #include "stormtty/settings_reload.hpp"
 #include "stormtty/workspace_save_signal.hpp"
+#include "stormtty/window_workspace_view.hpp"
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -40,6 +41,7 @@
 #include "stormtty/cursor_motion.hpp"
 #include "stormtty/smoke_deadline.hpp"
 #include "stormtty/session.hpp"
+#include "stormtty/session_wake_router.hpp"
 #include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
 #include "stormtty/windows_settings_wheel.hpp"
@@ -79,6 +81,7 @@ std::uint64_t allocate_watch_host() {
     return 0; // Saturation disables watches, never reuses an identity.
 }
 constexpr UINT wake_message = WM_APP + 41;
+constexpr UINT workspace_saved_message = WM_APP + 45;
 constexpr UINT deferred_layout_message = WM_APP + 42;
 constexpr UINT smoke_settings_input_message = WM_APP + 43;
 constexpr UINT deferred_destroy_message = WM_APP + 44;
@@ -89,7 +92,6 @@ constexpr UINT_PTR material_probe_timer = 4;
 constexpr UINT_PTR typing_motion_timer = 5;
 constexpr UINT_PTR typing_smoke_timer = 6;
 constexpr UINT_PTR local_clock_timer = 7;
-constexpr UINT_PTR workspace_save_timer = 8;
 constexpr std::string_view smoke_marker="__STORMTTY_NATIVE_SMOKE_OK__";
 constexpr std::size_t clipboard_limit = 1024 * 1024;
 
@@ -188,7 +190,6 @@ struct WakeState {
     std::optional<std::string> clipboard;
     std::optional<std::string> error;
     std::optional<SettingsCompletion> settings;
-    std::optional<ConfigSaveResult> workspace_saved;
     void wake() noexcept {
         if (auto hwnd = window.load(std::memory_order_acquire)) {
             if (!posted.exchange(true, std::memory_order_acq_rel) && !PostMessageW(hwnd, wake_message, 0, 0)) posted.store(false, std::memory_order_release);
@@ -252,9 +253,76 @@ void enforce_custom_frame_style(HWND window, bool diagnostics) {
     if ((actual&WS_CAPTION) || missing) throw std::runtime_error("Windows did not retain the required caption-free resize/system-control styles; see frame-style diagnostic.");
 }
 
+using ActorWakeRouter=SessionWakeRouter<WakeState>;
+struct ApplicationActors {
+    std::map<SessionId,std::shared_ptr<Session>> sessions;
+    std::map<SessionId,SessionState> states;
+    std::map<SessionId,std::string> background_labels;
+    std::map<SessionId,ParkedAttention> parked_attention;
+    const std::uint64_t watch_host{allocate_watch_host()};
+    std::uint64_t next_watch_actor{1};
+    std::map<SessionId,std::uint64_t> watch_actors;
+    std::map<SessionId,CommandWatch> watches;
+    std::shared_ptr<ActorWakeRouter> wakes{std::make_shared<ActorWakeRouter>()};
+    SessionId allocate() {
+        if(!next_session_)throw std::runtime_error("Application session identity exhausted.");
+        const SessionId id{next_session_};
+        next_session_=next_session_==std::numeric_limits<std::uint64_t>::max()?0:next_session_+1;
+        return id;
+    }
+    Session::Wake callback(SessionId id, const std::shared_ptr<WakeState>& endpoint) {
+        auto route=wakes->bind(id,endpoint);
+        return [route=std::move(route)] {route->wake();};
+    }
+    ~ApplicationActors() { for(auto& [id,session]:sessions){(void)id;session->request_close();} }
+private:
+    std::uint64_t next_session_{1};
+};
+// Single application writer backing state. File operations stay serialized and
+// preserve the existing exact-baseline conflict checks. No per-window copy.
+struct WorkspaceSaveMailbox {
+    std::mutex mutex;
+    std::optional<ConfigSaveResult> result;
+    DWORD thread{}; // Initialized on the UI thread before any worker starts.
+};
+struct ApplicationWorkspacePersistence {
+    WorkspaceLibrary library;
+    std::optional<ConfigFileSnapshot> snapshot;
+    std::filesystem::path file;
+    std::thread worker;
+    bool busy{}, pending{}, enabled{}, autosave{};
+    UINT_PTR timer{};
+    WorkspaceSaveSignal signal;
+    std::shared_ptr<WorkspaceSaveMailbox> mailbox{std::make_shared<WorkspaceSaveMailbox>()};
+    ~ApplicationWorkspacePersistence() {
+        if(timer)KillTimer(nullptr,timer);
+        if(worker.joinable())worker.join();
+    }
+};
+class NativeWindow;
+class NativeApplication final {
+public:
+    int run(Config, NativeRunOptions);
+    void load_workspaces(NativeWindow&);
+    void workspace_model_changed();
+    void save_workspaces();
+    void workspace_save_completed();
+    void flush_workspaces();
+    void workspace_error(std::string);
+    NativeWindow* primary{}; // Temporary single-window notification sink, not worker-owned.
+    // First adaptation remains strictly single-window. Scoping catalog views and
+    // independent close is required before constructing a second NativeWindow.
+    ApplicationWorkspaces projects;
+    WindowId create_window_model() {
+        auto created=projects.create_window();if(!created)throw std::runtime_error(created.error);return *created.value;
+    }
+    ApplicationActors actors;
+    ApplicationWorkspacePersistence workspaces;
+};
+
 class NativeWindow final {
 public:
-    explicit NativeWindow(Config config, NativeRunOptions options) : config_(std::move(config)), options_(std::move(options)), wake_(std::make_shared<WakeState>()) {
+    explicit NativeWindow(NativeApplication& application, Config config, NativeRunOptions options) : application_(application), config_(std::move(config)), options_(std::move(options)), wake_(std::make_shared<WakeState>()) {
         if (!options_.shell_runtime_directory.empty() && options_.shell_runtime_error.empty()) {
             const auto& root=options_.shell_runtime_directory;
             Profile managed;
@@ -287,9 +355,8 @@ public:
     }
     ~NativeWindow() {
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor body begin");
-        if (workspace_worker_.joinable()) workspace_worker_.join();
         wake_->window.store(nullptr, std::memory_order_release);
-        for (auto& [id, session] : sessions_) { (void)id; session->request_close(); }
+        for (auto& [id,session]:sessions_) if(projects_.contains_session(id))session->request_close();
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor close requests complete");
         if (hwnd_) destroy_window();
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor HWND destruction complete");
@@ -316,8 +383,9 @@ public:
         }
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor body end; member destruction begin");
     }
-    int run();
 private:
+    friend class NativeApplication;
+    NativeApplication& application_;
     static LRESULT CALLBACK procedure(HWND, UINT, WPARAM, LPARAM) noexcept;
     LRESULT message(UINT, WPARAM, LPARAM);
     bool key_message(MSG&);
@@ -388,10 +456,10 @@ private:
     void acknowledge_watch(SessionId);
     void open_watch(ProjectSessionReference,WatchIdentity);
     bool project_watch_unread(ProjectWorkspaceId) const;
-    const std::uint64_t watch_host_{allocate_watch_host()};
-    std::uint64_t next_watch_actor_{1};
-    std::map<SessionId,std::uint64_t> watch_actors_;
-    std::map<SessionId,CommandWatch> watches_;
+    const std::uint64_t& watch_host_{application_.actors.watch_host};
+    std::uint64_t& next_watch_actor_{application_.actors.next_watch_actor};
+    std::map<SessionId,std::uint64_t>& watch_actors_{application_.actors.watch_actors};
+    std::map<SessionId,CommandWatch>& watches_{application_.actors.watches};
     bool using_managed_shell() const { return managed_shell_profile_ && (options_.shell_runtime_override || has_managed_zsh_selection(config_)); }
     const std::string& session_profile_id() const { return using_managed_shell()?managed_shell_profile_->id:config_.default_profile; }
     void new_tab();
@@ -608,12 +676,10 @@ private:
     ProjectWorkspaceId smoke_primary_project_{}, smoke_secondary_project_{};
     std::map<SessionId,std::shared_ptr<Session>> smoke_project_actors_;
     std::shared_ptr<Session> smoke_disposable_;
-    ProjectWorkspaceCatalog projects_;
-    WorkspaceLibrary workspace_library_;
-    std::optional<ConfigFileSnapshot> workspace_snapshot_;
-    std::filesystem::path workspace_file_;
-    std::thread workspace_worker_;
-    bool workspace_save_busy_{}, workspace_save_pending_{}, workspace_timer_{}, restored_workspaces_{};
+    WindowWorkspaceView projects_{application_.projects,application_.create_window_model()};
+    WorkspaceLibrary& workspace_library_{application_.workspaces.library};
+    std::optional<ConfigFileSnapshot>& workspace_snapshot_{application_.workspaces.snapshot};
+    bool restored_workspaces_{};
     std::function<Status(std::string)> edit_text_action_;
     std::string edit_text_hint_;
     void smoke_workspace_progress(bool presented);
@@ -622,12 +688,7 @@ private:
     bool workspace_smoke_menu_{};
     ULONGLONG workspace_smoke_capture_at_{};
     ULONGLONG workspace_smoke_diagnostic_at_{};
-    void load_workspaces();
-    WorkspaceSaveSignal workspace_save_signal_;
     void workspace_model_changed();
-    void save_workspaces();
-    void workspace_save_completed();
-    void flush_workspaces();
     void launch_restored_project(bool retry_failed = false);
     void workspace_menu(Point, ProjectWorkspaceId target = {});
     void edit_workspace_text(std::string hint, std::string value, std::function<Status(std::string)>);
@@ -649,13 +710,12 @@ private:
     std::size_t navigation_first_{};
     ProjectNavigationLayout navigation_;
     std::string context_label_;
-    std::map<SessionId, std::shared_ptr<Session>> sessions_;
+    std::map<SessionId, std::shared_ptr<Session>>& sessions_{application_.actors.sessions};
     std::map<SessionId, TerminalSize> sizes_;
-    std::map<SessionId, SessionState> session_states_;
-    std::map<SessionId, std::string> background_labels_;
-    std::map<SessionId, ParkedAttention> parked_attention_;
+    std::map<SessionId, SessionState>& session_states_{application_.actors.states};
+    std::map<SessionId, std::string>& background_labels_{application_.actors.background_labels};
+    std::map<SessionId, ParkedAttention>& parked_attention_{application_.actors.parked_attention};
     SessionId focused_session_{};
-    std::uint64_t next_session_{1};
     std::shared_ptr<WakeState> wake_;
     HWND hwnd_{}, tooltip_{};
     bool tooltip_active_{true};
@@ -872,11 +932,17 @@ void NativeWindow::create() {
     if (options_.smoke_test && !options_.smoke_agent && !options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && options_.smoke_workspaces.empty() && !SetTimer(hwnd_,typing_smoke_timer,25,nullptr)) throw std::runtime_error("Could not start bounded typing smoke progress timer.");
     if (options_.smoke_test && !SetTimer(hwnd_,smoke_timeout_timer,250,nullptr)) throw std::runtime_error("Could not start the native smoke deadline.");
 }
-int NativeWindow::run() {
-    WindowClass klass; klass.smoke=options_.smoke_test;
+int NativeApplication::run(Config config, NativeRunOptions options) {
+    WindowClass klass; klass.smoke=options.smoke_test;
+    NativeWindow window(*this,std::move(config),std::move(options));
+    struct PrimaryScope { NativeWindow*& sink; ~PrimaryScope(){sink=nullptr;} } primary_scope{primary};
+    primary=&window;
+    // Workers post to the application queue, never to a destructible HWND.
+    MSG queued{};PeekMessageW(&queued,nullptr,0,0,PM_NOREMOVE);
+    workspaces.mailbox->thread=GetCurrentThreadId();
     WNDCLASSEXW definition{}; definition.cbSize=sizeof(definition);
     definition.style = CS_DBLCLKS;
-    definition.lpfnWndProc = procedure;
+    definition.lpfnWndProc = NativeWindow::procedure;
     definition.hInstance = klass.instance;
     definition.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     definition.hIcon = windows::app_icon(GetDpiForSystem(),false);
@@ -885,34 +951,43 @@ int NativeWindow::run() {
     klass.atom = RegisterClassExW(&definition);
     if (!klass.atom) throw std::runtime_error("Could not register the native window class.");
     install_windows_png_decoder();
-    load_workspaces();
-    create();
-    workspace_smoke_ready_=true;
-    if(!options_.smoke_workspaces.empty()) changed(true);
+    load_workspaces(window);
+    window.create();
+    window.workspace_smoke_ready_=true;
+    if(!window.options_.smoke_workspaces.empty()) window.changed(true);
     for (;;) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            if(!message.hwnd && message.message==workspace_saved_message) { workspace_save_completed(); continue; }
+            if(!message.hwnd && message.message==WM_TIMER && workspaces.timer && message.wParam==workspaces.timer) {
+                KillTimer(nullptr,workspaces.timer);workspaces.timer=0;
+                if(workspaces.signal.take_pending())save_workspaces();
+                continue;
+            }
             if (message.message == WM_QUIT) {
                 int code=static_cast<int>(message.wParam);
                 // Explicit test-mode post-loop cleanup only. No WndProc or
                 // normal UI close ever waits for process/actor shutdown.
-                if (options_.smoke_test) for (const auto& [id,session]:smoke_sessions_) {
-                    std::fprintf(stderr,"Native CI cleanup begin: session=%llu elapsed_ms=%llu\n",static_cast<unsigned long long>(id.value),GetTickCount64()-smoke_started_at_);
+                if (window.options_.smoke_test) for (const auto& [id,session]:window.smoke_sessions_) {
+                    std::fprintf(stderr,"Native CI cleanup begin: session=%llu elapsed_ms=%llu\n",static_cast<unsigned long long>(id.value),GetTickCount64()-window.smoke_started_at_);
                     if (!session->wait_closed(std::chrono::seconds(5))) code=3;
                     std::fprintf(stderr,"Native CI cleanup end: session=%llu code=%d\n",static_cast<unsigned long long>(id.value),code);
                 }
-                if (options_.smoke_test) std::fprintf(stderr,"Native CI loop exit: code=%d settings_worker_joinable=%d\n",code,settings_worker_.joinable());
+                if (window.options_.smoke_test) std::fprintf(stderr,"Native CI loop exit: code=%d settings_worker_joinable=%d\n",code,window.settings_worker_.joinable());
                 flush_workspaces();
                 return code;
             }
-            if (message.hwnd == hwnd_ && key_message(message)) continue;
+            if (message.hwnd == window.hwnd_ && window.key_message(message)) continue;
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        if (dirty_ && !minimized_) render();
+        // A native modal loop may consume a thread wake. The owned mailbox is
+        // authoritative; drain again after dispatch before returning to wait.
+        workspace_save_completed();
+        if (window.dirty_ && !window.minimized_) window.render();
         // No ambient loop. GPU readiness is included only while a dirty frame is
         // blocked; otherwise only actual Windows/session work wakes this thread.
-        HANDLE ready = !minimized_ && dirty_ && render_busy_ && renderer_ ? static_cast<HANDLE>(renderer_->frame_latency_wait_handle()) : nullptr;
+        HANDLE ready = !window.minimized_ && window.dirty_ && window.render_busy_ && window.renderer_ ? static_cast<HANDLE>(window.renderer_->frame_latency_wait_handle()) : nullptr;
         const DWORD result = MsgWaitForMultipleObjectsEx(ready ? 1 : 0, ready ? &ready : nullptr, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (result == WAIT_FAILED) throw std::runtime_error("The native window wait failed.");
     }
@@ -1327,10 +1402,9 @@ SessionId NativeWindow::new_session(std::string profile_id) {
     terminal.ansi.emplace();
     for (std::size_t i=0;i<16;++i) (*terminal.ansi)[i]=color_hex(config_.theme.ansi[i],{0,0,0,255});
     terminal.default_background=color_hex(config_.theme.background,{23,25,29,255});
-    const SessionId id{next_session_++};
-    std::weak_ptr<WakeState> weak = wake_;
+    const SessionId id=application_.actors.allocate();
     const bool bundled=process.provider==ProcessProvider::windows_packaged_experimental;
-    auto session = Session::start(std::move(process), terminal, [weak] { if (auto state = weak.lock()) state->wake(); }, SessionRetentionPolicy::retain_document);
+    auto session = Session::start(std::move(process), terminal, application_.actors.callback(id,wake_), SessionRetentionPolicy::retain_document);
     if (options_.smoke_test) { smoke_sessions_.emplace(id,session); if (bundled) smoke_bundled_sessions_.insert(id); if (managed) smoke_managed_sessions_.insert(id); }
     sessions_.emplace(id, std::move(session));
     const auto token=next_watch_actor_==std::numeric_limits<std::uint64_t>::max()?0:next_watch_actor_++;
@@ -1359,8 +1433,8 @@ void NativeWindow::split(Direction direction) {
 }
 void NativeWindow::retire_unused_sessions() {
     for (auto iterator = sessions_.begin(); iterator != sessions_.end();) {
-        const bool used = projects_.contains_session(iterator->first);
-        if (!used) { iterator->second->request_close(); sizes_.erase(iterator->first); session_states_.erase(iterator->first); background_labels_.erase(iterator->first); parked_attention_.erase(iterator->first); watches_.erase(iterator->first); watch_actors_.erase(iterator->first); iterator = sessions_.erase(iterator); }
+        const bool used = application_.projects.catalog().contains_session(iterator->first);
+        if (!used) { iterator->second->request_close(); sizes_.erase(iterator->first); session_states_.erase(iterator->first); background_labels_.erase(iterator->first); parked_attention_.erase(iterator->first); watches_.erase(iterator->first); watch_actors_.erase(iterator->first); application_.actors.wakes->erase(iterator->first); iterator = sessions_.erase(iterator); }
         else ++iterator;
     }
 }
@@ -1679,7 +1753,6 @@ void NativeWindow::update_sessions() {
     refresh_find();
     settings_completed();
     refresh_agent_panel();
-    workspace_save_completed();
     drain_input(); dirty_=true; caret_schedule(); position_ime();
     if (options_.smoke_test) smoke_progress();
 }
@@ -1761,70 +1834,82 @@ std::string NativeWindow::directory_context() const {
     const std::string name=project?project->metadata.name:"Workspace";
     return path.empty()?name:name+"  /  "+path;
 }
-void NativeWindow::load_workspaces() {
-    if ((options_.smoke_test && options_.smoke_workspaces.empty()) || options_.config_path.empty()) return;
-    workspace_file_=options_.config_path.parent_path()/L"workspaces.stormtty";
+void NativeApplication::workspace_error(std::string error) {
+    if(primary) {primary->notice_=std::move(error);if(primary->hwnd_)primary->changed();}
+}
+void NativeApplication::load_workspaces(NativeWindow& window) {
+    const auto& options=window.options_;
+    workspaces.enabled=!(options.smoke_test && options.smoke_workspaces.empty()) && !options.config_path.empty();
+    workspaces.autosave=workspaces.enabled && !options.smoke_test;
+    if(!workspaces.enabled)return;
+    workspaces.file=options.config_path.parent_path()/L"workspaces.stormtty";
     WorkspaceLibrarySnapshotResult loaded;
-    // Before the window exists; no filesystem work runs in a window callback.
-    std::thread reader([&]{ loaded=load_workspace_library_snapshot(workspace_file_); }); reader.join();
-    if (!loaded) { notice_="Workspaces were not restored: "+loaded.error+" The saved file was left unchanged."; return; }
-    workspace_snapshot_=std::move(loaded.snapshot);
-    workspace_library_=std::move(*loaded.library);
-    if (!workspace_library_.restore_on_launch || workspace_library_.last_session.projects.empty()) return;
-    const auto status=restore_workspace_snapshot(projects_,workspace_library_.last_session);
-    if (!status) { notice_="Workspaces were not restored: "+status.error; workspace_snapshot_.reset(); }
-    else restored_workspaces_=true;
+    // Before HWND creation. File I/O still never runs in a window callback.
+    std::thread reader([&]{loaded=load_workspace_library_snapshot(workspaces.file);});reader.join();
+    if(!loaded){workspace_error("Workspaces were not restored: "+loaded.error+" The saved file was left unchanged.");return;}
+    workspaces.snapshot=std::move(loaded.snapshot);
+    workspaces.library=std::move(*loaded.library);
+    if(!workspaces.library.restore_on_launch || workspaces.library.last_session.projects.empty())return;
+    const auto status=projects.restore_single_window(window.projects_.id(),workspaces.library.last_session);
+    if(!status){workspace_error("Workspaces were not restored: "+status.error);workspaces.snapshot.reset();}
+    else window.restored_workspaces_=true;
 }
 void NativeWindow::workspace_model_changed() {
-    // Model commits only: navigation previews and input owners never call this
-    // with a different selection. Metadata/geometry changes deduplicate.
     commit_terminal_selection();
     if(navigator_open_)refresh_navigator();
-    if (options_.smoke_test || !workspace_snapshot_) return;
-    workspace_save_signal_.mark_changed();
-    if (hwnd_ && !workspace_timer_)
-        workspace_timer_=SetTimer(hwnd_,workspace_save_timer,1500,nullptr)!=0;
+    application_.workspace_model_changed();
 }
-void NativeWindow::save_workspaces() {
-    if ((options_.smoke_test && options_.smoke_workspaces.empty()) || !workspace_snapshot_) return;
-    if (workspace_save_busy_) { workspace_save_pending_=true; return; }
-    auto captured=capture_workspace_snapshot(projects_);
-    if (!captured) { show_error(captured.error); return; }
-    workspace_library_.last_session=std::move(*captured.value);
-    auto bytes=serialize_workspace_library(workspace_library_);
-    if (!bytes) { show_error(bytes.error); return; }
-    if (workspace_snapshot_->existed && *bytes.value==workspace_snapshot_->bytes) return;
-    if (workspace_worker_.joinable()) workspace_worker_.join();
-    const auto path=workspace_file_; const auto baseline=*workspace_snapshot_; const auto library=workspace_library_; const auto shared=wake_;
-    workspace_save_busy_=true;
-    workspace_worker_=std::thread([path,baseline,library,shared] {
-        auto result=save_workspace_library(path,library,baseline);
-        { std::lock_guard lock(shared->mutex); shared->workspace_saved=std::move(result); }
-        shared->wake();
-    });
+void NativeApplication::workspace_model_changed() {
+    if(!workspaces.autosave || !workspaces.snapshot)return;
+    workspaces.signal.mark_changed();
+    if(!workspaces.timer)workspaces.timer=SetTimer(nullptr,0,1500,nullptr);
 }
-void NativeWindow::workspace_save_completed() {
+void NativeApplication::save_workspaces() {
+    if(!workspaces.enabled || !workspaces.snapshot)return;
+    if(workspaces.busy){workspaces.pending=true;return;}
+    // No multiple-window persistence claim: native creation is gated to one
+    // window until a versioned grouped snapshot can be committed atomically.
+    if(projects.windows().size()!=1){workspace_error("Multi-window persistence is not enabled.");return;}
+    WindowWorkspaceView view(projects,projects.windows().front().id);
+    auto captured=view.snapshot();
+    if(!captured){workspace_error(captured.error);return;}
+    workspaces.library.last_session=std::move(*captured.value);
+    auto bytes=serialize_workspace_library(workspaces.library);
+    if(!bytes){workspace_error(bytes.error);return;}
+    if(workspaces.snapshot->existed && *bytes.value==workspaces.snapshot->bytes)return;
+    if(workspaces.worker.joinable())workspaces.worker.join();
+    const auto path=workspaces.file;const auto baseline=*workspaces.snapshot;
+    const auto library=workspaces.library;const auto mailbox=workspaces.mailbox;
+    workspaces.busy=true;
+    try {
+        workspaces.worker=std::thread([path,baseline,library,mailbox] {
+            auto result=save_workspace_library(path,library,baseline);
+            {std::lock_guard lock(mailbox->mutex);mailbox->result=std::move(result);}
+            PostThreadMessageW(mailbox->thread,workspace_saved_message,0,0);
+        });
+    } catch(...) {workspaces.busy=false;throw;}
+}
+void NativeApplication::workspace_save_completed() {
     std::optional<ConfigSaveResult> completed;
-    { std::lock_guard lock(wake_->mutex); completed.swap(wake_->workspace_saved); }
-    if (!completed) return;
-    if (workspace_worker_.joinable()) workspace_worker_.join();
-    workspace_save_busy_=false;
-    if (*completed) workspace_snapshot_=std::move(completed->snapshot);
+    {std::lock_guard lock(workspaces.mailbox->mutex);completed.swap(workspaces.mailbox->result);}
+    if(!completed)return;
+    if(workspaces.worker.joinable())workspaces.worker.join();
+    workspaces.busy=false;
+    if(*completed)workspaces.snapshot=std::move(completed->snapshot);
     else {
-        notice_="Workspaces were not saved: "+completed->error;
-        // Preserve the failed/conflicting file; never silently refresh its token.
-        workspace_snapshot_.reset();
+        workspace_error("Workspaces were not saved: "+completed->error);
+        // Preserve conflicting bytes and baseline; never silently reload/overwrite.
+        workspaces.snapshot.reset();
         std::fprintf(stderr,"Workspace save failed: %s\n",completed->error.c_str());
     }
-    const bool pending=std::exchange(workspace_save_pending_,false);
-    if (pending) save_workspaces();
+    if(std::exchange(workspaces.pending,false))save_workspaces();
 }
-void NativeWindow::flush_workspaces() {
-    if (options_.smoke_test && options_.smoke_workspaces.empty()) return;
-    if (workspace_worker_.joinable()) workspace_worker_.join();
-    workspace_save_completed();
-    save_workspaces();
-    if (workspace_worker_.joinable()) workspace_worker_.join();
+void NativeApplication::flush_workspaces() {
+    if(workspaces.timer){KillTimer(nullptr,workspaces.timer);workspaces.timer=0;}
+    if(!workspaces.enabled)return;
+    if(workspaces.worker.joinable())workspaces.worker.join();
+    workspace_save_completed();save_workspaces();
+    if(workspaces.worker.joinable())workspaces.worker.join();
     workspace_save_completed();
 }
 void NativeWindow::launch_restored_project(bool retry_failed) {
@@ -1969,7 +2054,7 @@ void NativeWindow::workspace_menu(Point point, ProjectWorkspaceId target) {
     actions["workspace.save_preset"]=[this] {
         edit_workspace_text("Workspace set name","",[this](std::string name) {
             if (!workspace_snapshot_) return Status::failure("Workspace file is unavailable; saved data has not been changed");
-            auto captured=capture_workspace_snapshot(projects_); if (!captured) return Status::failure(captured.error);
+            auto captured=projects_.snapshot(); if (!captured) return Status::failure(captured.error);
             return save_workspace_preset(workspace_library_,std::move(name),std::move(*captured.value));
         });
     };
@@ -2035,9 +2120,14 @@ void NativeWindow::close_project(ProjectWorkspaceId id, bool approved) {
     bool live=false;
     for (const auto session:projects_.session_ids(id)) if (sessions_.contains(session) && !sessions_.at(session)->process_finished()) live=true;
     if (!approved && live) {
-        const auto expected=projects_.session_ids(id);
-        show_modal("Close this workspace?",{"Its sessions may have running programs.","Closing can discard unsaved work."},"Close workspace",[this,id,expected]{
-            if (!projects_.find(id) || projects_.session_ids(id)!=expected) { show_error("The workspace changed; nothing was closed."); return; }
+        const auto preview=application_.projects.preview_close(id);
+        if(!preview){show_error(preview.error);return;}
+        show_modal("Close this workspace?",{"Its sessions may have running programs.","Closing can discard unsaved work."},"Close workspace",[this,id,expected=*preview.value]{
+            const auto current=application_.projects.preview_close(id);
+            if (!projects_.find(id) || !current || current.value->window!=expected.window ||
+                current.value->placement_revision!=expected.placement_revision || current.value->sessions!=expected.sessions) {
+                show_error("The workspace changed; nothing was closed."); return;
+            }
             close_project(id,true);
         }); return;
     }
@@ -4889,11 +4979,10 @@ bool NativeWindow::smoke_find_progress() {
         ProcessOptions process;process.executable=narrow(child.generic_wstring());process.arguments={"--native-find-child"};
         select_windows_console_provider(process,config_.windows_console_backend,options_.console_runtime_directory);
         const bool bundled=process.provider==ProcessProvider::windows_packaged_experimental;
-        std::weak_ptr<WakeState> weak=wake_;
-        auto owned=Session::start(std::move(process),TerminalOptions{},[weak]{if(auto state=weak.lock())state->wake();},SessionRetentionPolicy::retain_document);
+        smoke_find_fixture_session_=application_.actors.allocate();
+        auto owned=Session::start(std::move(process),TerminalOptions{},application_.actors.callback(smoke_find_fixture_session_,wake_),SessionRetentionPolicy::retain_document);
         // Register ownership before exposing the tab: normal smoke failure and
         // exception teardown close every registered actor, including this one.
-        smoke_find_fixture_session_=SessionId{next_session_++};
         smoke_sessions_.emplace(smoke_find_fixture_session_,owned);
         if(bundled)smoke_bundled_sessions_.insert(smoke_find_fixture_session_);
         sessions_.emplace(smoke_find_fixture_session_,owned);
@@ -5413,7 +5502,7 @@ void NativeWindow::smoke_workspace_progress(bool presented) {
             if(!created) { finish(created.error); return; }
             activate_project(*created.value); new_tab();
             workspace().rename_tab(workspace().active_tab(),"Saved active tab");
-            auto captured=capture_workspace_snapshot(projects_);
+            auto captured=projects_.snapshot();
             if(!captured) { finish(captured.error); return; }
             status=save_workspace_preset(workspace_library_,"Fixture preset",std::move(*captured.value));
             if(!status) { finish(status.error); return; }
@@ -5426,7 +5515,7 @@ void NativeWindow::smoke_workspace_progress(bool presented) {
     if(!restored_workspaces_ || projects_.entries().size()!=2 || workspace_library_.presets.size()!=1) {
         finish("Second app did not restore saved workspaces/preset."); return;
     }
-    auto captured=capture_workspace_snapshot(projects_);
+    auto captured=projects_.snapshot();
     if(!captured) { finish(captured.error); return; }
     auto expected=serialize_workspace_library(workspace_library_);
     auto actual_library=workspace_library_; actual_library.last_session=*captured.value;
@@ -6262,7 +6351,16 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             smoke_modal_stage_=2;
         } else return;
     }
-    if (options_.smoke_modal && smoke_disposable_ && !smoke_disposable_->closed()) return;
+    if (options_.smoke_modal && smoke_disposable_) {
+        if(!smoke_disposable_->closed())return;
+        if(smoke_modal_stage_==2) {
+            if(sessions_.size()!=1 || !active_session() || active_session()==smoke_disposable_.get() || active_session()->process_finished()) {
+                smoke_finish("Retired actor disposal changed the surviving modal terminal.");return;
+            }
+            smoke_modal_stage_=3;
+            std::fputs("Native modal retirement: removed actor completed disposal; original live survivor retained; final marker/exit may proceed.\n",stderr);
+        }
+    }
     if (options_.smoke_projects && !smoke_projects_live_verified_) {
         if (projects_.entries().size()!=2 || sessions_.size()!=2 || smoke_project_actors_.size()!=2) { smoke_finish("Workspace creation did not retain two distinct actors."); return; }
         for (const auto& [id,actor]:smoke_project_actors_) {
@@ -6774,7 +6872,6 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         wake_->posted.store(false,std::memory_order_release); update_sessions(); InvalidateRect(hwnd_,nullptr,FALSE); return 0;
     case WM_TIMECHANGE: refresh_clock(); return 0;
     case WM_TIMER:
-        if (wparam==workspace_save_timer) { KillTimer(hwnd_,workspace_save_timer); workspace_timer_=false; if (workspace_save_signal_.take_pending()) save_workspaces(); return 0; }
         if (wparam==local_clock_timer) { refresh_clock(); return 0; }
         if (wparam==typing_smoke_timer) { dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0; }
         if (wparam==typing_motion_timer) {
@@ -6969,7 +7066,8 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (settings_loading()) { settings_open_requested_=false; settings_binding_.clear(); notice_.clear(); caret_schedule(true); changed(); return 0; }
         if (context_menu_.is_open()) { context_menu_.cancel(); menu_input_changed(); }
         if (settings_input_blocked()) { settings_panel_.cancel(); settings_input_changed(); return 0; }
-        const bool live=std::any_of(sessions_.begin(),sessions_.end(),[](const auto& pair) { return !pair.second->process_finished(); });
+        const auto owned=projects_.all_session_ids();
+        const bool live=std::any_of(owned.begin(),owned.end(),[this](SessionId id) { const auto found=sessions_.find(id);return found!=sessions_.end()&&!found->second->process_finished(); });
         if (modal_) { answer_modal(ModalDecision::cancel); return 0; }
         if (!live && !(agent_controller_&&agent_controller_->any_active())) destroy_window();
         else show_modal("Close StormTTY?",{"Its terminals or agents may have running work.","Closing disconnects agents and can discard unsaved work."},"Close window",[this]{if (hwnd_) destroy_window();});
@@ -6978,11 +7076,10 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_DESTROY:
         wake_->window.store(nullptr,std::memory_order_release);
         KillTimer(hwnd_,local_clock_timer);
-        KillTimer(hwnd_,workspace_save_timer); workspace_timer_=false;
         KillTimer(hwnd_,typing_smoke_timer); KillTimer(hwnd_,typing_motion_timer); KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer); KillTimer(hwnd_,chrome_motion_timer); KillTimer(hwnd_,material_probe_timer);
         if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);
         tooltip_=nullptr; tooltip_texts_.clear();
-        for (auto& [id,session]:sessions_) { (void)id; session->request_close(); }
+        for (auto& [id,session]:sessions_) if(projects_.contains_session(id))session->request_close();
         PostQuitMessage(exit_code_); return 0;
     case WM_NCDESTROY: {
         const auto result=DefWindowProcW(hwnd_,message,wparam,lparam);
@@ -6996,8 +7093,8 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
 int run_native_application(Config config, NativeRunOptions options) {
     const bool smoke=options.smoke_test;
     windows::SmokeTeardownEnd completed{smoke,"native application locals destroyed"};
-    NativeWindow window(std::move(config),std::move(options));
-    const int result=window.run();
+    NativeApplication application;
+    const int result=application.run(std::move(config),std::move(options));
     windows::smoke_teardown_trace(smoke,"window run returned");
     return result;
 }
