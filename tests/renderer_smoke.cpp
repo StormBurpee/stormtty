@@ -362,6 +362,136 @@ std::shared_ptr<RenderFrame> frame() {
     }
     return result;
 }
+// Compare persistent damage composition with a forced repaint of identical
+// immutable scene data. Every mutation publishes a fresh frame/row/pixel owner.
+void terminal_painter_incremental_test() {
+    for (const float dpi : {96.f, 144.f, 192.f}) {
+        RendererOptions options;
+        options.force_warp = true;
+        options.font.family = "Consolas";
+        options.background_opacity = .45f;
+        Renderer renderer(nullptr, options);
+        renderer.resize(224, 128, dpi);
+
+        auto source = frame();
+        auto styled = std::make_shared<FrameRow>(*source->lines[0]);
+        const std::array<std::string, 8> graphemes{"f", "f", "i", "e\xCC\x81", "界", "", "A", "B"};
+        for (std::size_t i = 0; i < graphemes.size(); ++i) {
+            styled->cells[i].grapheme = graphemes[i];
+            styled->cells[i].style.underline = static_cast<std::uint8_t>(i % 5 + 1);
+        }
+        styled->cells[4].span = 2;
+        styled->cells[5].span = 0;
+        styled->cells[1].style.italic = true;
+        styled->cells[2].style.inverse = true;
+        styled->cells[3].selected = true;
+        styled->cells[6].style.faint = true;
+        styled->cells[6].style.strikethrough = true;
+        styled->cells[7].style.overline = true;
+        styled->cells[7].style.blink = true;
+        source->lines[0] = styled;
+        auto explicit_row = std::make_shared<FrameRow>(*source->lines[1]);
+        explicit_row->cells[0].background_is_default = false;
+        explicit_row->cells[0].background = source->background;
+        explicit_row->cells[1].grapheme = "👩‍💻";
+        explicit_row->cells[1].span = 2;
+        explicit_row->cells[2].span = 0;
+        source->lines[1] = explicit_row;
+        source->cursor.row = 0;
+        source->cursor.column = 4;
+        source->cursor.shape = CursorShape::block;
+        source->cursor.visible = true;
+
+        auto pixels = std::make_shared<ImagePixels>();
+        pixels->image_id = 191;
+        pixels->generation = 1;
+        pixels->width = 2;
+        pixels->height = 2;
+        pixels->bytes = {255, 20, 20, 128, 20, 255, 20, 255,
+                         20, 20, 255, 255, 255, 255, 20, 128};
+        const std::array layers{
+            ImageLayer::below_background, ImageLayer::below_text, ImageLayer::above_text};
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            ImagePlacement placement;
+            placement.pixels = pixels;
+            placement.layer = layers[index];
+            placement.column = static_cast<std::uint32_t>(index * 3);
+            placement.pixel_width = 40;
+            placement.pixel_height = 32;
+            placement.offset_x = -4;
+            placement.offset_y = -3;
+            source->images.push_back(placement);
+        }
+        source->image_placements_generation = 1;
+
+        WindowScene scene;
+        scene.panes.push_back({741, {8, 8, 192, 96}, source});
+        const auto compare = [&] {
+            require(renderer.render(scene) == RenderResult::presented,
+                    "Terminal painter transition did not render");
+            const auto incremental = renderer.read_pixels();
+            auto full = scene;
+            full.force_redraw = true;
+            require(renderer.render(full) == RenderResult::presented,
+                    "Terminal painter forced reference did not render");
+            require(renderer.read_pixels() == incremental,
+                    "Terminal painter incremental pixels differ from forced full repaint");
+            require(renderer.render(scene) == RenderResult::unchanged,
+                    "Terminal painter settled scene did not become unchanged");
+        };
+        compare();
+
+        auto changed = std::make_shared<RenderFrame>(*source);
+        ++changed->generation;
+        auto selected = std::make_shared<FrameRow>(*source->lines[0]);
+        ++selected->generation;
+        selected->cells[0].selected = true;
+        selected->cells[3].selected = false;
+        selected->cells[6].style.invisible = true;
+        changed->lines[0] = selected;
+        scene.panes[0].frame = changed;
+        compare();
+
+        scene.panes[0].text_blink_on = false;
+        compare();
+        for (const auto shape : {CursorShape::bar, CursorShape::underline, CursorShape::block}) {
+            auto cursor_frame = std::make_shared<RenderFrame>(*scene.panes[0].frame);
+            ++cursor_frame->generation;
+            cursor_frame->cursor.shape = shape;
+            cursor_frame->cursor.column = 5;
+            cursor_frame->cursor.wide_tail = true;
+            scene.panes[0].frame = cursor_frame;
+            scene.panes[0].cursor_reveal = .5f;
+            compare();
+        }
+        scene.panes[0].focused = false;
+        compare();
+        scene.panes[0].cursor_on = false;
+        compare();
+
+        auto animated = std::make_shared<RenderFrame>(*scene.panes[0].frame);
+        ++animated->generation;
+        ++animated->image_placements_generation;
+        auto next_pixels = std::make_shared<ImagePixels>(*pixels);
+        ++next_pixels->generation;
+        next_pixels->bytes[0] = 0;
+        for (auto& placement : animated->images) {
+            placement.pixels = next_pixels;
+            placement.source_x = 1;
+            placement.source_width = 1;
+        }
+        scene.panes[0].frame = animated;
+        compare();
+
+        auto removed = std::make_shared<RenderFrame>(*animated);
+        ++removed->generation;
+        ++removed->image_placements_generation;
+        removed->images.clear();
+        scene.panes[0].frame = removed;
+        compare();
+    }
+}
+
 // The retained Windows shape is CPU data, unlike the GPU image cache. Keep
 // these lifetime assertions ahead of any typography-owner migration.
 WindowScene single_shape_scene() {
@@ -521,6 +651,13 @@ void uncached_shape_lifetime_test() {
 }
 
 void graphics_error_identity_test() {
+    for (const HRESULT result : {DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+                                 D2DERR_RECREATE_TARGET, DXGI_ERROR_DRIVER_INTERNAL_ERROR}) {
+        require(stormtty::windows::device_lost(result), "Device-loss classification changed");
+    }
+    for (const HRESULT result : {E_FAIL, E_NOINTERFACE, S_OK, DXGI_ERROR_WAS_STILL_DRAWING}) {
+        require(!stormtty::windows::device_lost(result), "Ordinary HRESULT classified as device loss");
+    }
     windows::check(S_OK, "Successful graphics call");
     windows::check(S_FALSE, "Successful graphics status");
     try {
@@ -895,6 +1032,7 @@ int main(int argc,char** argv) {
             save_motion_png(captures/std::string(name),pixels,width,height);
         });
         graphics_error_identity_test();
+        terminal_painter_incremental_test();
         shape_cache_lifetime_test();
         image_cache_lifetime_test();
         uncached_shape_lifetime_test();

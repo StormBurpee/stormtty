@@ -19,9 +19,8 @@ a supplied background brush retains the existing background-then-tint path.
 
 Renderer still resolves opaque/translucent material policy, computes paint order,
 and owns damage snapping, canvas clear/background, BeginDraw/EndDraw, exception
-handling, scene commit and presentation. Terminal algorithms remain in Renderer
-for the next separately reviewed slice; they reuse only the extracted clip,
-color/rectangle conversion and rectangle-fill mechanics. Cache accounting stays
+handling, scene commit and presentation. TerminalPainter separately owns terminal paint policy and shares the narrow
+paint mechanics; neither painter owns the draw transaction. Cache accounting stays
 in TextResources/ImageCache, including partial progress before an exception.
 No new painter statistics or transactional counter merging is introduced.
 

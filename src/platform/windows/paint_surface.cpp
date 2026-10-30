@@ -1,4 +1,5 @@
 #include "paint_surface.hpp"
+#include "image_cache.hpp"
 
 #include "stormtty/scene_damage.hpp"
 
@@ -48,10 +49,12 @@ PaintOpacity::~PaintOpacity() {
 PaintSurface::PaintSurface(
     ID2D1DeviceContext& context,
     ID2D1SolidColorBrush& brush,
-    ID2D1Brush* replacement_background) noexcept
+    ID2D1Brush* replacement_background,
+    ID2D1DeviceContext4* color_context) noexcept
     : context_(context),
       brush_(brush),
-      replacement_background_(replacement_background) {}
+      replacement_background_(replacement_background),
+      color_context_(color_context) {}
 
 PaintClip PaintSurface::clip(PixelRect bounds) {
     return PaintClip(&context_, bounds);
@@ -106,6 +109,64 @@ void PaintSurface::line(PixelRect endpoints, Color color, float width) {
         {endpoints.x + endpoints.width, endpoints.y + endpoints.height},
         &brush_,
         width);
+}
+
+void PaintSurface::line(D2D1_POINT_2F start, D2D1_POINT_2F end, Color color, float width) {
+    brush_.SetColor(paint_color(color));
+    context_.DrawLine(start, end, &brush_, width);
+}
+
+void PaintSurface::stroke_rectangle(D2D1_RECT_F bounds, Color color, float width) {
+    brush_.SetColor(paint_color(color));
+    context_.DrawRectangle(bounds, &brush_, width);
+}
+
+bool PaintSurface::supports_color_glyphs() const noexcept {
+    return color_context_ != nullptr;
+}
+
+void PaintSurface::glyph_run(D2D1_POINT_2F origin, const DWRITE_GLYPH_RUN& run, Color color) {
+    brush_.SetColor(paint_color(color));
+    context_.DrawGlyphRun(origin, &run, &brush_, DWRITE_MEASURING_MODE_NATURAL);
+}
+
+void PaintSurface::color_glyph_layer(const DWRITE_COLOR_GLYPH_RUN1& layer, Color foreground) {
+    const D2D1_POINT_2F position{layer.baselineOriginX, layer.baselineOriginY};
+    switch (layer.glyphImageFormat) {
+    case DWRITE_GLYPH_IMAGE_FORMATS_PNG:
+    case DWRITE_GLYPH_IMAGE_FORMATS_JPEG:
+    case DWRITE_GLYPH_IMAGE_FORMATS_TIFF:
+    case DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8:
+        color_context_->DrawColorBitmapGlyphRun(
+            layer.glyphImageFormat, position, &layer.glyphRun,
+            DWRITE_MEASURING_MODE_NATURAL, D2D1_COLOR_BITMAP_GLYPH_SNAP_OPTION_DEFAULT);
+        break;
+    case DWRITE_GLYPH_IMAGE_FORMATS_SVG:
+        brush_.SetColor(paint_color(foreground));
+        color_context_->DrawSvgGlyphRun(
+            position, &layer.glyphRun, &brush_, nullptr, 0, DWRITE_MEASURING_MODE_NATURAL);
+        break;
+    default:
+        brush_.SetColor(layer.paletteIndex == 0xffff ? paint_color(foreground) : layer.runColor);
+        context_.DrawGlyphRun(position, &layer.glyphRun, &brush_, DWRITE_MEASURING_MODE_NATURAL);
+        break;
+    }
+}
+
+void PaintSurface::image(
+    ImageCache& cache,
+    std::uint64_t pane_id,
+    const ImagePixels& pixels,
+    std::uint64_t render_tick,
+    PixelRect destination,
+    D2D1_RECT_F source) {
+    auto* bitmap = cache.bitmap(context_, pane_id, pixels, render_tick);
+    if (!bitmap) {
+        return;
+    }
+    const auto destination_rect = paint_rect(destination);
+    context_.DrawBitmap(
+        bitmap, &destination_rect, 1, D2D1_INTERPOLATION_MODE_LINEAR, &source, nullptr);
 }
 
 void PaintSurface::text_layout(PixelRect bounds, IDWriteTextLayout& layout, Color color) {
