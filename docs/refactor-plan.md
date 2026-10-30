@@ -10,10 +10,12 @@ and the evidence needed to close them.
 
 ### 1. Windows application and view transactions
 
-`src/platform/windows/window.cpp` still contains `NativeApplication`,
-`NativeWindow`, `ApplicationActors`, `ActorLifetimeRegistry` and `RendererReadyWake`.
-Move existing application lifetime and view-creation/retirement machinery into
-private modules with explicit dependencies. Preserve unpublished-candidate
+The first private module boundary is implemented: `application_actors.hpp/.cpp`
+owns registry/disposal coordination and `native_wake.hpp/.cpp` contains notification
+mailboxes and renderer readiness waits. `NativeApplication`, `NativeWindow` and
+view-creation/retirement transactions still reside in
+`src/platform/windows/window.cpp`; this group is not complete. Continue separating
+that machinery with explicit dependencies. Preserve unpublished-candidate
 rollback, exact actor ledgers, close authorization, final wake delivery and
 readiness-wait draining. A view must not acquire application-wide authority through
 a shared context or a map-access facade. This work does not enable New Window or

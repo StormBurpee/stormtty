@@ -45,10 +45,12 @@ See [the terminal adapter](../src/terminal/README.md) and
 
 ## Application lifetime versus a view
 
-The Windows `NativeApplication`, `NativeWindow`, `ActorLifetimeRegistry` and
-`ApplicationActors` currently live in `src/platform/windows/window.cpp`. These
-are real ownership boundaries, but the host is not yet separated into focused
-implementation files.
+The Windows `NativeApplication`, `NativeWindow` and view transactions remain in
+`src/platform/windows/window.cpp`. `ActorLifetimeRegistry` and `ApplicationActors`
+now live in private `src/platform/windows/application_actors.hpp/.cpp`;
+`WakeState` and `RendererReadyWake` live in `native_wake.hpp/.cpp` beside them.
+This establishes the actor/notification module boundary, not a completed
+application/view separation.
 
 **`NativeApplication` owns application lifetime:** native view ownership and the
 message pump, `ApplicationWorkspaces`, actor registration, and the
@@ -68,8 +70,23 @@ Native resources use RAII; exceptions must not cross Win32, COM or C callbacks.
 Do not join actors or wait for process exit in a window callback. Renderer-ready
 waits are canceled and drained before resize, recovery or view destruction.
 Actor callbacks retain routes with weak endpoints, not raw view pointers: removing
-registry discoverability must not lose final completion delivery. See
-[application windows](application-windows.md).
+registry discoverability must not lose final completion delivery. Disposal rebinds
+the completion route before requesting close, then removes discovery; callbacks
+can outlive registration and retain only a weak destination. Registry disposal and
+destruction contain no explicit actor join, but dropping the last shared reference
+still invokes `Session` destruction. Do not infer a new nonblocking-destruction
+guarantee from moving the registry. See [application windows](application-windows.md).
+
+`WakeState` is a notification/mailbox record, not an HWND owner. Its atomic
+`posted` flag coalesces notifications; failed posting releases that flag for retry.
+Clipboard/error values remain mutex-protected mailbox data for the host to consume.
+The host clears the HWND before destruction, resets notification coalescing when
+handling wakes, and preserves application completion after modal dispatch. The
+view's fixed weak fallback does not keep the application endpoint alive.
+`RendererReadyWake` owns a one-shot threadpool wait, but borrows its latency handle:
+the host must cancel/drain before handle replacement, device recovery or teardown.
+The wait object and endpoint outlive callbacks; callbacks do not access the view
+or renderer.
 
 ### Launch policy, identity and attention
 
