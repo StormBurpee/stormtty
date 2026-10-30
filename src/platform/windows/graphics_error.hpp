@@ -1,6 +1,8 @@
 #pragma once
 
 #include <windows.h>
+#include <d2derr.h>
+#include <dxgi.h>
 
 #include <cstdio>
 #include <stdexcept>
@@ -24,6 +26,11 @@ private:
         return std::string(action) + " failed (" + code + ")";
     }
 };
+
+inline bool device_lost(HRESULT hr) noexcept {
+    return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
+           hr == D2DERR_RECREATE_TARGET || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+}
 
 inline void check(HRESULT hr, const char* action) {
     if (FAILED(hr)) throw GraphicsError(hr, action);

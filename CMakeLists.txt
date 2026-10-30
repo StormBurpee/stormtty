@@ -361,6 +361,7 @@ if(WIN32)
         src/platform/windows/image_cache.cpp
         src/platform/windows/paint_surface.cpp
         src/platform/windows/chrome_painter.cpp
+        src/platform/windows/terminal_painter.cpp
         src/platform/windows/png_decoder.cpp
         src/platform/windows/host_backdrop.cpp
         src/platform/windows/liquid_glass/session.cpp)
