@@ -26,3 +26,6 @@ tools/run-owned-process.py -text
 tools/ci-msvc-env.ps1 -text
 .gitattributes -text
 tools/probes/msys-runtime-stage-trust/** -text
+
+# Bind the isolated stage workflow to its LF-pinned reviewed template.
+.github/workflows/msys-component-stage-review.yml text eol=lf

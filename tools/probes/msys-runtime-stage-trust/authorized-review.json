@@ -54,7 +54,7 @@
   },
   "reviewed_source_inventory": {
     "build_source_sha256": {
-      "../../../../.gitattributes": "28aec520bb86bade7c8e2689dc69447c3969d0085921d6fb65ff5f5febcb329f",
+      "../../../../.gitattributes": "d290860bdfc5ddd64ddc65af67107239548d5e459bc7076ad2d044f183af94d9",
       "../../../ci-msvc-env.ps1": "1f3c475a9c2e491bd6e15e341c3a7948f165c4e24d695e4b941787a2c39a49d0",
       "../../../run-owned-process.py": "ba3dd67e0182005c3be478eef9ac2f4d0289b9287943d7b3fb37dbd76168d5d7",
       "../.gitattributes": "b6e82bb9b0c352baf9f2b7965ad3fc58f8fe2d47da1830f4315bbbc93ec2bec3",
@@ -75,7 +75,7 @@
       "build-review/collect.py": "1a957d08aa95c0443f4f2f378895b8b6d71813221d823610f593fe1fbbf860a5",
       "build-review/compare-tests.py": "bf05147453e556d3ec7d5cf21c384b1f7beb03b6b4e1ec04b09a7df2b0fbc6c9",
       "build-review/compare.py": "cc6f20e8e1c06c43d7c27ac513afbebca4def17f920377e950a522a34b71f0ad",
-      "build-review/component-stage-tests.py": "e85d1055430807fd7e634de87d451485f3bb26d4b8fcf39476d63a3bbbecd108",
+      "build-review/component-stage-tests.py": "750f23d77a28c4bfa64cfb731ecea0f7054e0e39e32fe3a9160db6c9c5af3d48",
       "build-review/component-stage.py": "6f1ef64de0e644a6eb4b416b6b6dddffbd85d2a5bfa3ff7092400cca37cb1930",
       "build-review/component-stage.workflow.yml.template": "db0dcf42cdbf461ac2adaedfb0446b86ef12bb35afb8a424bf1fddc369dada38",
       "build-review/component-text.py": "8a9890a8a88485e8774f781b9f13531b4503356f4da94d30e7f053d5eb329bf2",

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Independent proposal gates/text tests. Never launch native or candidate code."""
-import copy,hashlib,importlib.util,json,tempfile,types,unittest
+import copy,hashlib,importlib.util,io,json,os,subprocess,tarfile,tempfile,types,unittest
 from pathlib import Path
 from unittest.mock import patch
 HERE=Path(__file__).resolve().parent
@@ -99,6 +99,40 @@ class Stage(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError,'variant readers differ' if fail=='readers' else 'synthetic linked rejection'):stage.main()
                         self.assertEqual(events,['copied'] if fail=='copied' else ['copied','combined'])
                         launched.assert_not_called()
+    def test_archived_active_workflow_matches_template_for_both_autocrlf_modes(self):
+        active=Path('.github/workflows/msys-component-stage-review.yml')
+        template=Path('tools/probes/msys-runtime-experiment/combined-runtime/build-review/component-stage.workflow.yml.template')
+        nested=Path('tools/probes/msys-runtime-experiment/.gitattributes')
+        root=HERE.parents[4]
+        rule=active.as_posix()+' text eol=lf'
+        attributes=(root/'.gitattributes').read_text()
+        self.assertIn(rule,attributes.splitlines())
+        self.assertIn(active.as_posix(),(HERE/'component-stage.py').read_text())
+        repository=self.root/'archive-repository';repository.mkdir()
+        env={key:value for key,value in os.environ.items() if not key.startswith('GIT_')}
+        env.update(GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL=os.devnull)
+        def git(*args):
+            return subprocess.check_output(['git',*args],cwd=repository,env=env,stderr=subprocess.PIPE)
+        git('init','-q')
+        for path,data in ((active,(root/active).read_bytes()),(template,(root/template).read_bytes()),
+                          (nested,(root/nested).read_bytes()),(Path('.gitattributes'),attributes.encode())):
+            dest=repository/path;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(data)
+        git('-c','core.autocrlf=false','add','.')
+        tree=git('write-tree').decode().strip()
+        def archived(tree,autocrlf):
+            data=git('-c','core.autocrlf='+autocrlf,'archive','--format=tar',tree,'--',active.as_posix(),template.as_posix())
+            with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+                return archive.extractfile(active.as_posix()).read(),archive.extractfile(template.as_posix()).read()
+        for mode in ('true','false'):
+            a,b=archived(tree,mode)
+            self.assertEqual(a,b,mode);self.assertNotIn(b'\r',a)
+            self.assertEqual(a,(root/template).read_bytes())
+        # Demonstrate the actual regression, not merely two equal source blobs:
+        # without the exact path rule, Windows archive changes only active YAML.
+        (repository/'.gitattributes').write_text('\n'.join(line for line in attributes.splitlines() if line!=rule)+'\n')
+        git('-c','core.autocrlf=false','add','.gitattributes')
+        unpinned=git('write-tree').decode().strip();a,b=archived(unpinned,'true')
+        self.assertNotEqual(a,b);self.assertIn(b'\r\n',a);self.assertNotIn(b'\r',b)
     def test_text_collector_excludes_binaries_and_decodes_trace(self):
         source=self.root/'source';source.mkdir();(source/'results.json').write_text('{}')
         trial=source/'1-raw-1-copied';trial.mkdir();(trial/'fixture.json').write_text('{}');(trial/'trace.bin').write_bytes(b'synthetic trace')
