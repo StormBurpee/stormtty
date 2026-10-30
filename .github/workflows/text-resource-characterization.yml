@@ -1,0 +1,130 @@
+# Targeted prerequisite evidence only. The normal full native workflow remains
+# required for final typography integration; this job does not replace its gates.
+name: Windows text resource characterization
+on:
+  push:
+    branches: [qualification/text-resource-characterization]
+permissions:
+  contents: read
+concurrency:
+  group: text-resource-characterization-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  windows-renderer:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Initialize native MSVC toolchain
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Restore pinned terminal engine
+        id: engine_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Bootstrap pinned terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Cache successfully built terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ${{ steps.engine_cache.outputs.cache-primary-key }}
+      - name: Configure isolated native renderer tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force text-resource-evidence | Out-Null
+          cmake -S . -B build-text -G Ninja "-DPython3_EXECUTABLE=${{ env.pythonLocation }}/python.exe" -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DBUILD_TESTING=ON -DSTORMTTY_BUILD_APP=OFF -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF -DSTORMTTY_TEST_INK=OFF 2>&1 | Tee-Object -FilePath text-resource-evidence/configure.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build only renderer smoke and PNG targets
+        id: build
+        shell: pwsh
+        run: |
+          cmake --build build-text --parallel 2 --target renderer_smoke renderer_png 2>&1 | Tee-Object -FilePath text-resource-evidence/build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run each registered renderer case once with owned cleanup
+        id: renderer_tests
+        shell: python
+        run: |
+          import importlib.util
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          root = pathlib.Path.cwd()
+          build = root / 'build-text'
+          evidence = root / 'text-resource-evidence'
+          spec = importlib.util.spec_from_file_location('owned_runner', root / 'tools/run-owned-process.py')
+          runner = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = runner
+          spec.loader.exec_module(runner)
+
+          # Discover commands and deadlines from CTest, without running CTest's
+          # child supervisor on top of ours. These are the unmodified native
+          # cases, including the 30-second final-teardown deadline.
+          discovery = subprocess.run(
+              ['ctest', '--test-dir', str(build), '--show-only=json-v1'],
+              check=True, capture_output=True, text=True)
+          (evidence / 'ctest-discovery.json').write_text(discovery.stdout, encoding='utf-8')
+          registered = {test['name']: test for test in json.loads(discovery.stdout)['tests']}
+          cases = [('renderer_smoke', 90), ('renderer_final_teardown', 30), ('renderer_png', 90)]
+          manifest = {
+              'source_sha': os.environ['GITHUB_SHA'],
+              'scope': 'targeted native renderer prerequisite; not whole-app qualification',
+              'user_desktop_capture': False,
+              'physical_display_verified': False,
+              'results': [],
+          }
+          failed = False
+          for name, expected_timeout in cases:
+              record = {'name': name}
+              try:
+                  test = registered[name]
+                  properties = {item['name']: item['value'] for item in test['properties']}
+                  timeout = properties['TIMEOUT']
+                  if timeout != expected_timeout:
+                      raise ValueError(f'{name}: registered deadline changed: {timeout}')
+                  record.update(command=test['command'], timeout=timeout)
+                  # No shell, provider, desktop source or retry. Renderer smoke
+                  # captures only its own authored framebuffer fixtures.
+                  result = runner.run_owned(
+                      test['command'], timeout=timeout, reap_timeout=10,
+                      tail_bytes=1024 * 1024,
+                      cwd=properties.get('WORKING_DIRECTORY', str(build)),
+                      output_dir=evidence)
+                  record['process'] = result.metadata()
+                  record['passed'] = (
+                      result.exit_code == 0 and result.reaped and
+                      not result.timed_out and not result.cleanup_error and
+                      not result.output_truncated)
+                  (evidence / f'{name}.log').write_bytes(result.output_tail)
+                  print(result.output_tail.decode('utf-8', errors='replace'), flush=True)
+              except (OSError, ValueError, KeyError) as error:
+                  record.update(passed=False, error=str(error))
+              failed |= not record['passed']
+              manifest['results'].append(record)
+              # Persist every completed case before starting the next one so an
+              # unrelated later failure cannot erase exit/reap evidence.
+              (evidence / f'{name}.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
+              (evidence / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+              print('RENDERER_CASE_RESULT=' + json.dumps(record, sort_keys=True), flush=True)
+          raise SystemExit(1 if failed else 0)
+      - name: Preserve prerequisite diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: text-resource-characterization-${{ github.sha }}
+          path: |
+            text-resource-evidence/
+            build-text/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn

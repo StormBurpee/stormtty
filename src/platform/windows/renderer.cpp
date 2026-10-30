@@ -14,6 +14,8 @@
 #include <dwrite_3.h>
 #include <dcomp.h>
 #include "smoke_teardown_trace.hpp"
+#include "com_owner.hpp"
+#include "graphics_error.hpp"
 #include "host_backdrop.hpp"
 #include "liquid_glass/session.hpp"
 #include "stormtty/build_features.hpp"
@@ -30,34 +32,10 @@
 
 namespace stormtty {
 namespace {
-template<class T> class Com {
-public:
-    Com() = default;
-    explicit Com(T* p, bool add_ref = false) : p_(p) { if (add_ref && p_) p_->AddRef(); }
-    ~Com() { reset(); }
-    Com(const Com& o) : Com(o.p_, true) {}
-    Com& operator=(const Com& o) { if (this != &o) { Com copy(o); swap(copy); } return *this; }
-    Com(Com&& o) noexcept : p_(std::exchange(o.p_, nullptr)) {}
-    Com& operator=(Com&& o) noexcept { if (this != &o) { reset(); p_ = std::exchange(o.p_, nullptr); } return *this; }
-    const char* teardown_label{}; // Enabled only at explicit smoke destruction.
-    void reset() noexcept {
-        if (auto* p = std::exchange(p_, nullptr)) {
-            windows::smoke_teardown_trace(teardown_label!=nullptr,teardown_label," begin");
-            p->Release();
-            windows::smoke_teardown_trace(teardown_label!=nullptr,teardown_label," end");
-        }
-    }
-    void swap(Com& o) noexcept { std::swap(p_, o.p_); }
-    T* get() const noexcept { return p_; }
-    T* operator->() const noexcept { return p_; }
-    explicit operator bool() const noexcept { return p_ != nullptr; }
-    T** put() noexcept { reset(); return &p_; }
-    template<class U> HRESULT as(Com<U>& out) const noexcept {
-        return p_ ? p_->QueryInterface(__uuidof(U), reinterpret_cast<void**>(out.put())) : E_POINTER;
-    }
-private:
-    T* p_{};
-};
+using windows::Com;
+using windows::GraphicsError;
+using windows::check;
+
 struct Apartment {
     HRESULT hr{CoInitializeEx(nullptr, COINIT_MULTITHREADED)};
     bool smoke{};
@@ -72,17 +50,6 @@ struct NativeHandle {
     ~NativeHandle() { reset(); }
     void reset(HANDLE v = nullptr) noexcept { if (value) CloseHandle(value); value = v; }
 };
-class GraphicsError : public std::runtime_error {
-public:
-    HRESULT result;
-    GraphicsError(HRESULT hr, const char* action) : std::runtime_error(message(hr, action)), result(hr) {}
-private:
-    static std::string message(HRESULT hr, const char* action) {
-        char code[16]{}; std::snprintf(code, sizeof code, "0x%08lx", static_cast<unsigned long>(hr));
-        return std::string(action) + " failed (" + code + ")";
-    }
-};
-void check(HRESULT hr, const char* action) { if (FAILED(hr)) throw GraphicsError(hr, action); }
 HRESULT win32_error() noexcept {
     const auto error=GetLastError();
     return error ? HRESULT_FROM_WIN32(error) : E_FAIL;
