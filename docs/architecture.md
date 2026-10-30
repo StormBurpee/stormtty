@@ -192,8 +192,8 @@ shaped rows, so the backends do not share cache-lifetime assumptions.
 the ordered native chrome drawing, separate from domain scene composition such
 as `RibbonRenderer`. `PaintSurface` is a synchronous drawing borrow with scoped
 clip/opacity state; it owns no GPU resources and exposes no resize, presentation
-or frame-transaction control. The renderer still resolves material policy and
-coordinates `BeginDraw`/`EndDraw`, damage commits and presentation.
+or frame-transaction control. `Renderer` coordinates the draw transaction, damage
+commits and presentation; `RenderDevice` supplies the scoped native draw borrow.
 
 `TerminalPainter` (`src/platform/windows/terminal_painter.hpp` and `.cpp`) owns
 terminal paint policy: selection and colors, glyph runs and decorations, image
@@ -210,11 +210,48 @@ no painter-owned counters or successful-frame-only statistics are introduced.
 The shared Windows HRESULT classifier preserves bounded device-loss recovery and
 unsupported color-glyph fallback. See [terminal-painter verification](../tests/terminal_painter_verification.md).
 
+`RenderDevice` (`src/platform/windows/render_device.hpp` and `.cpp`) owns the
+renderer-thread native resource graph: D3D/D2D devices and contexts, canvas and
+brushes, alpha-readback staging, swapchains and latency handle, DirectComposition,
+opaque presentation child window, HostBackdrop and liquid-glass resources. It
+retains no scene, damage history, painter, text owner or image-cache policy. The
+caller's COM apartment outlives this graph and `TextResources`.
+
+`CanvasDraw` is a noncopyable synchronous borrow of that canvas and its
+`PaintSurface`. The device/canvas must outlive drawing and clip scopes; no resize,
+reset or presentation is valid during the borrow. `finish()` ends drawing once;
+unwinding ends an unfinished draw without replacing the original paint exception.
+`Renderer` retains scene/damage coordination, DPI/tick, public statistics and
+`pending_present`: commit follows successful `EndDraw`, and busy/occluded Present
+keeps the completed canvas pending. `SurfaceChanges` distinguishes repaint from
+successful canvas installation; apply it on success and exceptions, clearing
+pending presentation only when a new canvas was actually installed.
+
+GPU recreation preserves `TextResources`. Normal device release unbinds the D2D
+target, releases staging/canvas/brush, explicitly clears the external `ImageCache`,
+then releases D2D contexts/device and presentation/D3D resources. Final shutdown's
+bounded completion query precedes resource release; replacement draining preserves
+the live-HWND distinction. The host must cancel/drain readiness waits before their
+borrowed latency handle is replaced or destroyed.
+
+Failed renderer construction is a different path: reset image ownership, release
+brush/canvas/staging slots, then destroy text before the remaining native graph
+unwinds in declaration order. Do not replace this with normal shutdown: the failure
+path deliberately adds no target unbind, completion wait or ClearState/Flush.
+
+Readback privacy belongs to the native canvas owner. Active glass or a canvas still
+tainted by glass blocks pixel readback and alpha probes. Stopping glass alone does
+not clear that state; only a successful full non-glass repaint clears the taint.
+Partial or aborted repaint cannot make stale desktop pixels readable. See
+[render-device verification](../tests/render_device_verification.md) for release
+ordering and native failure-injection coverage.
+
 ## Remaining ownership work
 
-`src/platform/windows/renderer.cpp` still owns device resources, material policy,
-the canvas/damage transaction and presentation. These need focused ownership
-without conflating canvas validity, resource lifetime and presentation readiness.
+`src/platform/windows/renderer.cpp` remains the frame-transaction coordinator,
+not the native resource owner. Further changes must preserve the distinction
+between canvas validity, resource lifetime and presentation readiness rather than
+recombining those states behind a shared device/window context.
 Observation caches are encapsulated, but deliberately remain application-shared;
 changing that lifetime requires separate transfer/invalidation characterization.
 
@@ -242,7 +279,7 @@ gates. Useful starting points:
   `native_settings_smoke`. Exercise conflicts, Cancel/reopen and close during I/O.
 - Rendering: `ribbon_renderer_tests`, `scene_damage_tests`, then Windows
   `text_resources_tests`, `image_cache_tests`, `paint_surface_tests`,
-  `renderer_smoke`/`renderer_final_teardown`, `renderer_png`
+  `render_device_tests`, `renderer_smoke`/`renderer_final_teardown`, `renderer_png`
   and relevant native layout/material
   scenarios. Include immutable full-versus-incremental terminal pixel comparisons
   at multiple DPIs, resize, font/DPI changes, occlusion and resource recovery.
