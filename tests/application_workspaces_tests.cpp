@@ -182,6 +182,37 @@ void unpublished_creation_rollback() {
     ApplicationWorkspaces empty;const auto first=empty.begin_window_creation();CHECK(first);
     empty.abort_window_creation(*first.value);CHECK(empty.windows().empty());CHECK(empty.catalog().entries().empty());CHECK(empty.validate());
 }
+void restore_candidate_beside_live_window() {
+    ApplicationWorkspaces source;const auto source_window=window(source);
+    project(source,source_window,810,"Imported");const auto selected=project(source,source_window,812,"Selected");CHECK(source.activate(source_window,selected));const auto snapshot=WindowWorkspaceView(source,source_window).snapshot();CHECK(snapshot);
+    ApplicationWorkspaces app;const auto original=window(app);const auto retained=project(app,original,820,"Live");
+    const auto persistent=app.catalog().find(retained)->metadata.persistent_id;
+    const auto candidate=app.begin_window_creation();CHECK(candidate);
+    CHECK(app.create_workspace(*candidate.value,{"placeholder","",""}));
+    CHECK(!app.restore_creating_window(original,*snapshot.value));
+    auto malformed=*snapshot.value;malformed.active_index=99;
+    CHECK(!app.restore_creating_window(*candidate.value,malformed));CHECK(app.window(*candidate.value)->projects.size()==1);
+    CHECK(app.restore_creating_window(*candidate.value,*snapshot.value));CHECK(app.validate());
+    const auto restored=app.window(*candidate.value)->active;CHECK(restored!=retained);
+    CHECK(app.catalog().find(restored)->metadata.persistent_id==snapshot.value->projects[1].metadata.persistent_id);
+    CHECK(app.catalog().session_ids(restored).empty());CHECK(app.catalog().contains_session({820}));
+    CHECK(app.catalog().find(retained)->metadata.persistent_id==persistent);CHECK(app.window(original)->active==retained);CHECK(app.catalog().active_id()==retained);
+    CHECK(app.window(*candidate.value)->projects.size()==2);CHECK(app.window(*candidate.value)->projects[1]==restored);
+    CHECK(app.commit_window_creation(*candidate.value));
+    const auto duplicate=app.begin_window_creation();CHECK(duplicate);
+    CHECK(!app.restore_creating_window(*duplicate.value,*snapshot.value));CHECK(app.window(*duplicate.value)->projects.empty());
+    app.abort_window_creation(*duplicate.value);CHECK(app.validate());CHECK(app.owner(retained)==original);
+    const auto live_candidate=app.begin_window_creation();CHECK(live_candidate);project(app,*live_candidate.value,830);
+    CHECK(!app.restore_creating_window(*live_candidate.value,*snapshot.value));app.abort_window_creation(*live_candidate.value);CHECK(app.validate());
+    const auto empty=app.begin_window_creation();CHECK(empty);CHECK(app.create_workspace(*empty.value,{"discarded","",""}));
+    CHECK(app.restore_creating_window(*empty.value,WorkspaceSnapshot{}));CHECK(app.window(*empty.value)->projects.empty());
+    CHECK(app.commit_window_creation(*empty.value));CHECK(app.catalog().active_id()==retained);CHECK(app.validate());
+    ApplicationWorkspaces capped;const auto occupied=window(capped);
+    for(std::size_t i=0;i<ProjectWorkspaceCatalog::maximum_projects-1;++i)CHECK(capped.create_workspace(occupied,{"capacity","",""}));
+    const auto pending=capped.begin_window_creation();CHECK(pending);const auto placeholder=capped.create_workspace(*pending.value,{"keep","",""});CHECK(placeholder);
+    CHECK(!capped.restore_creating_window(*pending.value,*snapshot.value));CHECK(capped.window(*pending.value)->projects==std::vector<ProjectWorkspaceId>{*placeholder.value});
+    CHECK(capped.catalog().entries().size()==ProjectWorkspaceCatalog::maximum_projects);CHECK(capped.validate());capped.abort_window_creation(*pending.value);CHECK(capped.validate());
+}
 void limits_and_invalid_models() {
     ApplicationWorkspaces app;
     for(std::size_t i=0;i<ApplicationWorkspaces::maximum_windows;++i)CHECK(app.create_window());
@@ -197,4 +228,4 @@ void limits_and_invalid_models() {
     CHECK(!app.validate());CHECK(!app.move(p,a,b));CHECK(app.windows()==invalid_before);
 }
 }
-int main(){return run_core_tests("application_workspaces",[]{ownership_and_moves();explicit_close_and_stale_authorization();snapshots_and_policy();selection_and_nonreuse();scoped_views_and_bootstrap();atomic_window_close();unpublished_creation_rollback();limits_and_invalid_models();});}
+int main(){return run_core_tests("application_workspaces",[]{ownership_and_moves();explicit_close_and_stale_authorization();snapshots_and_policy();selection_and_nonreuse();scoped_views_and_bootstrap();atomic_window_close();unpublished_creation_rollback();restore_candidate_beside_live_window();limits_and_invalid_models();});}

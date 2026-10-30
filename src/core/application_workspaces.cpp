@@ -38,6 +38,31 @@ WindowId ApplicationWorkspaces::owner(ProjectWorkspaceId id) const noexcept {
 Result<WindowId> ApplicationWorkspaces::begin_window_creation() {
     auto result=create_window();if(result)creating_=*result.value;return result;
 }
+Status ApplicationWorkspaces::restore_creating_window(WindowId id, const WorkspaceSnapshot& snapshot) {
+    if(!id || creating_!=id)return Status::failure("Restore requires an unpublished candidate window");
+    if(revision_==std::numeric_limits<std::uint64_t>::max())return Status::failure("Placement revision exhausted");
+    auto* candidate=&*std::find_if(windows_.begin(),windows_.end(),[&](const auto& w){return w.id==id;});
+    for(const auto project:candidate->projects)if(!catalog_.session_ids(project).empty())return Status::failure("Candidate already owns live sessions");
+    ProjectWorkspaceCatalog prepared;
+    if(auto result=restore_workspace_snapshot(prepared,snapshot);!result)return result;
+    const auto existing=catalog_.entries_.size()-candidate->projects.size();
+    if(prepared.entries_.size()>ProjectWorkspaceCatalog::maximum_projects-existing)return Status::failure("Application workspace limit reached");
+    for(const auto& restored:prepared.entries_)for(const auto& current:catalog_.entries_)
+        if(owner(current.id)!=id && current.metadata.persistent_id==restored.metadata.persistent_id)return Status::failure("Restored workspace already belongs to another window");
+    std::vector<ProjectWorkspaceId> placement;placement.reserve(prepared.entries_.size());
+    for(const auto& restored:prepared.entries_)placement.push_back(restored.id);
+    catalog_.entries_.reserve(existing+prepared.entries_.size());
+    // No allocation follows: prepared records are moved, not catalog identities
+    // copied. Preserve the legacy catalog selection if it belongs to a survivor.
+    static_assert(std::is_nothrow_move_constructible_v<ProjectWorkspace>);
+    static_assert(std::is_nothrow_move_assignable_v<ProjectWorkspace>);
+    const bool replacing_active=owner(catalog_.active_)==id;
+    std::erase_if(catalog_.entries_,[&](const auto& entry){return std::find(candidate->projects.begin(),candidate->projects.end(),entry.id)!=candidate->projects.end();});
+    for(auto& restored:prepared.entries_)catalog_.entries_.push_back(std::move(restored));
+    candidate->projects.swap(placement);candidate->active=prepared.active_;
+    if(replacing_active || !catalog_.active_)catalog_.active_=prepared.active_?prepared.active_:(catalog_.entries_.empty()?ProjectWorkspaceId{}:catalog_.entries_.front().id);
+    ++revision_;return {};
+}
 Status ApplicationWorkspaces::commit_window_creation(WindowId id) {
     if(!id || creating_!=id)return Status::failure("Window is not being created");
     if(auto valid=validate();!valid)return valid;

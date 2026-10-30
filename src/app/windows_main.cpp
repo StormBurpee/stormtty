@@ -204,7 +204,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             std::string bytes(52,'\0');marker.read(bytes.data(),static_cast<std::streamsize>(bytes.size()));bytes.resize(static_cast<std::size_t>(marker.gcount()));
             if(bytes!="StormTTY isolated windows qualification v1\n")throw std::runtime_error("Invalid window fixture marker.");
             if(std::filesystem::exists(window_fixture/L"config.stormtty") || std::filesystem::exists(window_fixture/L"workspaces.stormtty"))throw std::runtime_error("Window fixture already contains persisted user-like state.");
-            options.config_path.clear(); // No persistence until grouped storage is qualified.
+            options.smoke_window_fixture=window_fixture;
+            options.config_path.clear(); // No normal persistence until grouped storage is qualified.
             options.shell_runtime_directory.clear();options.shell_runtime_error.clear();
             config=stormtty::default_config(stormtty::Platform::windows);
             const auto directory=window_fixture.generic_u8string();

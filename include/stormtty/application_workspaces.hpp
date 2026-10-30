@@ -48,6 +48,9 @@ public:
     // closes a process; host retires candidate actors after clearing their view.
     Result<WindowId> begin_window_creation();
     Status commit_window_creation(WindowId);
+    // Declarative import into this unpublished candidate only. Existing live
+    // windows/identities are never replaced, relaunched or copied.
+    Status restore_creating_window(WindowId, const WorkspaceSnapshot&);
     void abort_window_creation(WindowId) noexcept;
     Result<WindowId> create_window(); // Empty until host explicitly creates/restores a workspace.
     Result<ProjectWorkspaceId> create_workspace(WindowId, ProjectWorkspaceMetadata, Workspace = {});
