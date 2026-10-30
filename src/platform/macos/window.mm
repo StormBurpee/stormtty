@@ -1,6 +1,9 @@
 #include "stormtty/native_window.hpp"
 #include "stormtty/renderer.hpp"
 #include "stormtty/session.hpp"
+#include "stormtty/context_footer.hpp"
+#include "stormtty/workspace_ribbon.hpp"
+#include "stormtty/ui_colors.hpp"
 #include "platform.hpp"
 #include "input.hpp"
 #include "menu_shortcuts.hpp"
@@ -102,7 +105,8 @@ public:
     std::map<SessionId,std::shared_ptr<Session>> sessions;
     std::map<SessionId,TerminalSize> sent_sizes;
     std::vector<NSButton*> tab_buttons;
-    NSButton* add_button;NSButton* menu_button;
+    NSButton* add_button;NSButton* menu_button;NSButton* inspect_button;
+    std::optional<ContextFooterPresentation> painted_footer;
     std::uint64_t next_session{1},chrome{1};
     double scale{1};std::uint32_t pixel_width{},pixel_height{};
     bool closing{},finished{},close_authorized{},confirming_close{},reduce_motion{},cursor_on{true},blink_scheduled{},retry_scheduled{};
@@ -110,6 +114,7 @@ public:
     bool appearance_pending{},resize_pending{},update_active{},update_again{};
     std::chrono::steady_clock::time_point smoke_present_deadline{};
     int exit_code{};std::atomic<bool> wake_queued{false};
+    bool terminal_pointer_down{},footer_pointer_down{};
     NodeId dragged_divider;PaneId selection_pane;std::uint16_t selection_x{},selection_y{};
     std::string message;std::uint64_t accessibility_generation{};
     struct Input {std::function<SessionSendResult()> send;std::size_t bytes{};};
@@ -121,7 +126,18 @@ public:
         auto found=sessions.find(p->session);return found==sessions.end()?nullptr:found->second;
     }
     double header_height()const {return std::max(0.,[view convertRect:window.contentLayoutRect fromView:nil].origin.y);}
-    Rect viewport()const {const double top=header_height()+14;return {16,top,std::max(1.,view.bounds.size.width-32),std::max(1.,view.bounds.size.height-top-16)};}
+    ContextFooterLayout footer_layout()const {return layout_context_footer(view.bounds.size.width,view.bounds.size.height,header_height());}
+    Rect viewport()const {return footer_layout().terminal;}
+    ContextFooterPresentation footer_presentation()const {
+        ContextFooterPresentation result;const auto* pane=workspace.pane(workspace.active_pane());const auto session=active();
+        if(!pane||!session){result.context=make_pane_context({});result.status="No terminal";return result;}
+        const auto info=session->info();
+        const auto profile=std::find_if(config.profiles.begin(),config.profiles.end(),[&](const Profile& p){return p.id==pane->profile;});
+        const std::string_view label=profile==config.profiles.end()?std::string_view(pane->profile):std::string_view(profile->label);
+        const std::string_view start=options.smoke_test?std::string_view("/"):profile==config.profiles.end()?std::string_view{}:std::string_view(profile->working_directory);
+        result.context=make_pane_context({info.title,label,info.working_directory,start,info.shell_context?&*info.shell_context:nullptr,false,info.state==SessionState::exited||info.state==SessionState::failed});
+        result.status=terminal_status_label(info);result.failed=info.state==SessionState::failed;result.notice=pane_context_text(message);return result;
+    }
     LayoutMetrics layout_metrics()const {return {1./scale,8,96,64};}
     void initialize() {
         install_macos_png_decoder();
@@ -149,6 +165,10 @@ public:
         // view through its parent hierarchy.
         renderer=std::make_unique<Renderer>((__bridge void*)view,rendering);
         [backdrop addSubview:view];
+        inspect_button=[NSButton buttonWithTitle:@"Inspect" target:delegate action:@selector(executeCommand:)];
+        inspect_button.identifier=@"pane.inspect";inspect_button.bordered=NO;inspect_button.font=[NSFont systemFontOfSize:11];
+        [inspect_button setAccessibilityLabel:@"Inspect active terminal context"];
+        [backdrop addSubview:inspect_button]; // Sibling of the terminal accessibility element.
         chrome_view=[[STChromeView alloc] initWithFrame:NSMakeRect(0,0,1000,38)];
         tab_accessory=[NSTitlebarAccessoryViewController new];tab_accessory.layoutAttribute=NSLayoutAttributeRight;tab_accessory.view=chrome_view;
         [window addTitlebarAccessoryViewController:tab_accessory];
@@ -276,6 +296,7 @@ public:
         pixel_height=static_cast<std::uint32_t>(std::max(0.,std::round(view.bounds.size.height*scale)));
         renderer->resize(pixel_width,pixel_height,float(scale*96));
         layout=workspace.layout(workspace.active_tab(),viewport(),layout_metrics());
+        const auto footer=footer_layout();inspect_button.frame=[view convertRect:NSMakeRect(footer.inspect.x,footer.inspect.y,footer.inspect.width,footer.inspect.height) toView:backdrop];
         const auto metrics=renderer->metrics();
         for(const auto& p:layout.panes) {
             TerminalSize size;size.columns=static_cast<std::uint16_t>(std::clamp(std::floor(p.bounds.width*scale/metrics.width),1.,1000.));
@@ -412,21 +433,14 @@ public:
         }else if(id=="pane.inspect"){
             // Do not steal AppKit marked text or nest a modal inspector. Capture
             // metadata once, without polling the shell or touching PTY ownership.
-            if(!menu_commands_available(view.hasMarkedText,closing,NSApp.modalWindow!=nil))return;
-            const auto* pane=workspace.pane(workspace.active_pane());const auto session=active();
-            if(!pane||!session)return;
-            const auto info=session->info();
-            const auto profile=std::find_if(config.profiles.begin(),config.profiles.end(),[&](const Profile& p){return p.id==pane->profile;});
-            const std::string_view label=profile==config.profiles.end()?std::string_view(pane->profile):std::string_view(profile->label);
-            const std::string_view start=options.smoke_test?std::string_view("/"):profile==config.profiles.end()?std::string_view{}:std::string_view(profile->working_directory);
-            // This host launches ordinary profiles, not the Windows managed shell.
-            const auto snapshot=make_pane_context({info.title,label,info.working_directory,start,
-                info.shell_context?&*info.shell_context:nullptr,false,
-                info.state==SessionState::exited||info.state==SessionState::failed});
+            if(!menu_commands_available(view.hasMarkedText,closing,NSApp.modalWindow!=nil||window.attachedSheet!=nil))return;
+            if(!active())return;
+            const auto presentation=footer_presentation();auto snapshot=presentation.context;
+            snapshot.detail=presentation.detail();
             STPaneInspector* inspector=[[STPaneInspector alloc] initWithSnapshot:snapshot];
             auto weak=weak_from_this();
             [inspector presentForWindow:window completion:^{if(auto h=weak.lock())
-                h->guard([&]{if(!h->closing)[h->window makeFirstResponder:h->view];});}];
+                h->guard([&]{if(!h->closing){[h->window makeFirstResponder:h->view];h->wake();}});}];
             return;
         }else if(id=="terminal.find"){
             NSAlert* alert=[NSAlert new];alert.messageText=@"Find in visible terminal";NSTextField* field=[[NSTextField alloc] initWithFrame:NSMakeRect(0,0,300,24)];
@@ -447,6 +461,14 @@ public:
     void select_tab(std::uint64_t id){workspace.activate_tab(TabId{id});focus_changed();resize();}
     void mouse(NSEvent* event,MouseAction action) {
         const NSPoint position=[view convertPoint:event.locationInWindow fromView:nil];const Point point{position.x,position.y};
+        const bool in_footer=footer_layout().bounds.contains(point);
+        if(action==MouseAction::press)footer_pointer_down=in_footer;
+        if(footer_pointer_down){if(action==MouseAction::release)footer_pointer_down=false;return;}
+        if(in_footer){
+            // Finish an existing gesture before excluding new footer input.
+            if(dragged_divider){if(action==MouseAction::release)dragged_divider={};return;}
+            if(action!=MouseAction::release || (!terminal_pointer_down&&!selection_pane))return;
+        }
         if(action==MouseAction::press){
             if(position.y<header_height()){[window performWindowDragWithEvent:event];return;}
             auto hit=hit_test(layout,point);
@@ -461,8 +483,11 @@ public:
                 workspace.resize_split(divider->node,offset/std::max(1.,length),viewport(),layout_metrics());resize();}}return;}
         auto place=std::find_if(layout.panes.begin(),layout.panes.end(),[&](const auto& p){return p.pane==workspace.active_pane();});
         auto session=active();if(place==layout.panes.end()||!session)return;auto frame=session->frame();if(!frame)return;
-        const double x=(point.x-place->bounds.x)*scale,y=(point.y-place->bounds.y)*scale;
+        const double x=(point.x-place->bounds.x)*scale;
+        const double y=in_footer?std::max(0.,place->bounds.height*scale-1):(point.y-place->bounds.y)*scale;
+        if(action==MouseAction::release)terminal_pointer_down=false;
         if(frame->mouse_reporting&&!(event.modifierFlags&NSEventModifierFlagShift)){
+            if(action==MouseAction::press)terminal_pointer_down=true;
             MouseInput input{action,event.buttonNumber==1?MouseButton::right:event.buttonNumber==2?MouseButton::middle:MouseButton::left,modifiers(event.modifierFlags),x,y,action!=MouseAction::release};
             enqueue([session,input]{return session->mouse(input);});return;
         }
@@ -473,6 +498,8 @@ public:
             enqueue([session,sx,sy,cx,cy,rectangle]{return session->select(sx,sy,cx,cy,rectangle);});if(action==MouseAction::release)selection_pane={};}
     }
     void scroll(NSEvent* event) {
+        const auto location=[view convertPoint:event.locationInWindow fromView:nil];
+        if(footer_layout().bounds.contains({location.x,location.y}))return;
         auto session=active();if(!session)return;auto frame=session->frame();if(!frame)return;
         if(frame->mouse_reporting&&!(event.modifierFlags&NSEventModifierFlagShift)){
             auto place=std::find_if(layout.panes.begin(),layout.panes.end(),[&](const auto& p){return p.pane==workspace.active_pane();});if(place==layout.panes.end())return;
@@ -531,7 +558,23 @@ public:
         if(view.hasMarkedText){const auto r=cursor_rect();const auto width=std::max(80.,std::min(400.,double(view->marked.length)*config.font.size_dip));
             scene.primitives.push_back({{float(r.origin.x*scale),float(r.origin.y*scale),float(width*scale),float(r.size.height*scale)},{43,49,57,255},{},0,0,ChromePrimitiveKind::rectangle,false,{ChromeLayer::transient}});
             scene.texts.push_back({{float(r.origin.x*scale),float(r.origin.y*scale),float(width*scale),float(r.size.height*scale)},utf8(view->marked.string),{236,238,242,255},float(config.font.size_dip),false,"Menlo",ChromeTextAlignment::leading,{ChromeLayer::transient}});}
-        if(!message.empty())scene.texts.push_back({{float(16*scale),float(pixel_height-22*scale),float(pixel_width-32*scale),float(18*scale)},message,{222,192,146,255},11,false,"Segoe UI Variable Text",ChromeTextAlignment::leading,{ChromeLayer::toast}});
+        const auto footer=footer_layout();const auto presentation=footer_presentation();
+        if(!painted_footer || *painted_footer!=presentation){painted_footer=presentation;scene.chrome_generation=++chrome;}
+        auto ui=resolve_ui_colors(config.theme);
+        const auto native_color=[&](NSColor* value,Color fallback){__block Color resolved=fallback;[window.effectiveAppearance performAsCurrentDrawingAppearance:^{NSColor* rgb=[value colorUsingColorSpace:NSColorSpace.sRGBColorSpace];if(rgb)resolved={std::uint8_t(std::lround(rgb.redComponent*255)),std::uint8_t(std::lround(rgb.greenComponent*255)),std::uint8_t(std::lround(rgb.blueComponent*255)),255};}];return resolved;};
+        if([NSWorkspace sharedWorkspace].accessibilityDisplayShouldIncreaseContrast){
+            ui.surface=native_color(NSColor.windowBackgroundColor,ui.surface);ui.ink=native_color(NSColor.labelColor,ui.ink);
+            ui.secondary=ui.ink;ui.divider=ui.ink;ui.danger=ui.ink;
+        }
+        const auto ink=presentation.failed||!presentation.notice.empty()?ui.danger:ui.secondary;
+        scene.primitives.push_back({{0,float(footer.bounds.y*scale),float(pixel_width),float(footer.bounds.height*scale)},ui.surface});
+        scene.primitives.push_back({{0,float(footer.bounds.y*scale),float(pixel_width),float(scale)},ui.divider});
+        const auto label=presentation.label(footer.text.width,[&](const std::string& text){ChromeText item;item.text=text;item.size_dip=11;item.family=".AppleSystemUIFont";item.rect={0,0,100000,float(26*scale)};return renderer->measure_chrome_text(item).width/scale;});
+        scene.texts.push_back({{float(footer.text.x*scale),float(footer.text.y*scale),float(footer.text.width*scale),float(footer.text.height*scale)},label,ink,11,false,".AppleSystemUIFont"});
+        inspect_button.contentTintColor=[NSColor colorWithSRGBRed:ui.ink.r/255. green:ui.ink.g/255. blue:ui.ink.b/255. alpha:1];
+        inspect_button.toolTip=ns(presentation.detail());[inspect_button setAccessibilityHelp:ns(presentation.detail())];
+        inspect_button.enabled=active()!=nullptr && !view.hasMarkedText && !closing && !window.attachedSheet && !NSApp.modalWindow;
+
         auto result=renderer->render(scene);
         if(result==RenderResult::busy&&!retry_scheduled){retry_scheduled=true;auto weak=weak_from_this();dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC/60),dispatch_get_main_queue(),^{if(auto h=weak.lock()){h->retry_scheduled=false;h->wake();}});}
         if(result==RenderResult::presented){smoke_force_present=false;if(auto s=active()){auto frame=s->frame();if(frame&&frame->generation!=accessibility_generation){accessibility_generation=frame->generation;NSAccessibilityPostNotification(view,NSAccessibilityValueChangedNotification);}}

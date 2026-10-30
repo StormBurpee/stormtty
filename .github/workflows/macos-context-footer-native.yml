@@ -1,0 +1,56 @@
+name: macOS context footer qualification
+on:
+  push:
+    branches: [feature/macos-context-footer]
+permissions:
+  contents: read
+concurrency:
+  group: macos-context-footer-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  appkit:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install supported native C++20 toolchain
+        run: brew install llvm@20
+      - name: Restore pinned terminal engine
+        id: engine_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Bootstrap pinned terminal engine
+        if: steps.engine_cache.outputs.cache-hit != 'true'
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Configure actual AppKit application and native fixtures
+        run: cmake -S . -B build-mac-context -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/MacOSLLVM.cmake -DSTORMTTY_LLVM_ROOT="$(brew --prefix llvm@20)" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=OFF
+      - name: Build application, inspector and keyboard contracts
+        run: cmake --build build-mac-context --parallel 2 --target stormtty macos_toolchain_probe macos_context_footer_tests context_footer_tests macos_pane_inspector_tests macos_menu_tests macos_input_tests pane_context_tests core_commands_tests core_config_tests
+      - name: Run native attached inspector and dispatch contracts
+        run: ctest --test-dir build-mac-context -R '^(macos_toolchain_probe|macos_context_footer_tests|context_footer_tests|macos_pane_inspector_tests|pane_context_tests|macos_menu_tests|macos_input_tests|core_commands_tests|core_config_tests)$' --no-tests=error --output-on-failure --output-junit macos-context-footer-tests.xml
+      - name: Preserve exact source and verification limits
+        if: always()
+        shell: python3 {0}
+        run: |
+          import json,os,pathlib
+          p=pathlib.Path('build-mac-context');p.mkdir(exist_ok=True)
+          (p/'macos-context-footer-evidence.json').write_text(json.dumps({'source_sha':os.environ['GITHUB_SHA'],'fixture_scope':'Actual macOS Host with retained POSIX actor, observed directory update, fixed footer geometry, native Inspect button and repeated sheet dismissal; Metal footer readback retains onscreen presentedTime gate. AppKit control raster is separate. No global input injection','physical_keyboard_verified':False,'host_inspector_interaction_verified':'See exact test result; not inferred from artifact existence','desktop_capture':False,'physical_blur_verified':False,'pane_header_parity':False,'scrollback_find_parity':False,'native_ime_verified':False,'macos_settings_editor_available':False,'theme_picker_parity':False,'real_provider_calls':False},indent=2))
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: macos-context-footer-native-${{ github.sha }}
+          path: |
+            build-mac-context/pane-context-*.png
+            build-mac-context/macos-footer-*.png
+            build-mac-context/macos-context-footer-tests.xml
+            build-mac-context/macos-context-footer-evidence.json
+            build-mac-context/Testing/Temporary/LastTest.log
+            build-mac-context/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
