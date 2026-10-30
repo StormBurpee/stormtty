@@ -1,0 +1,660 @@
+--- a/include/stormtty/process.hpp
++++ b/include/stormtty/process.hpp
+@@ -115,6 +115,18 @@
+     std::function<void(ProcessExit)> exited;
+ };
+ 
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++// Failure-only fixture snapshot. Independent samples, never transport predicates.
++struct ProcessTestDiagnostics {
++    // -1 unavailable (including failed DuplicateHandle/query); 0 alive; 1 signaled.
++    int os_process_signaled{-1};
++    const char* controller_phase{"unavailable"};
++    const char* reader_phase{"unavailable"};
++    std::uint64_t read_bytes{}, callback_returned_bytes{};
++    bool reader_done{}, writer_done{};
++};
++#endif
++
+ class Process final {
+ public:
+     // Returns immediately; child/PTY creation and cleanup run off the caller thread.
+@@ -134,6 +146,9 @@
+     void request_close() noexcept;
+     [[nodiscard]] ProcessState state() const noexcept;
+     [[nodiscard]] ProcessDiagnostics diagnostics() const;
++#if defined(STORMTTY_SESSION_TEST_DIAGNOSTICS) && defined(_WIN32)
++    [[nodiscard]] ProcessTestDiagnostics test_diagnostics() const;
++#endif
+     // Test/background-worker convenience only; never call from UI or callbacks.
+     [[nodiscard]] bool wait_for_exit(std::chrono::milliseconds timeout) const;
+ 
+--- a/include/stormtty/session.hpp
++++ b/include/stormtty/session.hpp
+@@ -28,6 +28,18 @@
+     CommandSnapshot command; // Independent observed shell command, not process status.
+     SessionWriteAccounting sent; // Actual accepted transport bytes; total() == bytes_sent.
+ };
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++// Synthetic session_tests only. No terminal text, process arguments or paths.
++// Observations are independently sampled, not a synchronization barrier.
++struct SessionTestDiagnostics {
++    std::optional<ProcessTestDiagnostics> transport;
++    const char* actor_phase{};
++    std::size_t queued_output_bytes{}, queued_commands{};
++    std::uint64_t fed_bytes{}, backpressure_waits{};
++    bool exit_callback{}, close_requested{};
++    std::optional<ProcessState> process_state;
++};
++#endif
+ // Thread-safe host facade. TerminalCore is owned by a dedicated actor; no VT
+ // method runs on the UI or PTY reader thread. Destruction/close never joins UI.
+ class Session final {
+@@ -42,6 +54,9 @@
+     [[nodiscard]] FramePtr frame() const noexcept;
+     [[nodiscard]] SessionInfo info() const;
+     [[nodiscard]] ProcessDiagnostics diagnostics() const;
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++    [[nodiscard]] SessionTestDiagnostics test_diagnostics() const;
++#endif
+     // PTY-generating operations return closed once transport exit is observed,
+     // even while an opted-in read-only terminal document remains available.
+     SessionSendResult key(KeyInput);
+--- a/src/platform/windows/conpty_process.cpp
++++ b/src/platform/windows/conpty_process.cpp
+@@ -315,6 +315,13 @@
+     // Duplicated real Windows thread handles, not implementation-specific
+     // std::thread::native_handle values. Kept until after workers are joined.
+     Handle reader_cancel, writer_cancel;
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++    // Published under mutex; never reset until Impl destruction. This private
++    // SYNCHRONIZE-only handle cannot race controller retirement of process.
++    Handle diagnostic_process;
++    std::atomic<const char*> controller_phase{"starting"}, reader_phase{"starting"};
++    std::atomic<std::uint64_t> read_bytes{}, callback_returned_bytes{};
++#endif
+ 
+     Impl(ProcessOptions o, ProcessCallbacks c) : options(std::move(o)), callbacks(std::move(c)) {
+         // Auto-reset, initially nonsignalled, and owned until all workers release
+@@ -358,6 +365,9 @@
+         std::array<char, 64 * 1024> buffer{};
+         bool discard_after_callback_failure = false;
+         while (!stop_reader.load()) {
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++            reader_phase.store("read-file", std::memory_order_relaxed);
++#endif
+             DWORD count = 0;
+             if (!ReadFile(output_read.value, buffer.data(), static_cast<DWORD>(buffer.size()), &count, nullptr)) {
+                 const DWORD error = GetLastError();
+@@ -365,8 +375,16 @@
+                 break;
+             }
+             if (!count) break;
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++            read_bytes.fetch_add(count, std::memory_order_relaxed);
++            reader_phase.store("output-callback", std::memory_order_relaxed);
++#endif
+             if (!discard_after_callback_failure) {
+-                try { if (callbacks.output) callbacks.output({buffer.data(), count}, output_stop.get_token()); }
++                try { if (callbacks.output) callbacks.output({buffer.data(), count}, output_stop.get_token());
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                    if (callbacks.output) callback_returned_bytes.fetch_add(count, std::memory_order_relaxed);
++#endif
++                }
+                 catch (...) {
+                     fail("output callback threw");
+                     // ClosePseudoConsole can emit final output. Continue draining
+@@ -375,6 +393,9 @@
+                 }
+             }
+         }
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        reader_phase.store("done", std::memory_order_relaxed);
++#endif
+         publish_flag(reader_done);
+     }
+     void write_loop() noexcept {
+@@ -551,6 +572,14 @@
+                     process.reset(pi.hProcess); primary_thread.reset(pi.hThread);
+                     if (!AssignProcessToJobObject(job.value, process.value)) throw win_error("AssignProcessToJobObject");
+                     if (closing.load()) throw LaunchCancelled{};
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                    HANDLE snapshot_handle{};
++                    if (DuplicateHandle(GetCurrentProcess(), process.value, GetCurrentProcess(),
++                                        &snapshot_handle, SYNCHRONIZE, FALSE, 0)) {
++                        std::lock_guard lock(mutex);
++                        diagnostic_process.reset(snapshot_handle);
++                    } // Metadata failure must not fail or change the transport.
++#endif
+                     if (ResumeThread(primary_thread.value) == static_cast<DWORD>(-1)) throw win_error("ResumeThread");
+                     primary_thread.reset();
+                     // ConPTY owns its copies; retaining these suppresses pipe EOF.
+@@ -565,6 +594,9 @@
+                         // Child exit takes precedence if both handles are ready.
+                         // No periodic polling while running; teardown below keeps
+                         // its separate, finite drain/cancellation deadlines.
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        controller_phase.store("controller-wait", std::memory_order_relaxed);
++#endif
+                         const DWORD wait = WaitForMultipleObjects(initialization_event ? 3 : 2, events, FALSE, INFINITE);
+                         if (wait == WAIT_FAILED) throw win_error("WaitForMultipleObjects(child/control)");
+                         if (initialization_event && wait == WAIT_OBJECT_0 + 2) {
+@@ -602,6 +634,9 @@
+             if (requested) output_stop.request_stop();
+             phase.store(ProcessState::draining);
+             publish_flag(closing);
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        controller_phase.store("join-writer", std::memory_order_relaxed);
++#endif
+             cancel_and_join(writer, writer_cancel, writer_done);
+             input_write.reset();
+             input_read.reset(); output_write.reset();
+@@ -614,7 +649,13 @@
+             // Close is off UI and reader stays alive to consume the final frame.
+             // Callback cancellation was signaled on explicit close/failure only;
+             // a normal child exit still delivers its complete trailing output.
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        controller_phase.store("close-console", std::memory_order_relaxed);
++#endif
+             close_console_with_drain(console);
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        controller_phase.store("reap-process", std::memory_order_relaxed);
++#endif
+             if (process.value) {
+                 const DWORD wait = WaitForSingleObject(process.value, 5000);
+                 DWORD exit_code{};
+@@ -624,6 +665,9 @@
+             // Closing the provider normally breaks output. Allow final data/EOF
+             // before cancellation, and report a drain timeout rather than claim
+             // silent success if a stuck host fails to close the pipe.
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        controller_phase.store("reader-drain", std::memory_order_relaxed);
++#endif
+             if (reader.joinable()) {
+                 std::unique_lock lock(mutex);
+                 bool drained = changed.wait_for(lock, 1000ms, [&] { return reader_done.load(); });
+@@ -631,6 +675,9 @@
+                 if (!drained) fail("ConPTY output drain timed out during teardown");
+             }
+             stop_reader.store(true); output_stop.request_stop();
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        controller_phase.store("join-reader", std::memory_order_relaxed);
++#endif
+             cancel_and_join(reader, reader_cancel, reader_done);
+         } catch (const std::exception& e) { fail(e.what()); }
+         catch (...) { fail("unknown ConPTY provider failure"); }
+@@ -644,13 +691,40 @@
+             result = {code, requested || cancel_output_requested.load(), failure};
+             phase.store(failure.empty() ? ProcessState::exited : ProcessState::failed);
+         }
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        controller_phase.store("exit-callback", std::memory_order_relaxed);
++#endif
+         try { if (callbacks.exited) callbacks.exited(std::move(result)); } catch (...) { /* no exception crosses worker */ }
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        controller_phase.store("done", std::memory_order_relaxed);
++#endif
+         { std::lock_guard lock(mutex); done = true; }
+         changed.notify_all();
+     }
+ };
+ 
+ Process::Process(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++ProcessTestDiagnostics Process::test_diagnostics() const {
++    ProcessTestDiagnostics result;
++    {
++        std::lock_guard lock(impl_->mutex);
++        if (impl_->diagnostic_process.value) {
++            const auto status = WaitForSingleObject(impl_->diagnostic_process.value, 0);
++            if (status == WAIT_OBJECT_0) result.os_process_signaled = 1;
++            else if (status == WAIT_TIMEOUT) result.os_process_signaled = 0;
++        }
++    }
++    result.controller_phase = impl_->controller_phase.load(std::memory_order_relaxed);
++    result.reader_phase = impl_->reader_phase.load(std::memory_order_relaxed);
++    result.read_bytes = impl_->read_bytes.load(std::memory_order_relaxed);
++    result.callback_returned_bytes = impl_->callback_returned_bytes.load(std::memory_order_relaxed);
++    result.reader_done = impl_->reader_done.load();
++    result.writer_done = impl_->writer_done.load();
++    return result;
++}
++#endif
++
+ std::unique_ptr<Process> Process::start(ProcessOptions options, ProcessCallbacks callbacks) {
+     auto impl = std::make_shared<Impl>(std::move(options), std::move(callbacks));
+     auto process = std::unique_ptr<Process>(new Process(impl));
+--- a/src/session/session.cpp
++++ b/src/session/session.cpp
+@@ -67,6 +67,11 @@
+     SessionInfo information;
+     std::shared_ptr<Process> process;
+     ProcessDiagnostics final_diagnostics;
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++    std::atomic<const char*> actor_phase{"starting"};
++    std::atomic<std::uint64_t> fed_bytes{};
++    std::uint64_t backpressure_waits{}; // Protected by mutex.
++#endif
+ 
+     Impl(ProcessOptions p, TerminalOptions t, Wake w, SessionRetentionPolicy policy)
+         : process_options(std::move(p)), terminal_options(t), wake(std::move(w)), retention(policy) {}
+@@ -145,6 +150,9 @@
+         for (std::size_t offset = 0; offset < bytes.size();) {
+             const auto count = std::min(chunk_limit, bytes.size() - offset);
+             std::unique_lock lock(mutex);
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++            if (count > output_budget - output_bytes) ++backpressure_waits;
++#endif
+             if (!changed.wait(lock, stop, [&] {
+                     return done.load() || close_requested || count <= output_budget - output_bytes;
+                 }) || done.load() || close_requested) return;
+@@ -173,7 +181,13 @@
+             close_requested = true;
+             retired.swap(commands); command_bytes = 0;
+         }
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        actor_phase.store("retire-commands", std::memory_order_relaxed);
++#endif
+         retired.clear();
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        actor_phase.store("publish-actor-completion", std::memory_order_relaxed);
++#endif
+         // Publish under the same mutex as wait predicates, avoiding a lost wake
+         // between a predicate check and condition-variable sleep.
+         { std::lock_guard lock(mutex); done.store(true, std::memory_order_release); }
+@@ -181,6 +195,9 @@
+         notify();
+     }
+     void fail(std::string reason) noexcept {
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        actor_phase.store("failure-reap", std::memory_order_relaxed);
++#endif
+         std::shared_ptr<Process> child;
+         std::deque<Command> retired;
+         {
+@@ -303,6 +320,9 @@
+             const auto now = TerminalCore::Clock::now();
+             step_search(core, now, next_search_step);
+             if (dirty && now - last_frame >= std::chrono::milliseconds(8)) {
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                actor_phase.store("retained-snapshot", std::memory_order_relaxed);
++#endif
+                 publish(core.snapshot(now)); last_frame = now; dirty = false;
+                 // Display-only operations must never turn retained protocol
+                 // effects into writes or start another process.
+@@ -314,16 +334,25 @@
+             if (core.search_needs_work()) until = std::min(until, next_search_step);
+             std::unique_lock lock(mutex);
+             const auto ready = [&] { return !commands.empty() || close_requested; };
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++            actor_phase.store("wait-work", std::memory_order_relaxed);
++#endif
+             if (until == TerminalCore::Clock::time_point::max()) changed.wait(lock, ready);
+             else changed.wait_until(lock, until, ready);
+         }
+     }
+     void actor() {
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        actor_phase.store("construct-terminal", std::memory_order_relaxed);
++#endif
+         TerminalCore core(terminal_options); // Construct and destroy on this actor.
+         publish(core.snapshot());
+         publish_search(core.search_snapshot());
+         notify();
+         const auto weak = weak_from_this();
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        actor_phase.store("launch-transport", std::memory_order_relaxed);
++#endif
+         auto child = Process::start(process_options, {
+             [weak](std::string_view bytes, std::stop_token stop) {
+                 if (auto state = weak.lock()) state->accept_output(bytes, stop);
+@@ -372,6 +401,9 @@
+             if (metadata_changed) notify();
+         };
+         for (;;) {
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++            actor_phase.store("live-batch", std::memory_order_relaxed);
++#endif
+             // Cancel superseded work before consuming any more search units,
+             // even if the newest typing command is behind bounded PTY output.
+             const auto requested = requested_search.load(std::memory_order_acquire);
+@@ -423,7 +455,16 @@
+                     } catch (const std::invalid_argument& e) { set_error(e.what()); }
+                 }
+             }
+-            if (!bytes.empty() && !closing) { core.feed(bytes); dirty = true; }
++            if (!bytes.empty() && !closing) {
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                actor_phase.store("feed-terminal", std::memory_order_relaxed);
++#endif
++                core.feed(bytes); dirty = true;
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                fed_bytes.fetch_add(bytes.size(), std::memory_order_relaxed);
++                actor_phase.store("live-batch", std::memory_order_relaxed);
++#endif
++            }
+             effects();
+             bool progress = false;
+             while (!closing && !writes.empty()) {
+@@ -441,11 +482,24 @@
+             }
+             const auto now = TerminalCore::Clock::now();
+             if (!closing && !child_exit) step_search(core, now, next_search_step);
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++            if (child_exit) actor_phase.store("finish-output", std::memory_order_relaxed);
++#endif
+             if (child_exit) core.finish_output(); // Reveal final held bytes and freeze animations.
+             const auto deadline = core.next_deadline();
+             if ((dirty && now - last_frame >= std::chrono::milliseconds(8)) ||
+                 (deadline && now >= *deadline) || child_exit) {
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                actor_phase.store(child_exit ? "final-capture" : "snapshot", std::memory_order_relaxed);
++#endif
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                auto captured = core.snapshot(now);
++                actor_phase.store(child_exit ? "final-publish" : "publish-frame", std::memory_order_relaxed);
++                publish(std::move(captured));
++                actor_phase.store(child_exit ? "final-effects" : "frame-effects", std::memory_order_relaxed);
++#else
+                 publish(core.snapshot(now));
++#endif
+                 last_frame = now; dirty = false; effects(); notify();
+             }
+             if (child_exit) {
+@@ -458,8 +512,17 @@
+                 // Release this live-loop batch outside mutex before entering an
+                 // indefinitely retained document; otherwise its closures keep
+                 // Session alive and prevent destructor-triggered disposal.
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                actor_phase.store("retire-live-batch", std::memory_order_relaxed);
++#endif
+                 batch.clear();
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                actor_phase.store("publish-process-result", std::memory_order_relaxed);
++#endif
+                 publish_process_result(*child_exit);
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++                actor_phase.store(retain ? "retain-document" : "destroy-terminal", std::memory_order_relaxed);
++#endif
+                 if (retain) retain_document(core); // Rechecks close_requested before any operation.
+                 return;
+             }
+@@ -482,6 +545,9 @@
+             if (!closing && core.search_needs_work()) until = std::min(until, next_search_step);
+             std::unique_lock lock(mutex);
+             const auto ready = [&] { return !commands.empty() || !output.empty() || exit.has_value() || (close_requested && !closing); };
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++            actor_phase.store("wait-work", std::memory_order_relaxed);
++#endif
+             if (until == TerminalCore::Clock::time_point::max()) changed.wait(lock, ready);
+             else changed.wait_until(lock, until, ready);
+         }
+@@ -526,6 +592,28 @@
+     { std::lock_guard lock(impl_->mutex); process = impl_->process; if (!process) return impl_->final_diagnostics; }
+     return process->diagnostics();
+ }
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++SessionTestDiagnostics Session::test_diagnostics() const {
++    SessionTestDiagnostics result;
++    std::shared_ptr<Process> process;
++    {
++        std::lock_guard lock(impl_->mutex);
++        result.queued_output_bytes = impl_->output_bytes;
++        result.queued_commands = impl_->commands.size();
++        result.backpressure_waits = impl_->backpressure_waits;
++        result.exit_callback = impl_->exit.has_value();
++        result.close_requested = impl_->close_requested;
++        process = impl_->process;
++    }
++    result.actor_phase = impl_->actor_phase.load(std::memory_order_relaxed);
++    result.fed_bytes = impl_->fed_bytes.load(std::memory_order_relaxed);
++    if (process) result.process_state = process->state();
++#ifdef _WIN32
++    if (process) result.transport = process->test_diagnostics();
++#endif
++    return result;
++}
++#endif
+ SessionSendResult Session::key(KeyInput value) { Command c; c.op = Op::key; c.key = std::move(value); return impl_->enqueue(std::move(c)); }
+ SessionSendResult Session::text(std::string value) { Command c; c.op = Op::text; c.text = std::move(value); return impl_->enqueue(std::move(c)); }
+ SessionSendResult Session::paste(std::string value, bool allow) { Command c; c.op = Op::paste; c.text = std::move(value); c.flag = allow; return impl_->enqueue(std::move(c)); }
+--- a/tests/session_tests.cpp
++++ b/tests/session_tests.cpp
+@@ -30,13 +30,98 @@
+     }
+     return text;
+ }
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++// Private named mapping for this synthetic child only. No output contents or
++// handles are inherited. Metadata setup failure never fails the transport.
++class ProducerProgress {
++#ifdef _WIN32
++    struct Shared { volatile LONG stage; volatile LONG lines; };
++    HANDLE mapping_{};
++    Shared* shared_{};
++    bool usable_{};
++    static constexpr const char* variable="STORMTTY_SESSION_DIAGNOSTIC_MAPPING";
++#endif
++public:
++    ProducerProgress() = default;
++    ProducerProgress(const ProducerProgress&) = delete;
++    ProducerProgress& operator=(const ProducerProgress&) = delete;
++    ~ProducerProgress() {
++#ifdef _WIN32
++        if (shared_) UnmapViewOfFile(shared_);
++        if (mapping_) CloseHandle(mapping_);
++#endif
++    }
++    void prepare(ProcessOptions& options) noexcept {
++#ifdef _WIN32
++        try {
++            static unsigned sequence{}; // Fixture main thread only.
++            const auto name="Local\\StormTTY-session-diagnostic-"+std::to_string(GetCurrentProcessId())+
++                "-"+std::to_string(GetTickCount64())+"-"+std::to_string(++sequence);
++            // Prepare the environment entry before allocating native metadata.
++            options.environment.push_back({variable, std::nullopt});
++            auto& entry=options.environment.back();
++            mapping_=CreateFileMappingA(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,sizeof(Shared),name.c_str());
++            const auto error=GetLastError();
++            if (!mapping_ || error==ERROR_ALREADY_EXISTS) return;
++            shared_=static_cast<Shared*>(MapViewOfFile(mapping_,FILE_MAP_ALL_ACCESS,0,0,sizeof(Shared)));
++            if (!shared_) return;
++            entry.value=name;
++            usable_=true;
++        } catch (...) { /* unavailable metadata, not a child launch failure */ }
++#else
++        (void)options;
++#endif
++    }
++    void open_child() noexcept {
++#ifdef _WIN32
++        char name[192]{};
++        const auto count=GetEnvironmentVariableA(variable,name,sizeof(name));
++        if (!count || count>=sizeof(name)) return;
++        mapping_=OpenFileMappingA(FILE_MAP_ALL_ACCESS,FALSE,name);
++        if (mapping_) shared_=static_cast<Shared*>(MapViewOfFile(mapping_,FILE_MAP_ALL_ACCESS,0,0,sizeof(Shared)));
++        usable_=shared_!=nullptr;
++#endif
++    }
++    void publish_stage(long value) noexcept {
++#ifdef _WIN32
++        if (shared_) InterlockedExchange(&shared_->stage,value);
++#else
++        (void)value;
++#endif
++    }
++    void publish_lines(unsigned value) noexcept {
++#ifdef _WIN32
++        if (shared_) InterlockedExchange(&shared_->lines,static_cast<LONG>(value));
++#else
++        (void)value;
++#endif
++    }
++    long stage() const noexcept {
++#ifdef _WIN32
++        if (usable_) return InterlockedCompareExchange(&shared_->stage,0,0);
++#endif
++        return -1;
++    }
++    long lines() const noexcept {
++#ifdef _WIN32
++        if (usable_) return InterlockedCompareExchange(&shared_->lines,0,0);
++#endif
++        return -1;
++    }
++};
++#endif
++
+ // Synthetic fixture failures only: no terminal payloads, PID, paths, arguments,
+ // environment or free-form errors. Independent snapshots, not an atomic barrier.
+ void report_bounded_child_failure(
+     const Session& session,
+     const char* policy,
+     bool wait_result,
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++    std::chrono::steady_clock::time_point started, const ProducerProgress& producer) noexcept {
++#else
+     std::chrono::steady_clock::time_point started) noexcept {
++#endif
+     try {
+         const auto info = session.info();
+         const auto transport = session.diagnostics();
+@@ -81,6 +166,22 @@
+                       << " resize_failures=" << control.resize_failures;
+         }
+ 
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        const auto d=session.test_diagnostics();
++        std::cerr << " diagnostic_version=3 actor_phase=" << d.actor_phase
++                  << " fed_bytes=" << d.fed_bytes << " queued_output_bytes=" << d.queued_output_bytes
++                  << " backpressure_waits=" << d.backpressure_waits << " queued_commands=" << d.queued_commands
++                  << " exit_callback=" << d.exit_callback << " close_requested=" << d.close_requested
++                  << " process_state=" << (d.process_state ? static_cast<int>(*d.process_state) : -1);
++        if (d.transport) {
++            const auto& n=*d.transport;
++            std::cerr << " os_process_signaled=" << n.os_process_signaled
++                      << " controller_phase=" << n.controller_phase << " reader_phase=" << n.reader_phase
++                      << " read_bytes=" << n.read_bytes << " callback_returned_bytes=" << n.callback_returned_bytes
++                      << " reader_done=" << n.reader_done << " writer_done=" << n.writer_done;
++        } else std::cerr << " transport_snapshot=unavailable";
++        std::cerr << " producer_stage=" << producer.stage() << " producer_lines=" << producer.lines();
++#endif
+         std::cerr << '\n' << std::flush;
+     } catch (...) {
+         // Diagnostics must not replace the original failing assertion or cleanup.
+@@ -168,14 +269,35 @@
+ #else
+         const auto identity=std::to_string(getpid());
+ #endif
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        ProducerProgress producer;
++        producer.open_child();
++        producer.publish_stage(1); // history ostream insertion
++#endif
+         std::cout << "old retained NEEDLE\r\n";
+         const unsigned count=mode=="retained-bounded"?30000:3000;
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        for(unsigned i=0;i<count;++i) {
++            std::cout << "history " << i << "\r\n";
++            producer.publish_lines(i+1);
++        }
++#else
+         for(unsigned i=0;i<count;++i) std::cout << "history " << i << "\r\n";
++#endif
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        producer.publish_stage(2); // READY insertion/flush
++#endif
+         std::cout << "READY:" << identity << "\r\n" << std::flush;
+         if(mode=="retained-history") { std::string input; std::getline(std::cin,input); }
+         // A real child may die during synchronized output or an incomplete VT
+         // sequence. Preserve the delivered printable bytes; invent no suffix.
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        producer.publish_stage(3); // FINAL insertion/flush
++#endif
+         std::cout << "\x1b[?2026hFINAL:" << identity << "\r\n\x1b[" << std::flush;
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++        producer.publish_stage(4); // returning, not proof of OS process exit
++#endif
+         return 23;
+     }
+     return 3;
+@@ -443,6 +565,10 @@
+     ProcessOptions p;p.executable=executable;p.arguments={"--child","retained-bounded"};
+     TerminalOptions t;t.size={80,4,8,16};t.scrollback_lines=10;
+     auto wake=std::make_shared<WakeCounter>();
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++    ProducerProgress retained_producer;
++    retained_producer.prepare(p);
++#endif
+     auto session=Session::start(p,t,[wake]{wake->signal();},SessionRetentionPolicy::retain_document);
+     CloseSession close{session};
+ 
+@@ -450,7 +576,11 @@
+     const bool retained_wait = session->wait_for_process_exit(10s);
+     if (!retained_wait) {
+         report_bounded_child_failure(
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++            *session, "retain_document", retained_wait, retained_wait_started, retained_producer);
++#else
+             *session, "retain_document", retained_wait, retained_wait_started);
++#endif
+     }
+     check(retained_wait, "bounded retained child failed to exit");
+ 
+@@ -461,6 +591,10 @@
+     check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==find.request_id&&r->status==SearchStatus::complete;},wake),"bounded final-marker search failed");
+     check(session->search_snapshot()->matches.size()==1,"bounded retention lost final bytes");
+     session->request_close();check(session->wait_closed(5s),"bounded document disposal hung");
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++    ProducerProgress final_producer;
++    final_producer.prepare(p);
++#endif
+     auto legacy=Session::start(p,t);
+ 
+     const auto final_wait_started = std::chrono::steady_clock::now();
+@@ -468,7 +602,11 @@
+     const bool final_complete = final_wait && legacy->process_finished();
+     if (!final_complete) {
+         report_bounded_child_failure(
++#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
++            *legacy, "final_frame_only", final_wait, final_wait_started, final_producer);
++#else
+             *legacy, "final_frame_only", final_wait, final_wait_started);
++#endif
+     }
+     check(final_complete, "default final-frame-only child failed to dispose");
+ 
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -296,6 +296,31 @@
+     endforeach()
+     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/session_tests.cpp")
+         stormtty_test(session_tests tests/session_tests.cpp stormtty_session)
++        option(STORMTTY_SESSION_DISPOSAL_DIAGNOSTICS "Build isolated synthetic session disposal diagnostic" OFF)
++        if(STORMTTY_SESSION_DISPOSAL_DIAGNOSTICS)
++            # Keep the Process ABI/implementation isolated as well as Session.
++            if(WIN32)
++                add_library(stormtty_process_test_diagnostics STATIC src/platform/windows/conpty_process.cpp)
++            else()
++                add_library(stormtty_process_test_diagnostics STATIC src/platform/posix/pty_process.cpp)
++                if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
++                    target_link_libraries(stormtty_process_test_diagnostics PRIVATE util)
++                endif()
++            endif()
++            target_include_directories(stormtty_process_test_diagnostics PUBLIC include)
++            target_compile_definitions(stormtty_process_test_diagnostics PUBLIC STORMTTY_SESSION_TEST_DIAGNOSTICS)
++            target_link_libraries(stormtty_process_test_diagnostics PUBLIC Threads::Threads)
++            stormtty_warnings(stormtty_process_test_diagnostics)
++            add_library(stormtty_session_test_diagnostics STATIC src/session/session.cpp src/session/terminal_find_controller.cpp)
++            target_include_directories(stormtty_session_test_diagnostics PUBLIC include)
++            target_compile_definitions(stormtty_session_test_diagnostics PUBLIC STORMTTY_SESSION_TEST_DIAGNOSTICS)
++            target_link_libraries(stormtty_session_test_diagnostics PUBLIC stormtty_terminal stormtty_process_test_diagnostics Threads::Threads)
++            stormtty_warnings(stormtty_session_test_diagnostics)
++            add_executable(session_disposal_diagnostics tests/session_tests.cpp)
++            target_link_libraries(session_disposal_diagnostics PRIVATE stormtty_session_test_diagnostics)
++            stormtty_warnings(session_disposal_diagnostics)
++            stormtty_copy_ghostty_runtime(session_disposal_diagnostics)
++        endif()
+     endif()
+     # Optional portable packaging checks do not make Python a core build requirement.
+     find_package(Python3 3.10 QUIET COMPONENTS Interpreter)

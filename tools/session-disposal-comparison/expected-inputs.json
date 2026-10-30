@@ -1,0 +1,7 @@
+{
+  "include/stormtty/process.hpp": "e7099c72c3ce28c0868fc59cf4426899d4f7223bb964bf191163b1b9dbe75ede",
+  "include/stormtty/session.hpp": "442a080c2cc3fb4f97643ca498223cfd065a48e97bd562058e43efa77891eace",
+  "src/platform/windows/conpty_process.cpp": "095e491ada4576ec49769e258da5c358f33a9ea03a292e7e567455fb7ddcdca1",
+  "src/session/session.cpp": "4ad2d8f2006167f5719310fec4e73bf99896abe6d49d0fc1bd9c47b31230fc43",
+  "tests/session_tests.cpp": "c2a0014ba287e3a51d5314e55f349999914429bb944c29f921989c4e79aa7c1c"
+}

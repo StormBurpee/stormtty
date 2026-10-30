@@ -1,0 +1,66 @@
+name: One-shot paired session disposal diagnostic
+on:
+  push:
+    branches: [diagnostic/session-disposal-paired]
+    paths:
+      - .github/workflows/session-disposal-comparison.yml
+      - tools/session-disposal-comparison/**
+permissions:
+  contents: read
+concurrency:
+  group: session-disposal-paired
+  cancel-in-progress: false
+jobs:
+  comparison:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Preserve source line endings for the common patch
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: control
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 9b9ce10f1750b46e630f31f001281c7c3a49d0c9
+          path: baseline
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 093df896d3d57205a6945bd0b1bd9bd0391abcc4
+          path: candidate
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Initialize native compiler
+        shell: pwsh
+        run: ./baseline/tools/ci-msvc-env.ps1
+      - name: Verify common pinned dependency
+        shell: python
+        run: |
+          import pathlib
+          for name in ['tools/bootstrap.lock.json','tools/bootstrap.py']:
+              assert (pathlib.Path('baseline')/name).read_bytes()==(pathlib.Path('candidate')/name).read_bytes(), name
+      - name: Restore pinned terminal engine
+        id: engine
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: baseline/.deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('baseline/tools/bootstrap.lock.json', 'baseline/tools/bootstrap.py') }}
+      - name: Build missing pinned engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        working-directory: baseline
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Build and observe each immutable head once
+        run: python control/tools/session-disposal-comparison/run-comparison.py
+      - name: Preserve both outcomes even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: session-disposal-paired-${{ github.sha }}
+          path: |
+            comparison-artifacts/
+            build-baseline/CMakeFiles/CMakeConfigureLog.yaml
+            build-candidate/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
