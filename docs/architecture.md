@@ -179,11 +179,26 @@ clip/opacity state; it owns no GPU resources and exposes no resize, presentation
 or frame-transaction control. The renderer still resolves material policy and
 coordinates `BeginDraw`/`EndDraw`, damage commits and presentation.
 
+`TerminalPainter` (`src/platform/windows/terminal_painter.hpp` and `.cpp`) owns
+terminal paint policy: selection and colors, glyph runs and decorations, image
+placement/cropping/layers and cursor drawing. A per-call pass borrows only
+`TextResources`, `ImageCache`, `PaintSurface` and resolved DPI/opacity/tick values.
+Rows, color-glyph layers and image bitmaps are consumed synchronously; none is
+retained by the painter. `PaintSurface` submits images immediately after cache
+lookup and exposes narrow glyph operations, not a raw context getter.
+
+Terminal background/image/text/decorations/cursor ordering remains below chrome.
+Physical-pixel geometry, clipping and DPI rounding are unchanged. Cache owners
+retain their cumulative counters, including progress before a later exception;
+no painter-owned counters or successful-frame-only statistics are introduced.
+The shared Windows HRESULT classifier preserves bounded device-loss recovery and
+unsupported color-glyph fallback. See [terminal-painter verification](../tests/terminal_painter_verification.md).
+
 ## Remaining ownership work
 
-`src/platform/windows/renderer.cpp` still owns terminal painting, device
-resources and presentation. These need focused ownership without conflating
-canvas validity, resource lifetime and presentation readiness.
+`src/platform/windows/renderer.cpp` still owns device resources, material policy,
+the canvas/damage transaction and presentation. These need focused ownership
+without conflating canvas validity, resource lifetime and presentation readiness.
 Observation caches are encapsulated, but deliberately remain application-shared;
 changing that lifetime requires separate transfer/invalidation characterization.
 
@@ -213,7 +228,8 @@ gates. Useful starting points:
   `text_resources_tests`, `image_cache_tests`, `paint_surface_tests`,
   `renderer_smoke`/`renderer_final_teardown`, `renderer_png`
   and relevant native layout/material
-  scenarios. Include resize, font/DPI changes, occlusion and resource recovery.
+  scenarios. Include immutable full-versus-incremental terminal pixel comparisons
+  at multiple DPIs, resize, font/DPI changes, occlusion and resource recovery.
 - macOS typography/rendering: `macos_font_resources_tests`, `macos_renderer_tests`
   and `macos_png_tests`; Windows graphics checks do not qualify this backend.
 - Actor/VT changes: `session_tests`, `terminal_tests`, `terminal_search_tests`,
