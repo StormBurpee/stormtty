@@ -188,6 +188,29 @@ DPI, row generation and invalidation; Metal resources and asynchronous presentat
 are separate. Its row cache contains GPU raster textures, not Windows-style CPU
 shaped rows, so the backends do not share cache-lifetime assumptions.
 
+`CoreTextRowRasterizer` (`src/platform/macos/core_text_row_rasterizer.hpp` and `.mm`)
+owns synchronous CPU row shaping and rasterization. It borrows immutable cells,
+`CTFontRef`, locale and explicit geometry/style options only for one call, returning
+owned premultiplied sRGB BGRA bytes. It retains no font, pane, host, Metal object or
+cache. Trait fonts, attributed text and the CoreText line stay scoped to CPU work;
+the line survives decoration drawing, and the bitmap context releases its backing
+store reference before owned pixels return to the renderer.
+
+The Metal renderer still owns row keys (including blink and cursor variants),
+texture residency, LRU policy, statistics, font/device invalidation and all GPU
+submission/completion state. Cache hits return before any CPU work. The shared
+remaining-upload guard precedes rasterization; only the later texture upload
+consumes the aggregate row/image/chrome allowance. The 4,096-cell guard remains
+after bitmap/context/attributed-string creation, preserving original failure order.
+No Windows CPU-shaped-row or painter ownership model is imposed on Metal rows.
+
+Native CPU characterization compares all decoration styles at 96/192 DPI against
+the pre-extraction row algorithm, separately from Metal renderer integration tests.
+The original dotted zero-length-dash path can be invisible at 96 DPI on the tested
+CoreGraphics runtime; exact-pixel parity records that existing limitation rather
+than repairing it in an ownership extraction. This is not physical UI or onscreen
+presentation qualification; see the [macOS limits](../src/platform/macos/README.md).
+
 `ChromePainter` (`src/platform/windows/chrome_painter.hpp` and `.cpp`) executes
 the ordered native chrome drawing, separate from domain scene composition such
 as `RibbonRenderer`. `PaintSurface` is a synchronous drawing borrow with scoped
@@ -283,8 +306,9 @@ gates. Useful starting points:
   and relevant native layout/material
   scenarios. Include immutable full-versus-incremental terminal pixel comparisons
   at multiple DPIs, resize, font/DPI changes, occlusion and resource recovery.
-- macOS typography/rendering: `macos_font_resources_tests`, `macos_renderer_tests`
-  and `macos_png_tests`; Windows graphics checks do not qualify this backend.
+- macOS typography/rendering: `macos_font_resources_tests`, `macos_row_rasterizer_tests`,
+  `macos_renderer_tests` and `macos_png_tests`; Windows graphics checks do not qualify
+  this backend.
 - Actor/VT changes: `session_tests`, `terminal_tests`, `terminal_search_tests`,
   plus the affected real transport/provider tests and complete process exit.
 
