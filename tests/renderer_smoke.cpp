@@ -434,6 +434,71 @@ void shape_cache_lifetime_test() {
     }
 }
 
+void image_cache_lifetime_test() {
+    RendererOptions options;
+    options.force_warp = true;
+    options.font.family = "Consolas";
+    Renderer renderer(nullptr, options);
+    renderer.resize(256, 96);
+
+    auto scene = single_shape_scene();
+    auto source = std::make_shared<RenderFrame>(*scene.panes.front().frame);
+    auto pixels = std::make_shared<ImagePixels>();
+    pixels->image_id = 7;
+    pixels->generation = 1;
+    pixels->width = 1;
+    pixels->height = 1;
+    pixels->bytes = {30, 210, 60, 255};
+    ImagePlacement placement;
+    placement.pixels = pixels;
+    placement.offset_x = 64;
+    placement.pixel_width = 16;
+    placement.pixel_height = 16;
+    placement.layer = ImageLayer::above_text;
+    source->images.push_back(placement);
+    source->image_placements_generation = 1;
+    scene.panes.front().frame = source;
+
+    auto repaint = [&](std::uint32_t surface_width) {
+        require(renderer.render(scene) == RenderResult::presented, "Image lifetime fixture did not repaint");
+        require(colors_near(pixel(renderer.read_pixels(), surface_width, 72, 8), {30, 210, 60, 255}),
+                "Image lifetime repaint changed owned pixels");
+    };
+    repaint(256);
+    require(renderer.stats().image_uploads == 1 && renderer.stats().image_cache_bytes == 4,
+            "Image lifetime fixture did not retain one bitmap");
+
+    scene.force_redraw = true;
+    repaint(256);
+    scene.force_redraw = false;
+    require(renderer.stats().image_uploads == 1, "Forced repaint reuploaded unchanged image");
+
+    renderer.resize(272, 96);
+    repaint(272);
+    require(renderer.stats().image_uploads == 1, "Surface resize discarded GPU image");
+
+    renderer.resize(272, 96, 144);
+    repaint(272);
+    require(renderer.stats().image_uploads == 1, "DPI change discarded GPU image");
+
+    options.font.size_dip += 2;
+    renderer.set_font(options.font);
+    repaint(272);
+    require(renderer.stats().image_uploads == 1, "Font change discarded GPU image");
+
+    const auto before_recovery = renderer.stats();
+    renderer.recreate_device();
+    require(renderer.stats().image_cache_bytes == 0 && renderer.stats().image_uploads == 1,
+            "Device reset failed to clear image residency or reset cumulative uploads");
+    require(renderer.stats().shape_cache_bytes == before_recovery.shape_cache_bytes,
+            "Image device reset discarded independent text shapes");
+    repaint(272);
+    require(renderer.stats().image_uploads == 2 && renderer.stats().image_cache_bytes == 4,
+            "Device recovery did not upload exactly one fresh bitmap");
+    require(renderer.stats().shaped_rows == before_recovery.shaped_rows,
+            "Device recovery reshaped retained text");
+}
+
 void uncached_shape_lifetime_test() {
     // Both disabled and too-small retained budgets use caller-owned scratch.
     for (const std::size_t budget : {std::size_t{0}, std::size_t{1}}) {
@@ -831,6 +896,7 @@ int main(int argc,char** argv) {
         });
         graphics_error_identity_test();
         shape_cache_lifetime_test();
+        image_cache_lifetime_test();
         uncached_shape_lifetime_test();
         cursor_motion_raster_test();
         native_host_surface_test();liquid_glass_off_test();native_render_test();font_override_test();transparency_test();chrome_material_test();chrome_ellipsis_and_opacity_test();chrome_alignment_test();alpha_probe_test();cache_pressure_test();rejected_image_test();chrome_notice_measurement_test();

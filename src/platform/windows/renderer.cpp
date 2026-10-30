@@ -16,6 +16,7 @@
 #include "com_owner.hpp"
 #include "graphics_error.hpp"
 #include "text_resources.hpp"
+#include "image_cache.hpp"
 #include "host_backdrop.hpp"
 #include "liquid_glass/session.hpp"
 #include "stormtty/build_features.hpp"
@@ -25,7 +26,6 @@
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
-#include <unordered_map>
 #include <utility>
 
 namespace stormtty {
@@ -146,23 +146,6 @@ struct OpacityLayer {
     }
     ~OpacityLayer(){if(active)dc->PopLayer();}
 };
-struct ImageKey {
-    std::uint64_t pane{}, generation{};
-    std::uint32_t id{}, width{}, height{};
-    PixelFormat format{};
-    bool operator==(const ImageKey&) const = default;
-};
-struct ImageHash {
-    std::size_t operator()(const ImageKey& k) const noexcept {
-        std::size_t hash = 0;
-        const std::array<std::uint64_t, 8> values{
-            k.pane, k.generation, k.id, k.width, k.height, static_cast<std::uint32_t>(k.format), 0, 0};
-        for (auto value : values)
-            hash ^= std::hash<std::uint64_t>{}(value) + 0x9e3779b9u + (hash << 6) + (hash >> 2);
-        return hash;
-    }
-};
-struct CachedImage { Com<ID2D1Bitmap1> bitmap; std::size_t bytes{}; std::uint64_t touched{}; };
 constexpr Color selection_background{58,79,91,255};
 constexpr Color selection_foreground{236,238,242,255};
 } // namespace
@@ -208,7 +191,7 @@ struct Renderer::Impl {
     RendererAlphaProbe alpha_metadata{};
     Com<ID2D1Bitmap1> canvas;
     Com<ID2D1SolidColorBrush> brush;
-    std::unordered_map<ImageKey, CachedImage, ImageHash> images;
+    std::unique_ptr<windows::ImageCache> image_cache;
     SceneDamageTracker scene_damage;
 
     Impl(void* hwnd, RendererOptions opts) : window(static_cast<HWND>(hwnd)), options(std::move(opts)) {
@@ -220,6 +203,9 @@ struct Renderer::Impl {
         if (!std::isfinite(options.background_opacity)) throw std::invalid_argument("Invalid background opacity");
         options.background_opacity = std::clamp(options.background_opacity, 0.0f, 1.0f);
         text = std::make_unique<windows::TextResources>(options.shape_cache_bytes);
+        image_cache = std::make_unique<windows::ImageCache>(windows::ImageCacheOptions{
+            options.image_cache_bytes,
+            options.maximum_image_dimension});
         D2D1_FACTORY_OPTIONS factory_options{};
         check(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory1),
                                 &factory_options, reinterpret_cast<void**>(d2d_factory.put())), "D2D1CreateFactory");
@@ -329,9 +315,8 @@ struct Renderer::Impl {
         windows::smoke_teardown_trace(tracing_teardown,"renderer SetTarget null end");
         alpha_staging.reset(); canvas.reset(); canvas_texture.reset(); brush.reset();
         windows::smoke_teardown_trace(tracing_teardown,"renderer image cache clear begin");
-        images.clear();
+        image_cache->clear();
         windows::smoke_teardown_trace(tracing_teardown,"renderer image cache clear end");
-        counters.image_cache_bytes = 0;
         // Release every D2D owner before the swapchain/context/device. Device
         // recovery still needs the documented flip-chain replacement drain;
         // A live caller-owned HWND may be reused even after this Renderer dies,
@@ -610,40 +595,6 @@ struct Renderer::Impl {
             if (c.style.overline) fill({x,y+thickness,length,thickness},fg);
         }
     }
-    ID2D1Bitmap1* image_bitmap(std::uint64_t pane, const ImagePixels& pixels) {
-        const ImageKey key{pane,pixels.generation,pixels.image_id,pixels.width,pixels.height,pixels.format};
-        if (auto found = images.find(key); found != images.end()) { found->second.touched = tick; return found->second.bitmap.get(); }
-        const std::size_t channels = pixels.format == PixelFormat::rgba ? 4 :
-            pixels.format == PixelFormat::rgb ? 3 : pixels.format == PixelFormat::gray_alpha ? 2 : 1;
-        const auto pixel_count = std::uint64_t(pixels.width) * pixels.height;
-        const auto decoded = pixel_count * 4;
-        if (!pixels.width || !pixels.height || pixels.width > options.maximum_image_dimension ||
-            pixels.height > options.maximum_image_dimension || decoded > options.image_cache_bytes ||
-            decoded > std::numeric_limits<UINT>::max() || pixel_count * channels != pixels.bytes.size()) return nullptr;
-        while (!images.empty() && counters.image_cache_bytes + decoded > options.image_cache_bytes) {
-            const auto oldest = std::min_element(images.begin(),images.end(),
-                [](const auto& a, const auto& b) { return a.second.touched < b.second.touched; });
-            counters.image_cache_bytes -= oldest->second.bytes; images.erase(oldest);
-        }
-        std::vector<std::uint8_t> premultiplied(static_cast<std::size_t>(decoded));
-        for (std::size_t i = 0; i < static_cast<std::size_t>(pixel_count); ++i) {
-            const auto* p = pixels.bytes.data() + i * channels;
-            const auto r = p[0], g = channels >= 3 ? p[1] : r, b = channels >= 3 ? p[2] : r;
-            const std::uint8_t a = channels == 4 ? p[3] : channels == 2 ? p[1] : 255;
-            premultiplied[i*4] = static_cast<std::uint8_t>((std::uint32_t(b)*a+127)/255);
-            premultiplied[i*4+1] = static_cast<std::uint8_t>((std::uint32_t(g)*a+127)/255);
-            premultiplied[i*4+2] = static_cast<std::uint8_t>((std::uint32_t(r)*a+127)/255);
-            premultiplied[i*4+3] = a;
-        }
-        CachedImage cached;
-        const D2D1_BITMAP_PROPERTIES1 props{{DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED},96,96,
-                                           D2D1_BITMAP_OPTIONS_NONE,nullptr};
-        check(dc->CreateBitmap({pixels.width,pixels.height},premultiplied.data(),pixels.width*4,&props,cached.bitmap.put()), "Upload image");
-        cached.bytes = static_cast<std::size_t>(decoded); cached.touched = tick;
-        auto [entry, inserted] = images.emplace(key,std::move(cached));
-        if (inserted) { counters.image_cache_bytes += static_cast<std::size_t>(decoded); ++counters.image_uploads; }
-        return entry->second.bitmap.get();
-    }
     void draw_images(const RenderPane& pane, ImageLayer layer, UINT cw, UINT ch, PixelRect damage) {
         for (const auto& placement : pane.frame->images) {
             if (placement.layer != layer || !placement.pixels) continue;
@@ -658,7 +609,8 @@ struct Renderer::Impl {
             const PixelRect target{pane.content.x+float(placement.column)*cw+placement.offset_x,
                                    pane.content.y+float(placement.row)*ch+placement.offset_y,dw,dh};
             if (!sw || !sh || !overlaps(target,damage)) continue;
-            auto* bitmap = image_bitmap(pane.id,pixels);
+            auto* bitmap = image_cache->bitmap(
+                *dc.get(), pane.id, pixels, tick);
             if (!bitmap) continue;
             const auto destination = rect(target);
             const D2D1_RECT_F source{float(placement.source_x),float(placement.source_y),
@@ -917,6 +869,9 @@ RendererStats Renderer::stats() const noexcept {
     result.shape_cache_hits = text.cache_hits;
     result.shape_cache_bytes = text.retained_bytes;
     result.bundled_font = text.bundled_font;
+    const auto images = impl_->image_cache->stats();
+    result.image_uploads = images.uploads;
+    result.image_cache_bytes = images.retained_bytes;
     return result;
 }
 void Renderer::recreate_device() {
