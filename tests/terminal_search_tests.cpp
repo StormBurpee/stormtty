@@ -1,5 +1,6 @@
 #include "stormtty/smoke_commands.hpp"
 #include "stormtty/session.hpp"
+#include "stormtty/terminal_find.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -298,6 +299,29 @@ void bounded_quanta_and_stale_navigation() {
     check(stable->matches.size()==160,"old snapshot mutated");
     check(!t.search_needs_work() && t.search_step()==result,"completed search requires idle polling");
 }
+// Reproduce the native race without timing: output invalidates a queued
+// explicit navigation after initial selection. Never replay it onto new cells.
+void explicit_navigation_invalidation_ownership() {
+    TerminalCore core(make_search_terminal_options(80,8));
+    core.feed("NEEDLE alpha\r\nNEEDLE beta\r\n");
+    core.begin_search(70,{"NEEDLE"});auto result=finish(core);
+    TerminalFindInitialSelection initial;initial.begin(70);
+    check(initial.take(*result)==result->token,"initial selection intent missing");
+    check(core.select_search_match(result->token,0)==SearchApplyResult::applied,"initial selection failed");
+    const auto queued=core.search_snapshot()->token;initial.cancel();
+    core.feed("late prompt repaint\r\n");
+    check(core.navigate_search(queued,SearchDirection::forward)==SearchApplyResult::stale,"queued navigation applied to changed output");
+    result=finish(core);
+    check(!result->selected_index&&!initial.take(*result),"stale explicit navigation silently reselected");
+    core.feed("another repaint\r\n");result=finish(core);
+    check(!result->selected_index&&!initial.take(*result),"later refresh resurrected cancelled initial intent");
+    check(core.navigate_search(result->token,SearchDirection::forward)==SearchApplyResult::applied,"fresh explicit user navigation rejected");
+    check(core.search_snapshot()->selected_index==result->matches.size()-1,"fresh navigation selected wrong match");
+}
+int finite_find_child() {
+    std::cout<<"STORMTTY_FIND_NEEDLE alpha\r\nSTORMTTY_FIND_NEEDLE beta\r\n"<<std::flush;
+    return std::cout?0:1;
+}
 void mutation_during_materialization() {
     TerminalCore t(make_search_terminal_options(40,200));
     for (unsigned i=0;i<150;++i) t.feed("needle\r\n");
@@ -341,6 +365,25 @@ int child() {
         std::cout<<"ECHO:"<<input<<"\r\n"<<std::flush;
     }
     return 0;
+}
+void drained_retained_find_fixture(const std::string& executable) {
+    auto wake=std::make_shared<WakeCounter>();ProcessOptions process;process.executable=executable;process.arguments={"--native-find-child"};
+    auto session=Session::start(process,make_search_terminal_options(80,8),[wake]{wake->signal();},SessionRetentionPolicy::retain_document);
+    struct Close {std::shared_ptr<Session> value;~Close(){value->request_close();(void)value->wait_closed(5s);}} close{session};
+    check(await([&]{return session->process_finished();},wake),"finite Find child did not drain");
+    check(session->info().state==SessionState::exited&&session->info().exit_code==0,"finite Find child failed");
+    check(frame_text(session->frame()).find("STORMTTY_FIND_NEEDLE beta")!=std::string::npos,"process_finished preceded final fixture output");
+    check(session->request_resize({60,6,8,16})==SessionSendResult::accepted,"retained Find resize rejected");
+    const auto submitted=session->search({"STORMTTY_FIND_NEEDLE"});
+    check(submitted.result==SessionSendResult::accepted,"retained Find query rejected");
+    check(await([&]{const auto r=session->search_snapshot();return r&&r->token.request_id==submitted.request_id&&r->status==SearchStatus::complete;},wake),"retained Find query incomplete");
+    auto result=session->search_snapshot();check(result->matches.size()==2,"retained final fixture lost matches");
+    check(session->select_search_match(result->token,0)==SessionSendResult::accepted,"retained initial selection not queued");
+    check(await([&]{return session->search_snapshot()->selected_index==0;},wake),"retained initial selection not applied");
+    result=session->search_snapshot();
+    check(session->navigate_search(result->token,SearchDirection::forward)==SessionSendResult::accepted,"retained navigation not queued");
+    check(await([&]{return session->search_snapshot()->selected_index==1;},wake),"single retained navigation did not apply");
+    check(session->info().sent.frontend()==0,"retained Find wrote frontend input");
 }
 void session_coalescing_and_fairness(const std::string& executable) {
     auto wake=std::make_shared<WakeCounter>(); ProcessOptions process; process.executable=executable; process.arguments={"--search-child"};process.input_capacity_bytes=3; // Force mixed frontend writes through partial transport chunks.
@@ -386,6 +429,7 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string_view(argv[1])=="--native-mouse-child")return native_mouse_child();
 #endif
     if(argc==2&&std::string_view(argv[1])=="--search-child")return child();
+    if(argc==2&&std::string_view(argv[1])=="--native-find-child")return finite_find_child();
     const std::vector<std::pair<const char*,std::function<void()>>> tests{
         {"safe native Find fixture",safe_native_fixture},
         {"visible selection publication",visible_selection_publication},
@@ -395,7 +439,9 @@ int main(int argc,char** argv) {
         {"revision, resize, eviction and reset",revision_resize_eviction_and_reset},
         {"result/work/memory bounds and cancellation",budgets_errors_and_cancellation},
         {"bounded quanta and stale navigation",bounded_quanta_and_stale_navigation},
+        {"explicit navigation invalidation ownership",explicit_navigation_invalidation_ownership},
         {"output during owned-coordinate materialization",mutation_during_materialization},
+        {"drained retained native Find fixture",[&]{drained_retained_find_fixture(std::filesystem::absolute(argv[0]).string());}},
         {"session coalescing, cancellation and I/O fairness",[&]{session_coalescing_and_fairness(std::filesystem::absolute(argv[0]).string());}}
     };
     unsigned failures{};

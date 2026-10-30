@@ -471,6 +471,9 @@ private:
     std::uint64_t smoke_find_bytes_{}, smoke_find_revision_{}, smoke_find_input_baseline_{}, smoke_terminal_input_submissions_{}, smoke_terminal_mouse_submissions_{};
     std::size_t smoke_find_selection_{};
     RECT smoke_find_window_{};
+    TabId smoke_find_original_tab_{}, smoke_find_fixture_tab_{};
+    SessionId smoke_find_fixture_session_{}, smoke_find_original_session_{};
+    std::size_t smoke_find_original_actor_count_{};
     struct PaletteEntry {
         std::string id, label, description;
         std::optional<ProjectSessionReference> session;
@@ -4790,15 +4793,38 @@ bool NativeWindow::smoke_find_progress() {
     const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_.reset();};
     const auto key=[&](WPARAM vk){MSG message{};message.hwnd=hwnd_;message.message=WM_KEYDOWN;message.wParam=vk;key_message(message);message.message=WM_KEYUP;key_message(message);};
     if(smoke_find_stage_==0) {
-        const std::string command(native_find_fixture_command(smoke_managed_sessions_.contains(workspace().pane(workspace().active_pane())->session)));
-        if(!TerminalCore::paste_is_safe(command)){smoke_finish("Find fixture violates ordinary paste safety.");return false;}
-        auto owned=sessions_.at(workspace().pane(workspace().active_pane())->session);
-        if(owned->paste(command)!=SessionSendResult::accepted){smoke_finish("Find fixture paste was not accepted.");return false;}
-        KeyInput enter;enter.key=Key::enter;
-        if(owned->key(enter)!=SessionSendResult::accepted){smoke_finish("Find fixture Enter was not accepted.");return false;}
+        // A live ConPTY can repaint after Find's geometry change, invalidating
+        // a correctly rejected navigation token. Prove native navigation on a
+        // real, fully drained retained document instead of racing that repaint.
+        std::wstring module(32768,L'\0');const auto length=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
+        if(!length||length>=module.size()){smoke_finish("Find fixture child path unavailable.");return false;}module.resize(length);
+        const auto child=std::filesystem::path(module).parent_path()/L"terminal_search_tests.exe";
+        if(!std::filesystem::is_regular_file(child)){smoke_finish("Find fixture child unavailable.");return false;}
+        ProcessOptions process;process.executable=narrow(child.generic_wstring());process.arguments={"--native-find-child"};
+        select_windows_console_provider(process,config_.windows_console_backend,options_.console_runtime_directory);
+        const bool bundled=process.provider==ProcessProvider::windows_packaged_experimental;
+        std::weak_ptr<WakeState> weak=wake_;
+        auto owned=Session::start(std::move(process),TerminalOptions{},[weak]{if(auto state=weak.lock())state->wake();},SessionRetentionPolicy::retain_document);
+        // Register ownership before exposing the tab: normal smoke failure and
+        // exception teardown close every registered actor, including this one.
+        smoke_find_fixture_session_=SessionId{next_session_++};
+        smoke_sessions_.emplace(smoke_find_fixture_session_,owned);
+        if(bundled)smoke_bundled_sessions_.insert(smoke_find_fixture_session_);
+        sessions_.emplace(smoke_find_fixture_session_,owned);
+        smoke_find_original_tab_=workspace().active_tab();
+        smoke_find_original_session_=workspace().pane(workspace().active_pane())->session;
+        smoke_find_original_actor_count_=sessions_.size()-1;
+        const auto tab=workspace().create_tab(smoke_find_fixture_session_,"default");
+        if(!tab){retire_unused_sessions();smoke_finish("Find fixture tab unavailable.");return false;}
+        smoke_find_fixture_tab_=*tab.value;workspace_model_changed();changed(true);
         smoke_find_stage_=1;return false;
     }
     if(smoke_find_stage_==1) {
+        // process_finished is published only after reader EOF, queued output
+        // drain and final frame publication, not merely the OS exit signal.
+        if(!actor->process_finished())return false;
+        const auto info=actor->info();
+        if(info.state!=SessionState::exited||info.exit_code!=0){smoke_finish("Find fixture did not exit cleanly.");return false;}
         const auto frame=actor->frame();if(!frame)return false;
         bool marker=false;for(const auto& row:frame->lines){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;marker=marker||native_find_fixture_output(text);}
         if(!marker)return false;
@@ -4844,7 +4870,15 @@ bool NativeWindow::smoke_find_progress() {
         if(find_session_||active_session()==actor){smoke_finish("Find crossed workspace/session ownership.");return false;}
         activate_project(smoke_primary_project_);
         if(active_session()!=actor||!sessions_.contains(target)){smoke_finish("Find changed the terminal actor.");return false;}
-        smoke_find_stage_=7;std::fputs("Native Find smoke: real retained output, asynchronous match selection/navigation, narrow strip, no-match replacement, rapid query coalescing, Escape focus, zero frontend query/key/paste submissions and workspace isolation verified.\n",stderr);return true;
+        if(!workspace().close_tab(smoke_find_fixture_tab_)||!workspace().activate_tab(smoke_find_original_tab_)){
+            smoke_finish("Find fixture could not restore its original tab.");return false;
+        }
+        workspace_model_changed();retire_unused_sessions();changed(true);
+        if(sessions_.contains(smoke_find_fixture_session_)||sessions_.size()!=smoke_find_original_actor_count_||
+           !active_session()||active_session()!=sessions_.at(smoke_find_original_session_).get()||active_session()->process_finished()){
+            smoke_finish("Find fixture did not restore its original live terminal.");return false;
+        }
+        smoke_find_stage_=7;std::fputs("Native Find smoke: drained exited-child retained document, asynchronous match selection/navigation, narrow strip, no-match replacement, rapid query coalescing, Escape focus, zero frontend query/key/paste submissions and workspace isolation verified.\n",stderr);return true;
     }
     return false;
 }
