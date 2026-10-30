@@ -38,3 +38,32 @@ Portable tests cover actual timeout/reaping, true nonzero exit codes, merged
 output, bounded tails, bad arguments/launch failure, CLI reporting, and a parent
 that exits while a controlled short-lived descendant retains its output handle.
 Windows runtime qualification of the helper remains a separate CI result.
+
+## Compact application receipts
+
+`native_application_receipt.py` publishes best-effort, per-case JSON for the
+existing Windows installed-console, packaged/bundled/developer application and
+repeated-Settings cases. Only fixed authored case IDs are accepted. The receipt
+contains return/exit status, timeout/reap/truncation flags and whether cleanup
+reported an error; it excludes PID, paths, argv, environment, raw output and
+cleanup text. Each file is capped at 2 KiB and atomically replaced under
+`build/artifacts/application-receipts/`.
+
+The helper observes the runner's already-bounded tail; it does not launch, capture
+or send anything. Only the reviewed missing-expected-marker diagnostic can set its
+observation to true. No match remains null, not false; malformed-paste and
+stale-marker observations remain null. These fields never diagnose a root cause.
+A missing receipt means unobserved, not success. Process-start exceptions before a
+Result exists do not produce a fabricated process result.
+
+Receipt failures emit only `CI_APPLICATION_RECEIPT_WRITE_FAILED` and do not alter
+the test result, loop continuation or cleanup. Existing stdout, deadlines, captures
+and artifacts remain unchanged. The separate `application-receipts-windows`
+artifact uploads only these JSON files, even after earlier test failures.
+
+```sh
+python tools/native-application-receipt-tests.py
+```
+
+Receipt tests use synthetic Result values and temporary files, not native input,
+extra application launches or new captures.
