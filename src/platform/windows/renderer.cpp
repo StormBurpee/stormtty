@@ -1,4 +1,5 @@
 #include "stormtty/renderer.hpp"
+#include "stormtty/scene_damage.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -234,16 +235,11 @@ D2D1_COLOR_F color(Color c, float opacity = 1) noexcept {
     return {float(c.r) / 255, float(c.g) / 255, float(c.b) / 255, float(c.a) / 255 * opacity};
 }
 D2D1_RECT_F rect(PixelRect r) noexcept { return {r.x, r.y, r.x + r.width, r.y + r.height}; }
-PixelRect intersect(PixelRect a, PixelRect b) noexcept {
-    const auto x = std::max(a.x, b.x), y = std::max(a.y, b.y);
-    return {x, y, std::max(0.0f, std::min(a.x + a.width, b.x + b.width) - x),
-                  std::max(0.0f, std::min(a.y + a.height, b.y + b.height) - y)};
-}
-bool nonempty(PixelRect r) noexcept {
-    return std::isfinite(r.x) && std::isfinite(r.y) && std::isfinite(r.width) &&
-           std::isfinite(r.height) && r.width > 0 && r.height > 0;
-}
-bool overlaps(PixelRect a, PixelRect b) noexcept { return nonempty(intersect(a, b)); }
+using render_geometry::intersect;
+using render_geometry::nonempty;
+using render_geometry::overlaps;
+using render_geometry::chrome_clip;
+using render_geometry::chrome_bounds;
 struct Clip {
     ID2D1DeviceContext* dc;
     Clip(ID2D1DeviceContext* context, PixelRect r) : dc(context) {
@@ -264,24 +260,6 @@ struct OpacityLayer {
     }
     ~OpacityLayer(){if(active)dc->PopLayer();}
 };
-PixelRect chrome_clip(PixelRect bounds,const std::optional<PixelRect>& viewport) noexcept {
-    if (!viewport) return bounds;
-    if (!nonempty(*viewport)) return {};
-    // Match Metal scissor coverage: fractional viewports cover whole physical
-    // pixels outward, while the original paths and glyph layouts stay intact.
-    const auto x=std::floor(viewport->x),y=std::floor(viewport->y);
-    return intersect(bounds,{x,y,std::ceil(viewport->x+viewport->width)-x,std::ceil(viewport->y+viewport->height)-y});
-}
-PixelRect chrome_bounds(const ChromeText& text) noexcept { return chrome_clip(text.rect,text.clip); }
-PixelRect chrome_bounds(const ChromePrimitive& p) noexcept {
-    if(!std::isfinite(p.stroke_width) || !std::isfinite(p.radius)) return {};
-    const auto pad=std::max(1.0f,p.stroke_width*.5f+1);
-    if(p.kind==ChromePrimitiveKind::line)
-        return chrome_clip({std::min(p.rect.x,p.rect.x+p.rect.width)-pad,std::min(p.rect.y,p.rect.y+p.rect.height)-pad,
-                std::abs(p.rect.width)+pad*2,std::abs(p.rect.height)+pad*2},p.clip);
-    if(!nonempty(p.rect))return {};
-    return chrome_clip({p.rect.x-pad,p.rect.y-pad,p.rect.width+pad*2,p.rect.height+pad*2},p.clip);
-}
 struct CellMap { UINT32 column{}, end{}; };
 struct GlyphCluster {
     Com<IDWriteFontFace> face;
@@ -404,10 +382,6 @@ struct ImageHash {
     }
 };
 struct CachedImage { Com<ID2D1Bitmap1> bitmap; std::size_t bytes{}; std::uint64_t touched{}; };
-bool same_cursor(const FrameCursor& a, const FrameCursor& b) noexcept {
-    return a.column == b.column && a.row == b.row && a.visible == b.visible &&
-           a.shape == b.shape && a.color == b.color && a.wide_tail == b.wide_tail;
-}
 constexpr Color selection_background{58,79,91,255};
 constexpr Color selection_foreground{236,238,242,255};
 } // namespace
@@ -431,7 +405,7 @@ struct Renderer::Impl {
     UINT width{}, height{};
     float dpi{96}, em_size{14};
     std::uint64_t font_generation{1}, tick{};
-    bool invalid{true}, pending_present{};
+    bool pending_present{};
     Com<ID3D11Device> device;
     Com<ID3D11DeviceContext> immediate;
     Com<IDXGISwapChain1> swapchain;
@@ -457,7 +431,7 @@ struct Renderer::Impl {
     Com<ID2D1SolidColorBrush> brush;
     std::unordered_map<RowKey, ShapedRow, RowHash> shapes;
     std::unordered_map<ImageKey, CachedImage, ImageHash> images;
-    WindowScene previous;
+    SceneDamageTracker scene_damage;
 
     Impl(void* hwnd, RendererOptions opts) : window(static_cast<HWND>(hwnd)), options(std::move(opts)) {
         if (FAILED(apartment.hr) && apartment.hr != RPC_E_CHANGED_MODE) check(apartment.hr, "COM initialization");
@@ -509,7 +483,7 @@ struct Renderer::Impl {
     }
     void stop_glass(const char* reason) noexcept {
         glass_paint=false;glass_key=nullptr;glass_brush.reset();glass_bitmap.reset();
-        liquid_glass.stop(reason);invalid=true;
+        liquid_glass.stop(reason);scene_damage.invalidate();
     }
     bool update_glass() {
         if(!liquid_glass.active())return false;
@@ -531,7 +505,7 @@ struct Renderer::Impl {
             }
         }catch(...) {stop_glass("Experimental glass surface failed; original material restored.");}
         const bool changed=glass_generation!=liquid_glass.generation();
-        glass_generation=liquid_glass.generation();if(changed)invalid=true;
+        glass_generation=liquid_glass.generation();if(changed)scene_damage.invalidate();
         return changed;
     }
     void release_swapchain(bool replacing = true) noexcept {
@@ -715,7 +689,7 @@ struct Renderer::Impl {
         const D2D1_BITMAP_PROPERTIES1 properties{{DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED},96,96,
                                                 D2D1_BITMAP_OPTIONS_TARGET,nullptr};
         check(dc->CreateBitmapFromDxgiSurface(surface.get(), &properties, canvas.put()), "Create canvas bitmap");
-        dc->SetTarget(canvas.get()); invalid = true; pending_present = false;
+        dc->SetTarget(canvas.get()); scene_damage.invalidate(); pending_present = false;
         } catch (...) {
             dc->SetTarget(nullptr); canvas.reset(); canvas_texture.reset();
             release_swapchain();
@@ -769,7 +743,7 @@ struct Renderer::Impl {
         cell.width = static_cast<std::uint16_t>(std::clamp(std::ceil(metrics.widthIncludingTrailingWhitespace), 1.0f, 65535.0f));
         cell.height = static_cast<std::uint16_t>(std::clamp(std::ceil(line.height + dpi / 96), 1.0f, 65535.0f));
         cell.baseline = line.baseline;
-        shapes.clear(); counters.shape_cache_bytes = 0; ++font_generation; invalid = true;
+        shapes.clear(); counters.shape_cache_bytes = 0; ++font_generation; scene_damage.invalidate();
     }
     ShapedRow build_shape(const FrameRow& row, UINT columns, UINT cw, UINT ch) {
         constexpr std::size_t maximum_utf16_per_row = 131072;
@@ -1084,22 +1058,8 @@ struct Renderer::Impl {
             dc->DrawBitmap(bitmap,&destination,1,D2D1_INTERPOLATION_MODE_LINEAR,&source,nullptr);
         }
     }
-    PixelRect cursor_rect(const RenderPane& pane) const noexcept {
-        if (!pane.frame || !pane.frame->cursor.visible || !pane.cursor_on ||
-            pane.frame->cursor.row >= pane.frame->rows || pane.frame->cursor.column >= pane.frame->columns) return {};
-        const auto& frame = *pane.frame;
-        auto column = frame.cursor.column;
-        if (frame.cursor.wide_tail && column) --column;
-        UINT span = 1;
-        if (frame.cursor.row < frame.lines.size() && frame.lines[frame.cursor.row] &&
-            column < frame.lines[frame.cursor.row]->cells.size())
-            span = std::max<UINT>(1,frame.lines[frame.cursor.row]->cells[column].span);
-        const auto cw = frame.cell_width ? frame.cell_width : cell.width;
-        const auto ch = frame.cell_height ? frame.cell_height : cell.height;
-        return intersect(pane.content,{pane.content.x+float(column*cw),pane.content.y+float(frame.cursor.row*ch),float(span*cw),float(ch)});
-    }
     void draw_cursor(const RenderPane& pane, UINT cw, UINT ch) {
-        auto bounds = cursor_rect(pane);
+        auto bounds = render_geometry::cursor_bounds(pane, cell);
         if (!nonempty(bounds)) return;
         const auto& cursor = pane.frame->cursor;
         const auto thickness = std::max(1.0f,std::round(dpi / 96));
@@ -1221,87 +1181,15 @@ struct Renderer::Impl {
             }
         }
     }
-    bool same_images(const RenderFrame& a, const RenderFrame& b) const noexcept {
-        if (a.image_placements_generation != b.image_placements_generation || a.images.size()!=b.images.size()) return false;
-        for (std::size_t i=0;i<a.images.size();++i) {
-            const auto& x=a.images[i]; const auto& y=b.images[i];
-            if (bool(x.pixels)!=bool(y.pixels)) return false;
-            if (x.pixels && (x.pixels->image_id!=y.pixels->image_id || x.pixels->generation!=y.pixels->generation)) return false;
-        }
-        return true;
-    }
-    std::vector<PixelRect> damage(const WindowScene& scene) const {
-        const PixelRect full{0,0,float(width),float(height)};
-        if (invalid || scene.force_redraw ||
-            scene.background != previous.background || scene.panes.size()!=previous.panes.size()) return {full};
-        std::vector<PixelRect> result;
-        auto add = [&](PixelRect r) { if(!nonempty(r))return;r=intersect(r,full);if(nonempty(r))result.push_back(r); };
-        if(scene.chrome_generation!=previous.chrome_generation) {
-            const auto primitives=std::max(scene.primitives.size(),previous.primitives.size());
-            for(std::size_t i=0;i<primitives;++i) {
-                if(i<scene.primitives.size() && i<previous.primitives.size() && scene.primitives[i]==previous.primitives[i])continue;
-                if(i<scene.primitives.size())add(chrome_bounds(scene.primitives[i]));
-                if(i<previous.primitives.size())add(chrome_bounds(previous.primitives[i]));
-            }
-            const auto texts=std::max(scene.texts.size(),previous.texts.size());
-            for(std::size_t i=0;i<texts;++i) {
-                if(i<scene.texts.size() && i<previous.texts.size() && scene.texts[i]==previous.texts[i])continue;
-                if(i<scene.texts.size())add(chrome_bounds(scene.texts[i]));
-                if(i<previous.texts.size())add(chrome_bounds(previous.texts[i]));
-            }
-        }
-        for (std::size_t i=0;i<scene.panes.size();++i) {
-            const auto& now=scene.panes[i]; const auto& before=previous.panes[i];
-            if (now.id!=before.id || now.content!=before.content) return {full};
-            if (!now.frame || !before.frame) { if(now.frame!=before.frame) add(now.content); continue; }
-            const auto& a=*now.frame; const auto& b=*before.frame;
-            if (a.columns!=b.columns || a.rows!=b.rows || a.cell_width!=b.cell_width || a.cell_height!=b.cell_height ||
-                a.background!=b.background || a.foreground!=b.foreground || !same_images(a,b)) { add(now.content); continue; }
-            const UINT ch=a.cell_height?a.cell_height:cell.height;
-            if (now.frame!=before.frame) {
-                const auto rows=std::max(a.lines.size(),b.lines.size());
-                for(std::size_t r=0;r<rows;++r) {
-                    bool dirty=r>=a.lines.size() || r>=b.lines.size();
-                    if(!dirty) {
-                        const auto& ar=a.lines[r];const auto& br=b.lines[r];
-                        dirty=bool(ar)!=bool(br) || (ar && (ar->id!=br->id || ar->generation!=br->generation));
-                    }
-                    if(dirty) add(intersect(now.content,{now.content.x,now.content.y+float(r*ch),now.content.width,float(ch)}));
-                }
-            }
-            if (now.text_blink_on!=before.text_blink_on) {
-                for (std::size_t r=0;r<a.lines.size();++r) {
-                    if(a.lines[r] && std::any_of(a.lines[r]->cells.begin(),a.lines[r]->cells.end(),
-                                               [](const Cell& c){return c.style.blink;}))
-                        add(intersect(now.content,{now.content.x,now.content.y+float(r*ch),now.content.width,float(ch)}));
-                }
-            }
-            if (!same_cursor(a.cursor,b.cursor) || now.cursor_on!=before.cursor_on || now.focused!=before.focused || now.cursor_reveal!=before.cursor_reveal) {
-                add(cursor_rect(before)); add(cursor_rect(now));
-            }
-        }
-        // Merge touching full-width row bands and overlapping cursor rectangles.
-        // A very fragmented update is cheaper as one correct canvas repaint.
-        if(result.size()>128) return {full};
-        for(std::size_t i=0;i<result.size();++i) {
-            for(std::size_t j=i+1;j<result.size();) {
-                auto& a=result[i];const auto& b=result[j];
-                const bool aligned=a.x==b.x && a.width==b.width && a.y<=b.y+b.height && b.y<=a.y+a.height;
-                if(aligned || overlaps(a,b)) {
-                    const auto x=std::min(a.x,b.x),y=std::min(a.y,b.y);
-                    a={x,y,std::max(a.x+a.width,b.x+b.width)-x,std::max(a.y+a.height,b.y+b.height)-y};
-                    result.erase(result.begin()+static_cast<std::ptrdiff_t>(j));
-                } else ++j;
-            }
-        }
-        return result;
-    }
     RenderResult render(const WindowScene& scene) {
         if (!width || !height || !canvas) return RenderResult::suspended;
         update_glass();glass_paint=bool(glass_brush);
         ++tick;
-        const auto dirty=damage(scene);
-        if(dirty.empty() && !pending_present) {previous=scene;previous.force_redraw=false;return RenderResult::unchanged;}
+        const auto dirty = scene_damage.damage(scene, cell, {0, 0, float(width), float(height)});
+        if (dirty.empty() && !pending_present) {
+            scene_damage.commit(scene);
+            return RenderResult::unchanged;
+        }
         if(!dirty.empty()) {
             const bool full_repaint=dirty.size()==1 && dirty[0].x<=0 && dirty[0].y<=0 && dirty[0].x+dirty[0].width>=float(width) && dirty[0].y+dirty[0].height>=float(height);
             if(glass_paint)glass_canvas_tainted=true; // Before any desktop pixels enter canvas.
@@ -1320,11 +1208,12 @@ struct Renderer::Impl {
                     for(const auto& pane:scene.panes) draw_pane(pane,r);
                     draw_chrome(scene,r,chrome_order);
                 }
-            } catch (...) { dc->EndDraw(); invalid=true; throw; }
+            } catch (...) { dc->EndDraw(); scene_damage.invalidate(); throw; }
             check(dc->EndDraw(),"Render canvas");
             if(!glass_paint&&full_repaint)glass_canvas_tainted=false;
             counters.dirty_rectangles+=dirty.size();
-            previous=scene; previous.force_redraw=false; invalid=false; pending_present=true;
+            scene_damage.commit(scene);
+            pending_present=true;
         }
         if(swapchain) {
             // Flip buffers are never assumed to retain old pixels. All damage is
@@ -1369,7 +1258,7 @@ void Renderer::resize(std::uint32_t width,std::uint32_t height,float dpi) {
     if(width==p.width && height==p.height && p.canvas) return;
     p.stop_glass("Stopped for resize. Start again explicitly in Settings.");
     p.width=width;p.height=height;
-    p.dc->SetTarget(nullptr);p.canvas.reset();p.canvas_texture.reset();p.invalid=true;
+    p.dc->SetTarget(nullptr);p.canvas.reset();p.canvas_texture.reset();p.scene_damage.invalidate();
     if(!width || !height) { p.opaque_window.resize(width,height); return; }
     try {
         if(p.swapchain) check(p.swapchain->ResizeBuffers(2,width,height,DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -1384,7 +1273,7 @@ void Renderer::set_font(FontOptions font) {
 }
 void Renderer::set_background_opacity(float opacity) {
     if(!std::isfinite(opacity) || opacity<0 || opacity>1) throw std::invalid_argument("Invalid background opacity");
-    if(impl_->options.background_opacity!=opacity) {impl_->options.background_opacity=opacity;impl_->invalid=true;}
+    if(impl_->options.background_opacity!=opacity) {impl_->options.background_opacity=opacity;impl_->scene_damage.invalidate();}
 }
 void Renderer::set_additional_blur(float sigma) {
     if(!std::isfinite(sigma) || sigma<0 || sigma>64) throw std::invalid_argument("Invalid additional blur");
@@ -1392,13 +1281,13 @@ void Renderer::set_additional_blur(float sigma) {
     if(p.additional_blur==sigma) return;
     const auto previous=p.additional_blur;p.additional_blur=sigma;
     if(p.host_backdrop.active() && sigma>0 && p.host_backdrop.update(sigma,p.width,p.height)) {
-        p.invalid=true;return;
+        p.scene_damage.invalidate();return;
     }
     // Avoid rebuilding an unsupported graph on every pointer move. A return to
     // zero, policy transition or device recovery permits another explicit try.
     if(previous>0 && sigma>0 && !p.counters.host_backdrop) return;
     p.dc->SetTarget(nullptr);p.canvas.reset();p.canvas_texture.reset();
-    p.release_swapchain();p.create_surfaces();p.invalid=true;
+    p.release_swapchain();p.create_surfaces();p.scene_damage.invalidate();
 }
 bool Renderer::liquid_glass_available() const noexcept {
 #if defined(_MSC_VER) && STORMTTY_EXPERIMENTAL_LIQUID_GLASS
@@ -1411,7 +1300,7 @@ bool Renderer::start_liquid_glass(void* monitor) {
     if(!liquid_glass_available())return false;
     auto& p=*impl_;p.stop_glass("Starting experimental glass.");
     const bool started=p.liquid_glass.start(p.window,monitor,p.device.get(),p.immediate.get());
-    p.invalid=true;return started;
+    p.scene_damage.invalidate();return started;
 }
 void Renderer::stop_liquid_glass(const char* reason) noexcept {impl_->stop_glass(reason);}
 bool Renderer::liquid_glass_active()const noexcept{return impl_->liquid_glass.active();}
@@ -1431,7 +1320,7 @@ RendererStats Renderer::stats() const noexcept {return impl_->counters;}
 void Renderer::recreate_device() {
     auto& p=*impl_;
     p.release_gpu();
-    p.create_device();p.invalid=true;++p.counters.device_recoveries;
+    p.create_device();p.scene_damage.invalidate();++p.counters.device_recoveries;
 }
 void Renderer::cancel_alpha_probe() noexcept { impl_->alpha_staging.reset(); }
 bool Renderer::begin_alpha_probe(PixelRect area) {
