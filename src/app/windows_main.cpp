@@ -69,7 +69,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
         Arguments args;
         if (!args.values) throw std::runtime_error("Could not read command-line arguments.");
-        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-agent" || std::wstring_view(args.values[i])==L"--smoke-settings" || std::wstring_view(args.values[i])==L"--smoke-workspaces") smoke=true;
+        for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-windows" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-agent" || std::wstring_view(args.values[i])==L"--smoke-settings" || std::wstring_view(args.values[i])==L"--smoke-workspaces") smoke=true;
         completed.enabled=smoke;
         stormtty::NativeRunOptions options; options.smoke_test=smoke;
         // Must precede creation of any HWND, including startup error dialogs.
@@ -80,7 +80,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (FAILED(apartment.status)) throw std::runtime_error("Could not initialize the UI COM apartment.");
         auto config = stormtty::default_config(stormtty::Platform::windows);
         std::filesystem::path config_path;
-        std::filesystem::path workspace_fixture;
+        std::filesystem::path workspace_fixture, window_fixture;
         bool required = false;
         unsigned smoke_modes=0;
         for (int i = 1; i < args.count; ++i) {
@@ -94,6 +94,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             else if (argument == L"--workspace-fixture" && i + 1 < args.count) workspace_fixture=args.values[++i];
             else if (argument == L"--smoke") { ++smoke_modes; }
             else if (argument == L"--smoke-layout") { options.smoke_layout=true; ++smoke_modes; }
+            else if (argument == L"--smoke-windows") { options.smoke_windows=true; ++smoke_modes; }
+            else if (argument == L"--window-fixture" && i+1<args.count) {
+                if(!window_fixture.empty())throw std::invalid_argument("Specify window fixture once.");
+                window_fixture=args.values[++i];
+            }
             else if (argument == L"--smoke-modal") { options.smoke_modal=true; ++smoke_modes; }
             else if (argument == L"--smoke-projects") { options.smoke_projects=true; ++smoke_modes; }
             else if (argument == L"--codex-executable" && i+1<args.count) {
@@ -184,6 +189,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             options.shell_runtime_directory.clear();
             config=stormtty::default_config(stormtty::Platform::windows);
         } else if (!workspace_fixture.empty()) throw std::runtime_error("Workspace fixture requires dedicated smoke mode.");
+        if(options.smoke_windows) {
+            if(!options.shell_runtime_directory.empty() && options.shell_runtime_override)throw std::runtime_error("Window ownership smoke requires controlled Cmd, not a shell override.");
+            const auto native_fixture=window_fixture.native();
+            const bool local_drive=native_fixture.size()>3 && ((native_fixture[0]>=L'A'&&native_fixture[0]<=L'Z')||(native_fixture[0]>=L'a'&&native_fixture[0]<=L'z')) && native_fixture[1]==L':';
+            if(!local_drive || !window_fixture.is_absolute() || !window_fixture.filename().wstring().starts_with(L"StormTTY.WindowsSmoke."))throw std::runtime_error("Window smoke requires its authored isolated fixture.");
+            for(auto path=window_fixture;!path.empty()&&path!=path.parent_path();path=path.parent_path()) {
+                const auto attributes=GetFileAttributesW(path.c_str());
+                if(attributes==INVALID_FILE_ATTRIBUTES || (attributes&FILE_ATTRIBUTE_REPARSE_POINT))throw std::runtime_error("Window fixture must be an existing local non-reparse directory tree.");
+            }
+            const auto marker_attributes=GetFileAttributesW((window_fixture/L"fixture.marker").c_str());
+            if(marker_attributes==INVALID_FILE_ATTRIBUTES || (marker_attributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_DIRECTORY)))throw std::runtime_error("Window fixture marker is not an owned regular file.");
+            std::ifstream marker(window_fixture/L"fixture.marker",std::ios::binary);
+            std::string bytes(52,'\0');marker.read(bytes.data(),static_cast<std::streamsize>(bytes.size()));bytes.resize(static_cast<std::size_t>(marker.gcount()));
+            if(bytes!="StormTTY isolated windows qualification v1\n")throw std::runtime_error("Invalid window fixture marker.");
+            if(std::filesystem::exists(window_fixture/L"config.stormtty") || std::filesystem::exists(window_fixture/L"workspaces.stormtty"))throw std::runtime_error("Window fixture already contains persisted user-like state.");
+            options.config_path.clear(); // No persistence until grouped storage is qualified.
+            options.shell_runtime_directory.clear();options.shell_runtime_error.clear();
+            config=stormtty::default_config(stormtty::Platform::windows);
+            const auto directory=window_fixture.generic_u8string();
+            for(auto& profile:config.profiles)profile.working_directory=std::string(reinterpret_cast<const char*>(directory.data()),directory.size());
+        } else if(!window_fixture.empty())throw std::runtime_error("Window fixture requires dedicated window smoke mode.");
         bool config_loaded=false;
         if (!config_path.empty() && (required || std::filesystem::exists(config_path))) {
             auto loaded = stormtty::load_config(config_path, stormtty::Platform::windows);

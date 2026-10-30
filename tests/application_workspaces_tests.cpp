@@ -2,6 +2,7 @@
 #include "stormtty/application_workspaces.hpp"
 #include "stormtty/window_workspace_view.hpp"
 #include <type_traits>
+#include <array>
 using namespace stormtty;
 static_assert(!std::is_copy_constructible_v<ApplicationWorkspaces>);
 static_assert(!std::is_convertible_v<WindowId,ProjectWorkspaceId>);
@@ -132,6 +133,55 @@ void scoped_views_and_bootstrap() {
     CHECK(!boot.restore_single_window(only,*saved.value));CHECK(view.active_id()==before);
     CHECK(view.contains_session({999}));
 }
+void atomic_window_close() {
+    ApplicationWorkspaces app;auto a=window(app),b=window(app);
+    auto p=project(app,a,400),q=project(app,a,410),r=project(app,b,420);
+    CHECK(app.park({p,app.workspace(p)->active_pane()}));
+    const auto survivor=app.workspace(r)->state();
+    auto before=app.preview_close_window(a);CHECK(before);CHECK(before.value->sessions.size()==4);
+    CHECK(app.move(q,a,b));CHECK(!app.close_window(*before.value));
+    CHECK(app.move(q,b,a));CHECK(!app.close_window(*before.value));
+    auto changed=app.preview_close_window(a);CHECK(changed);
+    CHECK(app.workspace(q)->create_tab({430}));CHECK(!app.close_window(*changed.value));
+    auto authorized=app.preview_close_window(a);CHECK(authorized);
+    auto removed=app.close_window(*authorized.value);CHECK(removed);
+    CHECK(removed.value->projects.size()==2);CHECK(removed.value->projects[0].project.parked_sessions.size()==1);
+    CHECK(!app.window(a));CHECK(app.owner(r)==b);CHECK(app.workspace(r)->state()==survivor);
+    CHECK(app.catalog().all_session_ids()==std::vector<SessionId>({{420},{421}}));CHECK(app.validate());
+    CHECK(!app.close_window(*authorized.value));
+    ProjectWorkspaceCatalog catalog;auto x=catalog.create({"X","",""}),y=catalog.create({"Y","",""}),z=catalog.create({"Z","",""});CHECK(x&&y&&z);
+    CHECK(catalog.activate(*y.value));
+    const std::array<ProjectWorkspaceId,2> duplicates{*x.value,*x.value};CHECK(!catalog.remove_many(duplicates));CHECK(catalog.entries().size()==3);
+    const std::array<ProjectWorkspaceId,1> middle{*y.value};CHECK(catalog.remove_many(middle));CHECK(catalog.active_id()==*z.value);
+    const std::array<ProjectWorkspaceId,1> last{*z.value};CHECK(catalog.remove_many(last));CHECK(catalog.active_id()==*x.value);
+    auto next=catalog.create({"Next","",""}),tail=catalog.create({"Tail","",""});CHECK(next&&tail);CHECK(catalog.activate(*next.value));
+    const std::array<ProjectWorkspaceId,2> invalid{*x.value,ProjectWorkspaceId{999999999}};
+    CHECK(!catalog.remove_many(invalid));CHECK(catalog.entries().size()==3);CHECK(catalog.active_id()==*next.value);
+    const std::array<ProjectWorkspaceId,2> adjacent{*next.value,*tail.value};CHECK(catalog.remove_many(adjacent));CHECK(catalog.active_id()==*x.value);
+    const std::array<ProjectWorkspaceId,1> remaining{*x.value};CHECK(catalog.remove_many(remaining));CHECK(catalog.entries().empty());CHECK(!catalog.active_id());CHECK(catalog.validate());
+    const auto empty_window=window(app);auto empty_preview=app.preview_close_window(empty_window);CHECK(empty_preview);
+    auto empty_closed=app.close_window(*empty_preview.value);CHECK(empty_closed);CHECK(empty_closed.value->projects.empty());CHECK(app.validate());
+}
+void unpublished_creation_rollback() {
+    ApplicationWorkspaces app;const auto original=window(app);const auto retained=project(app,original,701);
+    const auto identity=app.catalog().find(retained)->metadata.persistent_id;
+    const auto close=app.preview_close(retained);CHECK(close);
+    const auto staged=app.begin_window_creation();CHECK(staged);const auto candidate=*staged.value;
+    const auto temporary=project(app,candidate,710);CHECK(app.validate());
+    CHECK(!app.begin_window_creation());CHECK(!app.create_window());
+    CHECK(!app.move(retained,original,candidate));CHECK(!app.move(temporary,candidate,original));
+    CHECK(!app.close_workspace(*close.value));CHECK(!app.create_workspace(original,{"blocked","",""}));
+    CHECK(!app.commit_window_creation(original));app.abort_window_creation(original);CHECK(app.window(candidate));
+    app.abort_window_creation(candidate);CHECK(!app.window(candidate));CHECK(!app.catalog().find(temporary));
+    CHECK(app.owner(retained)==original);CHECK(app.catalog().contains_session({701}));CHECK(!app.catalog().contains_session({710}));
+    CHECK(app.catalog().find(retained)->metadata.persistent_id==identity);CHECK(app.validate());
+    app.abort_window_creation(candidate);CHECK(app.validate());
+    const auto next=app.begin_window_creation();CHECK(next);CHECK(next.value->value>candidate.value);
+    project(app,*next.value,720);CHECK(app.commit_window_creation(*next.value));
+    app.abort_window_creation(*next.value);CHECK(app.window(*next.value));CHECK(app.validate());
+    ApplicationWorkspaces empty;const auto first=empty.begin_window_creation();CHECK(first);
+    empty.abort_window_creation(*first.value);CHECK(empty.windows().empty());CHECK(empty.catalog().entries().empty());CHECK(empty.validate());
+}
 void limits_and_invalid_models() {
     ApplicationWorkspaces app;
     for(std::size_t i=0;i<ApplicationWorkspaces::maximum_windows;++i)CHECK(app.create_window());
@@ -147,4 +197,4 @@ void limits_and_invalid_models() {
     CHECK(!app.validate());CHECK(!app.move(p,a,b));CHECK(app.windows()==invalid_before);
 }
 }
-int main(){return run_core_tests("application_workspaces",[]{ownership_and_moves();explicit_close_and_stale_authorization();snapshots_and_policy();selection_and_nonreuse();scoped_views_and_bootstrap();limits_and_invalid_models();});}
+int main(){return run_core_tests("application_workspaces",[]{ownership_and_moves();explicit_close_and_stale_authorization();snapshots_and_policy();selection_and_nonreuse();scoped_views_and_bootstrap();atomic_window_close();unpublished_creation_rollback();limits_and_invalid_models();});}

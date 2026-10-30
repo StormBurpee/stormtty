@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stormtty/workspace.hpp"
+#include <span>
 
 namespace stormtty {
 
@@ -108,6 +109,9 @@ public:
     // If active is removed, activate the next row, or previous at the end.
     // Removing the last row leaves a valid empty catalog; no implicit window exit.
     [[nodiscard]] Result<RemovedProjectWorkspace> remove(ProjectWorkspaceId);
+    // Explicit batch close/detach: prepare all reports before any mutation.
+    // Invalid/duplicate IDs or allocation failure leave the catalog unchanged.
+    [[nodiscard]] Result<std::vector<RemovedProjectWorkspace>> remove_many(std::span<const ProjectWorkspaceId>);
 
     // Transactional placement transfers. Session identity is unchanged; pane,
     // tab and node IDs are fresh on reattachment. No launch/replay/termination.
@@ -128,6 +132,7 @@ public:
     Status replace_unbound(ProjectWorkspaceCatalog& prepared);
 
 private:
+    friend class ApplicationWorkspaces; // Allocation-free unpublished-window rollback only.
     ProjectWorkspace* mutable_project(ProjectWorkspaceId) noexcept;
     std::vector<ProjectWorkspace> entries_;
     ProjectWorkspaceId active_;

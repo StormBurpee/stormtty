@@ -145,6 +145,7 @@ struct NativeRunOptions {
     std::string codex_account_reference, codex_runtime_version;
     bool smoke_agent{}; // Authored native UI fixtures only; never starts a provider.
     bool smoke_settings{}; // Styled Settings/menu routing, reversible preview and isolated explicit Save.
+    bool smoke_windows{}; // Isolated controlled two-HWND ownership/retirement fixture, no user New Window UI.
     bool smoke_modal{}; // Styled modal + routing/close smoke, not desktop activation QA.
     bool smoke_projects{}; // Two actual folder contexts, actor retention and scoped close.
     bool smoke_layout{}; // Three visible real shells + two background tabs.

@@ -1,4 +1,5 @@
 #include "stormtty/settings_services.hpp"
+#include "stormtty/application_layout_services.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -143,11 +144,11 @@ void inspect_file(HANDLE handle, ConfigFileSnapshot& token) {
     token.bytes.resize(static_cast<std::size_t>(size));
 }
 struct OpenSnapshot { ConfigFileSnapshot token; Handle handle; };
-OpenSnapshot read_snapshot(const std::filesystem::path& path) {
+OpenSnapshot read_snapshot(const std::filesystem::path& path, bool allow_delete = true) {
     OpenSnapshot result;
     result.token.path = path;
     result.handle = Handle(CreateFileW(native_path(path).c_str(), GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+        FILE_SHARE_READ | (allow_delete ? FILE_SHARE_DELETE : 0), nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
     if (!result.handle) {
         if (absent(GetLastError())) return result;
         throw io_error("Could not read the settings file (it may be in use)");
@@ -326,7 +327,7 @@ SettingsSnapshotResult load_settings_snapshot(const std::filesystem::path& input
     return result;
 }
 
-static ConfigSaveResult save_document_bytes(const std::filesystem::path& input, const std::string& bytes, const ConfigFileSnapshot& loaded) {
+static ConfigSaveResult save_document_bytes(const std::filesystem::path& input, const std::string& bytes, const ConfigFileSnapshot& loaded, HANDLE security_source = INVALID_HANDLE_VALUE) {
     ConfigSaveResult result;
     try {
         if (bytes.size() > max_config_bytes) throw std::runtime_error("Saved document exceeds 1 MiB.");
@@ -362,6 +363,7 @@ static ConfigSaveResult save_document_bytes(const std::filesystem::path& input, 
         }
         if (!temporary.handle) throw std::runtime_error("Could not reserve a unique temporary settings file.");
         if (current.handle) preserve_dacl(current.handle.get(), temporary.handle.get());
+        else if(security_source!=INVALID_HANDLE_VALUE)preserve_dacl(security_source,temporary.handle.get());
         std::size_t done{};
         while (done < bytes.size()) {
             DWORD written{};
@@ -443,6 +445,79 @@ ConfigSaveResult save_workspace_library(const std::filesystem::path& input, cons
         return save_document_bytes(input, *bytes.value, loaded);
     } catch (const std::exception& error) { return {{}, error.what(), false}; }
 }
+ApplicationLayoutSnapshotResult load_application_layout_snapshot(const std::filesystem::path& input) {
+    ApplicationLayoutSnapshotResult result;
+    try {
+        const auto path=checked_path(input);const auto directories=guard_directories(path,false);
+        OpenSnapshot opened;opened.token.path=path;
+        if(directories.complete)opened=read_snapshot(path);
+        if(opened.token.existed) {
+            auto parsed=deserialize_application_layout(opened.token.bytes);
+            if(!parsed){result.error=parsed.error;return result;}
+            result.layout=std::move(parsed.value);
+        } else result.layout.emplace();
+        result.snapshot=std::move(opened.token);
+    } catch(const std::exception& error){result.error=error.what();}
+    return result;
+}
+namespace {
+bool equal_dacl(HANDLE first,HANDLE second) {
+    PACL a{},b{};LocalAllocation first_descriptor,second_descriptor;
+    auto status=GetSecurityInfo(first,SE_FILE_OBJECT,DACL_SECURITY_INFORMATION,nullptr,nullptr,&a,nullptr,&first_descriptor.value);
+    if(status!=ERROR_SUCCESS)throw io_error("Could not inspect original layout permissions",status);
+    status=GetSecurityInfo(second,SE_FILE_OBJECT,DACL_SECURITY_INFORMATION,nullptr,nullptr,&b,nullptr,&second_descriptor.value);
+    if(status!=ERROR_SUCCESS)throw io_error("Could not inspect backup layout permissions",status);
+    SECURITY_DESCRIPTOR_CONTROL ac{},bc{};DWORD revision{};
+    if(!GetSecurityDescriptorControl(first_descriptor.value,&ac,&revision)||!GetSecurityDescriptorControl(second_descriptor.value,&bc,&revision))
+        throw io_error("Could not inspect layout permission inheritance");
+    if((ac&SE_DACL_PROTECTED)!=(bc&SE_DACL_PROTECTED))return false;
+    if(!a||!b)return a==b;
+    return a->AclSize==b->AclSize && std::memcmp(a,b,a->AclSize)==0;
+}
+}
+ConfigSaveResult save_application_layout(const std::filesystem::path& input,const ApplicationLayoutDocument& document,const ConfigFileSnapshot& loaded) {
+    try {
+        // Preflight first: a valid large v1 file may not fit the envelope. Never
+        // create a backup or touch the original if complete encoding fails.
+        auto bytes=serialize_application_layout(document);if(!bytes)return {{},bytes.error,false};
+        const auto path=checked_path(input);
+        if(loaded.path!=path)return {{},"Layout snapshot does not match its path.",false};
+        bool legacy=false;
+        if(loaded.existed) {
+            auto parsed=deserialize_application_layout(loaded.bytes);
+            if(!parsed)return {{},"Invalid or unsupported original layout; nothing was saved.",false};
+            legacy=parsed.value->requires_legacy_backup;
+        }
+        if(!legacy)return save_document_bytes(path,*bytes.value,loaded);
+        const auto directories=guard_directories(path,false);
+        if(!directories.complete)return {{},"Original layout changed before migration.",true};
+        auto original=read_snapshot(path);
+        if(original.token!=loaded)return {{},"Original layout changed before migration.",true};
+        BY_HANDLE_FILE_INFORMATION info{};
+        if(!GetFileInformationByHandle(original.handle.get(),&info))throw io_error("Could not inspect original layout");
+        if(info.dwFileAttributes&(FILE_ATTRIBUTE_READONLY|FILE_ATTRIBUTE_ENCRYPTED))
+            return {{},"Read-only or encrypted layout requires manual migration; nothing was saved.",false};
+        const auto backup_path=checked_path(std::filesystem::path(path.wstring()+L".v1-backup"));
+        auto backup=read_snapshot(backup_path,false);
+        if(!backup.token.existed) {
+            ConfigFileSnapshot absent_backup;absent_backup.path=backup_path;
+            auto saved=save_document_bytes(backup_path,loaded.bytes,absent_backup,original.handle.get());
+            if(!saved)return {{},"Could not create the legacy layout backup: "+saved.error,saved.conflict};
+            backup=read_snapshot(backup_path,false);
+        }
+        // This handle denies new write/delete opens through the final commit.
+        // Existing backup bytes and permissions are never silently overwritten.
+        if(!backup.token.existed || backup.token.bytes!=loaded.bytes || !equal_dacl(original.handle.get(),backup.handle.get()))
+            return {{},"Existing legacy layout backup differs in bytes or permissions; nothing was saved.",true};
+        // Classic FileRenameInfo cannot replace an open target, even when this
+        // extra source read handle allowed FILE_SHARE_DELETE. Release only it;
+        // the verified backup and ancestor guards stay held through commit.
+        // The writer reopens/rechecks the exact original token and preserves its
+        // current DACL, then closes its own target handles before replacement.
+        original.handle.reset();
+        return save_document_bytes(path,*bytes.value,loaded);
+    } catch(const std::exception& error){return {{},error.what(),false};}
+}
 AgentSettingsSnapshotResult load_agent_provider_settings(const std::filesystem::path& input) {
     AgentSettingsSnapshotResult result;
     try {
@@ -462,7 +537,7 @@ ConfigSaveResult save_agent_provider_settings(const std::filesystem::path& path,
 
 #else
 namespace stormtty {
-ShellDiscoveryResult discover_windows_shells(std::span<const Profile> configured) { return {{}, {"Windows shell discovery is unavailable on this platform."}}; }
+ShellDiscoveryResult discover_windows_shells(std::span<const Profile>) { return {{}, {"Windows shell discovery is unavailable on this platform."}}; }
 SettingsSnapshotResult load_settings_snapshot(const std::filesystem::path&) { return {{}, {}, "Windows settings persistence is unavailable on this platform."}; }
 ConfigSaveResult save_settings_config(const std::filesystem::path&, const Config&, const ConfigFileSnapshot&) {
     return {{}, "Windows settings persistence is unavailable on this platform.", false};
@@ -472,6 +547,12 @@ WorkspaceLibrarySnapshotResult load_workspace_library_snapshot(const std::filesy
 }
 ConfigSaveResult save_workspace_library(const std::filesystem::path&, const WorkspaceLibrary&, const ConfigFileSnapshot&) {
     return {{}, "Windows workspace persistence is unavailable on this platform.", false};
+}
+ApplicationLayoutSnapshotResult load_application_layout_snapshot(const std::filesystem::path&) {
+    return {{},{},"Application layout persistence requires the Windows host."};
+}
+ConfigSaveResult save_application_layout(const std::filesystem::path&,const ApplicationLayoutDocument&,const ConfigFileSnapshot&) {
+    return {{},"Application layout persistence requires the Windows host.",false};
 }
 AgentSettingsSnapshotResult load_agent_provider_settings(const std::filesystem::path&) {return {{},{},"Local agent settings require the Windows host."};}
 ConfigSaveResult save_agent_provider_settings(const std::filesystem::path&,const AgentProviderSettings&,const ConfigFileSnapshot&) {return {{},"Local agent settings require the Windows host.",false};}
