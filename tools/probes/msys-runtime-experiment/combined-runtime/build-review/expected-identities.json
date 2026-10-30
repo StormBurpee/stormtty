@@ -1,0 +1,335 @@
+{
+  "approved_for_fixture_execution": false,
+  "identities": {
+    "controller": {
+      "config": {
+        "compiler": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\HostX64\\x64\\cl.exe",
+        "compiler_flags": "/nologo /std:c11 /W4 /WX /O2 /Brepro /c",
+        "include": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\include;C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\ATLMFC\\include;C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Auxiliary\\VS\\include;C:\\Program Files (x86)\\Windows Kits\\10\\include\\10.0.26100.0\\ucrt;C:\\Program Files (x86)\\Windows Kits\\10\\\\include\\10.0.26100.0\\\\um;C:\\Program Files (x86)\\Windows Kits\\10\\\\include\\10.0.26100.0\\\\shared;C:\\Program Files (x86)\\Windows Kits\\10\\\\include\\10.0.26100.0\\\\winrt;C:\\Program Files (x86)\\Windows Kits\\10\\\\include\\10.0.26100.0\\\\cppwinrt;C:\\Program Files (x86)\\Windows Kits\\NETFXSDK\\4.8.1\\include\\um",
+        "lib": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\ATLMFC\\lib\\x64;C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\lib\\x64;C:\\Program Files (x86)\\Windows Kits\\NETFXSDK\\4.8.1\\lib\\um\\x64;C:\\Program Files (x86)\\Windows Kits\\10\\lib\\10.0.26100.0\\ucrt\\x64;C:\\Program Files (x86)\\Windows Kits\\10\\\\lib\\10.0.26100.0\\\\um\\x64",
+        "linker": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\HostX64\\x64\\link.exe",
+        "linker_flags": "/nologo /WX /Brepro kernel32.lib",
+        "output": "C:\\stormtty-build-review\\controller",
+        "source_root": "C:\\stormtty-build-review\\source\\tools\\probes\\msys-runtime-experiment\\combined-runtime\\build-review"
+      },
+      "controller_sha256": "1cf92463ec2562f3cc690ce1efe0593582f64ce45b2da9d2d785ffce00823141",
+      "object_sha256": "31b315585a36a4a4781dcca7cf0153d0861e9e0c4006b3c47537a48a58600f91",
+      "source_sha256": "153b8c6b174ab803b4f02a7630b9f4390aa9cf70f6ce70f4e96f0829181616f5",
+      "tools": [
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\atlprov.dll",
+          "sha256": "b312525880cf640ddcae074f4f6935d65c0fb72298e84bcdcd40ba39c9e39fba"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\bscmake.exe",
+          "sha256": "cf0574bc1e5926883ad304ae75d72a1f2300289b0dd096f1a64d5d9a60e8dd0e"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\c1.dll",
+          "sha256": "49bd8b0b1c3d814b6b39cf0d649ac8a7ffc8fea021b0c5fd363f787b158d39a5"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\c1xx.dll",
+          "sha256": "de129befb4cfeca19ea62c4d72162f19f2b7952545cc64b7b3f1fcfd4981c5f1"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\c2.dll",
+          "sha256": "1477c03a2a267effe4a40d8debb846f3e4ab42547c5b966d7d5187bb2823e2f5"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\c2dd.dll",
+          "sha256": "59186b7f2988c9f4bd5b81fae79cebd101fcd557cff7b409c7b0f84c632a8afc"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\cfgpersist.dll",
+          "sha256": "5fdbecf891f10f2720fbffffd7b2da90211188459394ab38ea35fd261a7bdafa"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\cl.exe",
+          "sha256": "b0a1818ebae6da7f18230a84e76ce839212584ac4c2ab55b97a0d5268085da57"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\clang_rt.asan_dbg_dynamic-x86_64.dll",
+          "sha256": "ffc75f33331223e5970bce1f90fc9f08ff5ae14096bc0414976174a6b21826b3"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\clang_rt.asan_dynamic-x86_64.dll",
+          "sha256": "7f901a239979c49b36a3b18ecd1843f551f94b5879585bded41a650c5b71f35f"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\CppBuildInsights.dll",
+          "sha256": "fd906969e481c42dbe6882973638aaf2b61dadce32dba2a942c44949090d08f7"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\cvtres.exe",
+          "sha256": "830d09e8e4a66b2f8fb0bfaad943d0bc5ce704b990d6a57e2e1aad3ec91e8ef7"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\d3dcompiler_47.dll",
+          "sha256": "8c88c162010a8d6b80f2c0433d4ce973ce626afcbc8da5be68bfa2ba68341eba"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\dpcmi.dll",
+          "sha256": "aecbc7ed828821675ff41f10a9eb1b4386f88242466416566bbe25eaa3067e3f"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\dumpbin.exe",
+          "sha256": "357c989e1c926841df4e6e97c25a60b205b30110cd6db39bde8d81a627e48ebb"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\editbin.exe",
+          "sha256": "edaee7981c7f78953b0643b3ea4a77c89d2207abf97632ea5026a5b102a24bf0"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\EspXEngine.dll",
+          "sha256": "059938169a3abf5636450cb5937da3a14ade477b24d9f0fd9c406211245499c8"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\ifc.exe",
+          "sha256": "985ea160e2370a0ee8ea28596531be135407d72a04b7e422d5c4821f2eff0be5"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\KernelTraceControl.dll",
+          "sha256": "9e2477efeb3d218f4a1844afc590e6040efecca599c91f777e56ce64a1faccc5"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\lib.exe",
+          "sha256": "d8dae02a50c7571c6c0ea5cd7a853830aaca8fad13f8f4be147828d51dd4adec"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\libz3.dll",
+          "sha256": "d4dbe180fdb89d6d5bfbec007bb6a6aeb335cf129285f6aed2c2054b939d6ba3"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\link.exe",
+          "sha256": "a8c42e25c91ca2453e1110540ac08f0fc12d7539454a11b9af8baeecb469837d"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\llvm-symbolizer.exe",
+          "sha256": "10409d7f56976c7c3df4248bedf26837fef99c8f2341a13024cf864fb56b2ea4"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\math.dll",
+          "sha256": "182ca601734fbb7b5173bfdf475bce90711ed9218705d9b89d7f6637d3025976"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\Microsoft.Diagnostics.Tracing.EventSource.dll",
+          "sha256": "a20f6d6c0dae7ac9c7c295b819d085bdfc7cfab123e8fc4ca4ddfd0a88701d04"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\Microsoft.VisualStudio.RemoteControl.dll",
+          "sha256": "cc52e19735d6152702672feb5911c8ba77f60fdc73df5ed0d601b37415f3a7ed"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\Microsoft.VisualStudio.Telemetry.dll",
+          "sha256": "c6b09bdb01fb84406fb95f77befd68b4f8f0b5d715bb00df817b5e691501c50d"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\Microsoft.VisualStudio.Utilities.Internal.dll",
+          "sha256": "4d1d5efd28d72c332ba87e1993cb35e46404753543c5563700b98a97aa3c42a6"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\ml64.exe",
+          "sha256": "baf8f8be0e77992bb01cfd2b30ff46b1532362a649495df24966567f8517c1e1"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\msobj140.dll",
+          "sha256": "3bb97a52d2e94ea0210443e8b0c424ec3ded0b93c7edd7ac0e1952f27253a93c"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\mspdb140.dll",
+          "sha256": "429b03bbecf0851bd7f1922448c4ff4184d5e521af13a5ce0da6e8c54b033dff"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\mspdbcmf.exe",
+          "sha256": "92325876afd3becb63c423a52ac289ec92cc7f3e22b26f9dbba02c04445f205e"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\mspdbcore.dll",
+          "sha256": "91c61f30fafb3324b03070c4ee85f370902cf3d80240a210f7240e89777bf6be"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\mspdbsrv.exe",
+          "sha256": "498fdb05a806e44bd564aac3263645be748a0e9cecbb0220d598a3ddd7220748"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\mspdbst.dll",
+          "sha256": "7956adf9b55835091f6cb304febaf6356b7ef101f76c9da2a3683650baa6c2bd"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\mspft140.dll",
+          "sha256": "7958bbaf5768837dacc2361d4db771f267d8f1da00130ba2afed328a2f497d14"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\msvcdis140.dll",
+          "sha256": "ab2dad7a0260427deab6d17797d4676e74f041d19d60d223a92c6f739c635803"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\msvcp140_1.dll",
+          "sha256": "3703b2d0e966ce43b28f1fe8efb606c8b486b1643c7df8e5b1b3afb1059d835b"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\msvcp140_2.dll",
+          "sha256": "2df4ba8c007568725238139e962a8f539d4c5d6321fe00e6a950ecc134f43142"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\msvcp140_atomic_wait.dll",
+          "sha256": "bf42a95e7ff83446a3c58bde8ad95b643ca4a75ce6ed99d6043700b1dcf1c0e4"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\msvcp140_codecvt_ids.dll",
+          "sha256": "c177906114f641bc7c56566c58d83a0d30b9904506c3f65f438addf7943516ea"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\msvcp140.dll",
+          "sha256": "aa30f46a44704dd3d8207f5fe859b4f9ac0d4e53de486b18841fc586827ea946"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\Newtonsoft.Json.dll",
+          "sha256": "ad537ef13183a95c4c40001f3994f751a6b0843fa812ff49d52ba861bd643cb9"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\nmake.exe",
+          "sha256": "492b4589acd95ac3a5066fdc8898ea32bda185e2e89ffbc0e6e7b1b056e026b9"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\pgocvt.exe",
+          "sha256": "471c7e2934405a0a2b052003f4c6f069c0d6e70ed1ab8f4d2c5eb98df72a1e4e"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\pgodb140.dll",
+          "sha256": "a01717cdf46b6a5c9f75dd1b2d5e85198d4bce69609c908fca8d092bdc29d578"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\pgomgr.exe",
+          "sha256": "439800ad8c4881679da8743be12698860c56a29d3b0b5406b4221e9a70712049"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\pgort140.dll",
+          "sha256": "8009e9ae64c5088a1c8e0eaa8ba16a1a29c38fbe36dbddb33cf674b234f38912"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\pgosweep.exe",
+          "sha256": "e74e99f1347569f73e5181212013a21e449c210c7cf10cb33ba364e03bf95fc2"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\spdconvert.exe",
+          "sha256": "dec754ae5667ca53e093b12457513f6f18f0d935c61529aa112ae85c969b2b06"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\spddump.exe",
+          "sha256": "9a09faa9fa833f1810094c1a71e43217ff82e4861e3c63cea7670434b8d8229d"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\sptaggregate.exe",
+          "sha256": "89e05ec3d327f92c7274146467df7198499296d60191200910bc6e28dca2455d"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\sptdump.exe",
+          "sha256": "6fd2e3cd50c1c52c737a4a066bf1833709634ca3a6edf0c2bd9341d556180b48"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\System.Memory.dll",
+          "sha256": "06ea95f8388a6b031acb2449fd5663d9d26d720ae13df80c800805f896734430"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\System.Runtime.CompilerServices.Unsafe.dll",
+          "sha256": "3cadcb6b8a7335141c7c357a1d77af1ff49b59b872df494f5025580191d1c0d5"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\tbbmalloc.dll",
+          "sha256": "cc333821876857302b7458533b71af66e4636918d64031112a52e920fc96f651"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\undname.exe",
+          "sha256": "898491aea7eb002a5b165191191a696129d082315631a9738073aafcf7c52cd8"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\vcmeta.dll",
+          "sha256": "1a448333e6b8f7e9cb4f90397e49b2b3d3c92d51dec5d564bdb13130f008f0fc"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\vcperf.exe",
+          "sha256": "afb8f85d530b62718ecf2e678b512ab63fec6d13f031be8c8483aa83bc9cd741"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\vcruntime140_1.dll",
+          "sha256": "417e18eda9b2f5dcd65b9bac6640d90e5e79d373419cf4573bd9dc35faf42e33"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\vcruntime140_threads.dll",
+          "sha256": "2c3b345f6096b1f31d69776326ce0536c6f481a251f0688c09d570880c53cce7"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\vcruntime140.dll",
+          "sha256": "2aa42da93ed9f3c1fe9c085666bea24a59fb4c3542d60885ea9cfcfbc11b26ea"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\vctip.exe",
+          "sha256": "41fe46f8a0b41f6dd94c68c85fba20a10aacb662a9ef04784a632e37f3692371"
+        },
+        {
+          "path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Tools\\MSVC\\14.51.36231\\bin\\Hostx64\\x64\\xdcmake.exe",
+          "sha256": "116d05fd0db0cc32712ba503902be1c922bc8b9807f0b7d0437d9bc82fdd5232"
+        }
+      ]
+    },
+    "fixture_source_sha256": {
+      "../passive-path/linked-preflight.py": "90cdc22bea7da98b2e9d9ddc7647289eb00dba3485a50ec9cbf55520ba44a2f7",
+      "adjudicate.py": "adf98e92ae58fb4f6456dea11fd3e21ca32cf8352010c10816c49c480f146639",
+      "collect.py": "229723b938121e666e54e635651d059dc91ee45d296b50d9259e95b85a4e396b",
+      "controller-protocol.h": "a25dcf917c144538c7ce692b5c5ce56939ccf997ea0fc7c18f705bd189687f71",
+      "identities.json": "561d0d300c8521fd08144bfe7096761a1afa81d5c16a5a645e5244929e8fb262",
+      "linked-gate.py": "1ff6559113a5daadd3592db6a391931eb7b7fe436f718e01313287caa713a256",
+      "matrix.py": "72faf2432e81c4e635c918872a0842fd0a778f21843bbb7c126950389149a8c5",
+      "native/cases.h": "1fc5d72fa8dc01476d863475cd254d80abd57379f30e7edeac63c11373aafacb",
+      "native/controller.c": "153b8c6b174ab803b4f02a7630b9f4390aa9cf70f6ce70f4e96f0829181616f5",
+      "native/reader.c": "1168c53d74978cb9b79b886216b48b49fd2d2516f61ede29532c7e525e0acbf3",
+      "observer.hpp": "6df09baf831530992be0278e1e63f9ed512529c73b7c901db73429d44d567454",
+      "owned-runner.py": "ba3dd67e0182005c3be478eef9ac2f4d0289b9287943d7b3fb37dbd76168d5d7",
+      "reader-protocol.h": "c5c68dac3261fc7865e9ba60c3b29e4b44bb4846d39e63c30cf7a716aaea5f1e",
+      "run.py": "19a6f0451a02e6e505e757a159440d8b3ea5d197f6bad0c17f3af07f2110f73e",
+      "trace.py": "1efe2b8268d49d4d87f7d686c9aa387c3bf8ac478011e1c8733e0c552b92584b"
+    },
+    "variants": {
+      "combined": {
+        "dll": "3df25f66e4c5ce82101167c46205a95fcc2fee4b8b494191f1a667c6b0370cf5",
+        "metadata": {
+          "build-time-environment.txt": "b7dc39eef9ed646df3e13ad99ab4376b67a59497f4574e1128e625b7b50f2ff0",
+          "compiler-mode.txt": "8160e578d78a1254955d95714694039b77960e3802dadc07b719cfbaea301ed6",
+          "compiler-packages.txt": "feecbbb9be9775ee80ed1cf95433fbd35c5e79ff4a138dc95d418e8f1d458d1f",
+          "makepkg.conf": "e32dfe62e9477ad074c98c3821cfad93320aed41ec3c79c0cf5d59fcbbbc4bac",
+          "source-epoch.txt": "d7d506ea3d47526af08915a8db2747e6a255dd54aee1371ad232d963c178a874",
+          "tool-binaries-after.txt": "17ddb1e627aeed4cbba5c85a1869975faa40a7585c2425e0c5a1736bd7197b47",
+          "tool-binaries-before.txt": "17ddb1e627aeed4cbba5c85a1869975faa40a7585c2425e0c5a1736bd7197b47"
+        },
+        "reader": "542d3c603b82456cd0e1c08a0691dda35092c23af88c5d3e8ddaa3eb62457c30"
+      },
+      "copied": {
+        "dll": "946bfcf57d7b6bf1da7f67bfa355e540ee657e14d33030112256732f6e371a03",
+        "metadata": {
+          "build-time-environment.txt": "b7dc39eef9ed646df3e13ad99ab4376b67a59497f4574e1128e625b7b50f2ff0",
+          "compiler-mode.txt": "8160e578d78a1254955d95714694039b77960e3802dadc07b719cfbaea301ed6",
+          "compiler-packages.txt": "feecbbb9be9775ee80ed1cf95433fbd35c5e79ff4a138dc95d418e8f1d458d1f",
+          "makepkg.conf": "f7511dde213f10638278f29a70cee7eaf8ffa8037b5d5332b24b141167493173",
+          "source-epoch.txt": "d7d506ea3d47526af08915a8db2747e6a255dd54aee1371ad232d963c178a874",
+          "tool-binaries-after.txt": "17ddb1e627aeed4cbba5c85a1869975faa40a7585c2425e0c5a1736bd7197b47",
+          "tool-binaries-before.txt": "17ddb1e627aeed4cbba5c85a1869975faa40a7585c2425e0c5a1736bd7197b47"
+        },
+        "reader": "542d3c603b82456cd0e1c08a0691dda35092c23af88c5d3e8ddaa3eb62457c30"
+      }
+    }
+  },
+  "native_qualified": false,
+  "offline_analyzer_commit": "4fe5b875723450d28315db41fd8392c9ef0cc192",
+  "offline_verdict": "EXACT_MATCH",
+  "origin": {
+    "commit": "3f20af360ff6d359c19b13ac31f1851cde006a64",
+    "run_attempt": "1",
+    "run_id": "40994103183"
+  },
+  "original_ci_reason": "incomplete toolchain hashes",
+  "original_ci_verdict": "INCONCLUSIVE",
+  "schema": 1,
+  "scope": "immutable-prior-cold-build-identities"
+}

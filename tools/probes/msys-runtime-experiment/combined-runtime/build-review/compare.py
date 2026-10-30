@@ -4,6 +4,8 @@ import argparse,hashlib,json,re
 from pathlib import Path
 MAX_FILE=32*1024*1024
 HEX=re.compile(r'[0-9a-f]{64}')
+EXPECTED_PATH=Path(__file__).resolve().parent/'expected-identities.json'
+EXPECTED_SHA256='badc59a4bbfa01dfbbc90795afb12f88f1e9589a697adde8a854f9411e54c874'
 def pairs(items):
     result={}
     for key,value in items:
@@ -56,16 +58,22 @@ def identity(files,repeat):
         provenance=report['provenance_sha256']
         for name,sha in provenance.items():
             if hashlib.sha256(files[prefix+name]).hexdigest()!=digest(sha):raise ValueError('report provenance mismatch')
+        linkage=value(prefix+'cold-linkage.json')
+        if ('cold-linkage.json' not in provenance or linkage.get('schema')!=1 or
+            linkage.get('scope')!='bounded-cold-linkage-excerpts' or
+            linkage.get('fixtures_executed') is not False or linkage.get('approved_for_fixture_execution') is not False or
+            linkage.get('dll_sha256')!=report['dll_sha256'] or linkage.get('reader_sha256')!=report['reader_sha256']):
+            raise ValueError('invalid or missing cold linkage evidence')
         names=('tool-binaries-before.txt','tool-binaries-after.txt','source-epoch.txt','build-time-environment.txt','makepkg.conf','compiler-packages.txt','compiler-mode.txt')
         if any(name not in provenance for name in names):raise ValueError('required provenance absent')
         if files[prefix+'tool-binaries-before.txt']!=files[prefix+'tool-binaries-after.txt']:raise ValueError('toolchain changed during build')
         tools=files[prefix+'tool-binaries-before.txt'].decode('utf-8').splitlines()
-        if len(tools)<5 or any(not re.fullmatch(r'[0-9a-f]{64}  .+',line) for line in tools):raise ValueError('incomplete toolchain hashes')
+        if len(tools)<5 or any(not re.fullmatch(r'[0-9a-f]{64} [ *].+',line) for line in tools):raise ValueError('incomplete toolchain hashes')
         epoch=files[prefix+'source-epoch.txt'].decode('utf-8').splitlines()
         if len(epoch)!=3 or epoch[:2]!=['867eb7748e6e5a0e8430ce9f46af27b4b1e8f204','1790890720']:raise ValueError('source epoch mismatch')
         if files[prefix+'build-time-environment.txt'].decode('utf-8').strip()!='SOURCE_DATE_EPOCH=1790890720':raise ValueError('build epoch mismatch')
         result['variants'][variant]={'dll':digest(report['dll_sha256']),'reader':digest(report['reader_sha256']),
-            'source':snapshot,'metadata':{name:digest(provenance[name]) for name in names}}
+            'source':snapshot,'cold_linkage_sha256':digest(provenance['cold-linkage.json']),'metadata':{name:digest(provenance[name]) for name in names}}
     controller=value('controller/controller-build-review.json')
     if controller.get('schema')!=2 or controller.get('scope')!='controller-build-only' or controller.get('fixtures_executed') is not False or controller.get('review_required') is not True:raise ValueError('invalid controller scope')
     before=value('controller/tool-binaries-before.json');after=value('controller/tool-binaries-after.json')
@@ -82,7 +90,23 @@ def identity(files,repeat):
     if not result['controller']['config']:raise ValueError('controller configuration missing')
     return result
 
-def compare(first,second):
+def prior_projection(value):
+    # New cold-exporter sources may differ; behavior/fixture sources and all
+    # compiler/configuration and binary identities must remain exactly pinned.
+    return {'variants':{variant:{key:value['variants'][variant][key] for key in ('dll','reader','metadata')}
+                        for variant in ('copied','combined')},
+            'controller':value['controller'],
+            'fixture_source_sha256':value['variants']['copied']['source']['fixture_source_sha256']}
+
+def expected_identities():
+    data=read(EXPECTED_PATH)
+    if hashlib.sha256(data).hexdigest()!=EXPECTED_SHA256:raise ValueError('immutable expected identities hash mismatch')
+    expected=read_json(data)
+    if expected.get('schema')!=1 or expected.get('scope')!='immutable-prior-cold-build-identities' or expected.get('approved_for_fixture_execution') is not False or expected.get('native_qualified') is not False:
+        raise ValueError('invalid expected identities scope')
+    return expected
+
+def compare(first,second,expected=None):
     result={'schema':1,'scope':'two-clean-build-cold-evidence','fixtures_executed':False,
             'native_qualified':False,'approved_for_fixture_execution':False,'independent_linked_review_required':True,
             'verdict':'INCONCLUSIVE','exact_match':False}
@@ -90,8 +114,14 @@ def compare(first,second):
         a=identity(collection(first),1);b=identity(collection(second),2)
         if a['run']!=b['run']:raise ValueError('different workflow/source identities')
         result['identities']=[a,b]
-        result['exact_match']=a==b
-        result['verdict']='EXACT_MATCH' if a==b else 'MISMATCH'
+        # Synthetic tests can supply a baseline explicitly. The CLI has no
+        # override and always loads the hash-pinned repository baseline.
+        if expected is None:expected=expected_identities()
+        result['prior_origin']=expected['origin']
+        result['repeat_match']=a==b
+        result['prior_match']=all(prior_projection(value)==expected['identities'] for value in (a,b))
+        result['exact_match']=result['repeat_match'] and result['prior_match']
+        result['verdict']='EXACT_MATCH' if result['exact_match'] else 'MISMATCH'
     except (OSError,ValueError,KeyError,TypeError,AttributeError) as error:result['reason']=str(error)[:300]
     return result
 if __name__=='__main__':

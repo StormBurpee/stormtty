@@ -94,3 +94,35 @@ These tests cover exact retained epoch/source controls, drift, collection limits
 fixed branch-restricted build-only workflow, and synthetic comparison mutations. They do not
 prove native compiler acceptance, ABI correctness, reproducibility, runtime
 cleanup or physical UI behavior.
+
+## Follow-on bounded linkage evidence
+
+Run `40994103183` built both variants in both clean jobs. Its original comparison
+remains **INCONCLUSIVE** (`incomplete toolchain hashes`): the parser accepted only
+GNU sha256sum's text marker, whereas MSYS emitted the standard binary `*` marker.
+The independently reviewed parser revision `4fe5b875723450d28315db41fd8392c9ef0cc192`
+re-evaluated the unchanged, collection-hash-verified text artifacts as **EXACT_MATCH**.
+That offline result is not a new workflow pass and grants no execution approval.
+
+The next build-only evidence extension adds `cold-linkage.json`: selected six-byte
+OS accessor thunks, their exact import descriptor/lookup/IAT/hint/name bytes and
+RVA linkage; selected runtime export directory/name/ordinal/function bindings; and
+the four exact reader `.rdata` export-name literals plus bounded aligned pointer
+pool entries that reference those literals (at most four entries per name).
+Each excerpt is at most 256
+bytes, with at most 8192 selected bytes overall. These bounded hexadecimal records
+are not full PE/section exports. All checks read bytes; no candidate is loaded.
+Existing linked reader disassembly supplies the code references to these literals.
+
+The follow-on comparison requires both new repeats to match each other and the
+immutable prior DLL/reader/controller, fixture-source, compiler/tool and build
+configuration identities. Expected values are committed separately and their file
+hash pinned in the comparator; differences fail closed. Exporter source necessarily
+changes and is compared between the new repeats, not falsely equated to old source.
+No timestamps, binary bytes or checksum records are normalized. A mismatch must be
+investigated, never resolved by silently replacing expected identities.
+
+Fresh independent review must interpret the linkage records and code together.
+They do not prove general async-signal safety, OS TLS/accessor contracts, ABI behavior,
+rendezvous liveness or native cleanup. Those assumptions and the unexecuted runtime
+matrix remain separate. No `approved_for_fixture_execution` field becomes true.

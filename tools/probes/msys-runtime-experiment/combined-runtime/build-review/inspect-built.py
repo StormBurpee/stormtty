@@ -21,7 +21,13 @@ def inspect(build,variant):
     errno=pe.code_export('__errno')
     ranges={'handler':(handler,length),'emitter':(emitter,emit_length),'errno':(errno,len(gate.pe_gate.ERRNO_BYTES))}
     for label,(rva,size) in ranges.items():gate.pe_gate.dump(prov,dll,pe.base,label,rva,size)
-    files=['generated-version.cc','dll-debuglink.txt','tool-binaries-before.txt','tool-binaries-after.txt','source-epoch.txt','build-time-environment.txt','makepkg.conf','compiler-packages.txt','compiler-mode.txt','console-native-disassembly.txt','console-native-symbols.txt',
+    linkage_spec=importlib.util.spec_from_file_location('cold_linkage',HERE/'cold-linkage.py')
+    linkage=importlib.util.module_from_spec(linkage_spec);linkage_spec.loader.exec_module(linkage)
+    if pe.at(errno,len(gate.pe_gate.ERRNO_BYTES))!=gate.pe_gate.ERRNO_BYTES:raise ValueError('errno leaf changed')
+    excerpts=linkage.evidence(pe,rp,gate.EXPORTS,calls+emit_calls,emitter,errno,gate.pe_gate.OS_ACCESSORS,gate.pe_gate.EMITTER)
+    excerpts['dll_sha256']=hashlib.sha256(data).hexdigest();excerpts['reader_sha256']=hashlib.sha256(exe).hexdigest()
+    (prov/'cold-linkage.json').write_text(json.dumps(excerpts,indent=2)+'\n')
+    files=['cold-linkage.json','generated-version.cc','dll-debuglink.txt','tool-binaries-before.txt','tool-binaries-after.txt','source-epoch.txt','build-time-environment.txt','makepkg.conf','compiler-packages.txt','compiler-mode.txt','console-native-disassembly.txt','console-native-symbols.txt',
            'reader-object-disassembly.txt','reader-object-symbols.txt','reader-linked-disassembly.txt','reader-pe.txt',
            'console.cc.before','console.cc.after','fhandler.h.after','termios.cc.after','diagnostic.patch','stormtty-combined-path.h']
     spec=importlib.util.spec_from_file_location('build_source_manifest',HERE/'source-manifest.py')

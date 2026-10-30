@@ -4,7 +4,7 @@ import argparse,hashlib,json,stat
 from pathlib import Path
 FILE_LIMIT=32*1024*1024
 TOTAL_LIMIT=128*1024*1024
-PROVENANCE=('generated-version.cc','dll-debuglink.txt','tool-binaries-before.txt','tool-binaries-after.txt','reader-linker-help.txt','source-epoch.txt','makepkg.conf','build-time-environment.txt','source-before.json','combined-plan.md','variant.txt','compiler-mode.txt','compiler-packages.txt','selected-toolchain.txt',
+PROVENANCE=('cold-linkage.json','generated-version.cc','dll-debuglink.txt','tool-binaries-before.txt','tool-binaries-after.txt','reader-linker-help.txt','source-epoch.txt','makepkg.conf','build-time-environment.txt','source-before.json','combined-plan.md','variant.txt','compiler-mode.txt','compiler-packages.txt','selected-toolchain.txt',
  'system-toolchain.txt','pacman-before.txt','pacman-after.txt','configured-cxx.txt','hashes.txt','package-hashes.txt',
  'console-before.cc','console-after.cc','console.cc.before','console.cc.after','termios.cc.before','termios.cc.after',
  'fhandler.h.before','fhandler.h.after','PKGBUILD','0007-preserve-copied-on-signal.patch','0006-refined-prefix.patch',
