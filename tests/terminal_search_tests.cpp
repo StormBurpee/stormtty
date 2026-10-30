@@ -341,6 +341,115 @@ void mutation_during_materialization() {
     check(after->status==SearchStatus::complete && after->matches.size()==151,"mutation during conversion lost or duplicated hits");
     check(before->matches.empty(),"owned progress snapshot mutated");
 }
+// These public-API cases ran against the original implementation before the
+// search owner moved. They protect lifecycle details, not just final hit counts.
+void search_lifecycle_metadata() {
+    TerminalCore core(make_search_terminal_options());
+    core.feed("needle");
+    core.begin_search(11, {"needle"});
+    const auto complete = finish(core);
+    check(core.select_search_match(complete->token, 0) == SearchApplyResult::applied,
+          "metadata fixture selection failed");
+    const auto selected = core.search_snapshot();
+    core.cancel_search(0);
+    const auto cancelled = core.search_snapshot();
+    check(cancelled->token.request_id == 0 &&
+          cancelled->token.generation == selected->token.generation + 1 &&
+          cancelled->token.revision == selected->token.revision,
+          "cancellation token changed");
+    check(cancelled->query == selected->query &&
+          cancelled->work_units == selected->work_units &&
+          cancelled->update_id == selected->update_id + 1 &&
+          cancelled->matches_found == 0 && cancelled->matches.empty() &&
+          !cancelled->selected_index && !cancelled->last_apply_result,
+          "cancellation publication metadata changed");
+    check(core.selection_text() == "needle", "cancel erased independent selection");
+    check(core.search_step() == cancelled, "cancelled search polled or republished");
+    core.begin_search(11, {"absent"});
+    check(core.selection_text() == "needle", "begin erased independent selection");
+    const auto running = core.search_snapshot();
+    check(core.select_search_match(complete->token, 999) == SearchApplyResult::stale,
+          "stale must precede status and index validation");
+    check(core.select_search_match(running->token, 999) == SearchApplyResult::not_ready,
+          "status must precede index validation");
+    const auto empty = finish(core);
+    check(core.navigate_search(empty->token, SearchDirection::forward) == SearchApplyResult::no_match,
+          "empty completed search navigation changed");
+    check(core.select_search_match(empty->token, 0) == SearchApplyResult::no_match,
+          "empty completed search selection changed");
+    check(complete->matches.size() == 1 && !complete->selected_index,
+          "action changed an older immutable snapshot");
+}
+void search_revision_budget_and_noops() {
+    TerminalCore core(make_search_terminal_options());
+    core.feed("needle");
+    SearchOptions options{"needle"};
+    options.max_work_units_per_step = 1;
+    options.max_total_work_units = 2;
+    core.begin_search(12, options);
+    core.search_step();
+    const auto first = core.search_snapshot();
+    const auto revision = core.revision();
+    core.feed("");
+    core.resize(core.size());
+    check(core.revision() == revision && core.search_snapshot() == first,
+          "empty feed or unchanged geometry invalidated search");
+    core.feed(" more");
+    const auto exhausted = finish(core);
+    check(exhausted->status == SearchStatus::limited && exhausted->work_units == 2,
+          "content refresh reset cumulative work budget");
+    core.feed(" later");
+    check(!core.search_needs_work() && core.search_step() == exhausted,
+          "limited search restarted after content changed");
+    core.begin_search(12, {"needle"});
+    const auto renewed = finish(core);
+    check(renewed->status == SearchStatus::complete &&
+          renewed->token.generation > first->token.generation,
+          "fresh request did not recover from exhausted work");
+}
+void search_validation_and_phase_cancellation() {
+    TerminalCore core(make_search_terminal_options(40, 200));
+    for (unsigned i = 0; i < 150; ++i) core.feed("needle\r\n");
+    std::vector<SearchOptions> invalid;
+    for (const auto limit : {std::size_t{0}, std::size_t{4097}}) {
+        SearchOptions option{"needle"}; option.max_matches = limit; invalid.push_back(option);
+    }
+    for (const auto limit : {std::size_t{65535}, std::size_t{67108865}}) {
+        SearchOptions option{"needle"}; option.memory_budget_bytes = limit; invalid.push_back(option);
+    }
+    for (const auto limit : {0u, 17u}) {
+        SearchOptions option{"needle"}; option.max_work_units_per_step = limit; invalid.push_back(option);
+    }
+    for (const auto limit : {0u, 1000001u}) {
+        SearchOptions option{"needle"}; option.max_total_work_units = limit; invalid.push_back(option);
+    }
+    for (const auto& option : invalid) {
+        core.begin_search(13, option);
+        check(core.search_snapshot()->status == SearchStatus::error && !core.search_needs_work(),
+              "invalid search option accepted");
+    }
+    for (unsigned phase = 0; phase < 3; ++phase) {
+        SearchOptions option{"needle"}; option.max_work_units_per_step = 1;
+        core.begin_search(14, option);
+        if (phase == 1) core.search_step();
+        if (phase == 2) {
+            unsigned steps = 0;
+            while (core.search_snapshot()->matches_found != 150) {
+                core.search_step();
+                check(++steps < 1000, "materialization cancellation fixture stalled");
+            }
+            core.search_step();
+            check(core.search_snapshot()->status == SearchStatus::running &&
+                  core.search_snapshot()->matches.empty(), "partial matches published");
+        }
+        const auto old = core.search_snapshot();
+        core.cancel_search(15);
+        core.feed("output");
+        check(!core.search_needs_work(), "cancelled phase restarted after output");
+        check(core.select_search_match(old->token, 0) == SearchApplyResult::stale,
+              "cancelled phase token remained usable");
+    }
+}
 struct WakeCounter {
     std::mutex mutex; std::condition_variable cv;
     void signal(){{std::lock_guard lock(mutex);}cv.notify_all();}
@@ -560,6 +669,9 @@ int main(int argc,char** argv) {
         {"bounded quanta and stale navigation",bounded_quanta_and_stale_navigation},
         {"explicit navigation invalidation ownership",explicit_navigation_invalidation_ownership},
         {"output during owned-coordinate materialization",mutation_during_materialization},
+        {"search lifecycle metadata and selection ownership", search_lifecycle_metadata},
+        {"search revision cumulative budget and no-ops", search_revision_budget_and_noops},
+        {"search validation and phase cancellation", search_validation_and_phase_cancellation},
         {"drained retained native Find fixture",[&]{drained_retained_find_fixture(std::filesystem::absolute(argv[0]).string());}},
         {"pre-extraction Find lifecycle", [&] {
             find_controller_lifecycle<test::LegacyTerminalFind>(std::filesystem::absolute(argv[0]).string());
