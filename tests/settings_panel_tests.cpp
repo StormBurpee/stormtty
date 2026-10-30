@@ -1,3 +1,4 @@
+#include "stormtty/build_features.hpp"
 #include "core_test.hpp"
 #include "stormtty/settings_panel.hpp"
 #include <algorithm>
@@ -83,7 +84,7 @@ int main() {return run_core_tests("settings panel",[] {
     for(const auto& c:mac_exchange.layout().controls)CHECK(c.id!="appearance.import" && c.id!="appearance.export");
     }
     // Experimental glass is an explicit session action, never a draft preference.
-    {
+    if constexpr(experimental_liquid_glass) {
         SettingsPanel glass; glass.resize({1000,800}); glass.open(defaults);
         CHECK(!glass.take_action()); CHECK(!item(glass,"appearance.liquid_glass").enabled);
         glass.set_liquid_glass_status(false,true,"Off · local GPU-only capture starts only after confirmation.");
@@ -147,6 +148,19 @@ int main() {return run_core_tests("settings panel",[] {
         SettingsPanel reopened;reopened.set_liquid_glass_status(false,true,"Off");reopened.open(defaults,disk);
         const auto disk_preview=reopened.take_action();CHECK(disk_preview && disk_preview->kind==SettingsActionKind::preview);
         CHECK(!reopened.take_action());
+    }
+    else {
+        SettingsPanel glass; glass.resize({1000,800}); glass.open(defaults);
+        // Even a stale or mistaken host availability report cannot expose it.
+        glass.set_liquid_glass_status(true,true,"Active");
+        CHECK(std::none_of(glass.layout().controls.begin(),glass.layout().controls.end(),
+            [](const auto& c){return c.id=="appearance.liquid_glass";}));
+        CHECK(!glass.take_action()); CHECK(!glass.dirty()); CHECK(glass.draft()==defaults);
+        WindowScene scene;glass.append_scene(scene);
+        CHECK(std::none_of(scene.texts.begin(),scene.texts.end(),[](const auto& t){
+            return t.text.find("Liquid Glass")!=std::string::npos || t.text.find("display capture")!=std::string::npos;
+        }));
+        CHECK(item(glass,"appearance.blur").enabled); // Normal blur stays available.
     }
     // Backend is a stable draft preference, not a process launch or live preview.
     SettingsPanel backend;

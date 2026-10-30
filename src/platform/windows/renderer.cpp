@@ -15,6 +15,7 @@
 #include "smoke_teardown_trace.hpp"
 #include "host_backdrop.hpp"
 #include "liquid_glass/session.hpp"
+#include "stormtty/build_features.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1400,7 +1401,7 @@ void Renderer::set_additional_blur(float sigma) {
     p.release_swapchain();p.create_surfaces();p.invalid=true;
 }
 bool Renderer::liquid_glass_available() const noexcept {
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && STORMTTY_EXPERIMENTAL_LIQUID_GLASS
     return impl_->window && impl_->counters.composition && !impl_->counters.warp;
 #else
     return false;

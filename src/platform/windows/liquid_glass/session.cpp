@@ -1,7 +1,8 @@
 #include "session.hpp"
+#include "stormtty/build_features.hpp"
 #include <cstdint>
 #include <stdexcept>
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && STORMTTY_EXPERIMENTAL_LIQUID_GLASS
 #include "capture_source.hpp"
 #include "material_pass.hpp"
 #include <winrt/base.h>
@@ -82,7 +83,7 @@ struct Session::Impl{};
 Session::Session():impl_(std::make_unique<Impl>()){} Session::~Session()=default;
 bool Session::start(void*,void*,ID3D11Device*,ID3D11DeviceContext*)noexcept{return false;}
 void Session::stop(const char*)noexcept{} bool Session::active()const noexcept{return false;}
-std::string Session::status()const{return "Unavailable: experimental glass requires a native MSVC/Windows SDK build.";}
+std::string Session::status()const{return experimental_liquid_glass?"Unavailable: experimental glass requires a native MSVC/Windows SDK build.":"Disabled in this build — experimental Liquid Glass is paused.";}
 ID3D11Texture2D* Session::background(float)noexcept{return nullptr;}
 std::uint64_t Session::generation()const noexcept{return 0;}
 }

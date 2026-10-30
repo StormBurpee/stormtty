@@ -1,3 +1,4 @@
+#include "stormtty/build_features.hpp"
 // Native Windows runtime test. Cross-compiling this file is NOT a passing test.
 #include "stormtty/renderer.hpp"
 #include "stormtty/cursor_motion.hpp"
@@ -361,11 +362,16 @@ std::shared_ptr<RenderFrame> frame() {
     return result;
 }
 void liquid_glass_off_test() {
-    // App-owned offscreen pixels only: never call Start or acquire a desktop source.
+    // App-owned offscreen pixels only: never acquire a desktop source.
     // This contract also applies when the optional capture service is stubbed out.
     RendererOptions options;options.force_warp=true;options.font.family="Consolas";
     Renderer renderer(nullptr,options);
     require(!renderer.liquid_glass_active(),"New renderer started Liquid Glass without consent");
+    if constexpr(!experimental_liquid_glass) {
+        require(!renderer.liquid_glass_available(),"Disabled build exposed Liquid Glass");
+        require(!renderer.start_liquid_glass(nullptr),"Disabled build accepted a capture start");
+        require(!renderer.poll_liquid_glass(),"Disabled build scheduled a capture update");
+    }
     renderer.resize(96,48);
     WindowScene scene;scene.panes.push_back({1,{0,0,96,48},frame()});
     require(renderer.render(scene)==RenderResult::presented,"Glass-off fixture did not render");

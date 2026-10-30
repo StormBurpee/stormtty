@@ -1,4 +1,5 @@
 #include "stormtty/settings_panel.hpp"
+#include "stormtty/build_features.hpp"
 #include "stormtty/chrome_paint.hpp"
 #include "stormtty/ui_colors.hpp"
 
@@ -134,6 +135,7 @@ void SettingsPanel::set_material_status(std::string status) {
     material_status_=std::move(status);++generation_;
 }
 void SettingsPanel::set_liquid_glass_status(bool active, bool available, std::string status) {
+    if(!experimental_liquid_glass) return;
     status=bounded_message(std::move(status));
     if(liquid_glass_active_==active && liquid_glass_available_==available && liquid_glass_status_==status) return;
     const bool state_changed=liquid_glass_active_!=active || liquid_glass_available_!=available;
@@ -196,7 +198,7 @@ void SettingsPanel::rebuild_layout() {
         add("nav.ribbon",{x+16,y+242,180,40});
     }
     layout_.content={content_x,content_y,content_w,std::max(0.0,layout_.footer.y-content_y-16)};
-    document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?(platform_==Platform::windows?882.0+glass_status_height(content_w):740.0)+theme_gallery_extra(content_w):
+    document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?(platform_==Platform::windows && experimental_liquid_glass?882.0+glass_status_height(content_w):740.0)+theme_gallery_extra(content_w):
         section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
     scroll_motion_.reset(scroll_);
@@ -235,6 +237,8 @@ void SettingsPanel::rebuild_layout() {
         add("appearance.motion",{right-cw,detail_top+642,cw,34},true);
         if (platform_==Platform::windows) {
             add("appearance.clock",{right-42,detail_top+698,42,24},true);
+        }
+        if (platform_==Platform::windows && experimental_liquid_glass) {
             add("appearance.liquid_glass",{content_x,detail_top+824,std::min(content_w,180.0),34},true,
                 liquid_glass_active_ || (liquid_glass_available_ && !high_contrast_));
         }
@@ -312,7 +316,7 @@ void SettingsPanel::activate(std::string_view id,int direction) {
         return;
     }
     if(id=="appearance.liquid_glass") {
-        if(platform_!=Platform::windows || (!liquid_glass_active_ && (!liquid_glass_available_ || high_contrast_))) return;
+        if(!experimental_liquid_glass || platform_!=Platform::windows || (!liquid_glass_active_ && (!liquid_glass_available_ || high_contrast_))) return;
         liquid_glass_action_=liquid_glass_active_?SettingsActionKind::liquid_glass_stop:SettingsActionKind::liquid_glass_start;
         return;
     }
@@ -629,6 +633,7 @@ std::optional<SettingsAction> SettingsPanel::take_action() {
     // A session request must not discard an already queued ordinary preview.
     if(pending_) return std::exchange(pending_,std::nullopt);
     const auto action=std::exchange(liquid_glass_action_,std::nullopt);
+    if(!experimental_liquid_glass) return std::nullopt;
     if(!action || !open_ || saving_ || platform_!=Platform::windows) return std::nullopt;
     if(*action==SettingsActionKind::liquid_glass_start &&
        (liquid_glass_active_ || !liquid_glass_available_ || high_contrast_)) return std::nullopt;
@@ -840,6 +845,8 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
                 box(c->bounds,(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?accent:border,focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
                 box({c->bounds.x+((draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?21:3),c->bounds.y+3,18,18},(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?primary_ink:ink,transparent,9);
             }
+        }
+        if (platform_==Platform::windows && experimental_liquid_glass) {
             const double glass_top=top+appearance_offset;
             label({content.x,glass_top+750,content.width,24},"Experimental Liquid Glass",ink,13,true,true);
             const auto wrapped=[&](Rect rect,std::string value) {

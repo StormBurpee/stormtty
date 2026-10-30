@@ -188,6 +188,20 @@ These are native Windows development-build captures from the automated fixture,
 not concept art. They show layout and controls; desktop blur and physical input
 latency need separate hardware verification.
 
+### Experimental Liquid Glass (paused, disabled by default)
+
+Liquid Glass is hidden from Settings in normal builds. Its capture/material source
+is retained for later, but the application cannot start it while the build flag
+`STORMTTY_EXPERIMENTAL_LIQUID_GLASS` is OFF (the default). Ordinary backdrop and
+additional blur are unchanged. No runtime configuration or old settings enable it.
+
+Developer-only opt-in builds may set `-DSTORMTTY_EXPERIMENTAL_LIQUID_GLASS=ON`.
+Live capture still requires native MSVC/Windows SDK support, a supported SDR
+monitor, and explicit per-session confirmation; it never starts automatically.
+The separate desktop-glass diagnostic retains its independent, default-OFF probe
+option. [Deferred HDR findings](docs/liquid-glass-hdr-research.md) are research,
+not implemented support or permission to resume the experiment.
+
 ### Experimental AI (disabled by default)
 
 The AI integration is paused and hidden by default. Normal launches create no
