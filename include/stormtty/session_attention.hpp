@@ -16,12 +16,19 @@ namespace stormtty {
 // No Session handles, workspace mutation, notification delivery or persistence.
 class SessionAttention {
 public:
-    bool arm_watch(SessionId session, WatchIdentity identity,
-                   const SessionInfo& info, bool foreground) {
-        if (identity.session != session.value || watches_.contains(session)) return false;
+    bool arm_watch(
+        SessionId session,
+        WatchIdentity identity,
+        const SessionInfo& info,
+        bool foreground) {
+        if (identity.session != session.value || watches_.contains(session)) {
+            return false;
+        }
 
         CommandWatch watch;
-        if (!watch.arm(identity, info, foreground)) return false;
+        if (!watch.arm(identity, info, foreground)) {
+            return false;
+        }
 
         watches_.emplace(session, std::move(watch));
         return true;
@@ -32,15 +39,21 @@ public:
         if (found == watches_.end() || found->second.status() != WatchStatus::watching) {
             return false;
         }
+
         watches_.erase(found);
         return true;
     }
 
     // Changed includes removal on identity mismatch. CommandWatch::observe
     // itself returns false for that reset, but the host must redraw its chrome.
-    bool observe_watch(SessionId session, WatchIdentity identity, const SessionInfo& info) {
+    bool observe_watch(
+        SessionId session,
+        WatchIdentity identity,
+        const SessionInfo& info) {
         const auto found = watches_.find(session);
-        if (found == watches_.end()) return false;
+        if (found == watches_.end()) {
+            return false;
+        }
 
         const auto before = found->second.status();
         found->second.observe(identity, info);
@@ -48,6 +61,7 @@ public:
             watches_.erase(found);
             return true;
         }
+
         return before != found->second.status();
     }
 
@@ -67,7 +81,10 @@ public:
         return found->second.observe(info);
     }
 
-    bool acknowledge_watch(SessionId session, WatchIdentity identity, std::uint64_t generation) {
+    bool acknowledge_watch(
+        SessionId session,
+        WatchIdentity identity,
+        std::uint64_t generation) {
         const auto found = watches_.find(session);
         if (found == watches_.end() || found->second.identity() != identity ||
             found->second.generation() != generation || !found->second.unread()) {
@@ -94,7 +111,9 @@ public:
         return found == watches_.end() ? nullptr : &found->second;
     }
 
-    [[nodiscard]] const CommandWatch* current_watch(SessionId session, WatchIdentity identity) const {
+    [[nodiscard]] const CommandWatch* current_watch(
+        SessionId session,
+        WatchIdentity identity) const {
         const auto* watch = stored_watch(session);
         return watch && watch->identity() == identity ? watch : nullptr;
     }
@@ -131,17 +150,23 @@ public:
                 checkpoint.entries_.emplace(session, *attention);
             }
         }
+
         return checkpoint;
     }
 
     // The fixture validates that its actor incarnations still match first.
     // Transfer preallocated nodes so failure rollback cannot allocate while
     // unwinding. Missing saved entries mean the session was not parked before.
-    void restore_qualification_parked_checkpoint(QualificationParkedCheckpoint&& checkpoint) noexcept {
-        for (const auto session : checkpoint.sessions_) parked_.erase(session);
+    void restore_qualification_parked_checkpoint(
+        QualificationParkedCheckpoint&& checkpoint) noexcept {
+        for (const auto session : checkpoint.sessions_) {
+            parked_.erase(session);
+        }
+
         while (!checkpoint.entries_.empty()) {
             parked_.insert(checkpoint.entries_.extract(checkpoint.entries_.begin()));
         }
+
         checkpoint.sessions_.clear();
     }
 
