@@ -85,14 +85,39 @@ the new renderer, fixture and full changed Windows host. Sparse-checkout missing
 headers initially prevented the fixture/host syntax checks; materializing those
 existing tracked headers resolved them. These checks are not Windows execution.
 
-## Remaining qualification and scope
+## Native qualification and remaining limits
 
-Windows runtime qualification remains required for this source: the native
-project/focus/watch rail scenarios, collapsed/expanded/minimum workspace-frame
-captures, Settings cog/theme checks, renderer/cache/PNG and teardown gates. No
-native runtime, full-suite, macOS UI, mixed-monitor physical DPI, presentation
-smoothness or performance result is claimed here. Existing shell qualification
-failures remain separate and must not be relabeled as success.
+PR #44 head `b606156a` passed the Windows baseline **71/71** in
+[native run 41115202828](https://github.com/StormBurpee/stormtty/actions/runs/41115202828).
+The retained Windows baseline artifact is `13004838852`. Its JUnit result records
+71 tests, zero failures and zero skipped tests; `workspace_rail_renderer_tests`
+executed natively and passed the 12,288-case / 1,809,437-check emission matrix.
+This executes both frozen original and extracted emission after extraction; it
+does **not** establish original native execution before extraction.
+
+The same baseline passed the existing native workspace-frame, focus,
+collapsed/single/narrow/high-contrast, watch/activity, navigator and
+previous-terminal scenarios. Retained native logs record the controlled-time
+pane-focus checks and Settings owned-monochrome-cog/shared-hit-geometry checks.
+Renderer/resource/cache/PNG and final teardown gates also passed. These are
+existing native scenario contracts, not new physical UI or timing measurements.
+Linux and macOS jobs passed in the same run; they do not establish macOS rail UI
+parity or Windows physical behavior.
+
+The completed Windows tail passed **15/15 application cases**: all five packaged,
+all five bundled-zsh and all five developer-zsh scenarios. Settings repeats passed
+**8/10 explicit and 3/3 default** cases. Explicit cases **9 and 10 failed** with
+return code 2: retained terminal rows show malformed `[200~` paste input, a
+trailing `~` and `zsh: = not found`, followed by the internal phase-2 smoke
+deadline. Both failures were reaped, with `timed_out=false` and no cleanup error;
+that is successful cleanup, not successful scenarios. All 13 repeat receipts
+recorded reaping without an outer timeout or cleanup error.
+
+The Windows job therefore failed despite its green baseline and application
+cases. This records the observed shell failure, not a shell fix or a common-root-
+cause determination. No fully green Windows run, mixed-monitor physical DPI,
+wall-clock sampling equivalence, presentation smoothness, physical frame pacing
+or performance result is claimed.
 
 This completes the rail composition boundary only. Header/Ribbon owners are not
 rebuilt; pane-frame acquisition, typing observation, find/palette/navigator/modal

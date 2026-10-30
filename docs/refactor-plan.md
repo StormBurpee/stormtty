@@ -43,12 +43,13 @@ creation fixtures. The legacy implementation was captured before extraction but
 was **not executed natively before extraction**.
 
 The [full Windows run](https://github.com/StormBurpee/stormtty/actions/runs/41098888113)
-failed: packaged `smoke-layout` reached its stage 0 deadline, bundled
-`smoke-settings` reached its stage 8 deadline, and the repeat summary reported
-1/10 with return code 2. All 13 repeat receipts reported `reaped=true` and
-`timed_out=false`; successful process reaping is not scenario success. Failure
-classification remains under review, so these results do not establish a cause
-or a fully green shell run. They also do not qualify physical UI or macOS parity.
+failed: packaged `smoke-layout` reached its stage 0 deadline with malformed paste
+and a stale suffix; bundled `smoke-settings` reached its stage 8 deadline with
+malformed paste. Explicit repeat cases **1 and 10 failed** with malformed paste
+(return code 2); this was not a 1/10 success count. All 13 repeat receipts reported
+`reaped=true` and `timed_out=false`; successful process reaping is not scenario
+success. These observed failure classifications do not establish a common root
+cause, a fully green shell run, physical UI verification or macOS parity.
 See [creation verification](../tests/view_creation_verification.md) for coverage
 and source-characterization limits.
 
@@ -70,7 +71,15 @@ distinct from portable policy.
 overlay values. `WorkspaceRailRenderer` now owns rail visual composition from
 explicit geometry, resolved workspace rows and style; the host retains live
 catalog/watch sampling, transitions, input and layout. Its frozen oracle and
-actual-host-fragment trace provide portable equivalence, not native UI evidence.
+actual-host-fragment trace provide portable equivalence. PR #44 head `b606156a`
+passed the Windows native baseline 71/71, including the 12,288-case rail oracle
+matrix and existing workspace-frame/focus/watch/navigation gates; Linux and macOS
+jobs also passed. The Windows tail passed all 15 application cases and 8/10
+explicit plus 3/3 default Settings repeats. Explicit cases 9 and 10 failed with
+malformed `[200~` paste input, trailing `~` and `zsh: = not found`; both were reaped
+without outer timeout or cleanup error. The Windows job was not fully green, no
+shell fix is claimed, and physical DPI, wall-clock sampling equivalence and frame
+pacing remain unqualified.
 See [rail verification](../tests/workspace_rail_renderer_verification.md).
 Separate the remaining domain compositions from host interaction and native drawing,
 using explicit content/layout/style inputs. `RibbonRenderer` and
