@@ -158,3 +158,24 @@ rejects multiple windows until grouped persistence is implemented; the native
 controller still constructs only one. Settings-editor coordination and multi-window
 shutdown/renderer scheduling remain separate upcoming boundaries. A Windows-target
 object compile is not evidence that native modal/persistence smoke has passed.
+
+### Retired actor completion routing
+
+The first native extraction incorrectly erased the only route before a retired
+actor's final `done` notification. Native modal smoke stage 2 waits for that actor's
+`closed()` state; an idle survivor could therefore receive no wake to continue.
+This is an ownership regression, not a backend flake or a reason to add polling.
+
+The correction makes the actor callback own a route whose endpoint remains weak.
+The registry holds only a weak route for rebinding/discovery. Removing a registry
+entry no longer removes final completion delivery; a moved-then-retired actor
+notifies its last endpoint, and an expired endpoint is harmless. Expired failed-
+launch registrations are pruned on bind. Live-move integration must still schedule
+an explicit destination wake after commit, because a callback may already have
+captured the previous endpoint during a concurrent rebind.
+
+`session_wake_router_tests` exercises retirement before the final callback,
+move-then-retire, expired endpoints, registry destruction and concurrent rebinds.
+Native modal smoke now emits a distinct stage-3 retirement/survivor assertion after
+disposal, before sending its final marker. Only a new native run can qualify that
+path; portable router tests and cross-compilation do not replace it.

@@ -41,6 +41,7 @@
 #include "stormtty/cursor_motion.hpp"
 #include "stormtty/smoke_deadline.hpp"
 #include "stormtty/session.hpp"
+#include "stormtty/session_wake_router.hpp"
 #include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
 #include "stormtty/windows_settings_wheel.hpp"
@@ -251,24 +252,7 @@ void enforce_custom_frame_style(HWND window, bool diagnostics) {
     if ((actual&WS_CAPTION) || missing) throw std::runtime_error("Windows did not retain the required caption-free resize/system-control styles; see frame-style diagnostic.");
 }
 
-// Application-owned routing survives a view replacement. Actor threads only
-// resolve a weak wake endpoint; they never access the UI-thread model/registry.
-class ActorWakeRouter final {
-public:
-    void bind(SessionId id, const std::shared_ptr<WakeState>& endpoint) {
-        std::lock_guard lock(mutex_); endpoints_.insert_or_assign(id, endpoint);
-    }
-    void erase(SessionId id) { std::lock_guard lock(mutex_); endpoints_.erase(id); }
-    void wake(SessionId id) noexcept {
-        std::shared_ptr<WakeState> endpoint;
-        { std::lock_guard lock(mutex_); const auto found=endpoints_.find(id);
-          if(found!=endpoints_.end()) endpoint=found->second.lock(); }
-        if(endpoint) endpoint->wake();
-    }
-private:
-    std::mutex mutex_;
-    std::map<SessionId,std::weak_ptr<WakeState>> endpoints_;
-};
+using ActorWakeRouter=SessionWakeRouter<WakeState>;
 struct ApplicationActors {
     std::map<SessionId,std::shared_ptr<Session>> sessions;
     std::map<SessionId,SessionState> states;
@@ -286,8 +270,8 @@ struct ApplicationActors {
         return id;
     }
     Session::Wake callback(SessionId id, const std::shared_ptr<WakeState>& endpoint) {
-        wakes->bind(id,endpoint);
-        return [weak=std::weak_ptr<ActorWakeRouter>(wakes),id] { if(auto router=weak.lock())router->wake(id); };
+        auto route=wakes->bind(id,endpoint);
+        return [route=std::move(route)] {route->wake();};
     }
     ~ApplicationActors() { for(auto& [id,session]:sessions){(void)id;session->request_close();} }
 private:
@@ -6248,7 +6232,16 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             smoke_modal_stage_=2;
         } else return;
     }
-    if (options_.smoke_modal && smoke_disposable_ && !smoke_disposable_->closed()) return;
+    if (options_.smoke_modal && smoke_disposable_) {
+        if(!smoke_disposable_->closed())return;
+        if(smoke_modal_stage_==2) {
+            if(sessions_.size()!=1 || !active_session() || active_session()==smoke_disposable_.get() || active_session()->process_finished()) {
+                smoke_finish("Retired actor disposal changed the surviving modal terminal.");return;
+            }
+            smoke_modal_stage_=3;
+            std::fputs("Native modal retirement: removed actor completed disposal; original live survivor retained; final marker/exit may proceed.\n",stderr);
+        }
+    }
     if (options_.smoke_projects && !smoke_projects_live_verified_) {
         if (projects_.entries().size()!=2 || sessions_.size()!=2 || smoke_project_actors_.size()!=2) { smoke_finish("Workspace creation did not retain two distinct actors."); return; }
         for (const auto& [id,actor]:smoke_project_actors_) {
