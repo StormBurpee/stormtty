@@ -172,9 +172,16 @@ DPI, row generation and invalidation; Metal resources and asynchronous presentat
 are separate. Its row cache contains GPU raster textures, not Windows-style CPU
 shaped rows, so the backends do not share cache-lifetime assumptions.
 
+`ChromePainter` (`src/platform/windows/chrome_painter.hpp` and `.cpp`) executes
+the ordered native chrome drawing, separate from domain scene composition such
+as `RibbonRenderer`. `PaintSurface` is a synchronous drawing borrow with scoped
+clip/opacity state; it owns no GPU resources and exposes no resize, presentation
+or frame-transaction control. The renderer still resolves material policy and
+coordinates `BeginDraw`/`EndDraw`, damage commits and presentation.
+
 ## Remaining ownership work
 
-`src/platform/windows/renderer.cpp` still owns terminal/chrome painting, device
+`src/platform/windows/renderer.cpp` still owns terminal painting, device
 resources and presentation. These need focused ownership without conflating
 canvas validity, resource lifetime and presentation readiness.
 Observation caches are encapsulated, but deliberately remain application-shared;
@@ -203,7 +210,8 @@ gates. Useful starting points:
   Windows `settings_services_tests`, `windows_session_launcher_tests` and
   `native_settings_smoke`. Exercise conflicts, Cancel/reopen and close during I/O.
 - Rendering: `ribbon_renderer_tests`, `scene_damage_tests`, then Windows
-  `text_resources_tests`, `image_cache_tests`, `renderer_smoke`/`renderer_final_teardown`, `renderer_png`
+  `text_resources_tests`, `image_cache_tests`, `paint_surface_tests`,
+  `renderer_smoke`/`renderer_final_teardown`, `renderer_png`
   and relevant native layout/material
   scenarios. Include resize, font/DPI changes, occlusion and resource recovery.
 - macOS typography/rendering: `macos_font_resources_tests`, `macos_renderer_tests`
