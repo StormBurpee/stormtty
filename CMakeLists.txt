@@ -361,8 +361,9 @@ if(WIN32)
         stormtty_warnings(console_backend_tests)
         stormtty_copy_ghostty_runtime(console_backend_tests)
     endif()
-    add_library(stormtty_renderer
+    set(stormtty_windows_renderer_sources
         src/platform/windows/renderer.cpp
+        src/platform/windows/render_device.cpp
         src/platform/windows/text_resources.cpp
         src/platform/windows/image_cache.cpp
         src/platform/windows/paint_surface.cpp
@@ -371,6 +372,7 @@ if(WIN32)
         src/platform/windows/png_decoder.cpp
         src/platform/windows/host_backdrop.cpp
         src/platform/windows/liquid_glass/session.cpp)
+    add_library(stormtty_renderer ${stormtty_windows_renderer_sources})
     target_include_directories(stormtty_renderer PUBLIC include)
     target_link_libraries(stormtty_renderer PUBLIC stormtty_terminal stormtty_build_features PRIVATE stormtty_scene_damage d3d11 dxgi d2d1 dwrite dcomp windowscodecs ole32 user32)
     if(MSVC AND STORMTTY_EXPERIMENTAL_LIQUID_GLASS)
@@ -397,6 +399,27 @@ if(WIN32)
     target_compile_definitions(stormtty_renderer PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     stormtty_warnings(stormtty_renderer)
     if(BUILD_TESTING)
+        # Acquisition failure injection is isolated to these separately compiled
+        # objects. Production has neither checkpoints nor test policy switches.
+        add_executable(render_device_tests
+            tests/render_device_tests.cpp
+            ${stormtty_windows_renderer_sources})
+        target_include_directories(render_device_tests PRIVATE include)
+        target_compile_definitions(render_device_tests PRIVATE
+            UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+            _CRT_SECURE_NO_WARNINGS STORMTTY_RENDER_DEVICE_TESTS=1
+            STORMTTY_EXPERIMENTAL_LIQUID_GLASS=0)
+        target_link_libraries(render_device_tests PRIVATE
+            stormtty_terminal stormtty_scene_damage
+            d3d11 dxgi d2d1 dwrite dcomp windowscodecs ole32 user32)
+        if(MSVC)
+            target_link_libraries(render_device_tests PRIVATE windowsapp CoreMessaging dxguid dwmapi)
+        endif()
+        stormtty_warnings(render_device_tests)
+        stormtty_copy_ghostty_runtime(render_device_tests)
+        add_test(NAME render_device_tests COMMAND render_device_tests)
+        set_tests_properties(render_device_tests PROPERTIES TIMEOUT 30 LABELS "windows;native")
+
         stormtty_test(text_resources_tests tests/text_resources_tests.cpp stormtty_renderer)
         stormtty_test(image_cache_tests tests/image_cache_tests.cpp stormtty_renderer)
         stormtty_test(paint_surface_tests tests/paint_surface_tests.cpp stormtty_renderer)
