@@ -75,12 +75,16 @@ void migration_and_conflicts(const Directory& directory) {
     const auto path=directory.path/L"workspaces.stormtty";write(path,*old.value);
     auto loaded=load_application_layout_snapshot(path);CHECK(loaded);CHECK(loaded.layout->requires_legacy_backup);
     CHECK(!std::filesystem::exists(backup(path)));
-    auto saved=save_application_layout(path,loaded.layout->document,*loaded.snapshot);CHECK(saved);
+    auto saved=save_application_layout(path,loaded.layout->document,*loaded.snapshot);
+    if(!saved)std::cerr<<"initial legacy migration failed: conflict="<<saved.conflict<<" error="<<saved.error<<'\n';
+    CHECK(saved);
     CHECK(read(backup(path))==*old.value);
     auto current=load_application_layout_snapshot(path);CHECK(current);CHECK(!current.layout->requires_legacy_backup);
     CHECK(current.layout->document.library.presets.size()==1);
     current.layout->document.clean_shutdown=false;
-    auto updated=save_application_layout(path,current.layout->document,*current.snapshot);CHECK(updated);
+    auto updated=save_application_layout(path,current.layout->document,*current.snapshot);
+    if(!updated)std::cerr<<"envelope update failed: conflict="<<updated.conflict<<" error="<<updated.error<<'\n';
+    CHECK(updated);
     CHECK(read(backup(path))==*old.value);CHECK(!load_application_layout_snapshot(path).layout->document.clean_shutdown);
     auto stale=save_application_layout(path,loaded.layout->document,*loaded.snapshot);CHECK(!stale);CHECK(stale.conflict);
     const auto refused=directory.path/L"differing.stormtty";write(refused,*old.value);write(backup(refused),"Do not overwrite this backup");

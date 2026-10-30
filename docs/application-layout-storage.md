@@ -119,3 +119,14 @@ sequence ordering/import/saturation, invalid versions/numbers/lengths/ownership,
 live bindings, mutation robustness and the whole-envelope size cap. The backup/file-conflict service and its Windows-only tests are implemented but
 still require native runtime evidence; crash-marker timing, second-process routing
 and GPU wait lifetime behavior still need host implementation and Windows evidence.
+
+### Migration source-handle lifetime
+
+After verifying backup bytes and DACL, migration releases its extra original-file
+read handle before invoking the existing atomic writer. Classic FileRenameInfo
+replacement rejects an open target; delete sharing is not POSIX replacement
+semantics. The backup remains held without write/delete sharing, ancestor guards
+remain held, and the writer independently rereads/revalidates the exact original
+baseline and preserves its DACL before the unchanged atomic rename path. No ACL
+check, conflict guard, link rejection or read-only/encrypted refusal is relaxed.
+See [Microsoft FileRenameInformation error conditions](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/1d2673a8-8fb9-4868-920a-775ccaa30cf8).

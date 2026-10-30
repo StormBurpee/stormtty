@@ -509,6 +509,12 @@ ConfigSaveResult save_application_layout(const std::filesystem::path& input,cons
         // Existing backup bytes and permissions are never silently overwritten.
         if(!backup.token.existed || backup.token.bytes!=loaded.bytes || !equal_dacl(original.handle.get(),backup.handle.get()))
             return {{},"Existing legacy layout backup differs in bytes or permissions; nothing was saved.",true};
+        // Classic FileRenameInfo cannot replace an open target, even when this
+        // extra source read handle allowed FILE_SHARE_DELETE. Release only it;
+        // the verified backup and ancestor guards stay held through commit.
+        // The writer reopens/rechecks the exact original token and preserves its
+        // current DACL, then closes its own target handles before replacement.
+        original.handle.reset();
         return save_document_bytes(path,*bytes.value,loaded);
     } catch(const std::exception& error){return {{},error.what(),false};}
 }
