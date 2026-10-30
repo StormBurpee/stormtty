@@ -138,7 +138,8 @@ class FreshOutputTests(unittest.TestCase):
                  mock.patch.object(runner.importlib.util, 'module_from_spec', return_value=module), \
                  mock.patch.dict(runner.sys.modules), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(runner.main(), 0)
-                destination = build / 'settings-raw-artifacts'
+                # Production resolves build paths, including Windows 8.3 temp aliases.
+                destination = build.resolve(strict=True) / 'settings-raw-artifacts'
                 self.assertTrue(destination.is_dir())
                 self.assertEqual(len(calls), 2)
                 self.assertNotIn('--console-runtime', calls[0][0])
