@@ -30,6 +30,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$root/evidence" | Out-Null
           "SHIPPING_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           git rev-parse HEAD | Set-Content "$root/evidence/commit.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git rev-parse "HEAD^{tree}" | Set-Content "$root/evidence/tree.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check packaging and numeric evidence contracts
         timeout-minutes: 3
         shell: pwsh
@@ -147,5 +150,6 @@ jobs:
             ${{ env.SHIPPING_ROOT }}/evidence/*.log
             ${{ env.SHIPPING_ROOT }}/evidence/*.json
             ${{ env.SHIPPING_ROOT }}/evidence/commit.txt
+            ${{ env.SHIPPING_ROOT }}/evidence/tree.txt
             ${{ env.SHIPPING_ROOT }}/evidence/shipping-settings.png
             ${{ env.SHIPPING_ROOT }}/evidence/default-off-*.png

@@ -178,3 +178,48 @@ Build/install identity assertions passed, including:
 - runtime manifest: `2b28817c1bb43cbfffbfee16a4162f636728682b1578678e2dd42ce157fd1854`
 - seed identity: `4385058824c2b053d86e8bd8b94ce6b4bd071fd3a0257d6f01263f7d73ffcbba`
 - seed text: `361846b3c44f1db8e82799fb28fa3bf0ae90971621a7ed6a5fd06ef3fa0d7ec7`
+
+
+## Current-main requalification candidate (2026-10-30)
+
+Prepared against reviewed palette-scroll commit
+`f721db87aa51dd2e4fc0a10e6678947a8fd4f015`, tree
+`45275e9e595ebd46a57ab96820b758c021bd5294`, on local main
+`1bebd53dbe3e6064e1b5197caf465addbf89e8cf`. Both upcoming native OFF and ON
+builds include that exact finite Settings/palette scrolling and clipped pixel
+viewport implementation; it is not replaced with the older gallery UI.
+The gallery-era run above does not qualify this palette change or later workspace
+ribbon, pane context, renderer, or native test changes. Relative to the reviewed
+palette base, this refresh changes only workflow source-tree evidence, workflow
+regression contracts, and documentation. Production code, pins, seed policy, default OFF,
+security checks, sample counts, deadlines, and all existing native gates remain
+unchanged. No seed or trust header from the historical run is reused.
+
+The existing exact `diagnostic/completion-seed-shipping` push route is ready for
+root-controlled publication of the reviewed tree. It stages the pinned runtime
+and provider once; the OFF and ON builds share compiler/build configuration and
+engine/runtime inputs. The timing matrix deliberately retains one identical
+ON-built measurement executable for baseline (planner absent) and candidate
+(planner attached), removing a binary/build confound. The separate fresh
+unspecified-option build proves the actual default remains OFF and exercises
+full native CTest, current UI, state, history, customization and typing behavior.
+
+Warm state still participates in the planner. Skipping seed adoption is not
+permission to bypass the lease/journal/shared-cache concurrency protocol. A
+~100 ms historical warm penalty is a reviewable tradeoff, not justification to
+remove durability, compaudit, eager first-Tab or plugin coverage.
+
+Before a separate default-activation decision, require a successful run on the
+exact published commit/tree with complete OFF regressions, current ON installed
+identity/no-op repair, all lifecycle/ACL/journal/crash/contention checks, all five
+timing conditions and numeric phase rows, eager completion/module checks,
+fresh adoption and warm non-adoption. Compare all three fresh and warm samples
+per condition/provider, including preparation in total time; report distributions
+and the warm penalty rather than selecting the best sample. Root must explicitly
+accept the measured tradeoff and retained-uncertainty recovery policy. A failed
+or missing gate blocks qualification; no repeated unchanged runs until green.
+Any later production-source change needs its own exact-tree native evidence.
+None of these CI fixtures measures the user's installed executable or machine.
+
+Native results for this refresh are **pending**. Local portable checks are not
+native performance, native ACL/lifecycle, or physical UI qualification.

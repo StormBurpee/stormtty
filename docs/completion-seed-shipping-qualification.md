@@ -1,8 +1,10 @@
 # Opt-in shipping completion seed qualification
 
-Branch: `diagnostic/completion-seed-shipping`, based on current local main
-`202dd426` (remote main equivalent `24a36e1`). No runtime pin or default feature
-activation changes. `STORMTTY_EXPERIMENTAL_COMPLETION_SEED` defaults **OFF**.
+Publication branch: `diagnostic/completion-seed-shipping`. The current-main
+refresh is based on reviewed palette-scroll `f721db8` atop local `1bebd53`
+(source tree `45275e9e595ebd46a57ab96820b758c021bd5294`); see
+`completion-seed-current-main.md` for the historical native evidence and pending
+qualification boundary. No runtime pin or default feature activation changes. `STORMTTY_EXPERIMENTAL_COMPLETION_SEED` defaults **OFF**.
 
 ## Actual application path
 
@@ -37,13 +39,16 @@ and installation behavior is unchanged. This avoids the earlier mismatch between
 
 ## Bounded native route
 
-`.github/workflows/completion-seed-shipping.yml` runs only on a push changing that
-workflow on the exact branch, with the same exact-ref job guard and checkout SHA.
+`.github/workflows/completion-seed-shipping.yml` runs only on a push to that
+exact branch, with the same exact-ref job guard and checkout SHA.
 Root owns one intentional publication; no retries-until-green or automatic PR
 workflow. Existing native CI workflows/gates remain unchanged.
 
-One engine cache/build and one native application build produce the application,
-startup probe and lifecycle probe. Build and install directories are authored
+One engine cache/build and one runtime/provider staging feed two distinct native
+build directories with identical compiler, build type and runtime inputs: a fresh
+real-default-OFF all-target build, and an explicit-ON application/startup/lifecycle
+probe build. OFF native CTest and UI/managed-state checks must pass before ON.
+The artifact records both checked-out commit and source tree identities. Build and install directories are authored
 beneath LOCALAPPDATA, modelling a per-user installation rather than trusting a
 possibly broadly writable CI workspace. Actual native ACL checks remain enabled;
 no existing directory permissions are repaired or weakened to make adoption pass.
@@ -59,6 +64,10 @@ The job verifies:
 5. Uninstrumented shipping factory measurements: one build-tree inbox candidate,
    then installed baseline/candidate for inbox and packaged providers. Each fixed
    condition has 3 fresh-private-state + 3 warm samples, with no repeats.
+   Baseline and seeded timing modes use the same ON-built probe, installed runtime
+   and provider; baseline omits the planner, while seeded attaches it on both fresh
+   and warm launches. This controlled timing baseline is distinct from the genuine
+   default-OFF application regression build, not a claim of identical OFF binaries.
 
 The measurement executable uses exactly the app's factory and the installed
 console helper. Its only authored user config is the existing non-replacing ZLE

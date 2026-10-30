@@ -21,6 +21,28 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('--output-on-failure --timeout 120',s)
         self.assertIn('tools/probes/run-default-off-completion.py',s)
         self.assertIn('timeout=900',s)
+    def test_current_tree_and_shared_build_inputs(self):
+        s=(ROOT/'.github/workflows/completion-seed-shipping.yml').read_text()
+        self.assertIn('git rev-parse "HEAD^{tree}"',s)
+        self.assertIn('${{ env.SHIPPING_ROOT }}/evidence/tree.txt',s)
+        configures=[line.strip().split() for line in s.splitlines() if line.strip().startswith('cmake -S . -B ')]
+        self.assertEqual(len(configures),2)
+        off,on=configures
+        self.assertEqual(off[5:], [arg for arg in on[5:] if arg!='-DSTORMTTY_EXPERIMENTAL_COMPLETION_SEED=ON'])
+        self.assertIn('build-default-off',off[4])
+        self.assertIn('/build"',on[4])
+        self.assertEqual(s.count('python tools/shell-bootstrap.py --destination'),1)
+        self.assertEqual(s.count('./tools/prepare-conpty-probe.ps1 -Destination'),1)
+    def test_same_binary_baseline_and_seeded_measurements(self):
+        s=(ROOT/'tools/probes/run-shipping-completion-seed.py').read_text()
+        for provider in ('inbox','packaged'):
+            for mode in ('baseline','seeded'):
+                self.assertIn("('install-"+provider+"-"+mode+"',a.install,installed,",s)
+        self.assertIn("mode='--shipping-seed' if candidate else '--shipping-baseline'",s)
+        probe=(ROOT/'tools/probes/managed_shell_startup_probe.cpp').read_text()
+        self.assertIn('if(shipping) {\n        shipping_plan=completion_seed_launch(fixture.root,runtime,true);',probe)
+        source=(ROOT/'src/platform/windows/window.cpp').read_text()
+        self.assertIn('#ifdef STORMTTY_EXPERIMENTAL_COMPLETION_SEED\n        if (state)',source)
     def test_off_guard_rejects_activation_or_generated_seed(self):
         spec=importlib.util.spec_from_file_location('off_integration',ROOT/'tools/probes/run-default-off-completion.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
