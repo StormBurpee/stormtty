@@ -76,36 +76,38 @@ context or own native resources.
 
 ### 4. macOS painters and host
 
-`MetalCompositor` and scoped `MetalFrame` implement the device/submission boundary;
-the separate exceptional-encoder cleanup correction passed the native macOS gate.
-`ChromePainter` now owns synchronous per-item chrome primitive/text painting,
-borrowing only the admitted frame and viewport/DPI/allowance values. The renderer
-retains ordered traversal, fresh per-item budget snapshots, submission and
-scene-history/statistics updates. Native macOS qualification passed 59/59;
-see [chrome painter verification](../tests/macos_chrome_painter_verification.md)
-and [the native run](https://github.com/StormBurpee/stormtty/actions/runs/41102242173).
-Linux, Windows baseline 70/70 and all 15 application cases also passed. The full
-Windows run failed repeated Settings cases `explicit5`, `explicit7` and
-`explicit8` with verified malformed bracketed paste: 10/13 repeats passed, all
-13 were reaped, with no outer timeout or cleanup error. This is not a green full
-run or physical-presentation qualification.
+The macOS renderer now coordinates rather than implementing both paint domains:
+`ChromePainter` owns per-item chrome primitives/text, and `TerminalPainter` owns
+pane backgrounds/selection, image layers/crops, row dispatch and cursors. Both
+borrow an admitted `MetalFrame` synchronously. Scene admission, canvas/pane order,
+viewport reset, chrome traversal, submission and success-only scene-history/
+statistics updates remain with the renderer.
 
-Group 4 remains open:
+`CoreTextFontResources`, `CoreTextRowRasterizer`, `MetalTextureResources` and
+`MetalCompositor` remain the font, CPU row, texture/accounting and native device/
+submission owners. Preserve fresh upload allowances, charged failures, cursor
+clip lifetime, mixed terminal/chrome alpha and exceptional-frame recovery.
 
-- Separate terminal paint policy still in `src/platform/macos/renderer.mm`:
-  pane backgrounds/selection, image layers, row dispatch and cursor rendering.
-  Keep `CoreTextFontResources`, `CoreTextRowRasterizer` and
-  `MetalTextureResources` as their existing owners; do not move frame admission,
-  submission or scene-history authority into a terminal painter.
-- In `src/platform/macos/window.mm`, separate application/session, view and input
-  responsibilities within `Host` without imposing Windows lifecycle symmetry.
-  ARC resource retention, completion-generation state and AppKit close/Quit
-  semantics require native characterization, not mechanical translation.
+Terminal painter native qualification passed 60/60, including the new fixture;
+see [terminal painter verification](../tests/macos_terminal_painter_verification.md)
+and [the native run](https://github.com/StormBurpee/stormtty/actions/runs/41105869939).
+The original algorithm was frozen before extraction but not executed natively
+before extraction. Linux and Windows baseline 70/70 passed. The Windows full run
+failed packaged layout (actor 5 stale suffix at 33×13, exit 0/marker 0), packaged
+Settings and repeats `explicit2`/`explicit6` (malformed bracketed paste). All 10
+bundled/developer cases passed; 29 compact receipts recorded 25 successes/four
+failures, all reaped without outer timeout. No shell fix or full-green result is
+claimed; physical UI and performance remain unproven. Earlier chrome/compositor results
+and limits remain in their [chrome](../tests/macos_chrome_painter_verification.md)
+and [compositor](../tests/macos_metal_compositor_verification.md) verification notes.
 
-Preserve shared upload-budget charging, clip resets, mixed terminal/chrome alpha
-and exception recovery. See [compositor verification](../tests/macos_metal_compositor_verification.md)
-for submission/lifetime evidence and limits. Neither painter extraction nor native
-offscreen success activates held presentation work or paused features.
+Group 4 remains open for `Host` in `src/platform/macos/window.mm`: separate
+application/session, view and input responsibilities, including AppKit close/Quit
+semantics, without imposing Windows lifecycle symmetry. ARC resource retention
+and completion-generation state require native characterization, not mechanical
+translation. Do not reopen cohesive painter/resource owners merely to reduce file
+size. Neither extraction nor offscreen success activates held presentation work
+or paused features.
 
 ### 5. Terminal search and frame materialization
 

@@ -2,7 +2,9 @@
 
 Baseline: `31c01ec895ba931f42af90c5ab0ed85b68a3f61d` renderer.mm.
 The test-only reference freezes both helpers and the pane loop verbatim before
-production extraction. Native fixtures compare this algorithm with the new
+production extraction. The original was **not executed natively before extraction**;
+this is a frozen-source oracle, not an executed pre-extraction native baseline.
+Native fixtures compare this algorithm with the new
 painter, using real offscreen Metal frames and the existing texture owner.
 
 ## Observable order and ownership
@@ -26,9 +28,20 @@ painter, using real offscreen Metal frames and the existing texture owner.
 
 ## Verification scope
 
-Native fixtures must run on macOS with an actual Metal device at 96/144/192 DPI.
-Linux source checks are not native compile, pixel, CoreText or GPU evidence.
-No native run was performed in the Linux extraction environment.
+[Native qualification](https://github.com/StormBurpee/stormtty/actions/runs/41105869939)
+passed macOS 60/60 for PR #43 head `8179685b`, through native checkout
+`9d32d702254f724c537e38467a2b6a5daff21f8f` (tree
+`c0f8bb59ebac75f829ebc1e9acb1f0b1b228d63d`, matching the reviewed source).
+The new `macos_terminal_painter_tests` fixture compiled, linked and passed in
+1.34 seconds, comparing frozen-original and extracted paths
+on real offscreen Metal frames at 96/144/192 DPI. Linux passed and Windows baseline
+passed 70/70, but the Windows full run failed: packaged layout actor 5 retained a
+stale suffix at 33×13 (`exit=0`, `marker=0`); packaged Settings and repeats
+`explicit2`/`explicit6` showed malformed bracketed paste. All 10 bundled/developer
+cases passed. Across 29 compact receipts, 25 succeeded and four failed; all
+processes were reaped with no outer timeout. No full-green result or shell fix is
+claimed. Linux source checks alone are not native compile, pixel, CoreText or GPU
+evidence.
 
 ## Native fixture inventory
 
@@ -57,9 +70,11 @@ All groups run at 96, 144 and 192 DPI. Native command after a normal macOS build
 Extraction-environment checks: `git diff --check`; exact substring comparison of
 frozen helpers/pane loop with the base commit; reconstruction check confirming
 renderer code outside the extraction/include/unused-metrics removal is unchanged.
-These source checks passed. Native compilation and fixture execution are **not
-run** here; CI remains the gate for Apple framework and GPU behavior. No build,
-remote publication, physical UI or performance verification was performed.
+These source checks passed in the extraction environment; native compilation and
+fixture execution subsequently passed in the run linked above. The renderer's
+later readability pass preserves its coordinator responsibilities. Physical UI,
+onscreen presentation, performance and broader hardware parity remain unproven;
+the focused comparisons do not establish full renderer parity.
 
 Cache eviction remains the unchanged `MetalTextureResources` dependency's test
 responsibility; these new painter fixtures exercise reuse/identity, not eviction.

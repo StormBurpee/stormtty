@@ -384,10 +384,36 @@ remaining-upload allowance for each item, submission, statistics and scene-histo
 commit. Each painter call resets its clip before validation. Direct fills need no
 upload allowance; raster paths preserve the 4 MiB item bound and shared 64 MiB
 budget's existing charge/failure order. Ignored text wrapping and raster-padding
-replacement semantics remain unchanged. Terminal pane backgrounds, image layers,
-row dispatch and cursor policy still reside in `renderer.mm`.
+replacement semantics remain unchanged.
 
-Native macOS qualification passed 59/59, including legacy-versus-extracted Metal
+macOS `TerminalPainter` (`src/platform/macos/terminal_painter.hpp/.mm`) owns pane
+backgrounds/selection, image layering/crops, row dispatch and cursor painting. Its
+synchronous borrow contains the admitted `MetalFrame`, read-only texture owner,
+font/locale and resolved metrics, DPI, opacity, font generation and ligature
+policy. Font and locale must remain alive and unchanged throughout drawing; no
+native resource, cache, scene or callback ownership moves into the painter.
+
+Pane replacement clear, background, layered images, cell backgrounds, rows and
+cursor retain their order. Row allowance is sampled afresh; cursor clip persists
+until the next pane or the renderer's viewport reset. Font ownership, CPU row
+rasterization, texture residency/accounting and device submission remain with
+`CoreTextFontResources`, `CoreTextRowRasterizer`, `MetalTextureResources` and
+`MetalCompositor`. `renderer.mm` now coordinates scene validation/admission,
+canvas and pane order, viewport/chrome ordering, submission and success-only
+scene-history/statistics updates rather than implementing the paint domains.
+
+Terminal painter native qualification passed 60/60, including the new frozen-
+original comparison fixture. The original was frozen before extraction, not
+executed natively before extraction. Linux and Windows baseline 70/70 passed;
+the Windows full run failed packaged layout (stale suffix, actor 5 at 33×13,
+exit 0/marker 0), packaged Settings and repeats `explicit2`/`explicit6` (malformed
+bracketed paste). All 10 bundled/developer cases passed; 29 compact receipts
+recorded 25 successes/four failures, all reaped without outer timeout. No shell
+fix, full-green result, physical UI or performance qualification is claimed. See
+[terminal painter verification](../tests/macos_terminal_painter_verification.md)
+for coverage, cache-eviction limits and execution evidence.
+
+The earlier chrome slice's native macOS qualification passed 59/59, including legacy-versus-extracted Metal
 pixel and upload-budget comparisons; this is not physical UI or onscreen
 presentation qualification. See [chrome painter verification](../tests/macos_chrome_painter_verification.md)
 for detailed coverage and [the native run](https://github.com/StormBurpee/stormtty/actions/runs/41102242173)
@@ -496,7 +522,7 @@ gates. Useful starting points:
   at multiple DPIs, resize, font/DPI changes, occlusion and resource recovery.
 - macOS typography/rendering: `macos_font_resources_tests`, `macos_row_rasterizer_tests`,
   `macos_metal_texture_resources_tests`, `macos_metal_compositor_tests`,
-  `macos_chrome_painter_tests`, `macos_renderer_tests` and `macos_png_tests`;
+  `macos_chrome_painter_tests`, `macos_terminal_painter_tests`, `macos_renderer_tests` and `macos_png_tests`;
   Windows graphics checks do not qualify
   this backend.
 - Actor/VT changes: `session_tests`, `terminal_tests`, `terminal_search_tests`,
