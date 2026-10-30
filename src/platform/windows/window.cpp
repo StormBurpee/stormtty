@@ -2328,14 +2328,16 @@ void NativeApplication::workspace_save_completed() {
     if(!completed)return;
     if(workspaces.worker.joinable())workspaces.worker.join();
     workspaces.busy=false;
+    const bool retry = std::exchange(workspaces.pending, false);
     if(*completed)workspaces.snapshot=std::move(completed->snapshot);
     else {
-        workspace_error("Workspaces were not saved: "+completed->error);
-        // Preserve conflicting bytes and baseline; never silently reload/overwrite.
+        // Acknowledge failure before fallible UI presentation. Never retain a
+        // writable stale token if notice allocation or repaint throws.
         workspaces.snapshot.reset();
+        workspace_error("Workspaces were not saved: "+completed->error);
         std::fprintf(stderr,"Workspace save failed: %s\n",completed->error.c_str());
     }
-    if(std::exchange(workspaces.pending,false))save_workspaces();
+    if(retry)save_workspaces();
 }
 void NativeApplication::flush_workspaces() {
     if(workspaces.timer){KillTimer(nullptr,workspaces.timer);workspaces.timer=0;}
@@ -2344,7 +2346,7 @@ void NativeApplication::flush_workspaces() {
         WindowWorkspaceView view(projects,projects.windows().front().id);
         auto closed=view.snapshot();
         if(!closed){workspace_error(closed.error);workspaces.snapshot.reset();}
-        else if(auto recorded=workspaces.document.history.record_closed(std::move(*closed.value));!recorded){workspace_error(recorded.error);workspaces.snapshot.reset();}
+        else if(auto recorded=workspaces.document.history.record_closed(std::move(*closed.value));!recorded){workspaces.snapshot.reset();workspace_error(recorded.error);}
         else {workspaces.document.clean_shutdown=true;workspaces.finalizing=true;}
     }
     if(workspaces.worker.joinable())workspaces.worker.join();
