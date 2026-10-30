@@ -1,0 +1,20 @@
+{
+  "schema": 2,
+  "scope": "perturbed-scheduling-diagnostic-only",
+  "native_qualified": false,
+  "header_sha256": "6df09baf831530992be0278e1e63f9ed512529c73b7c901db73429d44d567454",
+  "variants": {
+    "copied": {
+      "source_sha256": "cf4eba2150f2b99dfe7c55c8d73ac0f578d7675e649b8468a364bfb8fe2efdb2",
+      "fhandler_sha256": "c8e4a76e2a7aa5963763c62319e5f51ab08445be2f7ea6e3c1c314de91223650",
+      "instrumented_sha256": "9ea360e875cae3f5aab334c10efdef27f9393d5252b76382c6611220b694d1f9",
+      "patch_sha256": "110283a9b46e4a4f452c3601e94db6a39259a5717ad4d1dff63bc43c89459ad2"
+    },
+    "combined": {
+      "source_sha256": "4d32b6219c1241a9fea998909ea8451799bf0c4f57d0eb004f88b9b9e9a57e66",
+      "fhandler_sha256": "ef5f8cd8db11a874807d37661a87ac0a65a9e5bad04c6f37039bd9b814a5f3d4",
+      "instrumented_sha256": "fc10d0b7bb3c789bcadcf4ed985f5a474c453ec8fb7a39c3a2c28acf2181bd6e",
+      "patch_sha256": "ee034031c6be325290421b1156018b362446e27d174fdbc53790094d07330d80"
+    }
+  }
+}

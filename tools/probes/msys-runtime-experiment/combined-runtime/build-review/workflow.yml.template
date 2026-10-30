@@ -1,0 +1,149 @@
+# INACTIVE SOURCE TEMPLATE. Root must review and explicitly publish separately.
+# Build and cold extraction only: no candidate execution, staging, or promotion.
+name: Combined runtime deterministic build-only review
+on:
+  push:
+    branches: [experiment/msys-combined-build-review]
+permissions:
+  contents: read
+concurrency:
+  group: combined-runtime-build-review-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build-only:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/msys-combined-build-review'
+    strategy:
+      fail-fast: false
+      matrix:
+        repeat: [1, 2]
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - name: Create private build root
+        shell: pwsh
+        run: |
+          $root = 'C:\stormtty-build-review'
+          if (Test-Path $root) { throw 'New build root required' }
+          New-Item -ItemType Directory "$root/evidence" | Out-Null
+          "EXPERIMENT_ROOT=$root" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          git rev-parse HEAD | Set-Content "$root/evidence/commit.txt"
+          New-Item -ItemType Directory "$root/source" | Out-Null
+          git archive --format=tar --output="$root/source.tar" HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          tar -xf "$root/source.tar" -C "$root/source"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item -LiteralPath "$root/source.tar"
+          [ordered]@{ repeat=${{ matrix.repeat }}; run_id='${{ github.run_id }}'; run_attempt='${{ github.run_attempt }}'; commit='${{ github.sha }}'; clean_root=$true } | ConvertTo-Json | Set-Content "$root/evidence/independent-build.json"
+      - name: Initialize trusted native compiler
+        shell: pwsh
+        run: C:/stormtty-build-review/source/tools/ci-msvc-env.ps1
+      - name: Compile controller without executing it
+        shell: pwsh
+        run: C:/stormtty-build-review/source/tools/probes/msys-runtime-experiment/combined-runtime/build-review/build-controller.ps1 -Output "$env:EXPERIMENT_ROOT/controller"
+      - name: Fetch exact official source archive for build
+        shell: python
+        run: |
+          import hashlib,os,pathlib,urllib.request
+          root=pathlib.Path(os.environ['EXPERIMENT_ROOT'])
+          path=root/'msys2-runtime-3.6.11-4.src.tar.zst'
+          url='https://repo.msys2.org/msys/sources/'+path.name
+          with urllib.request.urlopen(url,timeout=60) as response,path.open('xb') as output:
+              size=0
+              while chunk:=response.read(1024*1024):
+                  size+=len(chunk)
+                  if size>128907415:raise ValueError('source size bound')
+                  output.write(chunk)
+          with path.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
+          assert path.stat().st_size==128907415 and digest=='4b178dfb5b77bce293706dcfabea673b77d8da061a4725bdf4cd94f17533c204'
+          (root/'evidence/source-identity.txt').write_text(url+'\n'+digest+'\n')
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        with:
+          msystem: MSYS
+          location: C:/stormtty-msys-build-tools
+          update: true
+          cache: false
+          path-type: minimal
+          install: >-
+            base-devel autotools cocom docbook-xsl gcc gettext-devel git
+            libzstd-devel libiconv-devel mingw-w64-cross-crt mingw-w64-cross-gcc
+            mingw-w64-cross-zlib perl xmlto zlib-devel zstd texinfo
+      - name: Verify unchanged private GCC15 package toolchain
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd /c/stormtty-build-review/source
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          bash tools/probes/msys-runtime-experiment/toolchain.sh "$root/gcc15" 2>&1 | tee "$root/evidence/gcc15-preflight.log"
+      - name: Build copied variant only
+        id: copied
+        timeout-minutes: 40
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd /c/stormtty-build-review/source
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
+          bash tools/probes/msys-runtime-experiment/combined-runtime/build-review/build.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/copied-build" copied 2>&1 | tee "$root/evidence/copied-build.log"
+      - name: Build combined variant with identical toolchain
+        if: steps.copied.outcome == 'success'
+        timeout-minutes: 40
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd /c/stormtty-build-review/source
+          root=$(cygpath -u "$EXPERIMENT_ROOT")
+          export EXPERIMENT_TOOLCHAIN="$root/gcc15"
+          bash tools/probes/msys-runtime-experiment/combined-runtime/build-review/build.sh "$root/msys2-runtime-3.6.11-4.src.tar.zst" "$root/combined-build" combined 2>&1 | tee "$root/evidence/combined-build.log"
+          cmp "$root/copied-build/provenance/pacman-before.txt" "$root/combined-build/provenance/pacman-before.txt"
+          cmp "$root/copied-build/provenance/compiler-packages.txt" "$root/combined-build/provenance/compiler-packages.txt"
+      - name: Collect bounded text evidence, including failed builds
+        if: always()
+        shell: pwsh
+        run: |
+          python C:/stormtty-build-review/source/tools/probes/msys-runtime-experiment/combined-runtime/build-review/collect.py "$env:EXPERIMENT_ROOT" "$env:RUNNER_TEMP/combined-review-text"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: combined-build-review-text-${{ github.sha }}-${{ matrix.repeat }}
+          path: ${{ runner.temp }}/combined-review-text/
+          if-no-files-found: error
+# Deliberately no run.py, reader.exe/controller.exe launch, DLL load, runtime
+# staging, binary/package upload, deployment, or automatic execution approval.
+
+  compare-cold-evidence:
+    needs: build-only
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: combined-build-review-text-${{ github.sha }}-*
+          path: cold-evidence
+      - name: Compare complete exact identities without loading binaries
+        run: >-
+          python tools/probes/msys-runtime-experiment/combined-runtime/build-review/compare.py
+          cold-evidence/combined-build-review-text-${{ github.sha }}-1
+          cold-evidence/combined-build-review-text-${{ github.sha }}-2
+          --output exact-repeat-comparison.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: combined-exact-repeat-comparison-${{ github.sha }}
+          path: exact-repeat-comparison.json
+          if-no-files-found: error
