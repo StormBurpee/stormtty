@@ -98,6 +98,31 @@ See [actor lifetime](actor-lifetime-registry.md) and
 [Observation caches](session-observations.md) records the inherited shared-history
 and first-observation rules.
 
+### Terminal Find lifecycle
+
+`TerminalFindController` (`include/stormtty/terminal_find_controller.hpp`,
+`src/session/terminal_find_controller.cpp`) owns the UI-thread bounded query editor,
+bound session ID, request ID, owned search snapshot, initial-selection intent and
+error. Editing does not submit implicitly. The Windows host retains the actor for
+each synchronous `Session&` borrow; the controller retains no actor, registry,
+window or callback. Retained exited documents remain searchable.
+
+Keep snapshot adoption distinct from selection: after changed-result adoption,
+the host invalidates chrome and records diagnostics before consuming/submitting
+the initial token. Consumption is one attempt per exact token, including rejected
+submission. Explicit navigation cancels automatic intent before actor lookup and
+uses a fresh actor snapshot's token, not cached positions. Submission clears the
+old selection before queuing replacement search or empty-query cancellation.
+
+The host retains input precedence, IME, focus, clipboard, pointer/geometry,
+timers, rendering and old-actor cancellation. Both focus-loss reset and explicit
+close preserve query text while unbinding and dropping request/result/selection
+intent; only explicit close clears the transient error, and focus loss must not
+acquire explicit-close scheduling effects. See
+[Find controller verification](../tests/terminal_find_controller_verification.md)
+for lifecycle and no-terminal-input-leakage gates; this is not macOS integration
+or physical IME/UI qualification.
+
 ## Settings and persistence
 
 `SettingsPanel` (`settings_panel.hpp`, `src/core/settings_panel.cpp`) owns the
