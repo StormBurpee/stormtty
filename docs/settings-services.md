@@ -160,3 +160,28 @@ Windows Settings CI smoke additionally edits its isolated saved file, dispatches
 Reload, repeats the action while pending, checks live actor/output preservation,
 and checks malformed/missing-file rejection. Cross-compilation is not native
 runtime or physical UI evidence.
+
+
+## Shell-discovery extraction qualification
+
+[PR #47 run 41143384322](https://github.com/StormBurpee/stormtty/actions/runs/41143384322)
+checked out synthetic merge `d6516cb6f0384829294ee41ff6d0472d360e5477`.
+Windows and macOS logs confirm the checkout; its tree
+`8ccad1880443bcce0ffc5dcfd0d701f9a2d5020f` matches reviewed source
+`7fb1567f94f213c392716423b9a984aafe65db31`.
+
+Windows baseline passed **72/72**, including 42 discovery-policy checks,
+290 native Settings-service checks, 232 native application-layout-service
+checks, and the Session suite. macOS passed **62/62** and Linux CI passed.
+These results qualify the exercised native services, not launching every
+discovered shell or physical UI/performance.
+
+The full Windows job failed. Application cases passed **14/15**: only bundled
+`smoke-projects` failed, with malformed `[200~` paste, trailing `~` and
+`zsh: = not found` at a stage-0 deadline. Repeated Settings passed **9/10
+explicit + 3/3 default**; explicit case **4** failed with the same observed
+paste signature at a stage-8 deadline. Installed-console Settings passed.
+All 29 compact receipts reported reaped processes, no outer timeout, no cleanup
+error and no truncation: 27 successes and two failures. Failure classification
+comes from the full log, not the compact receipts' null signature fields.
+No shell fix, common root cause or fully green Windows result is claimed.

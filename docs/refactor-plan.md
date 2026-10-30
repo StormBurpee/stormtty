@@ -150,8 +150,8 @@ lifetimes. Do not introduce another terminal model, actor, lock or unbounded cop
 
 ### 6. Windows document-service modules
 
-`src/platform/windows/settings_services.cpp` combines bounded shell discovery,
-guarded atomic file transactions and document-specific adapters. Separate these
+`src/platform/windows/settings_services.cpp` still combines guarded atomic file
+transactions and document-specific adapters. Separate these
 responsibilities while retaining one security/commit-lock authority. Exact same-read
 save tokens, path/link checks, DACL preservation, legacy backup verification and
 atomic replacement ordering must not diverge between document types. Existing
@@ -165,7 +165,12 @@ probe domain, with portable candidate-policy characterization.
 stronger ancestor/link/security checks and the single commit mutex remain in
 `settings_services.cpp`. Group 6 remains open for guarded transaction versus
 codec-adapter separation; legacy backup lifetimes must stay inside the transaction
-authority. Portable tests and cross-compilation are not native runtime proof.
+authority. PR #47 passed Windows 72/72 (including native Settings/layout services),
+macOS 62/62 and Linux CI. The full Windows run still failed bundled Projects and
+explicit Settings repeat 4 with malformed paste; 14/15 application cases and
+12/13 repeats passed, all processes reaped. See
+[shell-discovery qualification](settings-services.md#shell-discovery-extraction-qualification).
+This does not qualify physical UI or every discovered shell's launch.
 
 ### 7. Trusted managed-shell modules
 
