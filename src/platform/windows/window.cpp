@@ -42,6 +42,10 @@
 #include "stormtty/cursor_motion.hpp"
 #include "stormtty/smoke_deadline.hpp"
 #include "stormtty/session.hpp"
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+#include "stormtty/settings_raw_boundary.hpp"
+#include <sstream>
+#endif
 #include "stormtty/session_wake_router.hpp"
 #include "stormtty/parked_attention.hpp"
 #include "stormtty/settings_panel.hpp"
@@ -482,6 +486,17 @@ private:
     void destroy_window() noexcept;
     bool smoke_frame_ready() const;
     void smoke_progress(bool presented = false, bool frame_observed = false);
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+    void settings_raw_progress(bool presented);
+    std::shared_ptr<qualification::InputEvidence> settings_raw_evidence_;
+    std::uint64_t settings_raw_after_{},settings_raw_ready_resize_{};
+    std::uint64_t settings_raw_resize_before_{},settings_raw_resize_applied_{};
+    unsigned settings_raw_columns_before_{},settings_raw_columns_after_{};
+    ProcessGridSize settings_raw_target_grid_;
+    LONG settings_raw_client_before_{},settings_raw_client_after_{};
+    unsigned settings_raw_stage_{};
+    bool settings_raw_dumped_{};
+#endif
     void smoke_finish(std::string_view error = {});
     bool smoke_typing_progress();
     void smoke_typing_diagnostic(const char* event);
@@ -1517,6 +1532,26 @@ SessionId NativeWindow::new_session(std::string profile_id) {
         if (options_.smoke_test) { process.arguments={"/d","/q"}; process.environment.clear(); if (!options_.smoke_projects && !options_.smoke_windows) process.working_directory.clear(); }
         else if (std::find(process.arguments.begin(),process.arguments.end(),"/d")==process.arguments.end()) process.arguments.insert(process.arguments.begin(),"/d"); // Do not unexpectedly run cmd AutoRun registry code.
     }
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+    if(options_.smoke_settings_raw) {
+        if(!managed || smoke_shell_state_root_.empty() || !sessions_.empty())
+            throw std::runtime_error("Settings raw diagnostic requires one private managed-runtime actor.");
+        const auto script=smoke_shell_state_root_/L"settings-raw.zsh";
+        const auto result=smoke_shell_state_root_/L"settings-raw.hex";
+        if(std::filesystem::exists(script)||std::filesystem::exists(result))
+            throw std::runtime_error("Settings raw fixture paths must be new.");
+        std::ofstream file(script,std::ios::binary);file<<qualification::settings_raw_script;file.close();
+        if(!file)throw std::runtime_error("Could not write authored Settings raw fixture.");
+        const auto runtime=std::filesystem::path(widen(process.executable)).parent_path();
+        process.arguments={"-df",narrow(script.generic_wstring()),narrow(result.generic_wstring())};
+        process.working_directory=narrow(smoke_shell_state_root_.generic_wstring());
+        process.environment={{"HOME",process.working_directory},{"ZDOTDIR",process.working_directory},
+            {"PATH",narrow(runtime.generic_wstring())},{"MSYSTEM","MSYS"},{"TERM","xterm-256color"},{"LC_ALL","C"},
+            {"MSYS",std::nullopt},{"ENV",std::nullopt},{"BASH_ENV",std::nullopt},{"STORMTTY_NATIVE_ZSH_STATE",std::nullopt}};
+        settings_raw_evidence_=std::make_shared<qualification::InputEvidence>();
+        process.qualification_input_evidence=settings_raw_evidence_;
+    }
+#endif
     TerminalOptions terminal;
     terminal.scrollback_lines=config_.scrollback_lines;
     // VT default colors belong to the engine, including OSC queries/resets.
@@ -3833,6 +3868,10 @@ bool NativeWindow::key_message(MSG& message) {
     const bool down = message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN;
     const bool up = message.message == WM_KEYUP || message.message == WM_SYSKEYUP;
     if (!down && !up) return false;
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+    if(options_.smoke_settings_raw)return true; // Never log human keystrokes in this authored fixture.
+#endif
+
     const auto vk = message.wParam;
     const auto modifiers = terminal_modifiers();
     const bool altgr = (modifiers & Modifier::right_alt) && (modifiers & Modifier::control);
@@ -6005,6 +6044,73 @@ void NativeApplication::windows_smoke_progress() {
     std::fputs("Native windows ownership passed: two distinct HWNDs/actors, failed creation rollback, Cancel preserved both, first-window close disposed only its actor, same survivor produced new output and exit 0.\n",stderr);
     survivor->smoke_finish();
 }
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+void NativeWindow::settings_raw_progress(bool presented) {
+    auto* actor=active_session();if(!actor||!settings_raw_evidence_){smoke_finish("Settings raw actor unavailable.");return;}
+    const auto frame=actor->frame();
+    if(settings_raw_stage_==0) {
+        bool ready=false;if(frame)for(const auto& row:frame->lines)if(row){std::string text;for(const auto& c:row->cells)text+=c.grapheme;ready=ready||text.find("RAW_READY")!=std::string::npos;}
+        if(!ready||!frame||!frame->bracketed_paste)return;
+        smoke_settings_actor_=sessions_.at(workspace().pane(workspace().active_pane())->session);
+        const auto ready_diagnostics=actor->diagnostics();
+        settings_raw_ready_resize_=ready_diagnostics.windows_control?ready_diagnostics.windows_control->applied_resize_generation:0;
+        smoke_phase(SmokeDeadline::Phase::interaction);settings_raw_stage_=1;open_settings();return;
+    }
+    if(smoke_settings_actor_.get()!=actor){smoke_finish("Settings raw actor identity changed.");return;}
+    if(settings_raw_stage_==1) {
+        if(settings_job_||!presented||motion_timer_active_)return;
+        if(!settings_panel_.is_open()){smoke_finish("Settings raw panel did not open.");return;}
+        const auto before=actor->diagnostics();
+        if(!before.windows_control||!before.windows_control->applied_grid||
+           before.windows_control->requested_resize_generation!=before.windows_control->applied_resize_generation||
+           *before.windows_control->applied_grid!=before.windows_control->requested_grid)return;
+        settings_raw_resize_before_=before.windows_control->applied_resize_generation;
+        settings_raw_columns_before_=before.windows_control->applied_grid->columns;
+        settings_panel_.cancel();settings_input_changed();settings_raw_stage_=2;
+        RECT window{},client{};
+        if(!GetWindowRect(hwnd_,&window)||!GetClientRect(hwnd_,&client)){smoke_finish("Settings raw resize geometry unavailable.");return;}
+        settings_raw_client_before_=client.right-client.left;
+        // Exactly one real window transition: normal WM_SIZE/layout/session route.
+        // No direct transport call, restore, repeated resize, or deadline extension.
+        if(!SetWindowPos(hwnd_,nullptr,0,0,window.right-window.left+80,window.bottom-window.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)||
+           !GetClientRect(hwnd_,&client)){smoke_finish("Settings raw single resize failed.");return;}
+        settings_raw_client_after_=client.right-client.left;
+        if(settings_raw_client_after_!=settings_raw_client_before_+80){smoke_finish("Settings raw client width transition differs.");return;}
+        force_redraw_=true;dirty_=true;return;
+    }
+    if(settings_raw_stage_==2) {
+        if(!presented||settings_panel_.is_open()||motion_timer_active_)return;
+        const auto after=actor->diagnostics();
+        if(!after.windows_control||!after.windows_control->applied_grid)return;
+        const auto& control=*after.windows_control;
+        if(control.requested_resize_generation<=settings_raw_resize_before_||
+           control.applied_resize_generation!=control.requested_resize_generation||
+           *control.applied_grid!=control.requested_grid||
+           control.applied_grid->columns<=settings_raw_columns_before_)return;
+        settings_raw_resize_applied_=control.applied_resize_generation;
+        settings_raw_columns_after_=control.applied_grid->columns;settings_raw_target_grid_=*control.applied_grid;
+        settings_raw_stage_=3;
+        if(!PostMessageW(hwnd_,smoke_settings_input_message,0,0))smoke_finish("Settings raw post failed.");
+        return;
+    }
+    if(settings_raw_stage_!=4||!actor->process_finished())return;
+    const auto info=actor->info();
+    const bool reader_ok=info.exit_code&&*info.exit_code==0;
+    const auto path=smoke_shell_state_root_/L"settings-raw.hex";
+    std::error_code ec;const auto size=std::filesystem::file_size(path,ec);
+    if(ec||size==0||size>2048){smoke_finish("Settings raw result missing or outside fixed bound.");return;}
+    std::ifstream file(path,std::ios::binary);std::string child(static_cast<std::size_t>(size),'\0');file.read(child.data(),static_cast<std::streamsize>(child.size()));
+    if(!file){smoke_finish("Settings raw result unreadable.");return;}
+    const auto snap=settings_raw_evidence_->snapshot(settings_raw_after_);
+    auto result=qualification::assess_settings_raw(snap,child);
+    if(!reader_ok)result.verdict="INCONCLUSIVE";
+    std::ostringstream evidence;qualification::InputEvidence::dump(evidence,snap,"settings-authored-paste-only");std::fputs(evidence.str().c_str(),stderr);settings_raw_dumped_=true;
+    std::fprintf(stderr,"SETTINGS_RAW_RESULT verdict=%s writer_complete=%d child_valid=%d child_exit=%d expected_hex=%s writer_hex=%s child_hex=%s\n",
+        result.verdict.c_str(),result.writer_complete,result.child_valid,info.exit_code.value_or(-1),result.expected_hex.c_str(),result.writer_hex.c_str(),result.child_hex.c_str());
+    settings_raw_stage_=5;
+    if(result.verdict=="PASS")smoke_finish();else smoke_finish("Authored Settings raw boundary differs or is inconclusive; no runtime cause assigned.");
+}
+#endif
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if(options_.smoke_windows)return; // Dedicated application-level controlled fixture.
     if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_ || smoke_settings_scroll_running_ || smoke_workspace_frame_running_ || smoke_activity_running_) return;
@@ -6019,6 +6125,9 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
     if (!options_.smoke_workspaces.empty()) { smoke_workspace_progress(presented); return; }
     if (sessions_.empty()) { smoke_finish("Native smoke has no real session."); return; }
     for (const auto& [id,session]:sessions_) { (void)id; const auto info=session->info(); if (info.state==SessionState::failed) { smoke_finish(info.error.empty()?"Native session failed.":info.error); return; } }
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+    if(options_.smoke_settings_raw){settings_raw_progress(presented);return;}
+#endif
     if (smoke_deadline_.phase()==SmokeDeadline::Phase::startup) {
         // Managed context proves the preset reached precmd; negotiated paste
         // mode proves ZLE is accepting bulk input. First output bytes alone do
@@ -6802,6 +6911,14 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
 }
 void NativeWindow::smoke_finish(std::string_view error) {
     if (!options_.smoke_test || smoke_finished_) return;
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+    if(options_.smoke_settings_raw && settings_raw_evidence_ && !settings_raw_dumped_) {
+        const auto snap=settings_raw_evidence_->snapshot(settings_raw_after_);
+        std::ostringstream evidence;qualification::InputEvidence::dump(evidence,snap,"settings-authored-inconclusive");
+        std::fputs(evidence.str().c_str(),stderr);settings_raw_dumped_=true;
+        std::fprintf(stderr,"SETTINGS_RAW_RESULT verdict=INCONCLUSIVE stage=%u raw_child_unavailable=1\n",settings_raw_stage_);
+    }
+#endif
     if (error.empty()) {
         for (const auto& [id,session]:smoke_sessions_) {
             const bool packaged_requested=smoke_bundled_sessions_.contains(id);
@@ -6878,6 +6995,12 @@ void NativeWindow::smoke_finish(std::string_view error) {
     }
             if(options_.smoke_layout&&!error.empty()){const auto* active=active_session();const auto frame=active?active->frame():FramePtr{};std::fprintf(stderr,"Native palette fixture: stage=%u stop_sent=%d mouse_mode=%d mouse_submissions=%llu capture=%d\n",smoke_palette_input_stage_,smoke_palette_disable_sent_,frame&&frame->mouse_reporting,static_cast<unsigned long long>(smoke_terminal_mouse_submissions_),GetCapture()==hwnd_);}
     smoke_finished_=true; exit_code_=error.empty()?0:2;
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+    if(options_.smoke_settings_raw) {
+        std::fprintf(stderr,"SETTINGS_RAW_FINAL verdict=%s detail=%.*s; authored Settings-close boundary only, not ZLE or general qualification.\n",
+            error.empty()?"PASS":"INCONCLUSIVE_OR_MISMATCH",static_cast<int>(error.size()),error.data());
+    } else
+#endif
     if (error.empty()) {
         const auto diagnostics=active_session()?active_session()->diagnostics():ProcessDiagnostics{};
         std::fprintf(stderr,"Native CI smoke passed: real HWND, WARP renderer, ConPTY input/output marker, presented frame, child exit 0. Provider: %s. Not physical visual/IME/Snap QA.\n",diagnostics.provider.c_str());
@@ -6975,6 +7098,12 @@ void NativeWindow::toggle_fullscreen() {
     changed(true);
 }
 LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+    if(options_.smoke_settings_raw && ((message>=WM_KEYFIRST&&message<=WM_KEYLAST)||
+        (message>=WM_MOUSEFIRST&&message<=WM_MOUSELAST)||message==WM_PASTE||message==WM_COMMAND||
+        message==WM_IME_STARTCOMPOSITION||message==WM_IME_COMPOSITION||message==WM_IME_ENDCOMPOSITION||
+        message==WM_DROPFILES))return 0; // Fixture owns its only payload; no user clipboard/IME/drop ingress.
+#endif
     LRESULT dwm_result{};
     const bool nc_input=message==WM_NCHITTEST || message==WM_NCMOUSEMOVE || message==WM_NCMOUSELEAVE;
     const bool dwm_handled=nc_input && DwmDefWindowProc(hwnd_,message,wparam,lparam,&dwm_result)!=FALSE;
@@ -7063,6 +7192,35 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (settings_pending_) { settings_pending_=false; settings_changed(); }
         changed(true); return 0;
     case smoke_settings_input_message:
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+        if(options_.smoke_settings_raw && settings_raw_stage_==3) {
+            if(settings_panel_.is_open()||!focused_session_||!active_session()||active_session()!=smoke_settings_actor_.get()||!settings_raw_evidence_) {
+                smoke_finish("Settings raw posted input lost its actor/focus.");return 0;
+            }
+            const auto found=sessions_.find(focused_session_);
+            if(found==sessions_.end()||found->second!=smoke_settings_actor_){smoke_finish("Settings raw focused actor changed.");return 0;}
+            const auto actor=smoke_settings_actor_;const auto frame=actor->frame();const auto d=actor->diagnostics();
+            if(!frame||!frame->bracketed_paste){smoke_finish("Settings raw posted input lacks negotiated2004.");return 0;}
+            if(!d.windows_control||!d.windows_control->applied_grid||
+               d.windows_control->requested_resize_generation!=settings_raw_resize_applied_||
+               d.windows_control->applied_resize_generation!=settings_raw_resize_applied_||
+               *d.windows_control->applied_grid!=settings_raw_target_grid_||d.windows_control->requested_grid!=settings_raw_target_grid_) {
+                smoke_finish("Settings raw applied resize changed before posted paste.");return 0;
+            }
+            settings_raw_after_=settings_raw_evidence_->snapshot().completed;
+            std::fprintf(stderr,"SETTINGS_RAW_POST separate_dispatch=1 closed_scene_presented=1 bracketed=1 resize_requested=%llu resize_applied=%llu resize_since_raw_ready=%d resize_before=%llu client_width_before=%ld client_width_after=%ld grid_columns_before=%u grid_columns_after=%u reader_termios=raw-noecho win32_input_mode=unobserved provider=%s\n",
+                static_cast<unsigned long long>(d.windows_control?d.windows_control->requested_resize_generation:0),
+                static_cast<unsigned long long>(d.windows_control?d.windows_control->applied_resize_generation:0),
+                d.windows_control&&d.windows_control->applied_resize_generation>settings_raw_ready_resize_,
+                static_cast<unsigned long long>(settings_raw_resize_before_),settings_raw_client_before_,settings_raw_client_after_,
+                settings_raw_columns_before_,settings_raw_columns_after_,d.provider.c_str());
+            settings_raw_stage_=4;smoke_phase(SmokeDeadline::Phase::exit);
+            const std::string payload(qualification::settings_raw_payload);
+            submit([actor,payload]{return actor->paste(payload);},payload.size());
+            KeyInput enter;enter.key=Key::enter;submit([actor,enter]{return actor->key(enter);});
+            return 0;
+        }
+#endif
         if (options_.smoke_test && options_.smoke_settings && smoke_settings_stage_==8 && smoke_settings_input_stage_==1) {
             if (settings_panel_.is_open() || !focused_session_) { smoke_finish("Settings-close input event did not retain terminal focus."); return 0; }
             smoke_settings_input_stage_=2;
@@ -7090,6 +7248,12 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (wparam==smoke_timeout_timer) {
             const auto now=GetTickCount64();
             if (smoke_deadline_.expired(now)) smoke_finish("Native smoke phase deadline expired before real output, presentation and clean exit.");
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+            else if(options_.smoke_settings_raw && settings_raw_stage_<=2) {
+                // Existing 250ms smoke tick only; no new polling/deadline budget.
+                force_redraw_=true;changed();
+            }
+#endif
             else if(!options_.smoke_workspaces.empty() && !smoke_finished_) {
                 // Hidden actor readiness can change without changing the visible
                 // scene. A normal unchanged render must not strand this explicit

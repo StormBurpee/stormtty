@@ -70,6 +70,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         Arguments args;
         if (!args.values) throw std::runtime_error("Could not read command-line arguments.");
         for (int i=1;i<args.count;++i) if (std::wstring_view(args.values[i])==L"--smoke" || std::wstring_view(args.values[i])==L"--smoke-layout" || std::wstring_view(args.values[i])==L"--smoke-windows" || std::wstring_view(args.values[i])==L"--smoke-modal" || std::wstring_view(args.values[i])==L"--smoke-projects" || std::wstring_view(args.values[i])==L"--smoke-agent" || std::wstring_view(args.values[i])==L"--smoke-settings" || std::wstring_view(args.values[i])==L"--smoke-workspaces") smoke=true;
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+        for (int i=1;i<args.count;++i)
+            if (std::wstring_view(args.values[i])==L"--smoke-settings-raw") smoke=true;
+#endif
         completed.enabled=smoke;
         stormtty::NativeRunOptions options; options.smoke_test=smoke;
         // Must precede creation of any HWND, including startup error dialogs.
@@ -112,6 +116,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 target.assign(value.begin(),value.end());
             }
             else if (argument == L"--smoke-agent") { options.smoke_agent=true; ++smoke_modes; }
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+            else if (argument == L"--smoke-settings-raw") {
+                options.smoke_settings_raw=true; options.smoke_settings=true; ++smoke_modes;
+            }
+#endif
             else if (argument == L"--smoke-settings") { options.smoke_settings=true; ++smoke_modes; }
             else if (argument == L"--capture" && i+1<args.count) options.capture_path=args.values[++i];
             else if ((argument == L"--console-runtime" || argument == L"--shell-runtime") && i+1<args.count) {
@@ -139,6 +148,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                     "--smoke-modal --capture modal.png\n"
                     "--smoke-projects --capture projects.png\n"
                     "--smoke-settings --capture settings.png\n"
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+                    "--smoke-settings-raw --capture settings-raw.png (isolated authored diagnostic only)\n"
+#endif
                     "--smoke-workspaces seed|restore|corrupt --workspace-fixture isolated-directory\n\n"
                     "--console-runtime explicitly opts this launch into the pinned experimental\n"
                     "Microsoft ConPTY runtime (1.25.260930003). No system fallback on failure.\n"
@@ -157,6 +169,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 return stormtty::show_startup_notice("StormTTY controls",help,stormtty::StartupNoticeKind::information)==0?0:1;
             } else throw std::runtime_error("Unknown or incomplete option. Use --help for supported options.");
         }
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+        if (!options.smoke_settings_raw)
+            throw std::invalid_argument("This isolated diagnostic requires --smoke-settings-raw; normal sessions are disabled.");
+#endif
         // Only builds including a validated runtime discover
         // this fixed executable-relative directory. Never search cwd or PATH.
         if (options.shell_runtime_directory.empty()) {

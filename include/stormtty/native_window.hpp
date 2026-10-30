@@ -137,6 +137,9 @@ private:
 
 // Enters the platform message loop. Called once, from the main UI thread.
 // Windows is implemented; other platforms provide their own native shell.
+#if defined(STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY) && !defined(STORMTTY_QUALIFICATION_INPUT_EVIDENCE)
+#error "Settings raw boundary requires the isolated qualification Session/Process ABI"
+#endif
 struct NativeRunOptions {
     bool smoke_test{}; // Explicit CI mode; never enabled on a normal launch.
     std::string smoke_workspaces; // Dedicated isolated restart qualification: seed/restore/corrupt.
@@ -146,6 +149,9 @@ struct NativeRunOptions {
     bool smoke_agent{}; // Authored native UI fixtures only; never starts a provider.
     bool smoke_settings{}; // Styled Settings/menu routing, reversible preview and isolated explicit Save.
     std::filesystem::path smoke_window_fixture; // Authored marker-checked directory, dedicated fixture only.
+#ifdef STORMTTY_QUALIFICATION_SETTINGS_RAW_BOUNDARY
+    bool smoke_settings_raw{}; // Fixed authored raw-Zsh diagnostic; separate executable only.
+#endif
     bool smoke_windows{}; // Isolated controlled two-HWND ownership/retirement fixture, no user New Window UI.
     bool smoke_modal{}; // Styled modal + routing/close smoke, not desktop activation QA.
     bool smoke_projects{}; // Two actual folder contexts, actor retention and scoped close.

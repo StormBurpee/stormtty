@@ -1,0 +1,76 @@
+# Strict diagnostic controls, not a new production qualification gate.
+name: Isolated Settings raw boundary diagnostic
+on:
+  push:
+    branches: [diagnostic/settings-raw-boundary]
+permissions:
+  contents: read
+concurrency:
+  group: settings-raw-boundary-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/diagnostic/settings-raw-boundary'
+    runs-on: windows-2025
+    timeout-minutes: 35
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.14'
+      - name: Initialize native compiler
+        shell: pwsh
+        run: ./tools/ci-msvc-env.ps1
+      - name: Restore pinned terminal engine
+        id: engine
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .deps/ghostty-native
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/bootstrap.lock.json', 'tools/bootstrap.py') }}
+      - name: Build missing pinned engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: python tools/bootstrap.py --install-zig --prefix .deps/ghostty-native --jobs 2
+      - name: Build qualification probe and verify production isolation
+        shell: pwsh
+        run: |
+          cmake -S . -B build-settings-raw -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_TEST_SHELL_PROBE=ON -DSTORMTTY_TEST_SETTINGS_RAW_BOUNDARY=ON -DBUILD_TESTING=ON -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-settings-raw --target stormtty stormtty_settings_raw_probe bundled_shell_probe qualification_input_evidence_tests settings_raw_boundary_tests --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-settings-raw -R "^(qualification_input_evidence_tests|settings_raw_boundary_tests)$" --no-tests=error --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/check_input_evidence_isolation.py build-settings-raw --settings-raw
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage isolated stock shell and packaged console
+        shell: pwsh
+        run: |
+          python tools/shell-bootstrap.py --destination .deps/stormtty-shell --cache .cache/shell-bootstrap
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./tools/prepare-conpty-probe.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'stormtty-settings-raw-conpty')
+      - name: Check source and isolation contracts
+        shell: pwsh
+        run: |
+          python tests/settings_raw_source_tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/settings_raw_runner_tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/probes/check_input_evidence_isolation_tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run one authored Settings boundary per stock provider
+        shell: pwsh
+        run: |
+          python tools/probes/run_settings_raw_boundary.py --build-dir build-settings-raw --shell-runtime .deps/stormtty-shell --console-runtime (Join-Path $env:RUNNER_TEMP 'stormtty-settings-raw-conpty')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve every diagnostic result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: settings-raw-boundary-${{ github.sha }}
+          path: |
+            build-settings-raw/artifacts/settings-raw-*.log
+            build-settings-raw/artifacts/owned-processes.json
+            build-settings-raw/Testing/Temporary/LastTest.log
+            build-settings-raw/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
