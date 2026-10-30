@@ -117,7 +117,8 @@ std::filesystem::path checked_root(const std::filesystem::path& input) {
             (flags & FILE_PERSISTENT_ACLS));
     return text;
 }
-Handle open_checked(const std::filesystem::path& path, const Security& security, bool directory, bool ancestor) {
+Handle open_checked(const std::filesystem::path& path, const Security& security, bool directory, bool ancestor,
+                    bool private_data = true) {
     Handle handle(CreateFileW(native(path).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
@@ -127,7 +128,7 @@ Handle open_checked(const std::filesystem::path& path, const Security& security,
     require(!(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT));
     require(static_cast<bool>(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == directory);
     require(directory || info.nNumberOfLinks == 1);
-    security.inspect(handle.value, ancestor);
+    security.inspect(handle.value, ancestor, private_data);
     return handle;
 }
 void inspect_tree(const std::filesystem::path& path, const Security& security, unsigned depth, unsigned& count,
@@ -318,7 +319,11 @@ ManagedShellState prepare_managed_shell_state_at(const std::filesystem::path& lo
         for (const auto* name : {L"StormTTY", L"managed-zsh-v1"}) {
             part /= name;
             if (!CreateDirectoryW(native(part).c_str(), &attributes)) require(GetLastError() == ERROR_ALREADY_EXISTS);
-            guards.push_back(open_checked(part, security, true, false));
+            // The app container can be public-readable; only its dedicated
+            // shell child contains private state. Keep ancestor=false here:
+            // untrusted creation/deletion and every other mutation still fail.
+            const bool private_data=std::wstring_view(name)!=L"StormTTY";
+            guards.push_back(open_checked(part, security, true, false, private_data));
         }
         unsigned count{};
         inspect_tree(part, security, 0, count, guards);

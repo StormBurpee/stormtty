@@ -57,6 +57,98 @@ void unsafe_inheritance(const std::filesystem::path& path) {
         DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, acl, nullptr);
     LocalFree(acl); CHECK(set == ERROR_SUCCESS);
 }
+// Add an untrusted grant without removing the fixture owner's full access.
+// Everyone stands in for any non-trusted reader; no group is whitelisted.
+void grant_untrusted(const std::filesystem::path& path, DWORD mask,
+                     DWORD inheritance=SUB_CONTAINERS_AND_OBJECTS_INHERIT) {
+    PSECURITY_DESCRIPTOR original{}; PACL old_acl{};
+    CHECK(GetNamedSecurityInfoW(const_cast<wchar_t*>(path.c_str()), SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION, nullptr, nullptr, &old_acl, nullptr, &original) == ERROR_SUCCESS);
+    PSID everyone{}; CHECK(ConvertStringSidToSidW(L"S-1-1-0", &everyone));
+    EXPLICIT_ACCESSW grant{};
+    grant.grfAccessPermissions=mask; grant.grfAccessMode=GRANT_ACCESS; grant.grfInheritance=inheritance;
+    grant.Trustee.TrusteeForm=TRUSTEE_IS_SID; grant.Trustee.ptstrName=static_cast<LPWSTR>(everyone);
+    PACL acl{}; const auto built=SetEntriesInAclW(1,&grant,old_acl,&acl);
+    LocalFree(original);LocalFree(everyone);CHECK(built==ERROR_SUCCESS);
+    const auto set=SetNamedSecurityInfoW(const_cast<wchar_t*>(path.c_str()),SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,nullptr,nullptr,acl,nullptr);
+    LocalFree(acl);CHECK(set==ERROR_SUCCESS);
+}
+std::wstring dacl_text(const std::filesystem::path& path) {
+    PSECURITY_DESCRIPTOR descriptor{};
+    CHECK(GetNamedSecurityInfoW(const_cast<wchar_t*>(path.c_str()),SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION,nullptr,nullptr,nullptr,nullptr,&descriptor)==ERROR_SUCCESS);
+    LPWSTR text{};
+    const auto ok=ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor,SDDL_REVISION_1,
+        DACL_SECURITY_INFORMATION,&text,nullptr);
+    LocalFree(descriptor);CHECK(ok);
+    std::wstring result=text;LocalFree(text);return result;
+}
+void private_child_dacl(const std::filesystem::path& path, bool protected_root) {
+    PSECURITY_DESCRIPTOR descriptor{}; PACL acl{};
+    CHECK(GetNamedSecurityInfoW(const_cast<wchar_t*>(path.c_str()),SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION,nullptr,nullptr,&acl,nullptr,&descriptor)==ERROR_SUCCESS);
+    SECURITY_DESCRIPTOR_CONTROL control{};DWORD revision{};
+    CHECK(GetSecurityDescriptorControl(descriptor,&control,&revision));
+    if(protected_root)CHECK(control&SE_DACL_PROTECTED);
+    CHECK(acl && IsValidAcl(acl));
+    for(DWORD index=0;index<acl->AceCount;++index) {
+        void* raw{};CHECK(GetAce(acl,index,&raw));
+        const auto* header=static_cast<ACE_HEADER*>(raw);
+        CHECK(header->AceType==ACCESS_ALLOWED_ACE_TYPE);
+        const auto* ace=static_cast<ACCESS_ALLOWED_ACE*>(raw);
+        CHECK(!IsWellKnownSid(const_cast<DWORD*>(&ace->SidStart),WinWorldSid));
+    }
+    LocalFree(descriptor);
+}
+void public_container_regressions(const std::filesystem::path& root) {
+    const auto allowed=root/L"readable-app-container";
+    CHECK(std::filesystem::create_directory(allowed));
+    const auto first=prepare_managed_shell_state_at(allowed,false);CHECK(first);
+    CHECK(std::filesystem::remove(first.directory));
+    const auto app=allowed/L"StormTTY";
+    grant_untrusted(app,FILE_GENERIC_READ|FILE_GENERIC_EXECUTE);
+    const auto original=dacl_text(app);
+    CHECK(!std::filesystem::exists(first.directory));
+    const auto state=prepare_managed_shell_state_at(allowed,false);CHECK(state);
+    CHECK(dacl_text(app)==original); // Existing app permissions are never repaired.
+    private_child_dacl(state.directory,true);
+    const auto cache=state.directory/L"cache";
+    CHECK(std::filesystem::create_directory(cache));
+    const auto history=state.directory/L"history";write(history);
+    private_child_dacl(cache,false);private_child_dacl(history,false);
+    CHECK(prepare_managed_shell_state_at(allowed,false)); // Warm reuse accepted.
+    grant_untrusted(history,FILE_GENERIC_READ,NO_INHERITANCE);
+    CHECK(!prepare_managed_shell_state_at(allowed,false));
+    CHECK(std::filesystem::remove(history));
+    CHECK(prepare_managed_shell_state_at(allowed,false));
+    grant_untrusted(state.directory,FILE_GENERIC_READ);
+    CHECK(!prepare_managed_shell_state_at(allowed,false)); // State remains private.
+    CHECK(dacl_text(app)==original);
+
+    const DWORD forbidden[]={FILE_WRITE_DATA,FILE_APPEND_DATA,FILE_WRITE_EA,FILE_WRITE_ATTRIBUTES,
+        FILE_DELETE_CHILD,DELETE,WRITE_DAC,WRITE_OWNER};
+    unsigned index{};
+    for(const DWORD mask:forbidden) {
+        const auto denied=root/(L"app-mutation-"+std::to_wstring(index++));
+        CHECK(std::filesystem::create_directory(denied));
+        const auto initial=prepare_managed_shell_state_at(denied,false);CHECK(initial);
+        CHECK(std::filesystem::remove(initial.directory));
+        const auto container=denied/L"StormTTY";
+        grant_untrusted(container,FILE_GENERIC_READ|mask);
+        const auto before=dacl_text(container);
+        CHECK(!prepare_managed_shell_state_at(denied,false));
+        CHECK(!std::filesystem::exists(initial.directory));
+        CHECK(dacl_text(container)==before);
+    }
+    const auto inherited=root/L"app-inherit-only-mutation";
+    CHECK(std::filesystem::create_directory(inherited));
+    const auto initial=prepare_managed_shell_state_at(inherited,false);CHECK(initial);
+    CHECK(std::filesystem::remove(initial.directory));
+    grant_untrusted(inherited/L"StormTTY",FILE_WRITE_DATA,SUB_CONTAINERS_AND_OBJECTS_INHERIT|INHERIT_ONLY);
+    CHECK(!prepare_managed_shell_state_at(inherited,false));
+    CHECK(!std::filesystem::exists(initial.directory));
+}
 void junction(const std::filesystem::path& link, const std::filesystem::path& target) {
     CHECK(CreateDirectoryW(link.c_str(), nullptr));
     const HANDLE handle = CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
@@ -92,6 +184,7 @@ int main() { return run_core_tests("windows_shell_state (Windows native)", [] {
     // Default uses the native known folder, never ambient LOCALAPPDATA/HOME.
     CHECK(prepare_managed_shell_state(false));
     Fixture fixture;
+    public_container_regressions(fixture.root);
     const auto result = prepare_managed_shell_state_at(fixture.root, false);
     CHECK(result && result.directory == fixture.root / L"StormTTY" / L"managed-zsh-v1");
     CHECK(result.directory.wstring().find(L"\u6d4b\u8bd5") != std::wstring::npos);
@@ -148,6 +241,12 @@ int main() { return run_core_tests("windows_shell_state (Windows native)", [] {
     CHECK(!prepare_managed_shell_state_at(linked_root, false));
     CHECK(!std::filesystem::exists(cache / L"StormTTY"));
     CHECK(RemoveDirectoryW(linked_root.c_str()));
+    const auto linked_app_root=fixture.root/L"linked-app-container";
+    CHECK(std::filesystem::create_directory(linked_app_root));
+    junction(linked_app_root/L"StormTTY",cache);
+    CHECK(!prepare_managed_shell_state_at(linked_app_root,false));
+    CHECK(!std::filesystem::exists(cache/L"managed-zsh-v1"));
+    CHECK(RemoveDirectoryW((linked_app_root/L"StormTTY").c_str()));
     CHECK(std::filesystem::create_directory(config));
     CHECK(!prepare_managed_shell_state_at(fixture.root, false));
     CHECK(std::filesystem::remove(config));
