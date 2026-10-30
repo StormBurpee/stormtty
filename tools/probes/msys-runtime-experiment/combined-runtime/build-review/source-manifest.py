@@ -17,6 +17,7 @@ def identities():
     fixture['owned-runner.py']=digest(ROOT.parents[2]/'run-owned-process.py')
     paths=[p for p in ROOT.rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix in ('.py','.h','.hpp','.c','.sh','.ps1','.md','.patch','.json','.template')]
     paths += [ROOT.parent/n for n in ('toolchain.sh','partial-read/0007-preserve-copied-on-signal.patch','0006-refined-prefix.patch','0000-utils-const-compat.patch')]
+    paths += [ROOT.parents[3]/'.gitattributes',ROOT.parent/'.gitattributes']
     paths += [ROOT.parents[2]/'ci-msvc-env.ps1',ROOT.parents[2]/'run-owned-process.py',ROOT.parent/'passive-path/linked-preflight.py']
     if any(p.is_symlink() for p in paths):raise ValueError('source alias rejected')
     return dict(schema=1,fixture_source_sha256=fixture,build_source_sha256={relative_key(p,ROOT):digest(p) for p in sorted(set(paths))})

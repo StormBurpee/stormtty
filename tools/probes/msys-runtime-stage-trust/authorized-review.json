@@ -1,0 +1,566 @@
+{
+  "assumptions": {
+    "native_cleanup_and_liveness": "unexecuted-before-component-stage",
+    "os_tls_and_accessor_async_semantics": "explicit-assumption-not-general-proof",
+    "raw_pe_hash_binding": "native-cold-extractor-plus-verified-collection",
+    "reader_module_literal": "source-inferred-not-exported-byte-evidence"
+  },
+  "authorization_scope": "Only existing 15-case, 60-trial isolated component stage after fresh exact rebuild and linked gates. No promotion, full qualification, retries, or default changes.",
+  "authorization_source": "Root explicit narrow stage decision, 2026-10-30; final publication remains root-owned.",
+  "case_ids": [
+    "raw-1",
+    "raw-64",
+    "canonical",
+    "select-raw",
+    "stable-mouse-off",
+    "stable-mouse-on",
+    "stable-focus-off",
+    "stable-focus-on",
+    "stable-resize",
+    "changed-mouse-off",
+    "changed-mouse-on",
+    "prefix-mouse-off",
+    "prefix-mouse-on",
+    "storm-mouse-off",
+    "storm-mouse-on"
+  ],
+  "execution_authorized": true,
+  "native_qualified": false,
+  "pending_cases": [
+    "select-mouse-off",
+    "select-mouse-on",
+    "select-focus-off",
+    "select-focus-on",
+    "select-resize",
+    "copy-winch-2",
+    "copy-winch-64",
+    "copy-external-2",
+    "copy-external-64",
+    "zero-winch",
+    "zero-external",
+    "restart-winch-zero",
+    "restart-winch-positive",
+    "restart-external-zero",
+    "restart-external-positive",
+    "split-surrogate",
+    "mouse-key-ordering"
+  ],
+  "reviewed_evidence": {
+    "commit": "18970c01a321c981c106c03c149d43bc3b4ed7a9",
+    "comparison": "EXACT_MATCH",
+    "prior_match": true,
+    "repeat_match": true,
+    "run_id": 40999881932
+  },
+  "reviewed_source_inventory": {
+    "build_source_sha256": {
+      "../../../../.gitattributes": "28aec520bb86bade7c8e2689dc69447c3969d0085921d6fb65ff5f5febcb329f",
+      "../../../ci-msvc-env.ps1": "1f3c475a9c2e491bd6e15e341c3a7948f165c4e24d695e4b941787a2c39a49d0",
+      "../../../run-owned-process.py": "ba3dd67e0182005c3be478eef9ac2f4d0289b9287943d7b3fb37dbd76168d5d7",
+      "../.gitattributes": "b6e82bb9b0c352baf9f2b7965ad3fc58f8fe2d47da1830f4315bbbc93ec2bec3",
+      "../0000-utils-const-compat.patch": "a5b1d57c84088ac9330df9a30c64993d5aa2ce5b8adf242732c737807818a7f6",
+      "../0006-refined-prefix.patch": "1afc3483da5dcc8848f336619f858c0ffcfbef608d1446464e6566135b2aff66",
+      "../partial-read/0007-preserve-copied-on-signal.patch": "2a827b8e656975d8f34511152a664783fe48c1f6199ecd5506825af92bd7b508",
+      "../passive-path/linked-preflight.py": "90cdc22bea7da98b2e9d9ddc7647289eb00dba3485a50ec9cbf55520ba44a2f7",
+      "../toolchain.sh": "47f2e3dd788e4d966f186d32afed56854828054c0e41ef9b1e29e295124098a7",
+      "DETERMINISTIC-BUILD-PROPOSAL.md": "0c9f6980a5215a21968b7b49b95da8b54207a23bf0d9b1ba4bf664c417324484",
+      "PLAN.md": "4a59d7aa1c3ffa354f9a5a2de6c7a410190211e4f40e6f0804860a556573698a",
+      "adjudicate.py": "adf98e92ae58fb4f6456dea11fd3e21ca32cf8352010c10816c49c480f146639",
+      "build-review/COMPONENT-STAGE-PROPOSAL.md": "e59b3826ca81faf0d60100aa95b85a094098ccb37f3b74de95b639ac1437304d",
+      "build-review/README.md": "92b3f5ad5ff7508761cdc787566b396930074362209b8a8f382d6374804ecd4c",
+      "build-review/build-controller.ps1": "c1549e14e5ade567e2fc28c74b6eaf0b091b4c41083cb09799ae54fe570fd530",
+      "build-review/build.sh": "413937387e2d41b6d9b324fce61e6a3d608eba6cc1dbb4a95d29acc393007317",
+      "build-review/cold-linkage-tests.py": "30eabd44ad00d7418239013debaa653f823fc97cd45b216569edf64ddd11de7e",
+      "build-review/cold-linkage.py": "6add1e98ebee7015fae163a0cebfaa695a8b5b4facf7eb144d542efd0cac2425",
+      "build-review/collect.py": "1a957d08aa95c0443f4f2f378895b8b6d71813221d823610f593fe1fbbf860a5",
+      "build-review/compare-tests.py": "bf05147453e556d3ec7d5cf21c384b1f7beb03b6b4e1ec04b09a7df2b0fbc6c9",
+      "build-review/compare.py": "cc6f20e8e1c06c43d7c27ac513afbebca4def17f920377e950a522a34b71f0ad",
+      "build-review/component-stage-tests.py": "e85d1055430807fd7e634de87d451485f3bb26d4b8fcf39476d63a3bbbecd108",
+      "build-review/component-stage.py": "6f1ef64de0e644a6eb4b416b6b6dddffbd85d2a5bfa3ff7092400cca37cb1930",
+      "build-review/component-stage.workflow.yml.template": "db0dcf42cdbf461ac2adaedfb0446b86ef12bb35afb8a424bf1fddc369dada38",
+      "build-review/component-text.py": "8a9890a8a88485e8774f781b9f13531b4503356f4da94d30e7f053d5eb329bf2",
+      "build-review/expected-identities.json": "badc59a4bbfa01dfbbc90795afb12f88f1e9589a697adde8a854f9411e54c874",
+      "build-review/inspect-built.py": "c2ea98463da4e7ae08b0f620c5ffd11d0831cba79142802160e9348a93374200",
+      "build-review/source-manifest.py": "af7d5829fc74b16148ef14e97e509ed49fc6adbc77ed8017f9a49b2181105951",
+      "build-review/tests.py": "b69d1b866f5c76fc470b85bab91ecb6031cb13322411d9730b50dfe0fe2dfacb",
+      "build-review/verify-source.py": "e65aaab88a94277692420b01a8b273230133d7e65e7946d7b83fd0ccc232f146",
+      "build-review/workflow.yml.template": "694b9fba27af987d211fc061e30c1d14966a7aa2d288c8629ab69e7efb0a461f",
+      "collect.py": "229723b938121e666e54e635651d059dc91ee45d296b50d9259e95b85a4e396b",
+      "combined.patch": "ee034031c6be325290421b1156018b362446e27d174fdbc53790094d07330d80",
+      "controller-protocol.h": "a25dcf917c144538c7ce692b5c5ce56939ccf997ea0fc7c18f705bd189687f71",
+      "copied.patch": "110283a9b46e4a4f452c3601e94db6a39259a5717ad4d1dff63bc43c89459ad2",
+      "identities.json": "561d0d300c8521fd08144bfe7096761a1afa81d5c16a5a645e5244929e8fb262",
+      "linked-gate.py": "1ff6559113a5daadd3592db6a391931eb7b7fe436f718e01313287caa713a256",
+      "make-patch.py": "03b35009b90aa2cd43dc887dbeec4e1a5fc2518215c18808e9e45726b8b066d5",
+      "matrix.py": "72faf2432e81c4e635c918872a0842fd0a778f21843bbb7c126950389149a8c5",
+      "native/README.md": "a98c00cc462857e65d4d527422a486e6bcf68d9ad200bc568ad0d5a195156885",
+      "native/cases.h": "1fc5d72fa8dc01476d863475cd254d80abd57379f30e7edeac63c11373aafacb",
+      "native/controller.c": "153b8c6b174ab803b4f02a7630b9f4390aa9cf70f6ce70f4e96f0829181616f5",
+      "native/reader.c": "1168c53d74978cb9b79b886216b48b49fd2d2516f61ede29532c7e525e0acbf3",
+      "native/tests.py": "ef781a0fab1e394b4835b8025be79337708ce8fc516fd105028c0dee62c65a9d",
+      "native/tests/windows.h": "c81229870e319f1f2d7c2cf9b77b109fed21b696a6b8dc612111d0eae72642b2",
+      "observer.hpp": "6df09baf831530992be0278e1e63f9ed512529c73b7c901db73429d44d567454",
+      "reader-protocol.h": "c5c68dac3261fc7865e9ba60c3b29e4b44bb4846d39e63c30cf7a716aaea5f1e",
+      "run.py": "19a6f0451a02e6e505e757a159440d8b3ea5d197f6bad0c17f3af07f2110f73e",
+      "stage-tests.py": "ba2a0ebeffef3aed90b58546dd6fd04c134dcbc023917f6f0decd5e9ac4ed667",
+      "tests.py": "29b8e3e9fbf64181ded46726f2a28057afd7ca478f6ad3fffea2d41938eb109e",
+      "tests/reader-portable.c": "e79cc21e4fd3832f4d29e1d2c2555cbdc5f904557c4be8bc473a6274ba61501c",
+      "tests/windows.h": "4c1c8692818a2a1b12e12b04ba786abe8352402b1308790180a7b683ad3734d4",
+      "trace.py": "1efe2b8268d49d4d87f7d686c9aa387c3bf8ac478011e1c8733e0c552b92584b"
+    },
+    "fixture_source_sha256": {
+      "../passive-path/linked-preflight.py": "90cdc22bea7da98b2e9d9ddc7647289eb00dba3485a50ec9cbf55520ba44a2f7",
+      "adjudicate.py": "adf98e92ae58fb4f6456dea11fd3e21ca32cf8352010c10816c49c480f146639",
+      "collect.py": "229723b938121e666e54e635651d059dc91ee45d296b50d9259e95b85a4e396b",
+      "controller-protocol.h": "a25dcf917c144538c7ce692b5c5ce56939ccf997ea0fc7c18f705bd189687f71",
+      "identities.json": "561d0d300c8521fd08144bfe7096761a1afa81d5c16a5a645e5244929e8fb262",
+      "linked-gate.py": "1ff6559113a5daadd3592db6a391931eb7b7fe436f718e01313287caa713a256",
+      "matrix.py": "72faf2432e81c4e635c918872a0842fd0a778f21843bbb7c126950389149a8c5",
+      "native/cases.h": "1fc5d72fa8dc01476d863475cd254d80abd57379f30e7edeac63c11373aafacb",
+      "native/controller.c": "153b8c6b174ab803b4f02a7630b9f4390aa9cf70f6ce70f4e96f0829181616f5",
+      "native/reader.c": "1168c53d74978cb9b79b886216b48b49fd2d2516f61ede29532c7e525e0acbf3",
+      "observer.hpp": "6df09baf831530992be0278e1e63f9ed512529c73b7c901db73429d44d567454",
+      "owned-runner.py": "ba3dd67e0182005c3be478eef9ac2f4d0289b9287943d7b3fb37dbd76168d5d7",
+      "reader-protocol.h": "c5c68dac3261fc7865e9ba60c3b29e4b44bb4846d39e63c30cf7a716aaea5f1e",
+      "run.py": "19a6f0451a02e6e505e757a159440d8b3ea5d197f6bad0c17f3af07f2110f73e",
+      "trace.py": "1efe2b8268d49d4d87f7d686c9aa387c3bf8ac478011e1c8733e0c552b92584b"
+    },
+    "schema": 1
+  },
+  "runtime_promotion_allowed": false,
+  "schema": 1,
+  "scope": "proposed-15-case-component-stage",
+  "trial_count": 60,
+  "variants": {
+    "combined": {
+      "approved_for_fixture_execution": true,
+      "approved_scope": "existing-15-case-component-stage-only",
+      "cold_linkage_sha256": "c613a480c04dba8e45b076ab1c11599ac3a3b46f7ab38e605025246a59a3b928",
+      "controller_input_schedule_reviewed": true,
+      "controller_job_ownership_reviewed": true,
+      "controller_sha256": "1cf92463ec2562f3cc690ce1efe0593582f64ce45b2da9d2d785ffce00823141",
+      "dll_sha256": "3df25f66e4c5ce82101167c46205a95fcc2fee4b8b494191f1a667c6b0370cf5",
+      "fixture_source_sha256": {
+        "../passive-path/linked-preflight.py": "90cdc22bea7da98b2e9d9ddc7647289eb00dba3485a50ec9cbf55520ba44a2f7",
+        "adjudicate.py": "adf98e92ae58fb4f6456dea11fd3e21ca32cf8352010c10816c49c480f146639",
+        "collect.py": "229723b938121e666e54e635651d059dc91ee45d296b50d9259e95b85a4e396b",
+        "controller-protocol.h": "a25dcf917c144538c7ce692b5c5ce56939ccf997ea0fc7c18f705bd189687f71",
+        "identities.json": "561d0d300c8521fd08144bfe7096761a1afa81d5c16a5a645e5244929e8fb262",
+        "linked-gate.py": "1ff6559113a5daadd3592db6a391931eb7b7fe436f718e01313287caa713a256",
+        "matrix.py": "72faf2432e81c4e635c918872a0842fd0a778f21843bbb7c126950389149a8c5",
+        "native/cases.h": "1fc5d72fa8dc01476d863475cd254d80abd57379f30e7edeac63c11373aafacb",
+        "native/controller.c": "153b8c6b174ab803b4f02a7630b9f4390aa9cf70f6ce70f4e96f0829181616f5",
+        "native/reader.c": "1168c53d74978cb9b79b886216b48b49fd2d2516f61ede29532c7e525e0acbf3",
+        "observer.hpp": "6df09baf831530992be0278e1e63f9ed512529c73b7c901db73429d44d567454",
+        "owned-runner.py": "ba3dd67e0182005c3be478eef9ac2f4d0289b9287943d7b3fb37dbd76168d5d7",
+        "reader-protocol.h": "c5c68dac3261fc7865e9ba60c3b29e4b44bb4846d39e63c30cf7a716aaea5f1e",
+        "run.py": "19a6f0451a02e6e505e757a159440d8b3ea5d197f6bad0c17f3af07f2110f73e",
+        "trace.py": "1efe2b8268d49d4d87f7d686c9aa387c3bf8ac478011e1c8733e0c552b92584b"
+      },
+      "handler_export": "stormtty_combined_handler_v2",
+      "native_qualified": false,
+      "object_body_sha256": {
+        "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt": "8cebcd3d87ea31977b457ff0999f42a1a6ea770cbb8a7c8d9ce57d356e201bde",
+        "stormtty_combined_handler_v2": "e1eabe465dde59fe7dd85610b497dae492768124a33456d9204a3eb8ba0c7790"
+      },
+      "provenance_sha256": {
+        "build-time-environment.txt": "b7dc39eef9ed646df3e13ad99ab4376b67a59497f4574e1128e625b7b50f2ff0",
+        "cold-linkage.json": "c613a480c04dba8e45b076ab1c11599ac3a3b46f7ab38e605025246a59a3b928",
+        "compiler-mode.txt": "8160e578d78a1254955d95714694039b77960e3802dadc07b719cfbaea301ed6",
+        "compiler-packages.txt": "feecbbb9be9775ee80ed1cf95433fbd35c5e79ff4a138dc95d418e8f1d458d1f",
+        "console-native-disassembly.txt": "897e5dc878356121c10db92aa2f3a255749568be1e6a5994498cce9bbbc8bc59",
+        "console-native-symbols.txt": "c3782da753c0af6c4500b22dfafb178f8046a1d095c8ff12c979d427dbf83a00",
+        "console.cc.after": "fc10d0b7bb3c789bcadcf4ed985f5a474c453ec8fb7a39c3a2c28acf2181bd6e",
+        "console.cc.before": "4d32b6219c1241a9fea998909ea8451799bf0c4f57d0eb004f88b9b9e9a57e66",
+        "diagnostic.patch": "ee034031c6be325290421b1156018b362446e27d174fdbc53790094d07330d80",
+        "dll-debuglink.txt": "abc333fe07297504df246379eebcaf9cd0215557de363aa3670e31553877d641",
+        "fhandler.h.after": "ef5f8cd8db11a874807d37661a87ac0a65a9e5bad04c6f37039bd9b814a5f3d4",
+        "generated-version.cc": "d376066e8d4026295ef7a8940f5757fe670c5b74d582399622fe18dc8f32f54d",
+        "makepkg.conf": "e32dfe62e9477ad074c98c3821cfad93320aed41ec3c79c0cf5d59fcbbbc4bac",
+        "reader-linked-disassembly.txt": "ba987f2c2c0cefc1ed779f21fd4f6710fa18d1a466ce50352fef376d9f548008",
+        "reader-object-disassembly.txt": "dc790890763bc49d33f5afee3b934f0b0b0f88dc6cdaaf65fc70bd25c9f90d69",
+        "reader-object-symbols.txt": "bfb2db6c79e1d081d7534fdd0bebc51e04bb19950913b97609f05660822c545a",
+        "reader-pe.txt": "ce24948642b01c3ca4fd4e108e613325410fa20df17615699ebb71b4314511c0",
+        "source-epoch.txt": "d7d506ea3d47526af08915a8db2747e6a255dd54aee1371ad232d963c178a874",
+        "stormtty-combined-path.h": "6df09baf831530992be0278e1e63f9ed512529c73b7c901db73429d44d567454",
+        "termios.cc.after": "e65b607b331586533fd495dc228361b01b10f4ec85682abb2342b5c29867a36f",
+        "tool-binaries-after.txt": "17ddb1e627aeed4cbba5c85a1869975faa40a7585c2425e0c5a1736bd7197b47",
+        "tool-binaries-before.txt": "17ddb1e627aeed4cbba5c85a1869975faa40a7585c2425e0c5a1736bd7197b47"
+      },
+      "reader_callback_binding_reviewed": true,
+      "reader_handler": {
+        "rva": 4208,
+        "sha256": "c436566b7ad954ebc7a1620e1f14ec44e836f912b8018c74ed1b9a4422f2e908",
+        "size": 128
+      },
+      "reader_handler_call_graph_reviewed": true,
+      "reader_imports": [
+        [
+          "kernel32.dll",
+          "GetConsoleMode"
+        ],
+        [
+          "kernel32.dll",
+          "GetLastError"
+        ],
+        [
+          "kernel32.dll",
+          "GetModuleHandleA"
+        ],
+        [
+          "kernel32.dll",
+          "GetModuleHandleW"
+        ],
+        [
+          "kernel32.dll",
+          "GetProcAddress"
+        ],
+        [
+          "kernel32.dll",
+          "GetStdHandle"
+        ],
+        [
+          "kernel32.dll",
+          "MapViewOfFile"
+        ],
+        [
+          "kernel32.dll",
+          "SetEvent"
+        ],
+        [
+          "kernel32.dll",
+          "SetLastError"
+        ],
+        [
+          "kernel32.dll",
+          "UnmapViewOfFile"
+        ],
+        [
+          "msys-2.0.dll",
+          "__errno"
+        ],
+        [
+          "msys-2.0.dll",
+          "__main"
+        ],
+        [
+          "msys-2.0.dll",
+          "_dll_crt0"
+        ],
+        [
+          "msys-2.0.dll",
+          "_impure_ptr"
+        ],
+        [
+          "msys-2.0.dll",
+          "calloc"
+        ],
+        [
+          "msys-2.0.dll",
+          "cfmakeraw"
+        ],
+        [
+          "msys-2.0.dll",
+          "cygwin_internal"
+        ],
+        [
+          "msys-2.0.dll",
+          "dll_dllcrt0"
+        ],
+        [
+          "msys-2.0.dll",
+          "free"
+        ],
+        [
+          "msys-2.0.dll",
+          "isatty"
+        ],
+        [
+          "msys-2.0.dll",
+          "malloc"
+        ],
+        [
+          "msys-2.0.dll",
+          "memcmp"
+        ],
+        [
+          "msys-2.0.dll",
+          "memcpy"
+        ],
+        [
+          "msys-2.0.dll",
+          "msys_detach_dll"
+        ],
+        [
+          "msys-2.0.dll",
+          "posix_memalign"
+        ],
+        [
+          "msys-2.0.dll",
+          "read"
+        ],
+        [
+          "msys-2.0.dll",
+          "realloc"
+        ],
+        [
+          "msys-2.0.dll",
+          "select"
+        ],
+        [
+          "msys-2.0.dll",
+          "setlocale"
+        ],
+        [
+          "msys-2.0.dll",
+          "sigaction"
+        ],
+        [
+          "msys-2.0.dll",
+          "sigemptyset"
+        ],
+        [
+          "msys-2.0.dll",
+          "strcmp"
+        ],
+        [
+          "msys-2.0.dll",
+          "strlen"
+        ],
+        [
+          "msys-2.0.dll",
+          "tcgetattr"
+        ],
+        [
+          "msys-2.0.dll",
+          "tcsetattr"
+        ],
+        [
+          "msys-2.0.dll",
+          "write"
+        ]
+      ],
+      "reader_sha256": "542d3c603b82456cd0e1c08a0691dda35092c23af88c5d3e8ddaa3eb62457c30",
+      "rendezvous_unreachable_from_handlers_reviewed": true,
+      "runtime_handler_call_graph_reviewed": true,
+      "runtime_promotion_allowed": false,
+      "schema": 2,
+      "variant": "combined"
+    },
+    "copied": {
+      "approved_for_fixture_execution": true,
+      "approved_scope": "existing-15-case-component-stage-only",
+      "cold_linkage_sha256": "40dad2895301559089a7277c0a435f22cf8afc1fee32d2eb7911642b2eee2989",
+      "controller_input_schedule_reviewed": true,
+      "controller_job_ownership_reviewed": true,
+      "controller_sha256": "1cf92463ec2562f3cc690ce1efe0593582f64ce45b2da9d2d785ffce00823141",
+      "dll_sha256": "946bfcf57d7b6bf1da7f67bfa355e540ee657e14d33030112256732f6e371a03",
+      "fixture_source_sha256": {
+        "../passive-path/linked-preflight.py": "90cdc22bea7da98b2e9d9ddc7647289eb00dba3485a50ec9cbf55520ba44a2f7",
+        "adjudicate.py": "adf98e92ae58fb4f6456dea11fd3e21ca32cf8352010c10816c49c480f146639",
+        "collect.py": "229723b938121e666e54e635651d059dc91ee45d296b50d9259e95b85a4e396b",
+        "controller-protocol.h": "a25dcf917c144538c7ce692b5c5ce56939ccf997ea0fc7c18f705bd189687f71",
+        "identities.json": "561d0d300c8521fd08144bfe7096761a1afa81d5c16a5a645e5244929e8fb262",
+        "linked-gate.py": "1ff6559113a5daadd3592db6a391931eb7b7fe436f718e01313287caa713a256",
+        "matrix.py": "72faf2432e81c4e635c918872a0842fd0a778f21843bbb7c126950389149a8c5",
+        "native/cases.h": "1fc5d72fa8dc01476d863475cd254d80abd57379f30e7edeac63c11373aafacb",
+        "native/controller.c": "153b8c6b174ab803b4f02a7630b9f4390aa9cf70f6ce70f4e96f0829181616f5",
+        "native/reader.c": "1168c53d74978cb9b79b886216b48b49fd2d2516f61ede29532c7e525e0acbf3",
+        "observer.hpp": "6df09baf831530992be0278e1e63f9ed512529c73b7c901db73429d44d567454",
+        "owned-runner.py": "ba3dd67e0182005c3be478eef9ac2f4d0289b9287943d7b3fb37dbd76168d5d7",
+        "reader-protocol.h": "c5c68dac3261fc7865e9ba60c3b29e4b44bb4846d39e63c30cf7a716aaea5f1e",
+        "run.py": "19a6f0451a02e6e505e757a159440d8b3ea5d197f6bad0c17f3af07f2110f73e",
+        "trace.py": "1efe2b8268d49d4d87f7d686c9aa387c3bf8ac478011e1c8733e0c552b92584b"
+      },
+      "handler_export": "stormtty_combined_handler_v2",
+      "native_qualified": false,
+      "object_body_sha256": {
+        "_ZN7st_path12emit_contextEPNS_7ContextENS_5EventEmmmmmmmmmmtt": "8cebcd3d87ea31977b457ff0999f42a1a6ea770cbb8a7c8d9ce57d356e201bde",
+        "stormtty_combined_handler_v2": "e1eabe465dde59fe7dd85610b497dae492768124a33456d9204a3eb8ba0c7790"
+      },
+      "provenance_sha256": {
+        "build-time-environment.txt": "b7dc39eef9ed646df3e13ad99ab4376b67a59497f4574e1128e625b7b50f2ff0",
+        "cold-linkage.json": "40dad2895301559089a7277c0a435f22cf8afc1fee32d2eb7911642b2eee2989",
+        "compiler-mode.txt": "8160e578d78a1254955d95714694039b77960e3802dadc07b719cfbaea301ed6",
+        "compiler-packages.txt": "feecbbb9be9775ee80ed1cf95433fbd35c5e79ff4a138dc95d418e8f1d458d1f",
+        "console-native-disassembly.txt": "7bdb1d21f38f57b7fc8a1081539deb867eba73a7dc2959ac271efc2701704ccf",
+        "console-native-symbols.txt": "c2437b65585373627310dcbfa3738dd8c4787ec67ccd32ff8bca36e7f3159964",
+        "console.cc.after": "9ea360e875cae3f5aab334c10efdef27f9393d5252b76382c6611220b694d1f9",
+        "console.cc.before": "cf4eba2150f2b99dfe7c55c8d73ac0f578d7675e649b8468a364bfb8fe2efdb2",
+        "diagnostic.patch": "110283a9b46e4a4f452c3601e94db6a39259a5717ad4d1dff63bc43c89459ad2",
+        "dll-debuglink.txt": "0fd271de60f91ca4e4d10a9d42367e6fba79c528048a3362f7d6dc19be0c8abf",
+        "fhandler.h.after": "c8e4a76e2a7aa5963763c62319e5f51ab08445be2f7ea6e3c1c314de91223650",
+        "generated-version.cc": "d376066e8d4026295ef7a8940f5757fe670c5b74d582399622fe18dc8f32f54d",
+        "makepkg.conf": "f7511dde213f10638278f29a70cee7eaf8ffa8037b5d5332b24b141167493173",
+        "reader-linked-disassembly.txt": "9e0dc2fefb3b131cb38338b5882da8108bda9e688d8a2323f9ead945cde780a0",
+        "reader-object-disassembly.txt": "b7e56a4e16456062759f92eb6fb1c02da90e96699634b23e3f7c0e1672bf3662",
+        "reader-object-symbols.txt": "07ef8d1483b8f10a4419be8c14c0eeca027e488dad1b7111f47695e907022ea5",
+        "reader-pe.txt": "82dbdc0de1df9d44bb5889cd5f003f3054513ea68c9564e86b3fa49dc10b865f",
+        "source-epoch.txt": "d7d506ea3d47526af08915a8db2747e6a255dd54aee1371ad232d963c178a874",
+        "stormtty-combined-path.h": "6df09baf831530992be0278e1e63f9ed512529c73b7c901db73429d44d567454",
+        "termios.cc.after": "e65b607b331586533fd495dc228361b01b10f4ec85682abb2342b5c29867a36f",
+        "tool-binaries-after.txt": "17ddb1e627aeed4cbba5c85a1869975faa40a7585c2425e0c5a1736bd7197b47",
+        "tool-binaries-before.txt": "17ddb1e627aeed4cbba5c85a1869975faa40a7585c2425e0c5a1736bd7197b47"
+      },
+      "reader_callback_binding_reviewed": true,
+      "reader_handler": {
+        "rva": 4208,
+        "sha256": "c436566b7ad954ebc7a1620e1f14ec44e836f912b8018c74ed1b9a4422f2e908",
+        "size": 128
+      },
+      "reader_handler_call_graph_reviewed": true,
+      "reader_imports": [
+        [
+          "kernel32.dll",
+          "GetConsoleMode"
+        ],
+        [
+          "kernel32.dll",
+          "GetLastError"
+        ],
+        [
+          "kernel32.dll",
+          "GetModuleHandleA"
+        ],
+        [
+          "kernel32.dll",
+          "GetModuleHandleW"
+        ],
+        [
+          "kernel32.dll",
+          "GetProcAddress"
+        ],
+        [
+          "kernel32.dll",
+          "GetStdHandle"
+        ],
+        [
+          "kernel32.dll",
+          "MapViewOfFile"
+        ],
+        [
+          "kernel32.dll",
+          "SetEvent"
+        ],
+        [
+          "kernel32.dll",
+          "SetLastError"
+        ],
+        [
+          "kernel32.dll",
+          "UnmapViewOfFile"
+        ],
+        [
+          "msys-2.0.dll",
+          "__errno"
+        ],
+        [
+          "msys-2.0.dll",
+          "__main"
+        ],
+        [
+          "msys-2.0.dll",
+          "_dll_crt0"
+        ],
+        [
+          "msys-2.0.dll",
+          "_impure_ptr"
+        ],
+        [
+          "msys-2.0.dll",
+          "calloc"
+        ],
+        [
+          "msys-2.0.dll",
+          "cfmakeraw"
+        ],
+        [
+          "msys-2.0.dll",
+          "cygwin_internal"
+        ],
+        [
+          "msys-2.0.dll",
+          "dll_dllcrt0"
+        ],
+        [
+          "msys-2.0.dll",
+          "free"
+        ],
+        [
+          "msys-2.0.dll",
+          "isatty"
+        ],
+        [
+          "msys-2.0.dll",
+          "malloc"
+        ],
+        [
+          "msys-2.0.dll",
+          "memcmp"
+        ],
+        [
+          "msys-2.0.dll",
+          "memcpy"
+        ],
+        [
+          "msys-2.0.dll",
+          "msys_detach_dll"
+        ],
+        [
+          "msys-2.0.dll",
+          "posix_memalign"
+        ],
+        [
+          "msys-2.0.dll",
+          "read"
+        ],
+        [
+          "msys-2.0.dll",
+          "realloc"
+        ],
+        [
+          "msys-2.0.dll",
+          "select"
+        ],
+        [
+          "msys-2.0.dll",
+          "setlocale"
+        ],
+        [
+          "msys-2.0.dll",
+          "sigaction"
+        ],
+        [
+          "msys-2.0.dll",
+          "sigemptyset"
+        ],
+        [
+          "msys-2.0.dll",
+          "strcmp"
+        ],
+        [
+          "msys-2.0.dll",
+          "strlen"
+        ],
+        [
+          "msys-2.0.dll",
+          "tcgetattr"
+        ],
+        [
+          "msys-2.0.dll",
+          "tcsetattr"
+        ],
+        [
+          "msys-2.0.dll",
+          "write"
+        ]
+      ],
+      "reader_sha256": "542d3c603b82456cd0e1c08a0691dda35092c23af88c5d3e8ddaa3eb62457c30",
+      "rendezvous_unreachable_from_handlers_reviewed": true,
+      "runtime_handler_call_graph_reviewed": true,
+      "runtime_promotion_allowed": false,
+      "schema": 2,
+      "variant": "copied"
+    }
+  }
+}

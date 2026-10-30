@@ -20,3 +20,9 @@ tools/shell-tools-notices/texts/** -text
 tools/probes/msys-runtime-experiment/0005-conditional-retirement.patch -text
 # Keep the unchanged PR7 raw probe byte pin stable on Windows checkout.
 tests/paste_input_probe.cpp -text
+
+# Retain exact reviewed Windows experiment tooling bytes across checkout/archive.
+tools/run-owned-process.py -text
+tools/ci-msvc-env.ps1 -text
+.gitattributes -text
+tools/probes/msys-runtime-stage-trust/** -text
