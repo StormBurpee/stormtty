@@ -33,7 +33,7 @@ jobs:
         run: cmake -S . -B build-mac-context -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/MacOSLLVM.cmake -DSTORMTTY_LLVM_ROOT="$(brew --prefix llvm@20)" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=OFF
       - name: Build application, inspector and keyboard contracts
         id: build
-        run: cmake --build build-mac-context --parallel 2 --target stormtty macos_toolchain_probe macos_context_footer_tests context_footer_tests macos_pane_inspector_tests macos_menu_tests macos_input_tests pane_context_tests core_commands_tests core_config_tests
+        run: cmake --build build-mac-context --parallel 2 --target macos_metal_reference_tests stormtty macos_toolchain_probe macos_context_footer_tests context_footer_tests macos_pane_inspector_tests macos_menu_tests macos_input_tests pane_context_tests core_commands_tests core_config_tests
       - name: Run native attached inspector and dispatch contracts
         run: ctest --test-dir build-mac-context -R '^(macos_toolchain_probe|macos_context_footer_tests|context_footer_tests|macos_pane_inspector_tests|pane_context_tests|macos_menu_tests|macos_input_tests|core_commands_tests|core_config_tests)$' --no-tests=error --output-on-failure --output-junit macos-context-footer-tests.xml
       - name: Diagnose actual application onscreen presentation independently
@@ -41,6 +41,10 @@ jobs:
         # This is a separate qualification, not a fallback or retry of the host
         # fixture. Its NSApp.run lifecycle distinguishes fixture from app failures.
         run: ctest --test-dir build-mac-context -R '^native_macos_window_smoke$' --no-tests=error --output-on-failure --output-junit macos-application-smoke-tests.xml --output-log macos-application-smoke.log
+      - name: Diagnose independent MetalKit reference presentation
+        if: always() && steps.build.outcome == 'success'
+        # Separate reference path, never a fallback pass for StormTTY failures.
+        run: ctest --test-dir build-mac-context -R '^macos_metal_reference_tests$' --no-tests=error --output-on-failure --output-junit macos-metal-reference-tests.xml --output-log build-mac-context/macos-metal-reference.log
       - name: Preserve exact source and verification limits
         if: always()
         shell: python3 {0}
@@ -59,6 +63,7 @@ jobs:
             build-mac-context/macos-application-smoke-tests.xml
             build-mac-context/macos-application-smoke.log
             build-mac-context/artifacts/native-macos.png
+            build-mac-context/macos-metal-reference*
             build-mac-context/macos-context-footer-evidence.json
             build-mac-context/Testing/Temporary/LastTest.log
             build-mac-context/CMakeFiles/CMakeConfigureLog.yaml
