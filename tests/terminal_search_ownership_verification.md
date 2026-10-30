@@ -79,7 +79,30 @@ succeed; begin/cancel/action publication can throw, and error publication can
 itself fail. Fatal callback poison remains a Core exception, not a recoverable
 search error. Source review is not runtime proof of those exceptional corners.
 
-Windows/macOS native runtime, native UI Find, physical interaction, performance,
-and exhaustive allocation failure qualification remain unrun for this slice.
+## Native qualification
+
+[PR #45 run 41134651142](https://github.com/StormBurpee/stormtty/actions/runs/41134651142)
+checked out `403a9ad873b7b4369a2b472b9b2c493751b9748e`, the synthetic merge of
+source `c957a5f8580663dbba193d1174749e9086474b06` into `8d53b991`.
+Both Windows and macOS checkout logs confirm that commit; its tree
+`9936edb80f4346f7f245d8fa437ac2f7a3684629` matches the reviewed source tree.
+
+- Windows native baseline: **71/71** passed; macOS native baseline: **61/61**
+  passed. Both executed **17/17** search cases, **33/33** terminal-core cases
+  and the Session suite. Linux CI also passed.
+- All **15** Windows application cases passed across packaged, bundled and
+  developer configurations. Installed-console Settings passed too.
+- Settings repeats passed **9/10 explicit + 3/3 default**. Only explicit case
+  **10** failed (return code 2): Settings stage 8 reached its phase-2 deadline,
+  with malformed `[200~` input, a trailing `~`, and `zsh: = not found` in the
+  terminal rows. This is an observed signature, not a proven root cause.
+- All **29** compact receipts reported reaped processes, no outer timeout,
+  no output truncation and no cleanup error: **28 successes, one failure**.
+  Successful cleanup does not make the failed scenario pass. Classification of
+  malformed paste comes from the full log; compact signature fields were null.
+
+The full Windows workflow remains failed. No shell fix or full-green result is
+claimed. Native UI Find, physical interaction, performance and exhaustive
+allocation failure qualification remain unrun for this slice.
 This does not close group 5's separate frame/image materialization responsibility
 or reopen AI, Liquid Glass/HDR, Leyline or the native-reader experiment.

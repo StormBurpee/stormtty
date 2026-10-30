@@ -135,8 +135,13 @@ a revision value and owned selection candidates, not a shared host context.
 The original Linux real-Ghostty search suite passed 14/14 before extraction;
 extended lifecycle characterization passed 17/17 both before and after. A private
 public-Core trace including snapshot metadata, pointer stability, selection and
-visible viewport matched byte-for-byte. These are Linux/core results, not native
-Windows/macOS or physical UI qualification. See [verification and limits](../tests/terminal_search_ownership_verification.md).
+visible viewport matched byte-for-byte. PR #45 then passed native Windows
+71/71 and macOS 61/61 baselines, each including all 17 search cases and 33
+terminal-core cases. All 15 Windows application cases passed, but explicit
+Settings repeat 10 failed with malformed bracketed paste; the other 12 repeats
+passed. All 29 application/repeat receipts recorded reaped processes without
+outer timeout or cleanup error. The full Windows job is not green; no shell fix,
+physical UI Find or performance qualification is claimed. See [verification and limits](../tests/terminal_search_ownership_verification.md).
 
 Group 5 remains open: frame/image snapshot materialization is still in
 `src/terminal/terminal.cpp`. Give that algorithm a focused collaborator while
