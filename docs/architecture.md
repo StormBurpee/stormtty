@@ -118,10 +118,15 @@ The native adapter is `src/platform/windows/settings_document_services.cpp`; gua
 file operations are in `settings_services.cpp`. See [settings services](settings-services.md).
 
 Workspace persistence is a different, application-owned writer, not one writer per
-view. `application_layout_codec.hpp` and `application_layout_services.hpp` provide
-bounded grouped-storage building blocks, but the native host still writes the v1
-workspace library. Grouped recovery, clean Quit versus individual close, and
-second-executable ownership remain integration gates. See
+view. The Windows coordinator loads and saves the bounded application-layout envelope
+through `load_application_layout_snapshot` and `save_application_layout`
+(`application_layout_services.hpp`, implemented in Windows `settings_services.cpp`).
+Legacy v1 libraries are imported without writing on read; migration on save requires
+an exact, permission-preserving `.v1-backup` before guarded atomic replacement.
+The host supports one persistent window: running checkpoints and clean individual
+close are integrated, but grouped startup, explicit application-wide Quit history,
+normal New Window and second-executable ownership remain gated. Unsupported selected
+multi-window recovery records are refused, not flattened or overwritten. See
 [application-layout storage](application-layout-storage.md).
 
 ## Rendering: scene policy is not a device
@@ -160,6 +165,13 @@ and DPI changes preserve these images; device replacement clears them before D2D
 resources are released. Residency is decoded cache-byte accounting, not a claim
 about total driver memory. See [image-cache qualification](../tests/image_cache_verification.md).
 
+On macOS, `CoreTextFontResources` (`src/platform/macos/core_text_font_resources.hpp`
+and `.mm`) owns the CoreText font reference, validation and measured cell metrics.
+Rasterization borrows the font synchronously. The renderer still owns font options,
+DPI, row generation and invalidation; Metal resources and asynchronous presentation
+are separate. Its row cache contains GPU raster textures, not Windows-style CPU
+shaped rows, so the backends do not share cache-lifetime assumptions.
+
 ## Remaining ownership work
 
 `src/platform/windows/renderer.cpp` still owns terminal/chrome painting, device
@@ -194,6 +206,8 @@ gates. Useful starting points:
   `text_resources_tests`, `image_cache_tests`, `renderer_smoke`/`renderer_final_teardown`, `renderer_png`
   and relevant native layout/material
   scenarios. Include resize, font/DPI changes, occlusion and resource recovery.
+- macOS typography/rendering: `macos_font_resources_tests`, `macos_renderer_tests`
+  and `macos_png_tests`; Windows graphics checks do not qualify this backend.
 - Actor/VT changes: `session_tests`, `terminal_tests`, `terminal_search_tests`,
   plus the affected real transport/provider tests and complete process exit.
 
