@@ -2,6 +2,7 @@
 #include "stormtty/commands.hpp"
 #include "stormtty/command_watch.hpp"
 #include "stormtty/project_workspaces.hpp"
+#include "stormtty/terminal_find.hpp"
 #include <algorithm>
 #include <optional>
 #include <string>
@@ -35,60 +36,222 @@ inline CommandAvailability activity_target_availability(const NavigatorTarget& t
 // association at commit; typing/navigation never switches or launches anything.
 class WorkspaceNavigator {
 public:
-    void open(std::vector<NavigatorWorkspace> entries, ProjectWorkspaceId project, SessionId session) {
-        entries_=std::move(entries);project_=project;session_=session;query_.clear();opened_=true;selection_stale_=false;filter();
+    // Interaction lifetime is independent of catalog initialization (opened_).
+    // Hosts still admit overlays, sample owned rows and validate live commits.
+    void begin(bool background_only, std::optional<ProjectWorkspaceId> activity_project);
+    void close();
+    bool is_open() const;
+    bool background_only() const;
+    std::optional<ProjectWorkspaceId> activity_project() const;
+
+    void replace_catalog(std::vector<NavigatorWorkspace> entries,
+                         ProjectWorkspaceId active_project, SessionId active_session);
+    TerminalFindQuery& editor();
+    const TerminalFindQuery& editor() const;
+    void apply_query();
+    unsigned focus() const;
+    void set_focus(unsigned focus); // 0=query, 1=workspaces, 2=terminals.
+
+    void arm_switch();
+    void cancel_switch();
+    bool switch_pressed() const;
+    // Boolean eligibility deliberately preserves stale/null-target attempts;
+    // the host's live commit validation supplies the stale-selection notice.
+    bool take_switch();
+
+    void open(std::vector<NavigatorWorkspace> entries, ProjectWorkspaceId project,
+              SessionId session) {
+        entries_ = std::move(entries);
+        project_ = project;
+        session_ = session;
+        query_.clear();
+        opened_ = true;
+        selection_stale_ = false;
+        filter();
     }
+
     // Activity refresh may update labels/order, but never authorizes a different
     // actor or placement. A stale selection remains blocked across later refreshes
     // until the user explicitly chooses a row or changes the search.
-    void refresh(std::vector<NavigatorWorkspace> entries, ProjectWorkspaceId initial_project, SessionId initial_session) {
-        if(!opened_){open(std::move(entries),initial_project,initial_session);return;}
-        const auto previous=target();
-        entries_=std::move(entries);filter();
-        if(!selection_stale_ && previous!=target())selection_stale_=true;
-    }
-    bool selection_stale() const{return selection_stale_;}
-    // Filtering preserves catalog order and the selected stable identity when
-    // still present; it does not reorder workspaces on every keystroke.
-    void search(std::string query) {if(query!=query_)selection_stale_=false;query_=std::move(query);filter();}
-    const std::string& query() const{return query_;}
-    const std::vector<NavigatorWorkspace>& entries() const{return entries_;}
-    const std::vector<std::size_t>& workspaces() const{return workspaces_;}
-    const std::vector<std::size_t>& terminals() const{return terminals_;}
-    std::size_t workspace_index() const{return workspace_index_;}
-    std::size_t terminal_index() const{return terminal_index_;}
-    const NavigatorWorkspace* workspace() const{return workspaces_.empty()?nullptr:&entries_[workspaces_[workspace_index_]];}
-    const NavigatorTerminal* terminal() const{const auto* w=workspace();return w&&!terminals_.empty()?&w->terminals[terminals_[terminal_index_]]:nullptr;}
-    std::optional<NavigatorTarget> target() const {if(selection_stale_)return {};const auto* w=workspace();if(!w)return {};const auto* t=terminal();return NavigatorTarget{w->project,t?t->session:SessionId{},t&&t->parked,t?t->identity:WatchIdentity{}};}
-    void select_workspace(std::size_t index){if(index>=workspaces_.size())return;selection_stale_=false;workspace_index_=index;project_=workspace()->project;session_={};filter_terminals();}
-    void select_terminal(std::size_t index){if(index>=terminals_.size())return;selection_stale_=false;terminal_index_=index;session_=terminal()->session;}
-    void move(bool workspaces,int direction){const auto count=workspaces?workspaces_.size():terminals_.size();if(!count)return;const auto i=workspaces?workspace_index_:terminal_index_;const auto next=direction<0?(i?i-1:count-1):(i+1)%count;if(workspaces)select_workspace(next);else select_terminal(next);}
-private:
-    bool workspace_matches(const NavigatorWorkspace& w) const{return bool(command_search_score(query_,w.name,w.directory));}
-    bool terminal_matches(const NavigatorTerminal& t) const{return bool(command_search_score(query_,t.title,t.directory));}
-    void filter(){
-        workspaces_.clear();
-        for(std::size_t i=0;i<entries_.size();++i){const auto& w=entries_[i];if(workspace_matches(w)||std::any_of(w.terminals.begin(),w.terminals.end(),[&](const auto& t){return terminal_matches(t);}))workspaces_.push_back(i);}
-        workspace_index_=0;
-        for(std::size_t i=0;i<workspaces_.size();++i)if(entries_[workspaces_[i]].project==project_)workspace_index_=i;
-        if(const auto* w=workspace())project_=w->project;
-        filter_terminals();
-    }
-    void filter_terminals(){
-        terminals_.clear();terminal_index_=0;
-        if(const auto* w=workspace()){
-            const bool all=workspace_matches(*w);
-            for(std::size_t i=0;i<w->terminals.size();++i)if(all||terminal_matches(w->terminals[i]))terminals_.push_back(i);
-            for(std::size_t i=0;i<terminals_.size();++i)if(w->terminals[terminals_[i]].session==session_)terminal_index_=i;
-            if(const auto* t=terminal())session_=t->session;
+    void refresh(std::vector<NavigatorWorkspace> entries,
+                 ProjectWorkspaceId initial_project, SessionId initial_session) {
+        if (!opened_) {
+            open(std::move(entries), initial_project, initial_session);
+            return;
+        }
+        const auto previous = target();
+        entries_ = std::move(entries);
+        filter();
+        if (!selection_stale_ && previous != target()) {
+            selection_stale_ = true;
         }
     }
+
+    bool selection_stale() const {
+        return selection_stale_;
+    }
+
+    // Filtering preserves catalog order and the selected stable identity when
+    // still present; it does not reorder workspaces on every keystroke.
+    void search(std::string query) {
+        if (query != query_) {
+            selection_stale_ = false;
+        }
+        query_ = std::move(query);
+        filter();
+    }
+
+    const std::string& query() const {
+        return query_;
+    }
+
+    const std::vector<NavigatorWorkspace>& entries() const {
+        return entries_;
+    }
+
+    const std::vector<std::size_t>& workspaces() const {
+        return workspaces_;
+    }
+
+    const std::vector<std::size_t>& terminals() const {
+        return terminals_;
+    }
+
+    std::size_t workspace_index() const {
+        return workspace_index_;
+    }
+
+    std::size_t terminal_index() const {
+        return terminal_index_;
+    }
+
+    const NavigatorWorkspace* workspace() const {
+        return workspaces_.empty() ? nullptr : &entries_[workspaces_[workspace_index_]];
+    }
+
+    const NavigatorTerminal* terminal() const {
+        const auto* w = workspace();
+        return w && !terminals_.empty() ? &w->terminals[terminals_[terminal_index_]] : nullptr;
+    }
+
+    std::optional<NavigatorTarget> target() const {
+        if (selection_stale_) {
+            return {};
+        }
+        const auto* w = workspace();
+        if (!w) {
+            return {};
+        }
+        const auto* t = terminal();
+        return NavigatorTarget{
+            w->project, t ? t->session : SessionId{}, t && t->parked,
+            t ? t->identity : WatchIdentity{}
+        };
+    }
+
+    void select_workspace(std::size_t index) {
+        if (index >= workspaces_.size()) {
+            return;
+        }
+        selection_stale_ = false;
+        workspace_index_ = index;
+        project_ = workspace()->project;
+        session_ = {};
+        filter_terminals();
+    }
+
+    void select_terminal(std::size_t index) {
+        if (index >= terminals_.size()) {
+            return;
+        }
+        selection_stale_ = false;
+        terminal_index_ = index;
+        session_ = terminal()->session;
+    }
+
+    void move(bool workspaces, int direction) {
+        const auto count = workspaces ? workspaces_.size() : terminals_.size();
+        if (!count) {
+            return;
+        }
+        const auto i = workspaces ? workspace_index_ : terminal_index_;
+        const auto next = direction < 0 ? (i ? i - 1 : count - 1) : (i + 1) % count;
+        if (workspaces) {
+            select_workspace(next);
+        } else {
+            select_terminal(next);
+        }
+    }
+
+private:
+    bool workspace_matches(const NavigatorWorkspace& w) const {
+        return bool(command_search_score(query_, w.name, w.directory));
+    }
+
+    bool terminal_matches(const NavigatorTerminal& t) const {
+        return bool(command_search_score(query_, t.title, t.directory));
+    }
+
+    void filter() {
+        workspaces_.clear();
+        for (std::size_t i = 0; i < entries_.size(); ++i) {
+            const auto& w = entries_[i];
+            if (workspace_matches(w) ||
+                std::any_of(w.terminals.begin(), w.terminals.end(),
+                    [&](const auto& t) { return terminal_matches(t); })) {
+                workspaces_.push_back(i);
+            }
+        }
+        workspace_index_ = 0;
+        for (std::size_t i = 0; i < workspaces_.size(); ++i) {
+            if (entries_[workspaces_[i]].project == project_) {
+                workspace_index_ = i;
+            }
+        }
+        if (const auto* w = workspace()) {
+            project_ = w->project;
+        }
+        filter_terminals();
+    }
+
+    void filter_terminals() {
+        terminals_.clear();
+        terminal_index_ = 0;
+        if (const auto* w = workspace()) {
+            const bool all = workspace_matches(*w);
+            for (std::size_t i = 0; i < w->terminals.size(); ++i) {
+                if (all || terminal_matches(w->terminals[i])) {
+                    terminals_.push_back(i);
+                }
+            }
+            for (std::size_t i = 0; i < terminals_.size(); ++i) {
+                if (w->terminals[terminals_[i]].session == session_) {
+                    terminal_index_ = i;
+                }
+            }
+            if (const auto* t = terminal()) {
+                session_ = t->session;
+            }
+        }
+    }
+
     std::vector<NavigatorWorkspace> entries_;
-    std::vector<std::size_t> workspaces_,terminals_;
-    ProjectWorkspaceId project_{};SessionId session_{};
-    std::size_t workspace_index_{},terminal_index_{};
+    std::vector<std::size_t> workspaces_;
+    std::vector<std::size_t> terminals_;
+    ProjectWorkspaceId project_{};
+    SessionId session_{};
+    std::size_t workspace_index_{};
+    std::size_t terminal_index_{};
     std::string query_;
-    bool opened_{},selection_stale_{};
+    bool opened_{};
+    bool selection_stale_{};
+    bool visible_{};
+    bool background_only_{};
+    std::optional<ProjectWorkspaceId> activity_project_;
+    TerminalFindQuery editor_;
+    unsigned focus_{};
+    bool switch_pressed_{};
+    std::optional<NavigatorTarget> pressed_target_;
 };
 struct NavigatorLayout {
     Rect panel, query, close, heading, workspace_body, terminal_body, footer;

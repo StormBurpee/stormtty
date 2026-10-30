@@ -80,6 +80,7 @@ endif()
 
 add_library(stormtty_workspace src/core/theme_exchange.cpp src/core/agent_provider_settings.cpp src/core/agent_panel.cpp src/core/settings_panel.cpp src/core/context_menu.cpp src/core/project_workspaces.cpp src/core/application_workspaces.cpp src/core/application_layout_codec.cpp src/core/workspace_presets.cpp src/core/workspace.cpp src/core/workspace_serialization.cpp src/core/commands.cpp src/core/config.cpp)
 target_sources(stormtty_workspace PRIVATE
+    src/core/workspace_navigator.cpp
     src/core/ribbon_renderer.cpp
     src/core/window_header_renderer.cpp)
 target_include_directories(stormtty_workspace PUBLIC include)
@@ -251,6 +252,7 @@ if(BUILD_TESTING)
     stormtty_test(terminal_search_tests tests/terminal_search_tests.cpp stormtty_session)
     stormtty_test(process_tests tests/process_tests.cpp stormtty_process stormtty_terminal)
     stormtty_test(window_geometry_tests tests/window_geometry_tests.cpp stormtty_workspace)
+    stormtty_test(navigator_interaction_tests tests/navigator_interaction_tests.cpp stormtty_workspace)
     stormtty_test(workspace_presets_tests tests/workspace_presets_tests.cpp stormtty_workspace)
     stormtty_test(project_workspaces_tests tests/project_workspaces_tests.cpp stormtty_workspace)
     stormtty_test(application_workspaces_tests tests/application_workspaces_tests.cpp stormtty_workspace)
