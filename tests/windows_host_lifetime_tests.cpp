@@ -262,6 +262,26 @@ void partial_registration_routes_test() {
     retained_callback(); // Expired route endpoint is harmless.
 }
 
+bool authored_actor_ready(const Session& actor) {
+    const auto frame = actor.frame();
+    if (!frame) {
+        return false;
+    }
+    for (const auto& row : frame->lines) {
+        if (!row) {
+            continue;
+        }
+        std::string text;
+        for (const auto& cell : row->cells) {
+            text += cell.grapheme;
+        }
+        if (text.find("HOST_LIFETIME_READY") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 struct ActorCleanup {
     std::shared_ptr<Session> actor;
     HANDLE release{};
@@ -305,11 +325,12 @@ void registered_actor_test(const std::string& executable) {
         require(next != id, "Registered identity recycled");
 
         const auto deadline = std::chrono::steady_clock::now() + 5s;
-        while (!retained->info().bytes_received && !retained->process_finished()) {
+        while (!authored_actor_ready(*retained) && !retained->process_finished()) {
             require(std::chrono::steady_clock::now() < deadline, "Authored actor did not start");
             std::this_thread::sleep_for(5ms);
         }
-        require(retained->info().bytes_received != 0, "Authored actor emitted no ready bytes");
+        require(authored_actor_ready(*retained) && !retained->process_finished(),
+                "Authored actor did not reach its event wait");
         actors.dispose(id, endpoint);
         require(!actors.registry.contains(id) && !actors.registry.identity(id) &&
                     retained != nullptr && snapshot.front().actor == retained,
@@ -329,14 +350,15 @@ void registered_actor_test(const std::string& executable) {
             SessionRetentionPolicy::retain_document);
         closing.register_actor(id, destructor_cleanup.actor);
         const auto deadline = std::chrono::steady_clock::now() + 5s;
-        while (!destructor_cleanup.actor->info().bytes_received &&
+        while (!authored_actor_ready(*destructor_cleanup.actor) &&
                !destructor_cleanup.actor->process_finished()) {
             require(std::chrono::steady_clock::now() < deadline,
                     "Destructor fixture actor did not start");
             std::this_thread::sleep_for(5ms);
         }
-        require(destructor_cleanup.actor->info().bytes_received != 0,
-                "Destructor fixture emitted no ready bytes");
+        require(authored_actor_ready(*destructor_cleanup.actor) &&
+                    !destructor_cleanup.actor->process_finished(),
+                "Destructor fixture did not reach its event wait");
     }
     require(destructor_cleanup.actor->wait_closed(5s),
             "Registry destruction did not request retained actor closure");
