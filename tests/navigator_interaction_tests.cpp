@@ -126,6 +126,7 @@ void characterize() {
 int main() {
     try {
         characterize<test::LegacyNavigatorInteraction>();
+        characterize<WorkspaceNavigator>();
         std::cout << "navigator interaction: " << checks << " checks passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

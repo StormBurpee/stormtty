@@ -2,6 +2,7 @@
 #include "stormtty/commands.hpp"
 #include "stormtty/command_watch.hpp"
 #include "stormtty/project_workspaces.hpp"
+#include "stormtty/terminal_find.hpp"
 #include <algorithm>
 #include <optional>
 #include <string>
@@ -35,6 +36,29 @@ inline CommandAvailability activity_target_availability(const NavigatorTarget& t
 // association at commit; typing/navigation never switches or launches anything.
 class WorkspaceNavigator {
 public:
+    // Interaction lifetime is independent of catalog initialization (opened_).
+    // Hosts still admit overlays, sample owned rows and validate live commits.
+    void begin(bool background_only, std::optional<ProjectWorkspaceId> activity_project);
+    void close();
+    bool is_open() const;
+    bool background_only() const;
+    std::optional<ProjectWorkspaceId> activity_project() const;
+
+    void replace_catalog(std::vector<NavigatorWorkspace> entries,
+                         ProjectWorkspaceId active_project, SessionId active_session);
+    TerminalFindQuery& editor();
+    const TerminalFindQuery& editor() const;
+    void apply_query();
+    unsigned focus() const;
+    void set_focus(unsigned focus); // 0=query, 1=workspaces, 2=terminals.
+
+    void arm_switch();
+    void cancel_switch();
+    bool switch_pressed() const;
+    // Boolean eligibility deliberately preserves stale/null-target attempts;
+    // the host's live commit validation supplies the stale-selection notice.
+    bool take_switch();
+
     void open(std::vector<NavigatorWorkspace> entries, ProjectWorkspaceId project, SessionId session) {
         entries_=std::move(entries);project_=project;session_=session;query_.clear();opened_=true;selection_stale_=false;filter();
     }
@@ -89,6 +113,13 @@ private:
     std::size_t workspace_index_{},terminal_index_{};
     std::string query_;
     bool opened_{},selection_stale_{};
+    bool visible_{};
+    bool background_only_{};
+    std::optional<ProjectWorkspaceId> activity_project_;
+    TerminalFindQuery editor_;
+    unsigned focus_{};
+    bool switch_pressed_{};
+    std::optional<NavigatorTarget> pressed_target_;
 };
 struct NavigatorLayout {
     Rect panel, query, close, heading, workspace_body, terminal_body, footer;

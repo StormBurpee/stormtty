@@ -80,6 +80,7 @@ endif()
 
 add_library(stormtty_workspace src/core/theme_exchange.cpp src/core/agent_provider_settings.cpp src/core/agent_panel.cpp src/core/settings_panel.cpp src/core/context_menu.cpp src/core/project_workspaces.cpp src/core/application_workspaces.cpp src/core/application_layout_codec.cpp src/core/workspace_presets.cpp src/core/workspace.cpp src/core/workspace_serialization.cpp src/core/commands.cpp src/core/config.cpp)
 target_sources(stormtty_workspace PRIVATE
+    src/core/workspace_navigator.cpp
     src/core/ribbon_renderer.cpp
     src/core/window_header_renderer.cpp)
 target_include_directories(stormtty_workspace PUBLIC include)

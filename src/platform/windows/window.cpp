@@ -722,12 +722,7 @@ private:
     void navigator_input_changed();
     void commit_navigator();
     std::pair<std::string,double> navigator_query_view() const;
-    bool navigator_open_{},navigator_switch_pressed_{},navigator_background_only_{};
-    std::optional<ProjectWorkspaceId> navigator_activity_project_;
-    unsigned navigator_focus_{};
-    std::optional<NavigatorTarget> navigator_pressed_target_;
     WorkspaceNavigator navigator_;
-    TerminalFindQuery navigator_query_;
     void open_find();
     void close_find(bool geometry=true);
     void submit_find();
@@ -1566,7 +1561,7 @@ void NativeWindow::refresh_layout() {
     RECT bounds{}; GetClientRect(hwnd_, &bounds);
     width_ = (bounds.right - bounds.left) / scale_; height_ = (bounds.bottom - bounds.top) / scale_;
     maximized_ = IsZoomed(hwnd_) != FALSE;
-    if(navigator_open_&&(width_<320||height_<260))close_navigator();
+    if(navigator_.is_open()&&(width_<320||height_<260))close_navigator();
     agent_panel_.resize({width_,height_}); settings_panel_.resize({width_,height_}); context_menu_.resize({width_,height_});
     std::vector<TabId> tabs;
     for (const auto& tab : workspace().state().tabs) tabs.push_back(tab.id);
@@ -1800,7 +1795,7 @@ bool NativeWindow::observe_watch(SessionId id, const SessionInfo& info) {
 void NativeWindow::acknowledge_watch(SessionId id, std::uint64_t generation) {
     if (!attention_.acknowledge_watch(id, watch_identity(id), generation)) return;
 
-    if (navigator_open_) refresh_navigator();
+    if (navigator_.is_open()) refresh_navigator();
     refresh_tooltips();
     changed();
 }
@@ -2013,7 +2008,7 @@ void NativeWindow::sync_focus() {
         if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
     }
     SessionId desired{};
-    if (active_ && !navigator_open_ && !find_.session() && !palette_open_ && !rename_open_ && !modal_ && !overlay_open()) if (const auto* pane=workspace().pane(workspace().active_pane())) desired=pane->session;
+    if (active_ && !navigator_.is_open() && !find_.session() && !palette_open_ && !rename_open_ && !modal_ && !overlay_open()) if (const auto* pane=workspace().pane(workspace().active_pane())) desired=pane->session;
     if (desired==focused_session_) return;
     const auto previous=focused_session_; focused_session_=desired;
     if (actor_registry_.contains(previous)) { auto old=actor_registry_.retain(previous); submit([old] { return old->focus(false); }); }
@@ -2093,7 +2088,7 @@ void NativeWindow::update_sessions() {
     const auto footer=footer_presentation();
     const auto footer_signature=footer.directory+"\n"+footer.head+"\n"+footer.status+(footer.subdued?"1":"0")+(footer.detached?"1":"0");
     if(footer_signature_!=footer_signature) {footer_signature_=footer_signature;state_changed=true;++chrome_generation_;}
-    if (!titles.empty() || state_changed) {refresh_tooltips();if(navigator_open_)refresh_navigator();}
+    if (!titles.empty() || state_changed) {refresh_tooltips();if(navigator_.is_open())refresh_navigator();}
     refresh_find();
     settings_completed();
     refresh_agent_panel();
@@ -2283,7 +2278,7 @@ void NativeApplication::load_workspaces(NativeWindow& window) {
 
 void NativeWindow::workspace_model_changed() {
     commit_terminal_selection();
-    if (navigator_open_) {
+    if (navigator_.is_open()) {
         refresh_navigator();
     }
     application_.workspace_model_changed();
@@ -2731,7 +2726,7 @@ void NativeWindow::motion_schedule() {
         smoke_pane_reduced_motion_.value_or(reduced_motion_):reduced_motion_;
     const auto pane_duration=pane_decoration_duration(pane_reduced,high_contrast_,IsWindowVisible(hwnd_)!=FALSE,minimized_);
     palette_transition_.target(palette_open_||rename_open_?1:0,now,reduced_motion_?0:100);
-    navigator_transition_.target(navigator_open_?1:0,now,(reduced_motion_||high_contrast_)?0:100);
+    navigator_transition_.target(navigator_.is_open()?1:0,now,(reduced_motion_||high_contrast_)?0:100);
     settings_transition_.target(settings_loading()||settings_input_blocked()?1:0,now,reduced_motion_?0:100);
     menu_transition_.target(context_menu_.is_open()?1:0,now,reduced_motion_?0:100);
     for (const auto& project:projects_.entries()) target_chrome_selection(workspace_focus_,project.id,project.id==projects_.active_id()?1:0,now,duration);
@@ -2808,7 +2803,7 @@ void NativeWindow::reload_settings() {
 }
 
 void NativeWindow::open_settings(std::string binding) {
-    if (navigator_open_) {
+    if (navigator_.is_open()) {
         close_navigator();
     }
     if (find_.session()) {
@@ -3147,87 +3142,173 @@ std::pair<std::string,double> NativeWindow::find_query_view() const {
     });
 }
 void NativeWindow::refresh_navigator() {
-    if(!navigator_open_)return;
-    const auto selected=navigator_.target();
+    if (!navigator_.is_open()) {
+        return;
+    }
     std::vector<NavigatorWorkspace> entries;
-    const auto text=[](std::string_view value){return agent_display_text(value,512);};
-    for(const auto& project:projects_.entries()) {
-        if(navigator_activity_project_ && project.id!=*navigator_activity_project_)continue;
-        NavigatorWorkspace item{project.id,text(project.metadata.name),text(project.metadata.working_directory),{}};
-        std::map<SessionId,unsigned> activity_ranks;
-        auto append=[&](SessionId id,std::string_view user_title,std::string_view profile,bool parked) {
-            if(navigator_background_only_&&!parked)return;
-            if(navigator_activity_project_ && !parked && !current_watch(id))return;
+    const auto text = [](std::string_view value) {
+        return agent_display_text(value, 512);
+    };
+    for (const auto& project : projects_.entries()) {
+        if (navigator_.activity_project() && project.id != *navigator_.activity_project()) {
+            continue;
+        }
+        NavigatorWorkspace item{
+            project.id, text(project.metadata.name), text(project.metadata.working_directory), {}
+        };
+        std::map<SessionId, unsigned> activity_ranks;
+        auto append = [&](SessionId id, std::string_view user_title,
+                          std::string_view profile, bool parked) {
+            if (navigator_.background_only() && !parked) {
+                return;
+            }
+            if (navigator_.activity_project() && !parked && !current_watch(id)) {
+                return;
+            }
             const auto* actor = actor_registry_.find(id);
-            if (!actor) return;
+            if (!actor) {
+                return;
+            }
             const auto info = actor->info();
-            std::string profile_label(profile);for(const auto& p:config_.profiles)if(p.id==profile)profile_label=p.label;
-            if(session_launcher_.managed_profile()&&session_launcher_.managed_profile()->id==profile)profile_label=session_launcher_.managed_profile()->label;
-            auto title=background_session_title(user_title,info.title,profile_label);if(title.empty())title="Terminal";
-            std::string state=terminal_status_label(info);
-            if(!watch_label(id).empty())state+=" · "+watch_label(id);
-            if(parked)state="Background · "+state;
-            if(navigator_activity_project_ && parked) {
+            std::string profile_label(profile);
+            for (const auto& candidate : config_.profiles) {
+                if (candidate.id == profile) {
+                    profile_label = candidate.label;
+                }
+            }
+            if (session_launcher_.managed_profile() &&
+                session_launcher_.managed_profile()->id == profile) {
+                profile_label = session_launcher_.managed_profile()->label;
+            }
+            auto title = background_session_title(user_title, info.title, profile_label);
+            if (title.empty()) {
+                title = "Terminal";
+            }
+            std::string state = terminal_status_label(info);
+            if (!watch_label(id).empty()) {
+                state += " · " + watch_label(id);
+            }
+            if (parked) {
+                state = "Background · " + state;
+            }
+            if (navigator_.activity_project() && parked) {
                 const auto* attention = attention_.parked(id);
                 const auto* watch = current_watch(id);
                 const auto generation = attention ? attention->unread_generation() : std::nullopt;
-                if(generation && !(watch && watch->status()==WatchStatus::completed && watch->generation()==*generation))state+=" · Unread background completion";
+                if (generation && !(watch && watch->status() == WatchStatus::completed &&
+                                    watch->generation() == *generation)) {
+                    state += " · Unread background completion";
+                }
             }
-            const bool managed=session_launcher_.managed_profile()&&session_launcher_.managed_profile()->id==profile;
-            const auto directory=info.shell_context?info.shell_context->display_directory:managed?std::string{}:info.working_directory;
-            if (navigator_activity_project_) {
+            const bool managed = session_launcher_.managed_profile() &&
+                session_launcher_.managed_profile()->id == profile;
+            const auto directory = info.shell_context ? info.shell_context->display_directory
+                : managed ? std::string{} : info.working_directory;
+            if (navigator_.activity_project()) {
                 const auto* attention = attention_.parked(id);
                 activity_ranks[id] = activity_priority(current_watch(id), info.state,
                     attention && attention->unread_completion());
             }
-            item.terminals.push_back({id,text(title),text(directory),state,parked,active_session()==actor,watch_identity(id)});
+            item.terminals.push_back({id, text(title), text(directory), state, parked,
+                                      active_session() == actor, watch_identity(id)});
         };
-        for(const auto& tab:project.workspace.state().tabs)for(const auto pane_id:project.workspace.pane_order(tab.id))if(const auto* pane=project.workspace.pane(pane_id))append(pane->session,tab.title,pane->profile,false);
-        for(const auto& parked:project.parked_sessions)append(parked.session,parked.user_title,parked.profile,true);
-        if(navigator_activity_project_)std::stable_sort(item.terminals.begin(),item.terminals.end(),[&](const auto& a,const auto& b){
-            return activity_ranks.at(a.session)>activity_ranks.at(b.session);
-        });
+        for (const auto& tab : project.workspace.state().tabs) {
+            for (const auto pane_id : project.workspace.pane_order(tab.id)) {
+                if (const auto* pane = project.workspace.pane(pane_id)) {
+                    append(pane->session, tab.title, pane->profile, false);
+                }
+            }
+        }
+        for (const auto& parked : project.parked_sessions) {
+            append(parked.session, parked.user_title, parked.profile, true);
+        }
+        if (navigator_.activity_project()) {
+            std::stable_sort(item.terminals.begin(), item.terminals.end(),
+                [&](const auto& left, const auto& right) {
+                    return activity_ranks.at(left.session) > activity_ranks.at(right.session);
+                });
+        }
         entries.push_back(std::move(item));
     }
-    SessionId active{};if(const auto* pane=workspace().pane(workspace().active_pane()))active=pane->session;
-    if(navigator_activity_project_)navigator_.refresh(std::move(entries),projects_.active_id(),active);
-    else navigator_.open(std::move(entries),selected?selected->project:projects_.active_id(),selected?selected->session:active);
-    navigator_.search(navigator_query_.text());
+    SessionId active{};
+    if (const auto* pane = workspace().pane(workspace().active_pane())) {
+        active = pane->session;
+    }
+    navigator_.replace_catalog(std::move(entries), projects_.active_id(), active);
 }
+
 void NativeWindow::open_navigator(bool background_only, bool activity_only) {
-    if(modal_||overlay_open())return;
-    if(width_<320||height_<260){show_error("Enlarge the window to use the workspace navigator.");return;}
-    if(navigator_open_){close_navigator();return;}
-    if(find_.session())close_find();
-    cancel_drag();palette_open_=rename_open_=false;query_.clear();
-    navigator_=WorkspaceNavigator{};navigator_query_=TerminalFindQuery{};navigator_focus_=0;navigator_switch_pressed_=false;
-    closing_palette_primitives_.clear();closing_palette_texts_.clear();palette_transition_=ChromeTransition{};
-    navigator_background_only_=background_only;
-    navigator_activity_project_=activity_only?std::optional<ProjectWorkspaceId>{projects_.active_id()}:std::nullopt;
-    navigator_open_=true;refresh_navigator();preedit_.clear();composing_=false;text_input_.reset();
-    if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
-    changed();caret_schedule();position_ime();
+    if (modal_ || overlay_open()) {
+        return;
+    }
+    if (width_ < 320 || height_ < 260) {
+        show_error("Enlarge the window to use the workspace navigator.");
+        return;
+    }
+    if (navigator_.is_open()) {
+        close_navigator();
+        return;
+    }
+    if (find_.session()) {
+        close_find();
+    }
+    cancel_drag();
+    palette_open_ = false;
+    rename_open_ = false;
+    query_.clear();
+    navigator_.begin(background_only, activity_only
+        ? std::optional<ProjectWorkspaceId>{projects_.active_id()}
+        : std::nullopt);
+    closing_palette_primitives_.clear();
+    closing_palette_texts_.clear();
+    palette_transition_ = ChromeTransition{};
+    refresh_navigator();
+    preedit_.clear();
+    composing_ = false;
+    text_input_.reset();
+    if (ImmContext context(hwnd_); context.context) {
+        ImmNotifyIME(context.context, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+    }
+    changed();
+    caret_schedule();
+    position_ime();
 }
+
 void NativeWindow::close_navigator() {
-    if(!navigator_open_)return;
-    navigator_open_=false;navigator_switch_pressed_=false;navigator_activity_project_.reset();
-    if(GetCapture()==hwnd_)ReleaseCapture();
-    preedit_.clear();composing_=false;text_input_.reset();
-    if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
-    changed();caret_schedule(true);
+    if (!navigator_.is_open()) {
+        return;
+    }
+    navigator_.close();
+    if (GetCapture() == hwnd_) {
+        ReleaseCapture();
+    }
+    preedit_.clear();
+    composing_ = false;
+    text_input_.reset();
+    if (ImmContext context(hwnd_); context.context) {
+        ImmNotifyIME(context.context, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+    }
+    changed();
+    caret_schedule(true);
 }
-void NativeWindow::navigator_input_changed() {navigator_.search(navigator_query_.text());changed();position_ime();}
+
+void NativeWindow::navigator_input_changed() {
+    navigator_.apply_query();
+    changed();
+    position_ime();
+}
+
 void NativeWindow::commit_navigator() {
-    if(navigator_activity_project_ && navigator_.selection_stale()){show_error("Activity changed; choose a terminal again.");changed();return;}
+    if(navigator_.activity_project() && navigator_.selection_stale()){show_error("Activity changed; choose a terminal again.");changed();return;}
     const auto target=navigator_.target();
     if(!target||!target->session)return;
     auto* project=projects_.workspace(target->project);
-    if(!project||!actor_registry_.contains(target->session)){if(navigator_activity_project_)show_error("The retained actor is no longer available.");refresh_navigator();changed();return;}
+    if(!project||!actor_registry_.contains(target->session)){if(navigator_.activity_project())show_error("The retained actor is no longer available.");refresh_navigator();changed();return;}
     PaneId pane{};for(const auto& [id,item]:project->state().panes)if(item.session==target->session){pane=id;break;}
     const auto* entry=projects_.find(target->project);
     const bool parked=std::any_of(entry->parked_sessions.begin(),entry->parked_sessions.end(),[&](const auto& item){return item.session==target->session;});
-    if(navigator_activity_project_) {
-        const auto available=activity_target_availability(*target,*navigator_activity_project_,projects_.active_id(),
+    if(navigator_.activity_project()) {
+        const auto available=activity_target_availability(*target,*navigator_.activity_project(),projects_.active_id(),
             watch_identity(target->session),bool(pane)||parked,parked,project->state().tabs.size()<Workspace::maximum_tabs);
         if(!available.enabled){show_error(available.reason);refresh_navigator();changed();return;}
     }
@@ -3242,12 +3323,12 @@ void NativeWindow::commit_navigator() {
     project->focus(pane);workspace_model_changed();reset_project_view();
 }
 std::pair<std::string,double> NativeWindow::navigator_query_view() const {
-    const auto layout=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);
-    return terminal_find_visible(navigator_query_,std::max(0.0,layout.query.width-28),[this](std::string_view text){ChromeText measure;measure.text=std::string(text);measure.size_dip=16;measure.rect={0,0,100000,32*static_cast<float>(scale_)};return renderer_->measure_chrome_text(measure).width/scale_;});
+    const auto layout=layout_workspace_navigator(width_,height_,navigator_,navigator_.focus());
+    return terminal_find_visible(navigator_.editor(),std::max(0.0,layout.query.width-28),[this](std::string_view text){ChromeText measure;measure.text=std::string(text);measure.size_dip=16;measure.rect={0,0,100000,32*static_cast<float>(scale_)};return renderer_->measure_chrome_text(measure).width/scale_;});
 }
 
 void NativeWindow::open_find() {
-    if (navigator_open_) {
+    if (navigator_.is_open()) {
         close_navigator();
     }
     if (modal_ || overlay_open()) {
@@ -3379,7 +3460,7 @@ void NativeWindow::acquire_text_overlay_input() {
     if(ImmContext context(hwnd_);context.context)ImmNotifyIME(context.context,NI_COMPOSITIONSTR,CPS_CANCEL,0);
 }
 void NativeWindow::toggle_palette() {
-    if(navigator_open_)close_navigator();
+    if(navigator_.is_open())close_navigator();
     if(find_.session())close_find();
     palette_background_only_=false; inspected_context_.reset();
     if(!palette_open_)acquire_text_overlay_input();
@@ -3514,7 +3595,7 @@ void NativeWindow::dispatch(std::string_view command) {
     auto report = [this](Status status) { if (!status) show_error(status.error); else workspace_model_changed(); };
     if (command == "workspace.navigator") {open_navigator();return;}
     if (command == "workspace.activity") {open_navigator(false,true);return;}
-    if(navigator_open_)close_navigator();
+    if(navigator_.is_open())close_navigator();
     if (command == "terminal.find") { open_find(); return; }
     if (find_.session()) close_find();
     if (command == "terminal.previous") { return_to_previous_terminal(); return; }
@@ -3727,7 +3808,7 @@ WindowScene NativeWindow::scene() {
         if (auto* session = session_for(placement.pane)) {
             auto frame=session->frame();
             const bool cursor_visible=!frame || !frame->cursor.blinking || reduced_motion_ || cursor_blink_.visible();
-            result.panes.push_back({placement.session.value,pixels(content_bounds(placement)),std::move(frame),active_ && !navigator_open_ && !find_.session() && placement.pane==workspace().active_pane() && !palette_open_ && !rename_open_ && !modal_ && !overlay_open(),cursor_visible,reduced_motion_ || cursor_blink_.visible()});
+            result.panes.push_back({placement.session.value,pixels(content_bounds(placement)),std::move(frame),active_ && !navigator_.is_open() && !find_.session() && placement.pane==workspace().active_pane() && !palette_open_ && !rename_open_ && !modal_ && !overlay_open(),cursor_visible,reduced_motion_ || cursor_blink_.visible()});
             if (placement.pane==workspace().active_pane()) {
                 auto& rendered=result.panes.back();
                 rendered.cursor_reveal=typing_motion_.observe(rendered,GetTickCount64(),!reduced_motion_ && !composing_ && !minimized_ && !in_size_move_ && drag_!=Drag::selection);
@@ -3925,7 +4006,7 @@ WindowScene NativeWindow::scene() {
     if (drag_ == Drag::tab && drag_started_) {
         for (const auto& tab : chrome_.tabs) if (tab.bounds.contains(hover_)) rectangle({tab.bounds.x,tab.bounds.y,2,tab.bounds.height},accent);
     }
-    if (!navigator_open_ && !find_.session() && !preedit_.empty() && composing_) {
+    if (!navigator_.is_open() && !find_.session() && !preedit_.empty() && composing_) {
         for (const auto& placement : layout_.panes) if (placement.pane == workspace().active_pane()) {
             if (auto* session = active_session(); session && session->frame()) {
                 const auto frame = session->frame(); const auto content = content_bounds(placement); const auto metrics = renderer_->metrics();
@@ -3968,14 +4049,14 @@ WindowScene NativeWindow::scene() {
         for (auto i=texts;i<result.texts.size();++i) result.texts[i].color=opacity(result.texts[i].color,amount);
     };
     const auto navigator_primitive_start=result.primitives.size(),navigator_text_start=result.texts.size();
-    if(navigator_open_) {
-        const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);const auto p=nav.panel;
+    if(navigator_.is_open()) {
+        const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_.focus());const auto p=nav.panel;
         rectangle({p.x,p.y+5,p.width,p.height},{0,0,0,56},10);rectangle(p,raised,10,seam,1);
-        rectangle(nav.query,background,5,navigator_focus_==0?accent:seam,navigator_focus_==0?1.5:1);
+        rectangle(nav.query,background,5,navigator_.focus()==0?accent:seam,navigator_.focus()==0?1.5:1);
         const auto visible=navigator_query_view();
-        if(navigator_query_.selected())rectangle({nav.query.x+4,nav.query.y+4,nav.query.width-8,nav.query.height-8},blend(background,accent,.22),3);
-        label({nav.query.x+9,nav.query.y+6,nav.query.width-18,22},navigator_query_.text().empty()?(navigator_activity_project_?"Find workspace activity…":navigator_background_only_?"Find a background terminal…":"Switch workspace or terminal…"):visible.first,navigator_query_.text().empty()?secondary:text,16);
-        if(navigator_focus_==0&&!navigator_query_.selected()){const auto x=nav.query.x+9+visible.second;line(x,nav.query.y+7,x,nav.query.y+25,accent,1.2);}
+        if(navigator_.editor().selected())rectangle({nav.query.x+4,nav.query.y+4,nav.query.width-8,nav.query.height-8},blend(background,accent,.22),3);
+        label({nav.query.x+9,nav.query.y+6,nav.query.width-18,22},navigator_.editor().text().empty()?(navigator_.activity_project()?"Find workspace activity…":navigator_.background_only()?"Find a background terminal…":"Switch workspace or terminal…"):visible.first,navigator_.editor().text().empty()?secondary:text,16);
+        if(navigator_.focus()==0&&!navigator_.editor().selected()){const auto x=nav.query.x+9+visible.second;line(x,nav.query.y+7,x,nav.query.y+25,accent,1.2);}
         if(composing_&&!preedit_.empty()){const auto x=nav.query.x+9+visible.second;label({x,nav.query.y+6,std::max(0.0,nav.query.x+nav.query.width-8-x),22},preedit_,text,16);}
         if(nav.close.contains(hover_))rectangle(nav.close,blend(raised,accent,.1),4);
         const auto cx=nav.close.x+nav.close.width/2,cy=nav.close.y+nav.close.height/2;line(cx-4,cy-4,cx+4,cy+4,secondary);line(cx+4,cy-4,cx-4,cy+4,secondary);
@@ -3984,32 +4065,32 @@ WindowScene NativeWindow::scene() {
             label({nav.workspace_body.x+8,nav.heading.y,nav.workspace_body.width-16,24},"Workspaces",secondary,11,true);
             label({nav.terminal_body.x+8,nav.heading.y,nav.terminal_body.width-16,24},selected_workspace?selected_workspace->name:"Terminals",text,13,true);
             line(nav.terminal_body.x-8,nav.heading.y,nav.terminal_body.x-8,nav.footer.y,seam);
-        }else label(nav.heading,navigator_focus_==1?"Workspaces":selected_workspace?"‹  "+selected_workspace->name+"   ·   "+std::to_string(navigator_.terminals().size())+" terminals":"Terminals",secondary,12,true);
+        }else label(nav.heading,navigator_.focus()==1?"Workspaces":selected_workspace?"‹  "+selected_workspace->name+"   ·   "+std::to_string(navigator_.terminals().size())+" terminals":"Terminals",secondary,12,true);
         for(std::size_t i=0;i<nav.workspace_rows.size();++i){
             const auto index=nav.workspace_first+i;const auto r=nav.workspace_rows[i];const auto& entry=navigator_.entries()[navigator_.workspaces()[index]];const bool selected=index==navigator_.workspace_index();
-            if(selected||r.contains(hover_))rectangle({r.x+2,r.y+2,r.width-4,r.height-4},selected?blend(raised,accent,.13):blend(raised,text,.04),5,selected&&navigator_focus_==1?accent:Color{0,0,0,0},1);
+            if(selected||r.contains(hover_))rectangle({r.x+2,r.y+2,r.width-4,r.height-4},selected?blend(raised,accent,.13):blend(raised,text,.04),5,selected&&navigator_.focus()==1?accent:Color{0,0,0,0},1);
             if(entry.project==projects_.active_id())rectangle({r.x+8,r.y+18,3,6},accent,1);
             label({r.x+18,r.y+10,std::max(0.0,r.width-54),22},entry.name,text,13,selected);
             label({r.x+r.width-34,r.y+11,24,20},std::to_string(entry.terminals.size()),secondary,11,false,ChromeTextAlignment::trailing);
         }
         for(std::size_t i=0;i<nav.terminal_rows.size();++i){
             const auto index=nav.terminal_first+i;const auto r=nav.terminal_rows[i];const auto& entry=selected_workspace->terminals[navigator_.terminals()[index]];const bool selected=index==navigator_.terminal_index();
-            if(selected||r.contains(hover_))rectangle({r.x+2,r.y+2,r.width-4,r.height-4},selected?blend(raised,accent,.14):blend(raised,text,.04),5,selected&&navigator_focus_==2?accent:Color{0,0,0,0},1);
+            if(selected||r.contains(hover_))rectangle({r.x+2,r.y+2,r.width-4,r.height-4},selected?blend(raised,accent,.14):blend(raised,text,.04),5,selected&&navigator_.focus()==2?accent:Color{0,0,0,0},1);
             const double x=r.x+10,y=r.y+12;rectangle({x,y,15,12},{0,0,0,0},2,entry.active?accent:secondary,1);line(x+3,y+3,x+6,y+6,secondary);line(x+6,y+6,x+3,y+9,secondary);line(x+8,y+9,x+12,y+9,secondary);
             label({r.x+36,r.y+6,std::max(0.0,r.width-48),21},entry.title,text,13,selected);
             label({r.x+36,r.y+28,std::max(0.0,r.width-48),18},entry.state+(entry.directory.empty()?"":"  ·  "+entry.directory),secondary,11);
         }
         if(navigator_.workspaces().empty()){label({p.x+24,nav.heading.y+58,p.width-48,28},"No matching workspaces or terminals",text,16,true);label({p.x+24,nav.heading.y+92,p.width-48,22},"Try a workspace name, terminal title or directory.",secondary,12);}
-        else if(navigator_.terminals().empty()&&(!nav.compact||navigator_focus_!=1))label({nav.terminal_body.x+8,nav.terminal_body.y+18,nav.terminal_body.width-16,36},navigator_activity_project_?"No watched commands or background terminals":"No existing terminals in this workspace",secondary,12);
+        else if(navigator_.terminals().empty()&&(!nav.compact||navigator_.focus()!=1))label({nav.terminal_body.x+8,nav.terminal_body.y+18,nav.terminal_body.width-16,36},navigator_.activity_project()?"No watched commands or background terminals":"No existing terminals in this workspace",secondary,12);
         line(nav.footer.x,nav.footer.y,nav.footer.x+nav.footer.width,nav.footer.y,seam);
-        const bool stale_activity=navigator_activity_project_ && navigator_.selection_stale();
+        const bool stale_activity=navigator_.activity_project() && navigator_.selection_stale();
         const auto* terminal=navigator_.terminal();const Rect action{nav.footer.x+nav.footer.width-104,nav.footer.y+12,88,30};
-        if(terminal && !stale_activity){rectangle(action,navigator_switch_pressed_?blend(raised,accent,.3):blend(raised,accent,.17),5,seam,1);label(action,terminal->parked?"Restore":"Switch",text,12,true,ChromeTextAlignment::center);}
+        if(terminal && !stale_activity){rectangle(action,navigator_.switch_pressed()?blend(raised,accent,.3):blend(raised,accent,.17),5,seam,1);label(action,terminal->parked?"Restore":"Switch",text,12,true,ChromeTextAlignment::center);}
         const double detail_width=std::max(0.0,nav.footer.width-136);
         label({nav.footer.x+16,nav.footer.y+9,detail_width,18},stale_activity?"Activity changed; choose a terminal again":terminal&&!terminal->directory.empty()?terminal->directory:selected_workspace?"Workspace · "+selected_workspace->directory:"",secondary,11);
         label({nav.footer.x+16,nav.footer.y+30,detail_width,17},nav.compact?"Tab: lists  ·  Enter: switch  ·  Esc: cancel":"Tab: query / workspaces / terminals   ·   Enter: switch   ·   Esc: cancel",secondary,10);
     }
-    reveal_surface(navigator_open_,navigator_transition_,navigator_primitive_start,navigator_text_start,closing_navigator_primitives_,closing_navigator_texts_);
+    reveal_surface(navigator_.is_open(),navigator_transition_,navigator_primitive_start,navigator_text_start,closing_navigator_primitives_,closing_navigator_texts_);
     const auto palette_primitive_start=result.primitives.size(), palette_text_start=result.texts.size();
     if (palette_open_ || rename_open_) {
         const auto commands=palette_commands();
@@ -4184,7 +4265,7 @@ void NativeWindow::render() {
 }
 
 void NativeWindow::toggle_agent_panel() {
-    if(navigator_open_)close_navigator();
+    if(navigator_.is_open())close_navigator();
     if(!ai_enabled_||!agent_controller_)return;
     if (agent_panel_.is_open()) agent_panel_.close();
     else if (!modal_ && !overlay_open() && !palette_open_ && !rename_open_) {
@@ -4273,7 +4354,7 @@ void NativeWindow::agent_input_changed() {
     sync_focus(); caret_schedule(true); changed();
 }
 void NativeWindow::terminal_text(std::string text, Key key, std::uint16_t modifiers) {
-    if(navigator_open_&&!modal_&&!overlay_open()){navigator_focus_=0;if(navigator_query_.insert(text))navigator_input_changed();return;}
+    if(navigator_.is_open()&&!modal_&&!overlay_open()){navigator_.set_focus(0);if(navigator_.editor().insert(text))navigator_input_changed();return;}
     if(find_.session() && !modal_ && !overlay_open()) {if(find_focus_==0 && find_.query().insert(text))submit_find();return;}
     if (agent_panel_.is_open()) { agent_panel_.text(text); agent_input_changed(); return; }
     if (modal_ || settings_input_blocked() || settings_loading() || text.empty()) return;
@@ -4393,23 +4474,23 @@ bool NativeWindow::key_message(MSG& message) {
         }
         return true; // All terminal/palette chords and key-up are trapped.
     }
-    if(navigator_open_ && !modal_ && !overlay_open()) {
+    if(navigator_.is_open() && !modal_ && !overlay_open()) {
         if(composing_||vk==VK_PROCESSKEY)return false;
         if(up)return true;
         if(vk<consumed_keys_.size())consumed_keys_[vk]=true;
         if(vk==VK_ESCAPE){close_navigator();return true;}
-        if(vk==VK_TAB){navigator_focus_=(navigator_focus_+((modifiers&Modifier::shift)?2:1))%3;changed();position_ime();return true;}
-        if(vk==VK_RETURN){if(!(message.lParam&(1LL<<30))){if(navigator_focus_==1){navigator_focus_=2;changed();}else commit_navigator();}return true;}
-        if(vk==VK_UP||vk==VK_DOWN){navigator_.move(navigator_focus_==1,vk==VK_UP?-1:1);changed();return true;}
-        if(navigator_focus_ && (vk==VK_LEFT||vk==VK_RIGHT)){navigator_focus_=vk==VK_LEFT?1:2;changed();return true;}
+        if(vk==VK_TAB){navigator_.set_focus((navigator_.focus()+((modifiers&Modifier::shift)?2:1))%3);changed();position_ime();return true;}
+        if(vk==VK_RETURN){if(!(message.lParam&(1LL<<30))){if(navigator_.focus()==1){navigator_.set_focus(2);changed();}else commit_navigator();}return true;}
+        if(vk==VK_UP||vk==VK_DOWN){navigator_.move(navigator_.focus()==1,vk==VK_UP?-1:1);changed();return true;}
+        if(navigator_.focus() && (vk==VK_LEFT||vk==VK_RIGHT)){navigator_.set_focus(vk==VK_LEFT?1:2);changed();return true;}
         if((modifiers&Modifier::control)&&!altgr){
-            if(vk=='A'){navigator_focus_=0;navigator_query_.select_all();changed();return true;}
+            if(vk=='A'){navigator_.set_focus(0);navigator_.editor().select_all();changed();return true;}
             if(vk=='V'){paste();return true;}
-            if((vk=='C'||vk=='X')&&navigator_query_.selected()){set_clipboard(navigator_query_.text());if(vk=='X'&&navigator_query_.erase(true))navigator_input_changed();return true;}
+            if((vk=='C'||vk=='X')&&navigator_.editor().selected()){set_clipboard(navigator_.editor().text());if(vk=='X'&&navigator_.editor().erase(true))navigator_input_changed();return true;}
             return true;
         }
-        if(vk==VK_BACK||vk==VK_DELETE){navigator_focus_=0;if(navigator_query_.erase(vk==VK_BACK))navigator_input_changed();return true;}
-        if(vk==VK_LEFT)navigator_query_.left();else if(vk==VK_RIGHT)navigator_query_.right();else if(vk==VK_HOME)navigator_query_.home();else if(vk==VK_END)navigator_query_.end();
+        if(vk==VK_BACK||vk==VK_DELETE){navigator_.set_focus(0);if(navigator_.editor().erase(vk==VK_BACK))navigator_input_changed();return true;}
+        if(vk==VK_LEFT)navigator_.editor().left();else if(vk==VK_RIGHT)navigator_.editor().right();else if(vk==VK_HOME)navigator_.editor().home();else if(vk==VK_END)navigator_.editor().end();
         else if(nontext_key(vk)||(!altgr&&(modifiers&(Modifier::alt|Modifier::super))))return true;
         else {text_vk_=vk;text_flags_=message.lParam;text_modifiers_=modifiers;return false;}
         changed();position_ime();return true;
@@ -4570,7 +4651,7 @@ void NativeWindow::paste() {
         GlobalUnlock(data);
     }
     if (text.size()>clipboard_limit) { show_error("Paste exceeds the 1 MiB safety limit; nothing was sent."); return; }
-    if(navigator_open_){navigator_focus_=0;if(navigator_query_.insert(text))navigator_input_changed();return;}
+    if(navigator_.is_open()){navigator_.set_focus(0);if(navigator_.editor().insert(text))navigator_input_changed();return;}
     if(find_.session()){if(find_focus_==0 && find_.query().insert(text))submit_find();return;}
     if(agent_panel_.is_open()) {agent_panel_.text(text);agent_input_changed();return;}
     const bool unsafe=!TerminalCore::paste_is_safe(text);
@@ -4586,7 +4667,7 @@ void NativeWindow::paste() {
     else send();
 }
 void NativeWindow::terminal_mouse(Point point, MouseAction action, MouseButton button, bool pressed) {
-    if(navigator_open_||palette_open_||rename_open_)return;
+    if(navigator_.is_open()||palette_open_||rename_open_)return;
     if (modal_ || overlay_open()) return;
     for (const auto& placement:layout_.panes) {
         const bool captured=mouse_capture_pane_ && placement.pane==mouse_capture_pane_;
@@ -4621,7 +4702,7 @@ void NativeWindow::terminal_mouse(Point point, MouseAction action, MouseButton b
     }
 }
 void NativeWindow::open_menu(std::vector<ContextMenuItem> items,Point anchor,std::map<std::string,std::function<void()>> actions,bool keyboard) {
-    if(navigator_open_)close_navigator();
+    if(navigator_.is_open())close_navigator();
     if (modal_ || settings_input_blocked() || settings_loading()) return;
     if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
     cancel_drag(); palette_open_=rename_open_=false; query_.clear(); preedit_.clear(); composing_=false; text_input_.reset();
@@ -4727,15 +4808,15 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
         if (modal_pressed_) { modal_focus_.select(*modal_pressed_); SetCapture(hwnd_); }
         changed(); return;
     }
-    if(navigator_open_) {
-        const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);
+    if(navigator_.is_open()) {
+        const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_.focus());
         if(!nav.panel.contains(point)||nav.close.contains(point)){close_navigator();return;}
-        if(nav.query.contains(point)){navigator_focus_=0;navigator_query_.end();changed();position_ime();return;}
-        if(nav.compact&&nav.heading.contains(point)){navigator_focus_=navigator_focus_==1?2:1;changed();return;}
-        for(std::size_t i=0;i<nav.workspace_rows.size();++i)if(nav.workspace_rows[i].contains(point)){navigator_.select_workspace(nav.workspace_first+i);navigator_focus_=1;changed();return;}
-        for(std::size_t i=0;i<nav.terminal_rows.size();++i)if(nav.terminal_rows[i].contains(point)){navigator_.select_terminal(nav.terminal_first+i);navigator_focus_=2;if(double_click)commit_navigator();else changed();return;}
+        if(nav.query.contains(point)){navigator_.set_focus(0);navigator_.editor().end();changed();position_ime();return;}
+        if(nav.compact&&nav.heading.contains(point)){navigator_.set_focus(navigator_.focus()==1?2:1);changed();return;}
+        for(std::size_t i=0;i<nav.workspace_rows.size();++i)if(nav.workspace_rows[i].contains(point)){navigator_.select_workspace(nav.workspace_first+i);navigator_.set_focus(1);changed();return;}
+        for(std::size_t i=0;i<nav.terminal_rows.size();++i)if(nav.terminal_rows[i].contains(point)){navigator_.select_terminal(nav.terminal_first+i);navigator_.set_focus(2);if(double_click)commit_navigator();else changed();return;}
         const Rect action{nav.footer.x+nav.footer.width-104,nav.footer.y+12,88,30};
-        if(action.contains(point)&&navigator_.terminal()){navigator_switch_pressed_=true;navigator_pressed_target_=navigator_.target();SetCapture(hwnd_);changed();}return;
+        if(action.contains(point)&&navigator_.terminal()){navigator_.arm_switch();SetCapture(hwnd_);changed();}return;
     }
     if(find_.session()) {
         const auto find=find_layout();
@@ -4834,8 +4915,8 @@ void NativeWindow::pointer_down(Point point, bool double_click) {
 }
 void NativeWindow::pointer_move(Point point) {
     if(palette_open_||rename_open_){hover_=point;return;}
-    if(navigator_open_){
-        const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);
+    if(navigator_.is_open()){
+        const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_.focus());
         auto hit=[&](Point p){if(nav.close.contains(p))return std::size_t{1};for(std::size_t i=0;i<nav.workspace_rows.size();++i)if(nav.workspace_rows[i].contains(p))return i+2;for(std::size_t i=0;i<nav.terminal_rows.size();++i)if(nav.terminal_rows[i].contains(p))return i+2+nav.workspace_rows.size();return std::size_t{0};};
         const bool repaint=hit(point)!=hit(hover_);hover_=point;if(repaint)changed();return;
     }
@@ -4895,7 +4976,7 @@ void NativeWindow::pointer_move(Point point) {
     if (drag_==Drag::tab) changed();
 }
 void NativeWindow::pointer_up(Point point) {
-    if(navigator_open_){const bool pressed=navigator_switch_pressed_&&navigator_pressed_target_==navigator_.target();navigator_switch_pressed_=false;navigator_pressed_target_.reset();if(GetCapture()==hwnd_)ReleaseCapture();const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);if(pressed&&Rect{nav.footer.x+nav.footer.width-104,nav.footer.y+12,88,30}.contains(point))commit_navigator();else changed();return;}
+    if(navigator_.is_open()){const bool pressed=navigator_.take_switch();if(GetCapture()==hwnd_)ReleaseCapture();const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_.focus());if(pressed&&Rect{nav.footer.x+nav.footer.width-104,nav.footer.y+12,88,30}.contains(point))commit_navigator();else changed();return;}
 
     if(find_pressed_) {
         const auto pressed=*find_pressed_;find_pressed_.reset();if(GetCapture()==hwnd_)ReleaseCapture();
@@ -5161,7 +5242,7 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
 }
 bool NativeWindow::smoke_activity_evidence() {
     if(smoke_activity_running_)return false;
-    if(!options_.smoke_test || !options_.smoke_layout || projects_.active_id()!=smoke_watch_project_ || navigator_open_ || palette_open_)
+    if(!options_.smoke_test || !options_.smoke_layout || projects_.active_id()!=smoke_watch_project_ || navigator_.is_open() || palette_open_)
         throw std::runtime_error("Activity evidence requires its owned Watch workspace and closed overlays.");
     const auto saved_clock=smoke_chrome_time_;const auto saved_contrast=high_contrast_;
     const auto saved_ribbon=config_.ribbon;const auto saved_project=projects_.active_id();
@@ -5185,8 +5266,13 @@ bool NativeWindow::smoke_activity_evidence() {
         smoke_chrome_time_=saved_clock;high_contrast_=saved_contrast;config_.ribbon=saved_ribbon;
         smoke_watch_pane_=saved_watch_pane;notice_.swap(saved_notice);
         try {cancel_drag();}catch(...){}
-        navigator_open_=navigator_switch_pressed_=palette_open_=rename_open_=false;
-        navigator_activity_project_.reset();navigator_=WorkspaceNavigator{};navigator_query_=TerminalFindQuery{};
+        palette_open_=rename_open_=false;
+        // Preserve the old fixture's closed focus/filter values while clearing
+        // catalog, query and activity scope through the normal owner lifecycle.
+        const auto navigator_focus = navigator_.focus();
+        navigator_.begin(navigator_.background_only(), {});
+        navigator_.close();
+        navigator_.set_focus(navigator_focus);
         query_.clear();preedit_.clear();composing_=false;text_input_.reset();
         closing_palette_primitives_.clear();closing_palette_texts_.clear();palette_transition_=ChromeTransition{};
         closing_navigator_primitives_.clear();closing_navigator_texts_.clear();navigator_transition_=ChromeTransition{};
@@ -5259,7 +5345,7 @@ bool NativeWindow::smoke_activity_evidence() {
         const auto r=footer_layout().background.overflow;pointer_down({r.x+r.width/2,r.y+r.height/2},false);pointer_up({r.x+r.width/2,r.y+r.height/2});
     }
     const auto select_watch=[&]{for(std::size_t i=0;i<navigator_.terminals().size();++i)if(navigator_.workspace()->terminals[navigator_.terminals()[i]].session==smoke_watch_session_){navigator_.select_terminal(i);return true;}return false;};
-    if(!navigator_open_ || navigator_activity_project_!=smoke_watch_project_ || navigator_.entries().size()!=1 || !select_watch() || navigator_.target()->identity!=smoke_watch_identity_)return fail("Activity escaped its frozen workspace or lost actor identity.");
+    if(!navigator_.is_open() || navigator_.activity_project()!=smoke_watch_project_ || navigator_.entries().size()!=1 || !select_watch() || navigator_.target()->identity!=smoke_watch_identity_)return fail("Activity escaped its frozen workspace or lost actor identity.");
     capture(unread?L"activity-picker-"+std::to_wstring(smoke_watch_cycle_):L"activity-picker-running");
     if(unread && smoke_watch_cycle_==0) {
         // Refresh a stale owned presentation, never mutate the live registry.
@@ -5278,22 +5364,22 @@ bool NativeWindow::smoke_activity_evidence() {
         }
         commit_navigator();
         refresh_navigator();
-        if(!navigator_open_ || !watch_unread(smoke_watch_session_) || !select_watch())return fail("Stale Activity actor action navigated or acknowledged a result.");
+        if(!navigator_.is_open() || !watch_unread(smoke_watch_session_) || !select_watch())return fail("Stale Activity actor action navigated or acknowledged a result.");
         projects_.activate(smoke_watch_other_);commit_navigator();projects_.activate(smoke_watch_project_);refresh_navigator();
-        if(!navigator_open_ || !watch_unread(smoke_watch_session_) || !select_watch())return fail("Activity silently switched its frozen workspace.");
+        if(!navigator_.is_open() || !watch_unread(smoke_watch_session_) || !select_watch())return fail("Activity silently switched its frozen workspace.");
         notice_.clear();
     }
     key(VK_ESCAPE);
-    if(navigator_open_ || watch_unread(smoke_watch_session_)!=unread || (!quiet && sizes_!=before))return fail("Activity preview/Escape acknowledged a result or resized a grid.");
+    if(navigator_.is_open() || watch_unread(smoke_watch_session_)!=unread || (!quiet && sizes_!=before))return fail("Activity preview/Escape acknowledged a result or resized a grid.");
     // Reopen and explicitly return/restore using the normal Navigator action,
     // never Open result. Both result and output remain on the same actor.
     dispatch("workspace.activity");if(!select_watch())return fail("Activity reopen lost its watched actor.");
     const bool parked=navigator_.target()->parked;
     if(unread && smoke_watch_cycle_==1) {
-        const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);
+        const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_.focus());
         const Point button{nav.footer.x+nav.footer.width-60,nav.footer.y+25};pointer_down(button,false);pointer_up(button);
     } else key(VK_RETURN);
-    if(navigator_open_ || active_session()!=actor.get() || actor_registry_.size()!=count || watch_unread(smoke_watch_session_)!=unread)return fail("Activity return replaced its actor or acknowledged its Watch.");
+    if(navigator_.is_open() || active_session()!=actor.get() || actor_registry_.size()!=count || watch_unread(smoke_watch_session_)!=unread)return fail("Activity return replaced its actor or acknowledged its Watch.");
     smoke_watch_pane_=workspace().active_pane();
     if(parked)park_pane(smoke_watch_pane_);
     if(quiet)restore_parked({smoke_watch_project_,quiet});
@@ -5303,7 +5389,7 @@ bool NativeWindow::smoke_activity_evidence() {
     if(!GetWindowRect(hwnd_,&restored_bounds) || restored_bounds.right-restored_bounds.left!=saved_bounds.right-saved_bounds.left ||
        restored_bounds.bottom-restored_bounds.top!=saved_bounds.bottom-saved_bounds.top || high_contrast_!=saved_contrast ||
        smoke_chrome_time_!=saved_clock || config_.ribbon!=saved_ribbon || actor_registry_.snapshot()!=saved_actors ||
-       projects_.active_id()!=saved_project || navigator_open_ || palette_open_ || GetCapture()==hwnd_)
+       projects_.active_id()!=saved_project || navigator_.is_open() || palette_open_ || GetCapture()==hwnd_)
         return fail("Activity fixture did not restore temporary policy, actor token, scope, bounds or input capture.");
     restore.restored=true;
     return true;
@@ -5395,7 +5481,7 @@ bool NativeWindow::smoke_watch_progress() {
             if(smoke_watch_cycle_==1){
                 if(activity_summary().terminals!=0)return fail("Activity leaked another workspace's Watch.");
                 dispatch("workspace.activity");
-                if(!navigator_open_ || navigator_activity_project_!=smoke_watch_other_ || navigator_.entries().size()!=1 || !navigator_.terminals().empty())return fail("Empty workspace Activity was not isolated.");
+                if(!navigator_.is_open() || navigator_.activity_project()!=smoke_watch_other_ || navigator_.entries().size()!=1 || !navigator_.terminals().empty())return fail("Empty workspace Activity was not isolated.");
                 capture(L"activity-other-workspace");key(VK_ESCAPE);
                 projects_.activate(smoke_watch_project_);reset_project_view();
             }
@@ -5588,24 +5674,24 @@ bool NativeWindow::smoke_navigator_evidence() {
     const auto fail=[&](std::string_view error){smoke_finish(error);return false;};
     const auto capture=[&](std::wstring_view name){smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(name,0);smoke_chrome_time_.reset();};
     const auto key=[&](WPARAM vk){MSG message{};message.hwnd=hwnd_;message.message=WM_KEYDOWN;message.wParam=vk;key_message(message);message.message=WM_KEYUP;key_message(message);};
-    open_navigator();if(!navigator_open_||focused_session_||!navigator_.terminal())return fail("Navigator failed to own input or enumerate existing terminal.");
+    open_navigator();if(!navigator_.is_open()||focused_session_||!navigator_.terminal())return fail("Navigator failed to own input or enumerate existing terminal.");
     if(navigator_.workspace()->project!=original_project||navigator_.workspace()->name!=agent_display_text(projects_.active()->metadata.name,512)||navigator_.terminal()->title.empty()||navigator_.terminal()->state.empty())return fail("Navigator selected metadata does not match the live catalog.");
     capture(L"navigator-normal");
-    navigator_focus_=1;key(VK_DOWN);
+    navigator_.set_focus(1);key(VK_DOWN);
     if(projects_.active_id()!=original_project||active_session()!=original_actor)return fail("Navigator preview switched the live workspace.");
     capture(L"navigator-preview");
     RECT bounds{};GetWindowRect(hwnd_,&bounds);SetWindowPos(hwnd_,nullptr,0,0,static_cast<int>(480*scale_),static_cast<int>(480*scale_),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
-    capture(L"navigator-narrow-workspaces");navigator_focus_=2;changed();capture(L"navigator-narrow-terminals");
+    capture(L"navigator-narrow-workspaces");navigator_.set_focus(2);changed();capture(L"navigator-narrow-terminals");
     SetWindowPos(hwnd_,nullptr,0,0,bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
-    navigator_query_.select_all();terminal_text("STORMTTY_NAVIGATOR_NO_MATCH_713");
+    navigator_.editor().select_all();terminal_text("STORMTTY_NAVIGATOR_NO_MATCH_713");
     if(navigator_.target())return fail("Navigator no-match query retained an actionable target.");
     capture(L"navigator-empty");key(VK_ESCAPE);
-    if(navigator_open_||!focused_session_||active_session()!=original_actor||smoke_terminal_input_submissions_!=baseline)return fail("Navigator dismissal leaked input or changed terminal focus.");
-    open_navigator();navigator_focus_=1;
+    if(navigator_.is_open()||!focused_session_||active_session()!=original_actor||smoke_terminal_input_submissions_!=baseline)return fail("Navigator dismissal leaked input or changed terminal focus.");
+    open_navigator();navigator_.set_focus(1);
     for(std::size_t i=0;i<navigator_.workspaces().size();++i)if(navigator_.entries()[navigator_.workspaces()[i]].project==smoke_secondary_project_)navigator_.select_workspace(i);
     const auto target=navigator_.target();if(!target||!target->session)return fail("Navigator cross-workspace target unavailable.");
-    navigator_focus_=2;key(VK_RETURN);
-    if(navigator_open_||projects_.active_id()!=target->project||active_session()!=actor_registry_.retain(target->session).get()||actor_registry_.size()!=actors)return fail("Navigator commit did not preserve the target actor.");
+    navigator_.set_focus(2);key(VK_RETURN);
+    if(navigator_.is_open()||projects_.active_id()!=target->project||active_session()!=actor_registry_.retain(target->session).get()||actor_registry_.size()!=actors)return fail("Navigator commit did not preserve the target actor.");
     activate_project(original_project);
     // A disposable extra actor exercises real removal after snapshot capture.
     // Never unregister and reinsert a survivor just to manufacture stale state.
@@ -5629,7 +5715,7 @@ bool NativeWindow::smoke_navigator_evidence() {
     }
     application_.actors.dispose(disposable);
     commit_navigator();
-    const bool rejected = navigator_open_ && projects_.active_id() == original_project;
+    const bool rejected = navigator_.is_open() && projects_.active_id() == original_project;
     workspace().close_tab(*disposable_tab.value);
     workspace().focus(original_pane);
     if (!rejected || active_session() != original_actor ||
@@ -5664,7 +5750,7 @@ bool NativeWindow::smoke_previous_terminal_evidence() {
     activate_project(other_project);
     if(previous_terminal_.previous()!=identity_a||previous_terminal_.current()!=identity_b)return fail("Return history missed committed cross-workspace selection.");
     // Overlays, preview/Escape, output refresh, and activation do not navigate.
-    open_navigator();navigator_focus_=1;key(VK_DOWN);key(VK_ESCAPE);
+    open_navigator();navigator_.set_focus(1);key(VK_DOWN);key(VK_ESCAPE);
     toggle_palette();key(VK_ESCAPE);open_find();close_find();
     const bool was_active=active_;active_=false;changed();active_=was_active;changed();update_sessions();
     if(previous_terminal_.previous()!=identity_a||previous_terminal_.current()!=identity_b)return fail("Transient focus or preview polluted return history.");
@@ -7276,10 +7362,10 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
         if(!footer.background.chips.empty()||background_summary().terminals!=2){smoke_finish("Background summary did not collapse its owned terminal list.");return;}
         const Point button{footer.background.overflow.x+footer.background.overflow.width/2,footer.background.overflow.y+footer.background.overflow.height/2};
         pointer_down(button,false);pointer_up(button);
-        if(!navigator_open_||navigator_activity_project_!=original_project||navigator_.entries().size()!=1||navigator_.terminals().size()!=2||!navigator_.target()||!navigator_.target()->parked){smoke_finish("Background footer did not open its scoped Activity list.");return;}
+        if(!navigator_.is_open()||navigator_.activity_project()!=original_project||navigator_.entries().size()!=1||navigator_.terminals().size()!=2||!navigator_.target()||!navigator_.target()->parked){smoke_finish("Background footer did not open its scoped Activity list.");return;}
         smoke_motion_capture(L"background-navigator",0);
         MSG escape{};escape.hwnd=hwnd_;escape.message=WM_KEYDOWN;escape.wParam=VK_ESCAPE;key_message(escape);escape.message=WM_KEYUP;key_message(escape);
-        if(navigator_open_||projects_.active_id()!=original_project||active_session()!=original_actor||smoke_terminal_input_submissions_!=input_before){smoke_finish("Background preview changed workspace, actor or terminal input.");return;}
+        if(navigator_.is_open()||projects_.active_id()!=original_project||active_session()!=original_actor||smoke_terminal_input_submissions_!=input_before){smoke_finish("Background preview changed workspace, actor or terminal input.");return;}
         std::fputs("Native background summary: workspace-owned compact target, scoped Activity list, Escape preserves context and frontend input.\n",stderr);
         smoke_chrome_time_.reset();
     }
@@ -7322,10 +7408,10 @@ void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
             }
             const auto count_before=background_summary();const auto input_before=smoke_terminal_input_submissions_;
             open_navigator(true);
-            if(!navigator_open_||!navigator_background_only_||count_before.terminals!=1||count_before.unread()!=1||!navigator_.target()||navigator_.target()->session!=smoke_parked_session_){smoke_finish("Unread background summary opened the wrong scope.");return;}
+            if(!navigator_.is_open()||!navigator_.background_only()||count_before.terminals!=1||count_before.unread()!=1||!navigator_.target()||navigator_.target()->session!=smoke_parked_session_){smoke_finish("Unread background summary opened the wrong scope.");return;}
             const auto old_clock=smoke_chrome_time_;smoke_chrome_time_=GetTickCount64()+1000;smoke_motion_capture(L"background-finished-navigator",0);smoke_chrome_time_=old_clock;
             MSG escape{};escape.hwnd=hwnd_;escape.message=WM_KEYDOWN;escape.wParam=VK_ESCAPE;key_message(escape);escape.message=WM_KEYUP;key_message(escape);
-            if(navigator_open_||background_summary().unread()!=1||smoke_terminal_input_submissions_!=input_before){smoke_finish("Background preview acknowledged unread completion or leaked input.");return;}
+            if(navigator_.is_open()||background_summary().unread()!=1||smoke_terminal_input_submissions_!=input_before){smoke_finish("Background preview acknowledged unread completion or leaked input.");return;}
             std::fputs("Native background attention: real observed completion remains unread through Navigator preview and Escape.\n",stderr);
             smoke_background_capture_stage_=2;
             activate_project(smoke_secondary_project_);
@@ -7524,8 +7610,8 @@ void NativeWindow::smoke_finish(std::string_view error) {
 void NativeWindow::position_ime() {
     if (!hwnd_ || !renderer_) return;
     POINT position{}; RECT exclusion{};
-    if(navigator_open_) {
-        const auto bounds=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_).query;const auto visible=navigator_query_view();
+    if(navigator_.is_open()) {
+        const auto bounds=layout_workspace_navigator(width_,height_,navigator_,navigator_.focus()).query;const auto visible=navigator_query_view();
         position={static_cast<LONG>((bounds.x+9+visible.second)*scale_),static_cast<LONG>((bounds.y+6)*scale_)};
         exclusion={position.x,position.y,position.x+1,position.y+static_cast<LONG>(24*scale_)};
     } else if(find_.session()) {
@@ -7579,7 +7665,7 @@ void NativeWindow::caret_schedule(bool restart) {
         for (const auto& row:snapshot->lines) if (row) for (const auto& cell:row->cells) if (cell.style.blink) { text_blinks=true; break; }
     }
     const bool cursor_blinks=!reduced_motion_ && frame && frame->cursor.visible && frame->cursor.blinking;
-    const bool should_blink=active_ && !minimized_ && !navigator_open_ && !find_.session() && !palette_open_ && !rename_open_ && !modal_ && !overlay_open() && (cursor_blinks || text_blinks) && interval && interval!=INFINITE;
+    const bool should_blink=active_ && !minimized_ && !navigator_.is_open() && !find_.session() && !palette_open_ && !rename_open_ && !modal_ && !overlay_open() && (cursor_blinks || text_blinks) && interval && interval!=INFINITE;
     const auto now=GetTickCount64();
     const bool was_visible=cursor_blink_.visible();
     const auto previous_interval=cursor_blink_.interval();
@@ -7679,7 +7765,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         const bool focused=message==WM_SETFOCUS;
         typing_motion_.reset();
         active_=focused; text_input_.reset(); consumed_keys_.fill(false);
-        if (!focused) { find_pressed_.reset(); navigator_switch_pressed_=false;navigator_pressed_target_.reset(); agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.cancel(); menu_input_changed(); cancel_drag(); preedit_.clear(); composing_=false; }
+        if (!focused) { find_pressed_.reset(); navigator_.cancel_switch(); agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.cancel(); menu_input_changed(); cancel_drag(); preedit_.clear(); composing_=false; }
         refresh_clock(); caret_schedule(focused); changed(); return 0;
     }
     case WM_ERASEBKGND: return 1;
@@ -7806,7 +7892,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (wparam==HTMINBUTTON || wparam==HTMAXBUTTON || wparam==HTCLOSE) return 0;
         break;
     case WM_RBUTTONDOWN: {
-        if (navigator_open_ || palette_open_ || rename_open_ || modal_ || overlay_open()) return 0;
+        if (navigator_.is_open() || palette_open_ || rename_open_ || modal_ || overlay_open()) return 0;
         const auto p=point(lparam);
         for (const auto& tab:chrome_.tabs) if (tab.bounds.contains(p)) { if (const auto* model=workspace().tab(tab.tab)) activate(model->active_pane); return 0; }
         if (navigation_.rail.contains(p)) { for (const auto& row:navigation_.projects) if (row.bounds.contains(p)) { activate_project(row.project); break; } return 0; }
@@ -7816,7 +7902,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     }
     case WM_RBUTTONUP: {
-        if (navigator_open_ || palette_open_ || rename_open_ || modal_ || overlay_open()) return 0;
+        if (navigator_.is_open() || palette_open_ || rename_open_ || modal_ || overlay_open()) return 0;
         const auto p=point(lparam);
         // A terminal drag owns its matching release even over workspace chrome.
         if (mouse_capture_pane_) { terminal_mouse(p,MouseAction::release,MouseButton::right,false); return 0; }
@@ -7828,10 +7914,10 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     }
     case WM_MBUTTONDOWN:
-        if (navigator_open_ || palette_open_ || rename_open_ || modal_ || overlay_open()) return 0;
+        if (navigator_.is_open() || palette_open_ || rename_open_ || modal_ || overlay_open()) return 0;
         for (const auto& tab:chrome_.tabs) if (tab.bounds.contains(point(lparam))) { close_tab(tab.tab); return 0; }
         terminal_mouse(point(lparam),MouseAction::press,MouseButton::middle,true); return 0;
-    case WM_MBUTTONUP: if (navigator_open_ || palette_open_ || rename_open_ || overlay_open()) return 0; terminal_mouse(point(lparam),MouseAction::release,MouseButton::middle,false); return 0;
+    case WM_MBUTTONUP: if (navigator_.is_open() || palette_open_ || rename_open_ || overlay_open()) return 0; terminal_mouse(point(lparam),MouseAction::release,MouseButton::middle,false); return 0;
     case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL: {
         if(palette_open_||rename_open_) {
             if(palette_open_ && message==WM_MOUSEWHEEL) {
@@ -7843,7 +7929,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
             }
             return 0; // Modal owns both axes, including outside its viewport.
         }
-        if(navigator_open_){const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_focus_);if(!nav.panel.contains(point(lparam,true)))return 0;const bool left=nav.workspace_body.contains(point(lparam,true));const int delta=GET_WHEEL_DELTA_WPARAM(wparam);for(int i=0;i<std::min(12,std::abs(delta)/WHEEL_DELTA);++i)navigator_.move(left,delta>0?-1:1);changed();return 0;}
+        if(navigator_.is_open()){const auto nav=layout_workspace_navigator(width_,height_,navigator_,navigator_.focus());if(!nav.panel.contains(point(lparam,true)))return 0;const bool left=nav.workspace_body.contains(point(lparam,true));const int delta=GET_WHEEL_DELTA_WPARAM(wparam);for(int i=0;i<std::min(12,std::abs(delta)/WHEEL_DELTA);++i)navigator_.move(left,delta>0?-1:1);changed();return 0;}
 
         if(agent_panel_.is_open()) {agent_panel_.scroll(static_cast<double>(GET_WHEEL_DELTA_WPARAM(wparam))/WHEEL_DELTA*3);agent_input_changed();return 0;}
         if (settings_loading()) return 0;
@@ -7893,16 +7979,16 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         break;
     case WM_CAPTURECHANGED:
-        find_pressed_.reset();navigator_switch_pressed_=false;navigator_pressed_target_.reset();
+        find_pressed_.reset();navigator_.cancel_switch();
         caption_pressed_=0; modal_pressed_.reset();
         agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.pointer_cancel(); overlay_pointer_sequence_=false;
         if (overlay_open()) changed();
         if (mouse_capture_pane_) terminal_mouse(hover_,MouseAction::release,mouse_capture_button_,false);
         mouse_capture_pane_={}; mouse_capture_button_=MouseButton::none;
         if (drag_!=Drag::none) cancel_drag(); return 0;
-    case WM_CANCELMODE: find_pressed_.reset(); navigator_switch_pressed_=false;navigator_pressed_target_.reset(); agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.cancel(); menu_input_changed(); cancel_drag(); return 0;
+    case WM_CANCELMODE: find_pressed_.reset(); navigator_.cancel_switch(); agent_panel_.pointer_cancel(); settings_panel_.pointer_cancel(); context_menu_.cancel(); menu_input_changed(); cancel_drag(); return 0;
     case WM_CONTEXTMENU:
-        if (navigator_open_ || palette_open_ || rename_open_ || modal_ || overlay_open()) return 0;
+        if (navigator_.is_open() || palette_open_ || rename_open_ || modal_ || overlay_open()) return 0;
         if (GET_X_LPARAM(lparam)==-1 && GET_Y_LPARAM(lparam)==-1) popup_menu({width_/2,chrome_.band.height+12},true);
         else popup_menu(point(lparam,true),true);
         return 0;
