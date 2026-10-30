@@ -17,7 +17,7 @@ def assess(metadata,output,provider=None):
     post=re.fullmatch(r'SETTINGS_RAW_POST separate_dispatch=1 closed_scene_presented=1 bracketed=1 resize_requested=(\d+) resize_applied=(\d+) resize_since_raw_ready=([01]) resize_before=(\d+) client_width_before=(\d+) client_width_after=(\d+) grid_columns_before=(\d+) grid_columns_after=(\d+) reader_termios=raw-noecho win32_input_mode=unobserved provider=(.+)',posts[0])
     if not post:return reject('malformed post evidence')
     requested,applied,observed,before,width_before,width_after,cols_before,cols_after=map(int,post.groups()[:8])
-    if requested!=applied or applied<=before or width_after!=width_before+80 or cols_after<=cols_before or not observed:
+    if requested!=applied or applied<=before or width_after!=width_before-80 or cols_after>=cols_before or not observed:
         return reject('single applied real resize evidence missing')
     actual=post[9]
     if provider not in (None,'inbox','packaged'):return reject('unknown provider')

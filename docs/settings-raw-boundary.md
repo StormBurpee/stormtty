@@ -11,7 +11,7 @@ cannot be combined with this target.
 
 The host creates a private GUID directory and one raw Zsh `-df` reader with private HOME
 and ZDOTDIR. It opens the real asynchronous Settings panel, presents it, cancels it,
-performs exactly one +80-physical-pixel window-width transition through the normal
+performs exactly one -80-physical-pixel window-width transition through the normal
 WM_SIZE/layout/session path, and presents the closed scene. Only after a new requested
 resize generation is applied with a changed grid does it post a separate input event.
 The posted event rechecks that exact generation and grid; there is no restore or retry. That event submits only
@@ -59,3 +59,5 @@ malformed/duplicate markers, unsuccessful child or incomplete writer evidence ca
 pass. A byte mismatch remains failure; missing or inconsistent resize evidence remains
 INCONCLUSIVE (workflow exit 2), even if a partial log contains a byte PASS. No result
 permits runtime promotion or general native qualification.
+
+The shrink requires target outer width above the actual WM_GETMINMAXINFO minimum track width, an exact -80px client delta, decreasing columns and an acknowledged new resize generation. Before/after numeric geometry records include outer/client bounds, DPI, zoom state, monitor work area and min/max track sizes. There is no fallback or repeat resize. Earlier +80px runs remain inconclusive; this direction change avoids requiring spare desktop width, not a claim about their cause.

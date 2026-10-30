@@ -6067,15 +6067,32 @@ void NativeWindow::settings_raw_progress(bool presented) {
         settings_raw_resize_before_=before.windows_control->applied_resize_generation;
         settings_raw_columns_before_=before.windows_control->applied_grid->columns;
         settings_panel_.cancel();settings_input_changed();settings_raw_stage_=2;
-        RECT window{},client{};
-        if(!GetWindowRect(hwnd_,&window)||!GetClientRect(hwnd_,&client)){smoke_finish("Settings raw resize geometry unavailable.");return;}
+        RECT window{},client{};MINMAXINFO track{};
+        const auto geometry=[&](const char* phase) {
+            MONITORINFO monitor{};monitor.cbSize=sizeof(monitor);
+            const UINT dpi=GetDpiForWindow(hwnd_);
+            track={};track.ptMaxTrackSize={GetSystemMetricsForDpi(SM_CXMAXTRACK,dpi),GetSystemMetricsForDpi(SM_CYMAXTRACK,dpi)};
+            SendMessageW(hwnd_,WM_GETMINMAXINFO,0,reinterpret_cast<LPARAM>(&track));
+            const bool outer_ok=GetWindowRect(hwnd_,&window)!=FALSE,client_ok=GetClientRect(hwnd_,&client)!=FALSE;
+            const bool monitor_ok=GetMonitorInfoW(MonitorFromWindow(hwnd_,MONITOR_DEFAULTTONEAREST),&monitor)!=FALSE;
+            std::fprintf(stderr,"SETTINGS_RAW_GEOMETRY phase=%s outer_ok=%d client_ok=%d monitor_ok=%d outer=%ld,%ld,%ld,%ld client=%ld,%ld,%ld,%ld dpi=%u zoomed=%d min_track=%ld,%ld max_track=%ld,%ld work=%ld,%ld,%ld,%ld\n",
+                phase,outer_ok,client_ok,monitor_ok,window.left,window.top,window.right,window.bottom,client.left,client.top,client.right,client.bottom,dpi,IsZoomed(hwnd_)!=FALSE,
+                track.ptMinTrackSize.x,track.ptMinTrackSize.y,track.ptMaxTrackSize.x,track.ptMaxTrackSize.y,monitor.rcWork.left,monitor.rcWork.top,monitor.rcWork.right,monitor.rcWork.bottom);
+            return outer_ok&&client_ok&&monitor_ok&&dpi!=0;
+        };
+        if(!geometry("before")){smoke_finish("Settings raw resize geometry unavailable.");return;}
         settings_raw_client_before_=client.right-client.left;
+        const LONG target_width=window.right-window.left-80;
+        if(track.ptMinTrackSize.x<=0||target_width<=track.ptMinTrackSize.x||settings_raw_client_before_<=80){
+            smoke_finish("Settings raw shrink lacks minimum track clearance.");return;
+        }
         // Exactly one real window transition: normal WM_SIZE/layout/session route.
         // No direct transport call, restore, repeated resize, or deadline extension.
-        if(!SetWindowPos(hwnd_,nullptr,0,0,window.right-window.left+80,window.bottom-window.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)||
-           !GetClientRect(hwnd_,&client)){smoke_finish("Settings raw single resize failed.");return;}
+        const bool resized=SetWindowPos(hwnd_,nullptr,0,0,target_width,window.bottom-window.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE;
+        const bool geometry_after=geometry("after"); // Retain numeric failure evidence even if SetWindowPos failed.
+        if(!resized||!geometry_after){smoke_finish("Settings raw single resize failed.");return;}
         settings_raw_client_after_=client.right-client.left;
-        if(settings_raw_client_after_!=settings_raw_client_before_+80){smoke_finish("Settings raw client width transition differs.");return;}
+        if(settings_raw_client_after_!=settings_raw_client_before_-80){smoke_finish("Settings raw client width transition differs.");return;}
         force_redraw_=true;dirty_=true;return;
     }
     if(settings_raw_stage_==2) {
@@ -6086,7 +6103,7 @@ void NativeWindow::settings_raw_progress(bool presented) {
         if(control.requested_resize_generation<=settings_raw_resize_before_||
            control.applied_resize_generation!=control.requested_resize_generation||
            *control.applied_grid!=control.requested_grid||
-           control.applied_grid->columns<=settings_raw_columns_before_)return;
+           control.applied_grid->columns>=settings_raw_columns_before_)return;
         settings_raw_resize_applied_=control.applied_resize_generation;
         settings_raw_columns_after_=control.applied_grid->columns;settings_raw_target_grid_=*control.applied_grid;
         settings_raw_stage_=3;

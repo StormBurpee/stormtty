@@ -15,7 +15,7 @@ spec = importlib.util.spec_from_file_location('raw_runner', ROOT / 'tools/probes
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 HEX = (b'\x1b[200~PASTE_QUAL_0123456789_[x]_end\x1b[201~\r').hex()
-POST = 'SETTINGS_RAW_POST separate_dispatch=1 closed_scene_presented=1 bracketed=1 resize_requested=3 resize_applied=3 resize_since_raw_ready=1 resize_before=2 client_width_before=960 client_width_after=1040 grid_columns_before=100 grid_columns_after=108 reader_termios=raw-noecho win32_input_mode=unobserved provider=Windows ConPTY (system)'
+POST = 'SETTINGS_RAW_POST separate_dispatch=1 closed_scene_presented=1 bracketed=1 resize_requested=3 resize_applied=3 resize_since_raw_ready=1 resize_before=2 client_width_before=960 client_width_after=880 grid_columns_before=100 grid_columns_after=92 reader_termios=raw-noecho win32_input_mode=unobserved provider=Windows ConPTY (system)'
 ROW = f'SETTINGS_RAW_RESULT verdict=PASS writer_complete=1 child_valid=1 child_exit=0 expected_hex={HEX} writer_hex={HEX} child_hex={HEX}'
 FINAL = 'SETTINGS_RAW_FINAL verdict=PASS detail=; authored Settings-close boundary only, not ZLE or general qualification.'
 CLEAN = 'Native smoke shell state cleanup: actors_closed=1 removed=1\nNative CI teardown: tick_ms=123 thread=456 stage=wWinMain locals destroyed; returning to CRT'
@@ -51,10 +51,11 @@ class AssessmentTests(unittest.TestCase):
         for old, new in (('resize_requested=3', 'resize_requested=4'),
                          ('resize_before=2', 'resize_before=3'),
                          ('resize_before=2', 'resize_before=4'),
-                         ('client_width_after=1040', 'client_width_after=960'),
-                         ('client_width_after=1040', 'client_width_after=1039'),
-                         ('grid_columns_after=108', 'grid_columns_after=100'),
-                         ('grid_columns_after=108', 'grid_columns_after=99'),
+                         ('client_width_after=880', 'client_width_after=960'),
+                         ('client_width_after=880', 'client_width_after=1040'),
+                         ('client_width_after=880', 'client_width_after=881'),
+                         ('grid_columns_after=92', 'grid_columns_after=100'),
+                         ('grid_columns_after=92', 'grid_columns_after=101'),
                          ('resize_since_raw_ready=1', 'resize_since_raw_ready=0')):
             with self.subTest(field=old): self.inconclusive(OUTPUT.replace(old, new))
         self.inconclusive(OUTPUT.replace('resize_before=2 ', ''))

@@ -40,13 +40,27 @@ class SettingsRawSourceContracts(unittest.TestCase):
         self.assertEqual(progress.count('SetWindowPos('), 1)
         self.assertLess(progress.index('settings_panel_.cancel()'), progress.index('SetWindowPos('))
         self.assertLess(progress.index('settings_raw_stage_=2'), progress.index('SetWindowPos('))
-        self.assertIn('window.right-window.left+80', progress)
-        self.assertIn('settings_raw_client_after_!=settings_raw_client_before_+80', progress)
+        self.assertIn('window.right-window.left-80', progress)
+        self.assertIn('settings_raw_client_after_!=settings_raw_client_before_-80', progress)
+        transition = progress.index('SetWindowPos(')
+        self.assertLess(progress.index('geometry("before")'), transition)
+        self.assertLess(progress.index('SendMessageW(hwnd_,WM_GETMINMAXINFO'), transition)
+        self.assertLess(progress.index('target_width<=track.ptMinTrackSize.x'), transition)
+        self.assertLess(progress.index('settings_raw_client_before_<=80'), transition)
+        precondition = progress[progress.index('if(track.ptMinTrackSize.x<=0'):transition]
+        self.assertIn('smoke_finish("Settings raw shrink lacks minimum track clearance.");return;', precondition)
+        self.assertGreater(progress.index('geometry("after")'), transition)
+        self.assertLess(progress.index('geometry("after")'), progress.index('if(!resized||!geometry_after)'))
+        for field in ('outer_ok=%d', 'client_ok=%d', 'monitor_ok=%d', 'outer=%ld,%ld,%ld,%ld',
+                      'client=%ld,%ld,%ld,%ld', 'dpi=%u', 'zoomed=%d', 'min_track=%ld,%ld',
+                      'max_track=%ld,%ld', 'work=%ld,%ld,%ld,%ld'):
+            self.assertIn(field, progress)
+
         gate = progress.split('if(settings_raw_stage_==2)', 1)[1].split('PostMessageW(', 1)[0]
         for check in ('control.requested_resize_generation<=settings_raw_resize_before_',
                       'control.applied_resize_generation!=control.requested_resize_generation',
                       '*control.applied_grid!=control.requested_grid',
-                      'control.applied_grid->columns<=settings_raw_columns_before_'):
+                      'control.applied_grid->columns>=settings_raw_columns_before_'):
             self.assertIn(check, gate)
         self.assertIn('settings_raw_target_grid_=*control.applied_grid', gate)
         dispatch = WINDOW.split('case smoke_settings_input_message:', 1)[1].split('#endif', 1)[0]
