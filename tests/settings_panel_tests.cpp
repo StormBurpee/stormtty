@@ -383,6 +383,28 @@ int main() {return run_core_tests("settings panel",[] {
     disk_config.bindings.push_back({"pane.split_right",{"F8",CommandModifier::control|CommandModifier::shift}});
     write_file(serialize_config(disk_config,Platform::windows));
     auto fresh_disk=load_config(lifecycle_path,Platform::windows);CHECK(fresh_disk);
+    // Native document completion opens the fresh disk draft first, then applies
+    // the latest requested shortcut target using the running value. Targeting
+    // must not collapse disk initial-draft and running rollback baselines.
+    SettingsPanel binding_open;
+    binding_open.open(defaults, *fresh_disk.config);
+    binding_open.open_for_binding(defaults, "terminal.find");
+    CHECK(binding_open.original() == defaults && binding_open.draft() == *fresh_disk.config);
+    CHECK(binding_open.loaded_changes_from_disk() && !binding_open.dirty());
+    CHECK(binding_open.focused_control() == "binding:terminal.find");
+    const auto binding_preview = binding_open.take_action();
+    CHECK(binding_preview && binding_preview->kind == SettingsActionKind::preview);
+    CHECK(binding_preview->config == *fresh_disk.config);
+
+    binding_open.open_for_binding(defaults, "pane.split_right");
+    CHECK(binding_open.focused_control() == "binding:pane.split_right");
+    CHECK(binding_open.draft() == *fresh_disk.config);
+    CHECK(!binding_open.take_action());
+    binding_open.cancel();
+    const auto binding_cancel = binding_open.take_action();
+    CHECK(binding_cancel && binding_cancel->kind == SettingsActionKind::cancel);
+    CHECK(binding_cancel->config == defaults);
+
     SettingsPanel reopened;reopened.open(defaults,*fresh_disk.config);
     CHECK(reopened.original()==defaults && reopened.draft()==*fresh_disk.config);
     CHECK(!reopened.dirty() && reopened.loaded_changes_from_disk());
