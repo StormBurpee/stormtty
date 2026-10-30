@@ -51,10 +51,11 @@ actor incarnations before restoring it. Successful fixture paths still use real
 park/restore operations; no checkpoint can replace Watch state or unrelated
 sessions' attention.
 
-`session_states_` and `background_labels_` remain application-shared presentation
-caches exactly as before. A future per-view observation-cache change requires
-separate multi-window, transfer and invalidation characterization; it is not part
-of this ownership extraction.
+`SessionObservationCache` separately encapsulates the application-shared process
+state and background-label observations. Their lifetime and comparison policy
+remain unchanged; see [session observations](session-observations.md). A future
+per-view migration requires separate multi-window, transfer and invalidation
+characterization; it is not part of either ownership extraction.
 
 Portable tests exercise the actual owner and project placement integration,
 including exact/stale acknowledgment, identity-reset change reporting, baseline
