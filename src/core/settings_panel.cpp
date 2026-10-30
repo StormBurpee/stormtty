@@ -837,7 +837,7 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
             button("ribbon.toggle:"+id,visible?"Shown":"Hidden",visible);
             button("ribbon.up:"+id,"↑");button("ribbon.down:"+id,"↓");
         }
-        label({content.x,top+400,content.width,34},"Narrow windows hide lower-priority items. Background terminals remain in Commands.",muted,11,false,true);
+        label({content.x,top+400,content.width,34},"Narrow windows hide lower-priority items. Workspace activity remains in Commands.",muted,11,false,true);
     } else if (section_==SettingsSection::shell) {
         if (platform_==Platform::windows) {
             row_labels(0,"Console backend","Existing sessions keep their backend.",content.width);

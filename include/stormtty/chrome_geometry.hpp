@@ -313,7 +313,7 @@ inline SessionFooterLayout layout_session_footer(Rect footer, std::size_t parked
     auto priority=ribbon_bindings;
     if(host.compact_background) {
         priority[ribbon_index(RibbonBinding::background)].minimum=96;
-        priority[ribbon_index(RibbonBinding::background)].preferred=208;
+        priority[ribbon_index(RibbonBinding::background)].preferred=host.activity_watches?360:208;
         priority[ribbon_index(RibbonBinding::status)].minimum=112;
         priority[ribbon_index(RibbonBinding::status)].preferred=176;
     }
