@@ -30,6 +30,64 @@ std::string frame_text(const FramePtr& frame) {
     }
     return text;
 }
+// Synthetic fixture failures only: no terminal payloads, PID, paths, arguments,
+// environment or free-form errors. Independent snapshots, not an atomic barrier.
+void report_bounded_child_failure(
+    const Session& session,
+    const char* policy,
+    bool wait_result,
+    std::chrono::steady_clock::time_point started) noexcept {
+    try {
+        const auto info = session.info();
+        const auto transport = session.diagnostics();
+        const auto frame = session.frame();
+        const auto text = frame_text(frame);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started);
+        const auto exit_code = info.exit_code
+            ? static_cast<std::int64_t>(*info.exit_code)
+            : -1;
+        const bool has_ready_marker = text.find("READY:") != std::string::npos;
+        const bool has_final_marker = text.find("FINAL:") != std::string::npos;
+
+        std::cerr << "BOUNDED-CHILD-FAILURE v1 policy=" << policy
+                  << " wait_result=" << wait_result
+                  << " elapsed_ms=" << elapsed.count()
+                  << " closed_now=" << session.closed()
+                  << " process_finished_now=" << session.process_finished()
+                  << " session_state=" << static_cast<int>(info.state)
+                  << " has_exit_code=" << info.exit_code.has_value()
+                  << " exit_code=" << exit_code
+                  << " has_error=" << !info.error.empty()
+                  << " received_bytes=" << info.bytes_received
+                  << " sent_bytes=" << info.bytes_sent
+                  << " queued_input_bytes=" << transport.queued_input_bytes
+                  << " bundled_provider=" << transport.bundled_provider
+                  << " has_frame=" << static_cast<bool>(frame)
+                  << " frame_generation=" << (frame ? frame->generation : 0)
+                  << " frame_columns=" << (frame ? frame->columns : 0)
+                  << " frame_rows=" << (frame ? frame->rows : 0)
+                  << " has_ready_marker=" << has_ready_marker
+                  << " has_final_marker=" << has_final_marker
+                  << " has_windows_control=" << transport.windows_control.has_value();
+
+        if (transport.windows_control) {
+            const auto& control = *transport.windows_control;
+            std::cerr << " controller_waits=" << control.wait_calls
+                      << " control_wakes=" << control.control_wakes
+                      << " child_exit_wakes=" << control.child_exit_wakes
+                      << " initialization_wakes=" << control.initialization_wakes
+                      << " resize_calls=" << control.resize_calls
+                      << " resize_failures=" << control.resize_failures;
+        }
+
+        std::cerr << '\n' << std::flush;
+    } catch (...) {
+        // Diagnostics must not replace the original failing assertion or cleanup.
+        std::fputs("BOUNDED-CHILD-FAILURE diagnostic capture unavailable\n", stderr);
+    }
+}
+
 struct WakeCounter {
     std::mutex mutex; std::condition_variable cv; unsigned wakes{};
     // Optional observed-publication acknowledgment. The callback and test use
@@ -387,7 +445,15 @@ void retained_bounds_failure_and_destructor(const std::string& executable) {
     auto wake=std::make_shared<WakeCounter>();
     auto session=Session::start(p,t,[wake]{wake->signal();},SessionRetentionPolicy::retain_document);
     CloseSession close{session};
-    check(session->wait_for_process_exit(10s),"bounded retained child failed to exit");
+
+    const auto retained_wait_started = std::chrono::steady_clock::now();
+    const bool retained_wait = session->wait_for_process_exit(10s);
+    if (!retained_wait) {
+        report_bounded_child_failure(
+            *session, "retain_document", retained_wait, retained_wait_started);
+    }
+    check(retained_wait, "bounded retained child failed to exit");
+
     auto find=session->search({"old retained NEEDLE"});
     check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==find.request_id&&r->status==SearchStatus::complete;},wake),"bounded retained search failed");
     check(session->search_snapshot()->matches.empty(),"retention bypassed scrollback bound");
@@ -396,7 +462,16 @@ void retained_bounds_failure_and_destructor(const std::string& executable) {
     check(session->search_snapshot()->matches.size()==1,"bounded retention lost final bytes");
     session->request_close();check(session->wait_closed(5s),"bounded document disposal hung");
     auto legacy=Session::start(p,t);
-    check(legacy->wait_closed(10s)&&legacy->process_finished(),"default final-frame-only child failed to dispose");
+
+    const auto final_wait_started = std::chrono::steady_clock::now();
+    const bool final_wait = legacy->wait_closed(10s);
+    const bool final_complete = final_wait && legacy->process_finished();
+    if (!final_complete) {
+        report_bounded_child_failure(
+            *legacy, "final_frame_only", final_wait, final_wait_started);
+    }
+    check(final_complete, "default final-frame-only child failed to dispose");
+
     check(frame_text(legacy->frame()).find("FINAL:")!=std::string::npos,"default final frame froze at a pre-hold viewport");
     check(legacy->scroll(-1)==SessionSendResult::closed,"default policy unexpectedly retained readable terminal");
     p.executable=executable+".missing";
