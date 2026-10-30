@@ -7,19 +7,40 @@ using namespace stormtty;
 namespace {
 bool wait_for(const std::function<bool()>& condition,double seconds=5) {
     NSDate* deadline=[NSDate dateWithTimeIntervalSinceNow:seconds];
-    while(!condition()&&deadline.timeIntervalSinceNow>0)
+    while(!condition()&&deadline.timeIntervalSinceNow>0){
+        // Unlike a pure model fixture, this owns a live Metal window. Deliver
+        // AppKit activation/window events, not only timers and dispatch sources.
+        while(NSEvent* event=[NSApp nextEventMatchingMask:NSEventMaskAny untilDate:NSDate.distantPast inMode:NSDefaultRunLoopMode dequeue:YES])
+            [NSApp sendEvent:event];
+        [NSApp updateWindows];
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
     return condition();
 }
 void capture(const std::shared_ptr<macos::Host>& h,const char* path) {
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(12);
+    std::fprintf(stdout,"Capture %s: requesting a fresh onscreen render\n",path);std::fflush(stdout);
     for(;;){
-        h->smoke_force_present=true;h->update();[h->view layoutSubtreeIfNeeded];[h->window displayIfNeeded];[CATransaction flush];
+        // Never accept an untouched target: serial zero formerly satisfied the
+        // observer's 0 >= 0 comparison and produced a black first capture.
+        const auto previous=h->renderer->stats().presents;
+        h->smoke_force_present=true;
+        const auto remaining=std::chrono::duration<double>(deadline-std::chrono::steady_clock::now()).count();
+        CHECK(remaining>0);
+        CHECK(wait_for([&]{h->update();return h->renderer->stats().presents>previous&&!h->smoke_force_present;},remaining));
+        CHECK(h->renderer->stats().presents>0);
+        CHECK(h->window.visible&&(h->window.occlusionState&NSWindowOcclusionStateVisible));
+        [h->view layoutSubtreeIfNeeded];[h->window displayIfNeeded];[CATransaction flush];
         h->smoke_capture_pending=true;
         auto read=std::async(std::launch::async,[h]{return h->renderer->read_pixels();});
         const bool ready=wait_for([&]{return read.wait_for(std::chrono::seconds(0))==std::future_status::ready;},15);
         h->smoke_capture_pending=false;CHECK(ready);
-        try{auto pixels=read.get();CHECK(!pixels.empty());write_macos_capture(path,pixels,h->pixel_width,h->pixel_height);return;}
+        try{auto pixels=read.get();CHECK(!pixels.empty());
+            // All captures contain terminal text/chrome; a uniform unpainted
+            // target is invalid even if its storage/readback succeeded.
+            bool varied=false;for(std::size_t i=4;i+3<pixels.size();i+=4)
+                if(!std::equal(pixels.begin(),pixels.begin()+4,pixels.begin()+i)){varied=true;break;}
+            CHECK(varied);write_macos_capture(path,pixels,h->pixel_width,h->pixel_height);return;}
         catch(const std::exception& e){
             if(!std::string_view(e.what()).starts_with("Metal drawable was not observed presented onscreen")||std::chrono::steady_clock::now()>=deadline)throw;
             h->wake();[[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
@@ -29,6 +50,7 @@ void capture(const std::shared_ptr<macos::Host>& h,const char* path) {
 }
 int main(){@autoreleasepool{return run_core_tests("native macOS context footer host",[]{
     [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp finishLaunching];
     auto config=default_config(Platform::macos);config.profiles.clear();Profile profile;
     profile.id="footer-fixture";profile.label="Footer fixture";profile.executable="/bin/sh";profile.working_directory="/";
     profile.arguments={"-c","printf 'FOOTER_READY\\n'; IFS= read -r x; [ \"$x\" = context ] || exit 19; printf '\\033]7;file://localhost/owned/footer/a-long-project-folder/with-sibling-workspaces/and-complete-context-retained\\007FOOTER_CONTEXT\\n'; IFS= read -r x; if [ \"$x\" = finish ]; then printf 'FOOTER_INPUT_OK\\n'; exit 7; else exit 19; fi"};
