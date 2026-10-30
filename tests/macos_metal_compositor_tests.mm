@@ -180,11 +180,14 @@ void abandoned_frame_test() {
             require(bool(paint), "Abandonment fixture did not admit a frame");
             const std::uint8_t bgra[] = {0, 0, 255, 255};
             paint.draw_bgra(1, 1, bgra, {0, 0, 8, 8});
+            std::cerr << "abandonment: uploaded; throwing with active encoder" << std::endl;
             throw std::runtime_error("Synthetic paint abandonment");
         } catch (const std::runtime_error& error) {
             abandoned = std::string_view(error.what()) == "Synthetic paint abandonment";
+            std::cerr << "abandonment: caught; draining autorelease pool" << std::endl;
         }
     }
+    std::cerr << "abandonment: pool drained" << std::endl;
     const auto after = Access::snapshot(owner);
     require(abandoned && after.serial == initial.serial + 1 &&
             after.in_flight == 0 && after.completed == initial.completed,
@@ -331,12 +334,24 @@ void unattached_view_status_test() {
 int main() {
     @autoreleasepool {
         try {
+            std::cerr << "BEGIN composition_and_readback" << std::endl;
             composition_and_readback_test();
+            std::cerr << "PASS composition_and_readback" << std::endl;
+            std::cerr << "BEGIN held_generations" << std::endl;
             held_generations_test();
+            std::cerr << "PASS held_generations" << std::endl;
+            std::cerr << "BEGIN abandoned_frame" << std::endl;
             abandoned_frame_test();
+            std::cerr << "PASS abandoned_frame" << std::endl;
+            std::cerr << "BEGIN failure_order" << std::endl;
             failure_order_test();
+            std::cerr << "PASS failure_order" << std::endl;
+            std::cerr << "BEGIN renderer_unwind" << std::endl;
             renderer_unwind_test();
+            std::cerr << "PASS renderer_unwind" << std::endl;
+            std::cerr << "BEGIN unattached_view_status" << std::endl;
             unattached_view_status_test();
+            std::cerr << "PASS unattached_view_status" << std::endl;
             std::cout << "PASS native macOS Metal compositor ownership/admission/readback\n";
             return 0;
         } catch (const std::exception& error) {
