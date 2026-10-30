@@ -17,6 +17,8 @@
 #include "graphics_error.hpp"
 #include "text_resources.hpp"
 #include "image_cache.hpp"
+#include "chrome_painter.hpp"
+#include "paint_surface.hpp"
 #include "host_backdrop.hpp"
 #include "liquid_glass/session.hpp"
 #include "stormtty/build_features.hpp"
@@ -117,35 +119,12 @@ bool device_lost(HRESULT hr) noexcept {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
            hr == D2DERR_RECREATE_TARGET || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
 }
-D2D1_COLOR_F color(Color c, float opacity = 1) noexcept {
-    return {float(c.r) / 255, float(c.g) / 255, float(c.b) / 255, float(c.a) / 255 * opacity};
-}
-D2D1_RECT_F rect(PixelRect r) noexcept { return {r.x, r.y, r.x + r.width, r.y + r.height}; }
+using windows::paint_color;
+using windows::paint_rect;
+using Clip = windows::PaintClip;
 using render_geometry::intersect;
 using render_geometry::nonempty;
 using render_geometry::overlaps;
-using render_geometry::chrome_clip;
-using render_geometry::chrome_bounds;
-struct Clip {
-    ID2D1DeviceContext* dc;
-    Clip(ID2D1DeviceContext* context, PixelRect r) : dc(context) {
-        dc->PushAxisAlignedClip(rect(r), D2D1_ANTIALIAS_MODE_ALIASED);
-    }
-    ~Clip() { dc->PopAxisAlignedClip(); }
-};
-struct OpacityLayer {
-    ID2D1DeviceContext* dc;bool active;
-    OpacityLayer(ID2D1DeviceContext* context,PixelRect bounds,float opacity):dc(context),active(opacity<1) {
-        if(active) {
-            D2D1_LAYER_PARAMETERS1 params{};
-            params.contentBounds=rect(bounds);params.maskAntialiasMode=D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
-            params.maskTransform._11=1;params.maskTransform._22=1;params.opacity=opacity;
-            params.layerOptions=D2D1_LAYER_OPTIONS1_NONE;
-            dc->PushLayer(&params,nullptr);
-        }
-    }
-    ~OpacityLayer(){if(active)dc->PopLayer();}
-};
 constexpr Color selection_background{58,79,91,255};
 constexpr Color selection_foreground{236,238,242,255};
 } // namespace
@@ -461,13 +440,10 @@ struct Renderer::Impl {
     float backdrop_opacity() const noexcept {
         return material_enabled() ? options.background_opacity : 1.0f;
     }
-    void fill(PixelRect r, Color c, float opacity = 1, bool replace = false) {
-        if (!nonempty(r)) return;
-        brush->SetColor(color(c, opacity));
-        if(replace && glass_paint) dc->FillRectangle(rect(r),glass_brush.get());
-        if (replace && !glass_paint) dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
-        dc->FillRectangle(rect(r), brush.get());
-        if (replace) dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+    void fill(PixelRect bounds, Color color, float opacity = 1, bool replace = false) {
+        windows::PaintSurface surface(
+            *dc.get(), *brush.get(), glass_paint ? glass_brush.get() : nullptr);
+        surface.fill(bounds, color, opacity, replace);
     }
     bool selected(const FrameRow& row, std::size_t column) const noexcept {
         return (column < row.cells.size() && row.cells[column].selected) ||
@@ -492,7 +468,7 @@ struct Renderer::Impl {
         run.glyphCount = static_cast<UINT32>(cluster.glyphs.size()); run.glyphIndices = cluster.glyphs.data();
         run.glyphAdvances = cluster.advances.data(); run.glyphOffsets = cluster.offsets.data();
         run.isSideways = cluster.sideways; run.bidiLevel = cluster.bidi;
-        brush->SetColor(color(fg));
+        brush->SetColor(paint_color(fg));
         if (text->supports_color_glyphs() && dc4) {
             Com<IDWriteColorGlyphRunEnumerator1> layers;
             const auto hr = text->color_glyph_layers(run, origin.x, origin.y, layers);
@@ -511,11 +487,11 @@ struct Renderer::Impl {
                             DWRITE_MEASURING_MODE_NATURAL, D2D1_COLOR_BITMAP_GLYPH_SNAP_OPTION_DEFAULT);
                         break;
                     case DWRITE_GLYPH_IMAGE_FORMATS_SVG:
-                        brush->SetColor(color(fg));
+                        brush->SetColor(paint_color(fg));
                         dc4->DrawSvgGlyphRun(position, &layer->glyphRun, brush.get(), nullptr, 0, DWRITE_MEASURING_MODE_NATURAL);
                         break;
                     default:
-                        brush->SetColor(layer->paletteIndex == 0xffff ? color(fg) : layer->runColor);
+                        brush->SetColor(layer->paletteIndex == 0xffff ? paint_color(fg) : layer->runColor);
                         dc->DrawGlyphRun(position, &layer->glyphRun, brush.get(), DWRITE_MEASURING_MODE_NATURAL);
                         break;
                     }
@@ -525,7 +501,7 @@ struct Renderer::Impl {
             if (device_lost(hr)) check(hr,"Translate color glyphs");
             // Unsupported color font/API uses explicit monochrome fallback.
         }
-        brush->SetColor(color(fg));
+        brush->SetColor(paint_color(fg));
         dc->DrawGlyphRun(origin, &run, brush.get(), DWRITE_MEASURING_MODE_NATURAL);
     }
     void draw_text(const RenderPane& pane, const FrameRow& row, UINT row_index, UINT cw, UINT ch,
@@ -580,7 +556,7 @@ struct Renderer::Impl {
                 fill({x,uy,length,thickness},underline_color);
                 if (c.style.underline == 2) fill({x,uy-thickness*2,length,thickness},underline_color);
             } else if (c.style.underline >= 3) {
-                brush->SetColor(color(underline_color));
+                brush->SetColor(paint_color(underline_color));
                 const float step = c.style.underline == 5 ? thickness * 4 : thickness * 2;
                 for (float p = 0; p < length; p += step) {
                     if (c.style.underline == 3) {
@@ -612,7 +588,7 @@ struct Renderer::Impl {
             auto* bitmap = image_cache->bitmap(
                 *dc.get(), pane.id, pixels, tick);
             if (!bitmap) continue;
-            const auto destination = rect(target);
+            const auto destination = paint_rect(target);
             const D2D1_RECT_F source{float(placement.source_x),float(placement.source_y),
                                     float(placement.source_x+sw),float(placement.source_y+sh)};
             dc->DrawBitmap(bitmap,&destination,1,D2D1_INTERPOLATION_MODE_LINEAR,&source,nullptr);
@@ -632,7 +608,7 @@ struct Renderer::Impl {
             else bounds.width*=reveal;
         }
         if (shape == CursorShape::hollow_block) {
-            brush->SetColor(color(cursor.color));
+            brush->SetColor(paint_color(cursor.color));
             const D2D1_RECT_F outline{bounds.x+thickness*.5f,bounds.y+thickness*.5f,
                                       bounds.x+bounds.width-thickness*.5f,bounds.y+bounds.height-thickness*.5f};
             dc->DrawRectangle(outline,brush.get(),thickness);
@@ -684,48 +660,6 @@ struct Renderer::Impl {
         draw_images(pane,ImageLayer::above_text,cw,ch,damage);
         draw_cursor(pane,cw,ch);
     }
-    void draw_chrome(const WindowScene& scene, PixelRect damage, std::span<const ChromeDrawItem> order) {
-        for (const auto& item : order) {
-            if (item.kind==ChromeDrawKind::primitive) {
-                const auto& primitive=scene.primitives[item.index];
-                if(!overlaps(chrome_bounds(primitive),damage))continue;
-                Clip viewport(dc.get(),chrome_clip({0,0,float(width),float(height)},primitive.clip));
-                if (primitive.kind == ChromePrimitiveKind::line) {
-                    brush->SetColor(color(primitive.stroke_width>0?primitive.stroke:primitive.fill));
-                    dc->DrawLine({primitive.rect.x,primitive.rect.y},{primitive.rect.x+primitive.rect.width,primitive.rect.y+primitive.rect.height},
-                                 brush.get(),std::max(1.0f,primitive.stroke_width));
-                } else {
-                    const auto radius=std::clamp(primitive.radius,0.0f,std::min(primitive.rect.width,primitive.rect.height)*.5f);
-                    const D2D1_ROUNDED_RECT rounded{rect(primitive.rect),radius,radius};
-                    if (primitive.fill.a || primitive.background_replace) {
-                        auto fill_color=primitive.fill;
-                        if(primitive.background_replace && !material_enabled())fill_color.a=255;
-                        brush->SetColor(color(fill_color));
-                        if(primitive.background_replace && glass_paint)dc->FillRoundedRectangle(rounded,glass_brush.get());
-                        if(primitive.background_replace && !glass_paint)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
-                        dc->FillRoundedRectangle(rounded,brush.get());
-                        if(primitive.background_replace)dc->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
-                    }
-                    if (primitive.stroke_width>0 && primitive.stroke.a) {
-                        brush->SetColor(color(primitive.stroke)); dc->DrawRoundedRectangle(rounded,brush.get(),primitive.stroke_width);
-                    }
-                }
-            } else {
-                const auto& label=scene.texts[item.index];
-                if (!nonempty(label.rect) || !overlaps(chrome_bounds(label),damage) || label.text.empty() || !label.color.a) continue;
-                if (label.text.size()>32768 || label.family.empty() || label.family.size()>256 ||
-                    !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256) continue;
-                const auto layout = text->chrome_paint_layout(label);
-                auto foreground=label.color;foreground.a=255;
-                brush->SetColor(color(foreground));
-                Clip clip(dc.get(),chrome_bounds(label));
-                // Layer opacity applies equally to monochrome and color-font layers.
-                // Only deliberate ChromeText alpha is faded; terminal rows never are.
-                OpacityLayer opacity(dc.get(),intersect(label.rect,{0,0,float(width),float(height)}),float(label.color.a)/255);
-                dc->DrawTextLayout({label.rect.x,label.rect.y},layout.get(),brush.get(),D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
-            }
-        }
-    }
     RenderResult render(const WindowScene& scene) {
         if (!width || !height || !canvas) return RenderResult::suspended;
         update_glass();glass_paint=bool(glass_brush);
@@ -751,7 +685,11 @@ struct Renderer::Impl {
                     dc->Clear(D2D1_COLOR_F{0,0,0,0});
                     fill({0,0,float(width),float(height)},scene.background,backdrop_opacity(),true);
                     for(const auto& pane:scene.panes) draw_pane(pane,r);
-                    draw_chrome(scene,r,chrome_order);
+                    windows::PaintSurface surface(
+                        *dc.get(), *brush.get(), glass_paint ? glass_brush.get() : nullptr);
+                    windows::ChromePainter{}.paint(
+                        scene.primitives, scene.texts, chrome_order, r,
+                        {0, 0, float(width), float(height)}, material_enabled(), surface, *text);
                 }
             } catch (...) { dc->EndDraw(); scene_damage.invalidate(); throw; }
             check(dc->EndDraw(),"Render canvas");

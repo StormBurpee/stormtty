@@ -359,6 +359,8 @@ if(WIN32)
         src/platform/windows/renderer.cpp
         src/platform/windows/text_resources.cpp
         src/platform/windows/image_cache.cpp
+        src/platform/windows/paint_surface.cpp
+        src/platform/windows/chrome_painter.cpp
         src/platform/windows/png_decoder.cpp
         src/platform/windows/host_backdrop.cpp
         src/platform/windows/liquid_glass/session.cpp)
@@ -390,6 +392,7 @@ if(WIN32)
     if(BUILD_TESTING)
         stormtty_test(text_resources_tests tests/text_resources_tests.cpp stormtty_renderer)
         stormtty_test(image_cache_tests tests/image_cache_tests.cpp stormtty_renderer)
+        stormtty_test(paint_surface_tests tests/paint_surface_tests.cpp stormtty_renderer)
         stormtty_test(renderer_smoke tests/renderer_smoke.cpp stormtty_renderer stormtty_workspace)
         add_test(NAME renderer_final_teardown COMMAND renderer_smoke --final-teardown)
         set_tests_properties(renderer_final_teardown PROPERTIES TIMEOUT 30 LABELS "windows;native;gui")
