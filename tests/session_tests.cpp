@@ -30,6 +30,136 @@ std::string frame_text(const FramePtr& frame) {
     }
     return text;
 }
+
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+// Private named mapping for this synthetic child only. No output contents or
+// handles are inherited. Metadata setup failure never fails the transport.
+class ProducerProgress {
+#ifdef _WIN32
+    struct Shared { volatile LONG stage; volatile LONG lines; };
+    HANDLE mapping_{};
+    Shared* shared_{};
+    bool usable_{};
+    static constexpr const char* variable="STORMTTY_SESSION_DIAGNOSTIC_MAPPING";
+#endif
+public:
+    ProducerProgress() = default;
+    ProducerProgress(const ProducerProgress&) = delete;
+    ProducerProgress& operator=(const ProducerProgress&) = delete;
+    ~ProducerProgress() {
+#ifdef _WIN32
+        if (shared_) UnmapViewOfFile(shared_);
+        if (mapping_) CloseHandle(mapping_);
+#endif
+    }
+    void prepare(ProcessOptions& options) noexcept {
+#ifdef _WIN32
+        try {
+            static unsigned sequence{}; // Fixture main thread only.
+            const auto name="Local\\StormTTY-session-diagnostic-"+std::to_string(GetCurrentProcessId())+
+                "-"+std::to_string(GetTickCount64())+"-"+std::to_string(++sequence);
+            // Prepare the environment entry before allocating native metadata.
+            options.environment.push_back({variable, std::nullopt});
+            auto& entry=options.environment.back();
+            mapping_=CreateFileMappingA(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,sizeof(Shared),name.c_str());
+            const auto error=GetLastError();
+            if (!mapping_ || error==ERROR_ALREADY_EXISTS) return;
+            shared_=static_cast<Shared*>(MapViewOfFile(mapping_,FILE_MAP_ALL_ACCESS,0,0,sizeof(Shared)));
+            if (!shared_) return;
+            entry.value=name;
+            usable_=true;
+        } catch (...) { /* unavailable metadata, not a child launch failure */ }
+#else
+        (void)options;
+#endif
+    }
+    void open_child() noexcept {
+#ifdef _WIN32
+        char name[192]{};
+        const auto count=GetEnvironmentVariableA(variable,name,sizeof(name));
+        if (!count || count>=sizeof(name)) return;
+        mapping_=OpenFileMappingA(FILE_MAP_ALL_ACCESS,FALSE,name);
+        if (mapping_) shared_=static_cast<Shared*>(MapViewOfFile(mapping_,FILE_MAP_ALL_ACCESS,0,0,sizeof(Shared)));
+        usable_=shared_!=nullptr;
+#endif
+    }
+    void publish_stage(long value) noexcept {
+#ifdef _WIN32
+        if (shared_) InterlockedExchange(&shared_->stage,value);
+#else
+        (void)value;
+#endif
+    }
+    void publish_lines(unsigned value) noexcept {
+#ifdef _WIN32
+        if (shared_) InterlockedExchange(&shared_->lines,static_cast<LONG>(value));
+#else
+        (void)value;
+#endif
+    }
+    long stage() const noexcept {
+#ifdef _WIN32
+        if (usable_) return InterlockedCompareExchange(&shared_->stage,0,0);
+#endif
+        return -1;
+    }
+    long lines() const noexcept {
+#ifdef _WIN32
+        if (usable_) return InterlockedCompareExchange(&shared_->lines,0,0);
+#endif
+        return -1;
+    }
+};
+void report_disposal_failure(const std::shared_ptr<Session>& session, const char* site,
+                             std::chrono::steady_clock::time_point wait_start,
+                             bool wait_satisfied, bool process_finished, const ProducerProgress& producer) {
+        // Sample before failure unwinds and requests close. No VT payload, PID,
+        // executable path or environment is logged. Samples are not atomic.
+        const auto d=session->test_diagnostics();
+        const auto info=session->info();
+        const auto transport=session->diagnostics();
+        const auto frame=session->frame();
+        const auto text=frame_text(frame);
+        std::cerr << "SESSION-DISPOSAL-DIAGNOSTIC v2"
+                  << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-wait_start).count()
+                  << " site=" << site << " wait_satisfied=" << wait_satisfied << " closed_now=" << session->closed()
+                  << " process_finished=" << process_finished
+                  << " session_state=" << static_cast<int>(info.state)
+                  << " actor_phase=" << d.actor_phase
+                  << " process_state=" << (d.process_state ? static_cast<int>(*d.process_state) : -1)
+                  << " exit_callback=" << d.exit_callback << " close_requested=" << d.close_requested
+                  << " exit_code=" << (info.exit_code ? static_cast<std::int64_t>(*info.exit_code) : -1)
+                  << " has_error=" << !info.error.empty()
+                  << " received_bytes=" << info.bytes_received << " fed_bytes=" << d.fed_bytes
+                  << " queued_output_bytes=" << d.queued_output_bytes << " backpressure_waits=" << d.backpressure_waits
+                  << " queued_commands=" << d.queued_commands << " sent_bytes=" << info.bytes_sent
+                  << " queued_input_bytes=" << transport.queued_input_bytes
+                  << " bundled_provider=" << transport.bundled_provider
+                  << " has_frame=" << static_cast<bool>(frame)
+                  << " frame_generation=" << (frame ? frame->generation : 0)
+                  << " frame_columns=" << (frame ? frame->columns : 0)
+                  << " frame_rows=" << (frame ? frame->rows : 0)
+                  << " has_ready_marker=" << (text.find("READY:")!=std::string::npos)
+                  << " has_final_marker=" << (text.find("FINAL:")!=std::string::npos);
+        if (transport.windows_control) {
+            const auto& c=*transport.windows_control;
+            std::cerr << " controller_waits=" << c.wait_calls << " control_wakes=" << c.control_wakes
+                      << " child_exit_wakes=" << c.child_exit_wakes
+                      << " initialization_wakes=" << c.initialization_wakes
+                      << " resize_calls=" << c.resize_calls << " resize_failures=" << c.resize_failures;
+        }
+        if (d.transport) {
+            const auto& n=*d.transport;
+            std::cerr << " os_process_signaled=" << n.os_process_signaled
+                      << " controller_phase=" << n.controller_phase << " reader_phase=" << n.reader_phase
+                      << " read_bytes=" << n.read_bytes << " callback_returned_bytes=" << n.callback_returned_bytes
+                      << " reader_done=" << n.reader_done << " writer_done=" << n.writer_done;
+        } else std::cerr << " transport_snapshot=unavailable";
+        std::cerr << " producer_stage=" << producer.stage() << " producer_lines=" << producer.lines()
+                  << '\n' << std::flush;
+}
+#endif
+
 struct WakeCounter {
     std::mutex mutex; std::condition_variable cv; unsigned wakes{};
     // Optional observed-publication acknowledgment. The callback and test use
@@ -110,14 +240,35 @@ int child(std::string_view mode, std::string_view exit_signal = {}) {
 #else
         const auto identity=std::to_string(getpid());
 #endif
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        ProducerProgress producer;
+        producer.open_child();
+        producer.publish_stage(1); // history ostream insertion
+#endif
         std::cout << "old retained NEEDLE\r\n";
         const unsigned count=mode=="retained-bounded"?30000:3000;
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        for(unsigned i=0;i<count;++i) {
+            std::cout << "history " << i << "\r\n";
+            producer.publish_lines(i+1);
+        }
+#else
         for(unsigned i=0;i<count;++i) std::cout << "history " << i << "\r\n";
+#endif
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        producer.publish_stage(2); // READY insertion/flush
+#endif
         std::cout << "READY:" << identity << "\r\n" << std::flush;
         if(mode=="retained-history") { std::string input; std::getline(std::cin,input); }
         // A real child may die during synchronized output or an incomplete VT
         // sequence. Preserve the delivered printable bytes; invent no suffix.
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        producer.publish_stage(3); // FINAL insertion/flush
+#endif
         std::cout << "\x1b[?2026hFINAL:" << identity << "\r\n\x1b[" << std::flush;
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        producer.publish_stage(4); // returning, not proof of OS process exit
+#endif
         return 23;
     }
     return 3;
@@ -385,9 +536,21 @@ void retained_bounds_failure_and_destructor(const std::string& executable) {
     ProcessOptions p;p.executable=executable;p.arguments={"--child","retained-bounded"};
     TerminalOptions t;t.size={80,4,8,16};t.scrollback_lines=10;
     auto wake=std::make_shared<WakeCounter>();
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+    ProducerProgress retained_producer;
+    retained_producer.prepare(p);
+#endif
     auto session=Session::start(p,t,[wake]{wake->signal();},SessionRetentionPolicy::retain_document);
     CloseSession close{session};
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+    const auto retained_wait_start=std::chrono::steady_clock::now();
+    const bool retained_wait=session->wait_for_process_exit(10s);
+    if (!retained_wait) report_disposal_failure(session,"bounded-retained",retained_wait_start,
+                                               retained_wait,session->process_finished(),retained_producer);
+    check(retained_wait,"bounded retained child failed to exit");
+#else
     check(session->wait_for_process_exit(10s),"bounded retained child failed to exit");
+#endif
     auto find=session->search({"old retained NEEDLE"});
     check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==find.request_id&&r->status==SearchStatus::complete;},wake),"bounded retained search failed");
     check(session->search_snapshot()->matches.empty(),"retention bypassed scrollback bound");
@@ -395,48 +558,17 @@ void retained_bounds_failure_and_destructor(const std::string& executable) {
     check(await([&]{auto r=session->search_snapshot();return r&&r->token.request_id==find.request_id&&r->status==SearchStatus::complete;},wake),"bounded final-marker search failed");
     check(session->search_snapshot()->matches.size()==1,"bounded retention lost final bytes");
     session->request_close();check(session->wait_closed(5s),"bounded document disposal hung");
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+    ProducerProgress final_producer;
+    final_producer.prepare(p);
+#endif
     auto legacy=Session::start(p,t);
 #ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
     const auto wait_start=std::chrono::steady_clock::now();
     const bool wait_closed=legacy->wait_closed(10s);
     const bool process_finished=legacy->process_finished();
     if (!wait_closed || !process_finished) {
-        // Sample before failure unwinds and requests close. No VT payload, PID,
-        // executable path or environment is logged. Samples are not atomic.
-        const auto d=legacy->test_diagnostics();
-        const auto info=legacy->info();
-        const auto transport=legacy->diagnostics();
-        const auto frame=legacy->frame();
-        const auto text=frame_text(frame);
-        std::cerr << "SESSION-DISPOSAL-DIAGNOSTIC v1"
-                  << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-wait_start).count()
-                  << " wait_closed=" << wait_closed << " closed_now=" << legacy->closed()
-                  << " process_finished=" << process_finished
-                  << " session_state=" << static_cast<int>(info.state)
-                  << " actor_phase=" << d.actor_phase
-                  << " process_state=" << (d.process_state ? static_cast<int>(*d.process_state) : -1)
-                  << " exit_callback=" << d.exit_callback << " close_requested=" << d.close_requested
-                  << " exit_code=" << (info.exit_code ? static_cast<std::int64_t>(*info.exit_code) : -1)
-                  << " has_error=" << !info.error.empty()
-                  << " received_bytes=" << info.bytes_received << " fed_bytes=" << d.fed_bytes
-                  << " queued_output_bytes=" << d.queued_output_bytes << " backpressure_waits=" << d.backpressure_waits
-                  << " queued_commands=" << d.queued_commands << " sent_bytes=" << info.bytes_sent
-                  << " queued_input_bytes=" << transport.queued_input_bytes
-                  << " bundled_provider=" << transport.bundled_provider
-                  << " has_frame=" << static_cast<bool>(frame)
-                  << " frame_generation=" << (frame ? frame->generation : 0)
-                  << " frame_columns=" << (frame ? frame->columns : 0)
-                  << " frame_rows=" << (frame ? frame->rows : 0)
-                  << " has_ready_marker=" << (text.find("READY:")!=std::string::npos)
-                  << " has_final_marker=" << (text.find("FINAL:")!=std::string::npos);
-        if (transport.windows_control) {
-            const auto& c=*transport.windows_control;
-            std::cerr << " controller_waits=" << c.wait_calls << " control_wakes=" << c.control_wakes
-                      << " child_exit_wakes=" << c.child_exit_wakes
-                      << " initialization_wakes=" << c.initialization_wakes
-                      << " resize_calls=" << c.resize_calls << " resize_failures=" << c.resize_failures;
-        }
-        std::cerr << '\n' << std::flush;
+        report_disposal_failure(legacy,"final-frame-only",wait_start,wait_closed,process_finished,final_producer);
     }
     check(wait_closed&&process_finished,"default final-frame-only child failed to dispose");
 #else

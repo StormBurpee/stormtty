@@ -1,4 +1,4 @@
-# Final-frame-only disposal diagnostic (opt-in, not a fix)
+# Session disposal diagnostic (opt-in, not a fix)
 
 The Windows 2025 MSVC baseline for PR20, run `41040682622`, head
 `ab91ee9e49151244ac9404570a72b342a7c7ffb1`, failed `session_tests` with
@@ -20,10 +20,14 @@ Configure the normal supported native build with
 `session_disposal_diagnostics`, then run that executable once from the build
 folder. This target is intentionally **not** registered as a CTest replacement.
 `session_tests` remains linked to the production session library. The diagnostic
-library and executable share one compile definition; neither links the production
-session library. Nothing diagnostic is installed or enabled by default.
+Process library, Session library and executable share one PUBLIC compile definition;
+none links either production Process or Session library. Only one Process
+implementation is linked. The option remains OFF by default. Nothing diagnostic is installed or enabled by default.
 
-Only the exact failing final-only assertion emits a report, before unwind/cleanup.
+Only failures of the first bounded-retained process wait or the final-frame-only
+disposal assertion emit a report, before unwind/cleanup. The first failure still
+throws immediately: the diagnostic does not continue past it to force the second
+site to run.
 The existing synthetic child, 30,000-line output, acceptance conditions, 10-second
 wait, failure exit and cleanup are unchanged. No retries, larger deadlines or
 production Session behavior changes are introduced. The report records counters,
@@ -34,7 +38,9 @@ user path, arguments or environment. It does not expose error/provider strings.
 
 Observations are sampled independently, not an atomic barrier or proof of a hang.
 
-- `wait_closed=0` preserves the original timeout even if `closed_now=1` races later.
+- `site=bounded-retained` uses the original `wait_for_process_exit(10s)` result;
+  `site=final-frame-only` uses the original `wait_closed(10s)` and process-finished
+  check. `wait_satisfied=0` preserves the timeout even if later samples advance.
 - Process states: absent=-1, starting=0, running=1, close_requested=2,
   draining=3, exited=4, failed=5. Session states: starting=0, running=1,
   closing=2, exited=3, failed=4.
@@ -71,3 +77,40 @@ CMake target, session implementation/header and fixture paths. There is no main 
 pull-request trigger. Manual dispatch remains optional. Do not repeatedly push
 unchanged code or dispatch again to chase a failure; inspect the terminal result
 and preserve its evidence before deciding the next authorized change.
+
+## Producer and native snapshot (v2, Windows only)
+
+The fixture gives each of the two bounded children its own private named mapping
+via a diagnostic-only environment override. No extra output, flush, input,
+thread, reader, wait loop, retry or deadline is introduced. Mapping handles/views
+are fixture-owned RAII; no mapping name or environment value is printed. Setup
+errors leave diagnostics unavailable, not a failed transport. Stage and completed
+line count use Windows interlocked operations and are sampled independently:
+
+- `producer_stage=-1`: local metadata unavailable; `0`: mapping exists but no
+  child publication observed (child attach may have failed; not proof of a stall).
+- `1`: inserting history; `producer_lines` counts completed ostream insertions,
+  **not** bytes written to the console or accepted by ConPTY.
+- `2`: READY insertion/flush; `3`: FINAL insertion/flush; `4`: returning from
+  the fixture child function. Stage 4 does not prove CRT flush/destructors or OS
+  process exit finished. The stage is set before the corresponding insertion.
+
+The isolated Windows Process implementation duplicates the suspended child handle
+with only SYNCHRONIZE access before ResumeThread. It retains this handle for the
+Impl lifetime, independently of the controller's handle cleanup. Only a failure
+snapshot queries it with zero timeout: `os_process_signaled=-1` means unavailable
+or failed query, `0` means nonsignaled, `1` means signaled. No exit-code access or
+extra process-control rights are requested. The extra handle retains a process
+object, not a running process, but instrumentation may still perturb timing.
+
+`read_bytes` counts successful nonempty ReadFile bytes; `callback_returned_bytes`
+counts bytes whose output callback returned normally. The difference can include
+an in-flight callback, exceptions or independently sampled progress. Reader phase
+`read-file` identifies a read attempt (not proof it is blocked); `output-callback`
+identifies delivery; `done` plus `reader_done` identify pump completion. Controller
+phases distinguish wait, writer join, console close, process reap, reader drain,
+reader join, exit callback and done. They are passive labels, not new predicates.
+If Session already released Process, `transport_snapshot=unavailable` is expected.
+No producer stage, process signaled sample, marker or phase alone proves a hang.
+A single failure report can separate unfinished production from signaled-child
+controller/reader drain or actor cleanup without claiming a production fix.

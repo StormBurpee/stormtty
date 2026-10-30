@@ -32,6 +32,7 @@ struct SessionInfo {
 // Synthetic session_tests only. No terminal text, process arguments or paths.
 // Observations are independently sampled, not a synchronization barrier.
 struct SessionTestDiagnostics {
+    std::optional<ProcessTestDiagnostics> transport;
     const char* actor_phase{};
     std::size_t queued_output_bytes{}, queued_commands{};
     std::uint64_t fed_bytes{}, backpressure_waits{};

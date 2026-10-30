@@ -315,6 +315,13 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
     // Duplicated real Windows thread handles, not implementation-specific
     // std::thread::native_handle values. Kept until after workers are joined.
     Handle reader_cancel, writer_cancel;
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+    // Published under mutex; never reset until Impl destruction. This private
+    // SYNCHRONIZE-only handle cannot race controller retirement of process.
+    Handle diagnostic_process;
+    std::atomic<const char*> controller_phase{"starting"}, reader_phase{"starting"};
+    std::atomic<std::uint64_t> read_bytes{}, callback_returned_bytes{};
+#endif
 
     Impl(ProcessOptions o, ProcessCallbacks c) : options(std::move(o)), callbacks(std::move(c)) {
         // Auto-reset, initially nonsignalled, and owned until all workers release
@@ -358,6 +365,9 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
         std::array<char, 64 * 1024> buffer{};
         bool discard_after_callback_failure = false;
         while (!stop_reader.load()) {
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+            reader_phase.store("read-file", std::memory_order_relaxed);
+#endif
             DWORD count = 0;
             if (!ReadFile(output_read.value, buffer.data(), static_cast<DWORD>(buffer.size()), &count, nullptr)) {
                 const DWORD error = GetLastError();
@@ -365,8 +375,16 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
                 break;
             }
             if (!count) break;
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+            read_bytes.fetch_add(count, std::memory_order_relaxed);
+            reader_phase.store("output-callback", std::memory_order_relaxed);
+#endif
             if (!discard_after_callback_failure) {
-                try { if (callbacks.output) callbacks.output({buffer.data(), count}, output_stop.get_token()); }
+                try { if (callbacks.output) callbacks.output({buffer.data(), count}, output_stop.get_token());
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+                    if (callbacks.output) callback_returned_bytes.fetch_add(count, std::memory_order_relaxed);
+#endif
+                }
                 catch (...) {
                     fail("output callback threw");
                     // ClosePseudoConsole can emit final output. Continue draining
@@ -375,6 +393,9 @@ struct Process::Impl : std::enable_shared_from_this<Impl> {
                 }
             }
         }
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        reader_phase.store("done", std::memory_order_relaxed);
+#endif
         publish_flag(reader_done);
     }
     void write_loop() noexcept {
@@ -551,6 +572,14 @@ finished:
                     process.reset(pi.hProcess); primary_thread.reset(pi.hThread);
                     if (!AssignProcessToJobObject(job.value, process.value)) throw win_error("AssignProcessToJobObject");
                     if (closing.load()) throw LaunchCancelled{};
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+                    HANDLE snapshot_handle{};
+                    if (DuplicateHandle(GetCurrentProcess(), process.value, GetCurrentProcess(),
+                                        &snapshot_handle, SYNCHRONIZE, FALSE, 0)) {
+                        std::lock_guard lock(mutex);
+                        diagnostic_process.reset(snapshot_handle);
+                    } // Metadata failure must not fail or change the transport.
+#endif
                     if (ResumeThread(primary_thread.value) == static_cast<DWORD>(-1)) throw win_error("ResumeThread");
                     primary_thread.reset();
                     // ConPTY owns its copies; retaining these suppresses pipe EOF.
@@ -565,6 +594,9 @@ finished:
                         // Child exit takes precedence if both handles are ready.
                         // No periodic polling while running; teardown below keeps
                         // its separate, finite drain/cancellation deadlines.
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        controller_phase.store("controller-wait", std::memory_order_relaxed);
+#endif
                         const DWORD wait = WaitForMultipleObjects(initialization_event ? 3 : 2, events, FALSE, INFINITE);
                         if (wait == WAIT_FAILED) throw win_error("WaitForMultipleObjects(child/control)");
                         if (initialization_event && wait == WAIT_OBJECT_0 + 2) {
@@ -602,6 +634,9 @@ finished:
             if (requested) output_stop.request_stop();
             phase.store(ProcessState::draining);
             publish_flag(closing);
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        controller_phase.store("join-writer", std::memory_order_relaxed);
+#endif
             cancel_and_join(writer, writer_cancel, writer_done);
             input_write.reset();
             input_read.reset(); output_write.reset();
@@ -614,7 +649,13 @@ finished:
             // Close is off UI and reader stays alive to consume the final frame.
             // Callback cancellation was signaled on explicit close/failure only;
             // a normal child exit still delivers its complete trailing output.
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        controller_phase.store("close-console", std::memory_order_relaxed);
+#endif
             close_console_with_drain(console);
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        controller_phase.store("reap-process", std::memory_order_relaxed);
+#endif
             if (process.value) {
                 const DWORD wait = WaitForSingleObject(process.value, 5000);
                 DWORD exit_code{};
@@ -624,6 +665,9 @@ finished:
             // Closing the provider normally breaks output. Allow final data/EOF
             // before cancellation, and report a drain timeout rather than claim
             // silent success if a stuck host fails to close the pipe.
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        controller_phase.store("reader-drain", std::memory_order_relaxed);
+#endif
             if (reader.joinable()) {
                 std::unique_lock lock(mutex);
                 bool drained = changed.wait_for(lock, 1000ms, [&] { return reader_done.load(); });
@@ -631,6 +675,9 @@ finished:
                 if (!drained) fail("ConPTY output drain timed out during teardown");
             }
             stop_reader.store(true); output_stop.request_stop();
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        controller_phase.store("join-reader", std::memory_order_relaxed);
+#endif
             cancel_and_join(reader, reader_cancel, reader_done);
         } catch (const std::exception& e) { fail(e.what()); }
         catch (...) { fail("unknown ConPTY provider failure"); }
@@ -644,13 +691,40 @@ finished:
             result = {code, requested || cancel_output_requested.load(), failure};
             phase.store(failure.empty() ? ProcessState::exited : ProcessState::failed);
         }
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        controller_phase.store("exit-callback", std::memory_order_relaxed);
+#endif
         try { if (callbacks.exited) callbacks.exited(std::move(result)); } catch (...) { /* no exception crosses worker */ }
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        controller_phase.store("done", std::memory_order_relaxed);
+#endif
         { std::lock_guard lock(mutex); done = true; }
         changed.notify_all();
     }
 };
 
 Process::Process(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+ProcessTestDiagnostics Process::test_diagnostics() const {
+    ProcessTestDiagnostics result;
+    {
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->diagnostic_process.value) {
+            const auto status = WaitForSingleObject(impl_->diagnostic_process.value, 0);
+            if (status == WAIT_OBJECT_0) result.os_process_signaled = 1;
+            else if (status == WAIT_TIMEOUT) result.os_process_signaled = 0;
+        }
+    }
+    result.controller_phase = impl_->controller_phase.load(std::memory_order_relaxed);
+    result.reader_phase = impl_->reader_phase.load(std::memory_order_relaxed);
+    result.read_bytes = impl_->read_bytes.load(std::memory_order_relaxed);
+    result.callback_returned_bytes = impl_->callback_returned_bytes.load(std::memory_order_relaxed);
+    result.reader_done = impl_->reader_done.load();
+    result.writer_done = impl_->writer_done.load();
+    return result;
+}
+#endif
+
 std::unique_ptr<Process> Process::start(ProcessOptions options, ProcessCallbacks callbacks) {
     auto impl = std::make_shared<Impl>(std::move(options), std::move(callbacks));
     auto process = std::unique_ptr<Process>(new Process(impl));

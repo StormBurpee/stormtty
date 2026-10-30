@@ -595,6 +595,9 @@ SessionTestDiagnostics Session::test_diagnostics() const {
     result.actor_phase = impl_->actor_phase.load(std::memory_order_relaxed);
     result.fed_bytes = impl_->fed_bytes.load(std::memory_order_relaxed);
     if (process) result.process_state = process->state();
+#ifdef _WIN32
+    if (process) result.transport = process->test_diagnostics();
+#endif
     return result;
 }
 #endif

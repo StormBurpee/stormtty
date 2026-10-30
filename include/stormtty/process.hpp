@@ -115,6 +115,18 @@ struct ProcessCallbacks {
     std::function<void(ProcessExit)> exited;
 };
 
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+// Failure-only fixture snapshot. Independent samples, never transport predicates.
+struct ProcessTestDiagnostics {
+    // -1 unavailable (including failed DuplicateHandle/query); 0 alive; 1 signaled.
+    int os_process_signaled{-1};
+    const char* controller_phase{"unavailable"};
+    const char* reader_phase{"unavailable"};
+    std::uint64_t read_bytes{}, callback_returned_bytes{};
+    bool reader_done{}, writer_done{};
+};
+#endif
+
 class Process final {
 public:
     // Returns immediately; child/PTY creation and cleanup run off the caller thread.
@@ -134,6 +146,9 @@ public:
     void request_close() noexcept;
     [[nodiscard]] ProcessState state() const noexcept;
     [[nodiscard]] ProcessDiagnostics diagnostics() const;
+#if defined(STORMTTY_SESSION_TEST_DIAGNOSTICS) && defined(_WIN32)
+    [[nodiscard]] ProcessTestDiagnostics test_diagnostics() const;
+#endif
     // Test/background-worker convenience only; never call from UI or callbacks.
     [[nodiscard]] bool wait_for_exit(std::chrono::milliseconds timeout) const;
 
