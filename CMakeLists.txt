@@ -353,7 +353,12 @@ if(WIN32)
         stormtty_warnings(console_backend_tests)
         stormtty_copy_ghostty_runtime(console_backend_tests)
     endif()
-    add_library(stormtty_renderer src/platform/windows/renderer.cpp src/platform/windows/png_decoder.cpp src/platform/windows/host_backdrop.cpp src/platform/windows/liquid_glass/session.cpp)
+    add_library(stormtty_renderer
+        src/platform/windows/renderer.cpp
+        src/platform/windows/text_resources.cpp
+        src/platform/windows/png_decoder.cpp
+        src/platform/windows/host_backdrop.cpp
+        src/platform/windows/liquid_glass/session.cpp)
     target_include_directories(stormtty_renderer PUBLIC include)
     target_link_libraries(stormtty_renderer PUBLIC stormtty_terminal stormtty_build_features PRIVATE stormtty_scene_damage d3d11 dxgi d2d1 dwrite dcomp windowscodecs ole32 user32)
     if(MSVC AND STORMTTY_EXPERIMENTAL_LIQUID_GLASS)
@@ -380,6 +385,7 @@ if(WIN32)
     target_compile_definitions(stormtty_renderer PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     stormtty_warnings(stormtty_renderer)
     if(BUILD_TESTING)
+        stormtty_test(text_resources_tests tests/text_resources_tests.cpp stormtty_renderer)
         stormtty_test(renderer_smoke tests/renderer_smoke.cpp stormtty_renderer stormtty_workspace)
         add_test(NAME renderer_final_teardown COMMAND renderer_smoke --final-teardown)
         set_tests_properties(renderer_final_teardown PROPERTIES TIMEOUT 30 LABELS "windows;native;gui")

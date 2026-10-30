@@ -11,53 +11,31 @@
 #include <d3d11.h>
 #include <dxgi1_3.h>
 #include <d2d1_3.h>
-#include <dwrite_3.h>
 #include <dcomp.h>
 #include "smoke_teardown_trace.hpp"
+#include "com_owner.hpp"
+#include "graphics_error.hpp"
+#include "text_resources.hpp"
 #include "host_backdrop.hpp"
 #include "liquid_glass/session.hpp"
 #include "stormtty/build_features.hpp"
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <limits>
-#include <numeric>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
 
 namespace stormtty {
 namespace {
-template<class T> class Com {
-public:
-    Com() = default;
-    explicit Com(T* p, bool add_ref = false) : p_(p) { if (add_ref && p_) p_->AddRef(); }
-    ~Com() { reset(); }
-    Com(const Com& o) : Com(o.p_, true) {}
-    Com& operator=(const Com& o) { if (this != &o) { Com copy(o); swap(copy); } return *this; }
-    Com(Com&& o) noexcept : p_(std::exchange(o.p_, nullptr)) {}
-    Com& operator=(Com&& o) noexcept { if (this != &o) { reset(); p_ = std::exchange(o.p_, nullptr); } return *this; }
-    const char* teardown_label{}; // Enabled only at explicit smoke destruction.
-    void reset() noexcept {
-        if (auto* p = std::exchange(p_, nullptr)) {
-            windows::smoke_teardown_trace(teardown_label!=nullptr,teardown_label," begin");
-            p->Release();
-            windows::smoke_teardown_trace(teardown_label!=nullptr,teardown_label," end");
-        }
-    }
-    void swap(Com& o) noexcept { std::swap(p_, o.p_); }
-    T* get() const noexcept { return p_; }
-    T* operator->() const noexcept { return p_; }
-    explicit operator bool() const noexcept { return p_ != nullptr; }
-    T** put() noexcept { reset(); return &p_; }
-    template<class U> HRESULT as(Com<U>& out) const noexcept {
-        return p_ ? p_->QueryInterface(__uuidof(U), reinterpret_cast<void**>(out.put())) : E_POINTER;
-    }
-private:
-    T* p_{};
-};
+using windows::Com;
+using windows::GraphicsError;
+using windows::check;
+using windows::GlyphCluster;
+using windows::ShapedRow;
+
 struct Apartment {
     HRESULT hr{CoInitializeEx(nullptr, COINIT_MULTITHREADED)};
     bool smoke{};
@@ -72,17 +50,6 @@ struct NativeHandle {
     ~NativeHandle() { reset(); }
     void reset(HANDLE v = nullptr) noexcept { if (value) CloseHandle(value); value = v; }
 };
-class GraphicsError : public std::runtime_error {
-public:
-    HRESULT result;
-    GraphicsError(HRESULT hr, const char* action) : std::runtime_error(message(hr, action)), result(hr) {}
-private:
-    static std::string message(HRESULT hr, const char* action) {
-        char code[16]{}; std::snprintf(code, sizeof code, "0x%08lx", static_cast<unsigned long>(hr));
-        return std::string(action) + " failed (" + code + ")";
-    }
-};
-void check(HRESULT hr, const char* action) { if (FAILED(hr)) throw GraphicsError(hr, action); }
 HRESULT win32_error() noexcept {
     const auto error=GetLastError();
     return error ? HRESULT_FROM_WIN32(error) : E_FAIL;
@@ -150,87 +117,6 @@ bool device_lost(HRESULT hr) noexcept {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
            hr == D2DERR_RECREATE_TARGET || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
 }
-std::wstring utf16(std::string_view text) {
-    if (text.empty()) return {};
-    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-        throw std::length_error("UTF-8 text exceeds platform length");
-    const auto count = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    if (count <= 0) return L"\uFFFD";
-    std::wstring result(static_cast<std::size_t>(count), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), count);
-    return result;
-}
-// Resolve only beside this executable, never relative to the terminal's CWD,
-// PATH, a user-controlled shell title, or the system font installation directory.
-std::wstring bundled_font_directory() {
-    constexpr std::size_t maximum_path = 32768;
-    std::wstring path(256,L'\0');
-    for (;;) {
-        const auto length=GetModuleFileNameW(nullptr,path.data(),static_cast<DWORD>(path.size()));
-        if(!length) return {};
-        if(length<path.size()) {path.resize(length);break;}
-        if(path.size()==maximum_path) return {};
-        path.resize(std::min(maximum_path,path.size()*2));
-    }
-    const auto slash=path.find_last_of(L"\\/");
-    if(slash==std::wstring::npos) return {};
-    path.resize(slash+1);
-    path+=L"assets\\fonts\\";
-    if(path.size()+64>=maximum_path) return {};
-    // Extended absolute paths avoid dependence on a process manifest's long-path
-    // setting. Keep existing extended paths and short paths unchanged.
-    if(path.size()+64>=MAX_PATH && path.rfind(L"\\\\?\\",0)!=0) {
-        if(path.rfind(L"\\\\",0)==0) path=L"\\\\?\\UNC\\"+path.substr(2);
-        else path=L"\\\\?\\"+path;
-    }
-    return path;
-}
-Com<IDWriteFontCollection> load_bundled_fonts(IDWriteFactory* factory) noexcept {
-    try {
-        // Factory5 is runtime-probed. AddFontFile imports all variable-font
-        // instances, including real weights, rather than just a default face.
-        Com<IDWriteFactory5> factory5;
-        if(FAILED(factory->QueryInterface(__uuidof(IDWriteFactory5),reinterpret_cast<void**>(factory5.put())))) return {};
-        const auto directory=bundled_font_directory();
-        if(directory.empty()) return {};
-        Com<IDWriteFontSetBuilder1> builder;
-        if(FAILED(factory5->CreateFontSetBuilder(builder.put()))) return {};
-        constexpr std::array<const wchar_t*,2> filenames{L"CascadiaMono.ttf",L"CascadiaMonoItalic.ttf"};
-        for(const auto* filename:filenames) {
-            const auto path=directory+filename;
-            WIN32_FILE_ATTRIBUTE_DATA attributes{};
-            if(!GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&attributes) ||
-               (attributes.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) || attributes.nFileSizeHigh ||
-               !attributes.nFileSizeLow || attributes.nFileSizeLow>8u*1024u*1024u) return {};
-            Com<IDWriteFontFile> file;
-            if(FAILED(factory->CreateFontFileReference(path.c_str(),&attributes.ftLastWriteTime,file.put()))) return {};
-            BOOL supported{};DWRITE_FONT_FILE_TYPE file_type{};DWRITE_FONT_FACE_TYPE face_type{};UINT32 faces{};
-            if(FAILED(file->Analyze(&supported,&file_type,&face_type,&faces)) || !supported || !faces || faces>64 ||
-               (file_type!=DWRITE_FONT_FILE_TYPE_TRUETYPE && file_type!=DWRITE_FONT_FILE_TYPE_CFF)) return {};
-            if(FAILED(builder->AddFontFile(file.get()))) return {};
-        }
-        Com<IDWriteFontSet> set;
-        if(FAILED(builder->CreateFontSet(set.put())) || !set->GetFontCount() || set->GetFontCount()>256) return {};
-        Com<IDWriteFontCollection1> collection;
-        if(FAILED(factory5->CreateFontCollectionFromFontSet(set.get(),collection.put()))) return {};
-        UINT32 index{};BOOL exists{};
-        if(FAILED(collection->FindFamilyName(L"Cascadia Mono",&index,&exists)) || !exists) return {};
-        Com<IDWriteFontFamily1> family;
-        if(FAILED(collection->GetFontFamily(index,family.put()))) return {};
-        for(auto style:{DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STYLE_ITALIC}) {
-            Com<IDWriteFont> face;
-            if(FAILED(family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STRETCH_NORMAL,style,face.put())) ||
-               face->GetStyle()!=style || face->GetSimulations()!=DWRITE_FONT_SIMULATIONS_NONE) return {};
-        }
-        Com<IDWriteFontCollection> result;
-        if(FAILED(collection.as(result))) return {};
-        return result;
-    } catch (...) {
-        // Missing, oversized, malformed or unsupported optional assets use the
-        // existing system-font fallback. No registration, downloads or retries.
-        return {};
-    }
-}
 D2D1_COLOR_F color(Color c, float opacity = 1) noexcept {
     return {float(c.r) / 255, float(c.g) / 255, float(c.b) / 255, float(c.a) / 255 * opacity};
 }
@@ -260,116 +146,6 @@ struct OpacityLayer {
     }
     ~OpacityLayer(){if(active)dc->PopLayer();}
 };
-struct CellMap { UINT32 column{}, end{}; };
-struct GlyphCluster {
-    Com<IDWriteFontFace> face;
-    std::vector<UINT16> glyphs;
-    std::vector<FLOAT> advances;
-    std::vector<DWRITE_GLYPH_OFFSET> offsets;
-    UINT32 column{}, end{}, bidi{};
-    float size{}, baseline{}, x{}, natural_left{}, advance_total{};
-    bool sideways{};
-};
-struct ShapedRow {
-    std::vector<GlyphCluster> clusters;
-    std::size_t bytes{};
-    std::uint64_t touched{};
-};
-// DirectWrite performs contextual shaping AND system font fallback for the whole
-// row. We capture its many-to-many clusters, not Unicode scalars. The subsequent
-// placement keeps VT columns authoritative rather than accepting paragraph bidi
-// reordering or proportional layout widths. Full terminal bidi is not supported.
-class ClusterCapture final : public IDWriteTextRenderer {
-public:
-    explicit ClusterCapture(const std::vector<CellMap>& mapping) : mapping_(mapping) {}
-    std::vector<GlyphCluster> clusters;
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) noexcept override {
-        if (!out) return E_POINTER;
-        *out = nullptr;
-        if (iid == __uuidof(IUnknown) || iid == __uuidof(IDWriteTextRenderer) ||
-            iid == __uuidof(IDWritePixelSnapping)) { *out = static_cast<IDWriteTextRenderer*>(this); AddRef(); return S_OK; }
-        return E_NOINTERFACE;
-    }
-    ULONG STDMETHODCALLTYPE AddRef() noexcept override { return ++refs_; }
-    ULONG STDMETHODCALLTYPE Release() noexcept override { const auto count = --refs_; if (!count) delete this; return count; }
-    HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* disabled) noexcept override {
-        if (!disabled) return E_POINTER; *disabled = TRUE; return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* matrix) noexcept override {
-        if (!matrix) return E_POINTER; *matrix = {1, 0, 0, 1, 0, 0}; return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* pixels) noexcept override {
-        if (!pixels) return E_POINTER; *pixels = 1; return S_OK;
-    }
-    HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT origin_x, FLOAT baseline,
-        DWRITE_MEASURING_MODE, const DWRITE_GLYPH_RUN* run,
-        const DWRITE_GLYPH_RUN_DESCRIPTION* description, IUnknown*) noexcept override {
-        try {
-            if (!run || !description || !description->clusterMap || !run->glyphIndices ||
-                !run->glyphAdvances || !run->fontFace || run->glyphCount == 0) return S_OK;
-            const auto length = description->stringLength;
-            if (std::uint64_t(description->textPosition) + length > mapping_.size()) return E_INVALIDARG;
-            // Build glyph-cluster boundaries from DirectWrite's UTF-16 cluster map.
-            // Sorting glyph offsets handles both LTR and RTL runs without reversing
-            // terminal cell order or assuming one character == one glyph.
-            std::vector<UINT32> boundaries;
-            boundaries.reserve(length + 1);
-            std::vector<CellMap> cells(run->glyphCount, {std::numeric_limits<UINT32>::max(), 0});
-            for (UINT32 i = 0; i < length; ++i) {
-                const auto glyph = description->clusterMap[i];
-                if (glyph >= run->glyphCount) return E_INVALIDARG;
-                boundaries.push_back(glyph);
-                const auto& mapped = mapping_[description->textPosition + i];
-                cells[glyph].column = std::min(cells[glyph].column, mapped.column);
-                cells[glyph].end = std::max(cells[glyph].end, mapped.end);
-            }
-            boundaries.push_back(run->glyphCount);
-            std::sort(boundaries.begin(), boundaries.end());
-            boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
-            std::vector<float> positions(run->glyphCount + 1);
-            for (UINT32 i = 0; i < run->glyphCount; ++i) positions[i + 1] = positions[i] + run->glyphAdvances[i];
-            for (std::size_t b = 0; b + 1 < boundaries.size(); ++b) {
-                const auto first = boundaries[b], last = boundaries[b + 1];
-                const auto column = cells[first].column, end = cells[first].end;
-                if (column == std::numeric_limits<UINT32>::max() || end <= column) continue;
-                GlyphCluster cluster;
-                cluster.face = Com<IDWriteFontFace>(run->fontFace, true);
-                cluster.glyphs.assign(run->glyphIndices + first, run->glyphIndices + last);
-                cluster.advances.assign(run->glyphAdvances + first, run->glyphAdvances + last);
-                if (run->glyphOffsets) cluster.offsets.assign(run->glyphOffsets + first, run->glyphOffsets + last);
-                else cluster.offsets.resize(last - first);
-                cluster.column = column; cluster.end = end; cluster.bidi = run->bidiLevel;
-                cluster.size = run->fontEmSize; cluster.baseline = baseline;
-                cluster.sideways = run->isSideways != FALSE;
-                cluster.advance_total = positions[last] - positions[first];
-                cluster.natural_left = (run->bidiLevel & 1) ? origin_x - positions[last] : origin_x + positions[first];
-                clusters.push_back(std::move(cluster));
-            }
-            return S_OK;
-        } catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
-          catch (...) { return E_FAIL; }
-    }
-    HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*, IUnknown*) noexcept override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*, IUnknown*) noexcept override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE DrawInlineObject(void*, FLOAT, FLOAT, IDWriteInlineObject*, BOOL, BOOL, IUnknown*) noexcept override { return E_NOTIMPL; }
-private:
-    std::atomic<ULONG> refs_{1};
-    const std::vector<CellMap>& mapping_;
-};
-struct RowKey {
-    std::uint64_t pane{}, row0{}, row1{}, generation{}, font{};
-    std::uint32_t columns{}, cell_width{}, cell_height{};
-    bool operator==(const RowKey&) const = default;
-};
-struct RowHash {
-    std::size_t operator()(const RowKey& key) const noexcept {
-        std::size_t hash = 0;
-        const std::array<std::uint64_t, 8> values{key.pane,key.row0,key.row1,key.generation,key.font,
-                                               key.columns,key.cell_width,key.cell_height};
-        for (auto value : values) hash ^= std::hash<std::uint64_t>{}(value) + 0x9e3779b9u + (hash << 6) + (hash >> 2);
-        return hash;
-    }
-};
 struct ImageKey {
     std::uint64_t pane{}, generation{};
     std::uint32_t id{}, width{}, height{};
@@ -378,7 +154,12 @@ struct ImageKey {
 };
 struct ImageHash {
     std::size_t operator()(const ImageKey& k) const noexcept {
-        return RowHash{}({k.pane,k.generation,k.id,k.width,k.height,static_cast<std::uint32_t>(k.format),0,0});
+        std::size_t hash = 0;
+        const std::array<std::uint64_t, 8> values{
+            k.pane, k.generation, k.id, k.width, k.height, static_cast<std::uint32_t>(k.format), 0, 0};
+        for (auto value : values)
+            hash ^= std::hash<std::uint64_t>{}(value) + 0x9e3779b9u + (hash << 6) + (hash >> 2);
+        return hash;
     }
 };
 struct CachedImage { Com<ID2D1Bitmap1> bitmap; std::size_t bytes{}; std::uint64_t touched{}; };
@@ -399,12 +180,13 @@ struct Renderer::Impl {
     float additional_blur{};
     HWND window{};
     OpaquePresentationWindow opaque_window;
+    // Font/cache settings below are construction inputs only. TextResources
+    // owns the active font and retained-shape policy after initialization.
     RendererOptions options;
-    CellMetrics cell;
     RendererStats counters;
     UINT width{}, height{};
-    float dpi{96}, em_size{14};
-    std::uint64_t font_generation{1}, tick{};
+    float dpi{96};
+    std::uint64_t tick{};
     bool pending_present{};
     Com<ID3D11Device> device;
     Com<ID3D11DeviceContext> immediate;
@@ -418,37 +200,31 @@ struct Renderer::Impl {
     Com<ID2D1Device> d2d_device;
     Com<ID2D1DeviceContext> dc;
     Com<ID2D1DeviceContext4> dc4;
-    Com<IDWriteFactory> write_factory;
-    Com<IDWriteFactory4> write4;
-    Com<IDWriteTextFormat> terminal_format;
-    Com<IDWriteTypography> typography;
-    Com<IDWriteFontCollection> bundled_fonts;
-    bool bundled_fonts_attempted{};
+    // Created after validation; survives GPU recreation. This slot preserves
+    // DirectWrite destruction after GPU release and before the COM apartment.
+    std::unique_ptr<windows::TextResources> text;
     Com<ID3D11Texture2D> canvas_texture, alpha_staging;
     UINT alpha_width{}, alpha_height{};
     RendererAlphaProbe alpha_metadata{};
     Com<ID2D1Bitmap1> canvas;
     Com<ID2D1SolidColorBrush> brush;
-    std::unordered_map<RowKey, ShapedRow, RowHash> shapes;
     std::unordered_map<ImageKey, CachedImage, ImageHash> images;
     SceneDamageTracker scene_damage;
 
     Impl(void* hwnd, RendererOptions opts) : window(static_cast<HWND>(hwnd)), options(std::move(opts)) {
         if (FAILED(apartment.hr) && apartment.hr != RPC_E_CHANGED_MODE) check(apartment.hr, "COM initialization");
-        validate_font(options.font);
+        windows::TextResources::validate_font(options.font);
         if (!options.maximum_image_dimension || options.maximum_image_dimension > 8192 ||
             options.shape_cache_bytes > 256u * 1024u * 1024u || options.image_cache_bytes > 512u * 1024u * 1024u)
             throw std::invalid_argument("Renderer cache or image dimensions exceed safety limits");
         if (!std::isfinite(options.background_opacity)) throw std::invalid_argument("Invalid background opacity");
         options.background_opacity = std::clamp(options.background_opacity, 0.0f, 1.0f);
-        check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-                                  reinterpret_cast<IUnknown**>(write_factory.put())), "DWriteCreateFactory");
-        write_factory.as(write4); // Runtime probe, not a hard requirement.
+        text = std::make_unique<windows::TextResources>(options.shape_cache_bytes);
         D2D1_FACTORY_OPTIONS factory_options{};
         check(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory1),
                                 &factory_options, reinterpret_cast<void**>(d2d_factory.put())), "D2D1CreateFactory");
         create_device();
-        measure_font();
+        text->configure(options.font, dpi);
     }
     bool tracing_teardown{};
     ~Impl() {
@@ -459,8 +235,8 @@ struct Renderer::Impl {
             TRACE_RELEASE(device); TRACE_RELEASE(immediate); TRACE_RELEASE(swapchain);
             TRACE_RELEASE(swapchain2); TRACE_RELEASE(composition); TRACE_RELEASE(composition_target);
             TRACE_RELEASE(composition_visual); TRACE_RELEASE(d2d_factory); TRACE_RELEASE(d2d_device);
-            TRACE_RELEASE(dc); TRACE_RELEASE(dc4); TRACE_RELEASE(write_factory); TRACE_RELEASE(write4);
-            TRACE_RELEASE(terminal_format); TRACE_RELEASE(typography); TRACE_RELEASE(bundled_fonts);
+            TRACE_RELEASE(dc); TRACE_RELEASE(dc4);
+            text->enable_teardown_trace();
             TRACE_RELEASE(canvas_texture); TRACE_RELEASE(alpha_staging); TRACE_RELEASE(canvas); TRACE_RELEASE(brush);
 #undef TRACE_RELEASE
         }
@@ -475,11 +251,6 @@ struct Renderer::Impl {
         windows::smoke_teardown_trace(tracing_teardown,"renderer ClearState end; Flush begin");
         immediate->Flush();
         windows::smoke_teardown_trace(tracing_teardown,"renderer Flush end");
-    }
-    static void validate_font(const FontOptions& font) {
-        if (font.family.empty() || font.family.size() > 256 || font.locale.size() > 85 ||
-            !std::isfinite(font.size_dip) || font.size_dip < 4 || font.size_dip > 128)
-            throw std::invalid_argument("Invalid terminal font");
     }
     void stop_glass(const char* reason) noexcept {
         glass_paint=false;glass_key=nullptr;glass_brush.reset();glass_bitmap.reset();
@@ -593,7 +364,7 @@ struct Renderer::Impl {
         if(SUCCEEDED(d2d_device.as(d2d4))) d2d4->SetMaximumColorGlyphCacheMemory(16u*1024u*1024u);
         check(d2d_device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, dc.put()), "D2D CreateDeviceContext");
         dc.as(dc4);
-        counters.color_fonts = bool(dc4) && bool(write4);
+        counters.color_fonts = bool(dc4) && text->supports_color_glyphs();
         dc->SetDpi(96, 96); // All geometry and fonts are already physical pixels.
         dc->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         check(dc->CreateSolidColorBrush(D2D1_COLOR_F{1,1,1,1}, brush.put()), "Create brush");
@@ -696,163 +467,6 @@ struct Renderer::Impl {
             throw;
         }
     }
-    void measure_font() {
-        em_size = options.font.size_dip * dpi / 96;
-        auto family = utf16(options.font.family);
-        const auto locale = utf16(options.font.locale);
-        IDWriteFontCollection* chosen_collection=nullptr;
-        if(CompareStringOrdinal(family.c_str(),-1,L"Cascadia Mono",-1,TRUE)==CSTR_EQUAL) {
-            if(!bundled_fonts_attempted) {
-                bundled_fonts_attempted=true;
-                bundled_fonts=load_bundled_fonts(write_factory.get());
-            }
-            // Private Cascadia wins over an arbitrary system-installed version.
-            // Other configured font families still resolve in the system collection.
-            chosen_collection=bundled_fonts.get();
-        }
-        if(!chosen_collection) {
-            Com<IDWriteFontCollection> fonts;
-            check(write_factory->GetSystemFontCollection(fonts.put(),FALSE),"Get system fonts");
-            UINT32 family_index{};BOOL exists{};
-            check(fonts->FindFamilyName(family.c_str(),&family_index,&exists),"Find terminal font");
-            if(!exists) {
-                family=L"Consolas";
-                check(fonts->FindFamilyName(family.c_str(),&family_index,&exists),"Find fallback mono font");
-                if(!exists) family=L"Courier New";
-            }
-        }
-        // A custom base collection does not replace DirectWrite's default system
-        // fallback list. Keep that list for CJK, emoji and other absent glyphs.
-        check(write_factory->CreateTextFormat(family.c_str(), chosen_collection, DWRITE_FONT_WEIGHT_NORMAL,
-              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, em_size, locale.c_str(), terminal_format.put()), "Create terminal format");
-        counters.bundled_font=chosen_collection!=nullptr;
-        check(terminal_format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP), "Disable text wrapping");
-        check(write_factory->CreateTypography(typography.put()),"Create terminal typography");
-        const UINT32 enabled=options.font.ligatures?1u:0u;
-        for(auto feature:{DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES,DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_LIGATURES,
-                          DWRITE_FONT_FEATURE_TAG_DISCRETIONARY_LIGATURES,DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_ALTERNATES})
-            check(typography->AddFontFeature({feature,enabled}),"Set optional ligature feature");
-        // Required script ligatures must stay enabled even when programming
-        // ligatures are disabled; disabling rlig would break script shaping.
-        check(typography->AddFontFeature({DWRITE_FONT_FEATURE_TAG_REQUIRED_LIGATURES,1}),"Enable required ligatures");
-        Com<IDWriteTextLayout> measure;
-        check(write_factory->CreateTextLayout(L"M", 1, terminal_format.get(), em_size * 4, em_size * 4, measure.put()), "Measure font");
-        DWRITE_TEXT_METRICS metrics{}; check(measure->GetMetrics(&metrics), "Get font metrics");
-        DWRITE_LINE_METRICS line{}; UINT32 count{};
-        check(measure->GetLineMetrics(&line, 1, &count), "Get line metrics");
-        cell.width = static_cast<std::uint16_t>(std::clamp(std::ceil(metrics.widthIncludingTrailingWhitespace), 1.0f, 65535.0f));
-        cell.height = static_cast<std::uint16_t>(std::clamp(std::ceil(line.height + dpi / 96), 1.0f, 65535.0f));
-        cell.baseline = line.baseline;
-        shapes.clear(); counters.shape_cache_bytes = 0; ++font_generation; scene_damage.invalidate();
-    }
-    ShapedRow build_shape(const FrameRow& row, UINT columns, UINT cw, UINT ch) {
-        constexpr std::size_t maximum_utf16_per_row = 131072;
-        constexpr std::size_t maximum_utf16_per_grapheme = 4096;
-        struct StyleRange { UINT32 start{}, length{}; bool bold{}, italic{}; };
-        std::wstring text;
-        std::vector<CellMap> mapping;
-        std::vector<StyleRange> styles;
-        const auto count = std::min<std::size_t>(columns, row.cells.size());
-        for (std::size_t column = 0; column < count; ++column) {
-            const auto& source = row.cells[column];
-            if (!source.span) continue;
-            auto grapheme = source.image_placeholder || source.grapheme.empty() ? std::wstring(L" ") :
-                source.grapheme.size() > maximum_utf16_per_grapheme * 4 ? std::wstring(L"\uFFFD") : utf16(source.grapheme);
-            if (grapheme.size() > maximum_utf16_per_grapheme ||
-                text.size() + grapheme.size() + count - column - 1 > maximum_utf16_per_row)
-                grapheme = L"\uFFFD"; // Explicit bounded pathological-sequence fallback.
-            const auto start = static_cast<UINT32>(text.size());
-            text += grapheme;
-            mapping.insert(mapping.end(), grapheme.size(), CellMap{static_cast<UINT32>(column),
-                static_cast<UINT32>(std::min<std::size_t>(count, column + source.span))});
-            if (!styles.empty() && styles.back().bold == source.style.bold && styles.back().italic == source.style.italic)
-                styles.back().length += static_cast<UINT32>(grapheme.size());
-            else styles.push_back({start, static_cast<UINT32>(grapheme.size()), source.style.bold, source.style.italic});
-        }
-        ShapedRow result;
-        result.bytes=sizeof(ShapedRow)+sizeof(RowKey)+sizeof(void*)*4;
-        if (text.empty()) return result;
-        Com<IDWriteTextLayout> layout;
-        check(write_factory->CreateTextLayout(text.data(), static_cast<UINT32>(text.size()), terminal_format.get(),
-                                               std::max(1.0f, float(columns * cw) * 4), float(ch) * 4, layout.put()), "Shape terminal row");
-        check(layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP), "Set row no-wrap");
-        check(layout->SetReadingDirection(DWRITE_READING_DIRECTION_LEFT_TO_RIGHT), "Set VT row direction");
-        check(layout->SetTypography(typography.get(),{0,static_cast<UINT32>(text.size())}),"Apply terminal typography");
-        check(layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM,float(ch),std::min(float(ch),cell.baseline)),
-              "Anchor row baseline to cell metrics");
-        for (const auto& range : styles) {
-            if (range.bold) check(layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, {range.start, range.length}), "Set row weight");
-            if (range.italic) check(layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, {range.start, range.length}), "Set row italic");
-        }
-        Com<ClusterCapture> capture(new ClusterCapture(mapping));
-        check(layout->Draw(nullptr, capture.get(), 0, 0), "Capture shaped clusters");
-        result.clusters = std::move(capture->clusters);
-        // If fallback splits one grapheme into several clusters, preserve their
-        // relative natural placement as a group instead of piling scalars onto
-        // the same origin. Unsupported emoji may still display multiple glyphs.
-        std::unordered_map<std::uint64_t, float> group_left;
-        for (const auto& cluster : result.clusters) {
-            const auto key = (std::uint64_t(cluster.column) << 32) | cluster.end;
-            const auto [entry, inserted] = group_left.emplace(key, cluster.natural_left);
-            if (!inserted) entry->second = std::min(entry->second, cluster.natural_left);
-        }
-        for (auto& cluster : result.clusters) {
-            const auto key = (std::uint64_t(cluster.column) << 32) | cluster.end;
-            cluster.x = float(cluster.column * cw) + cluster.natural_left - group_left.at(key);
-            if (cluster.bidi & 1) cluster.x += cluster.advance_total;
-        }
-        // Batch adjacent LTR clusters of the same physical font into one glyph
-        // run. Padding is assigned only at shaped cluster boundaries, preserving
-        // intra-cluster offsets and ligatures. Ordinary rows need one draw per
-        // paint/font run, not one Direct2D call or UI object per terminal cell.
-        std::vector<GlyphCluster> batches;
-        for (auto& cluster : result.clusters) {
-            if (!batches.empty()) {
-                auto& prior = batches.back();
-                if (!(prior.bidi & 1) && prior.bidi == cluster.bidi && prior.end == cluster.column &&
-                    prior.face.get() == cluster.face.get() && prior.size == cluster.size &&
-                    prior.baseline == cluster.baseline && prior.sideways == cluster.sideways &&
-                    !prior.advances.empty()) {
-                    const auto natural_end = prior.x + prior.advance_total;
-                    prior.advances.back() += cluster.x - natural_end;
-                    prior.advance_total = cluster.x - prior.x + cluster.advance_total;
-                    prior.glyphs.insert(prior.glyphs.end(),cluster.glyphs.begin(),cluster.glyphs.end());
-                    prior.advances.insert(prior.advances.end(),cluster.advances.begin(),cluster.advances.end());
-                    prior.offsets.insert(prior.offsets.end(),cluster.offsets.begin(),cluster.offsets.end());
-                    prior.end=cluster.end;
-                    continue;
-                }
-            }
-            batches.push_back(std::move(cluster));
-        }
-        result.clusters=std::move(batches);
-        result.bytes += result.clusters.capacity()*sizeof(GlyphCluster);
-        for (const auto& cluster:result.clusters)
-            result.bytes += cluster.glyphs.capacity()*sizeof(UINT16) +
-                cluster.advances.capacity()*sizeof(FLOAT) + cluster.offsets.capacity()*sizeof(DWRITE_GLYPH_OFFSET);
-        ++counters.shaped_rows;
-        return result;
-    }
-    void trim_shapes(std::size_t incoming) {
-        while (!shapes.empty() && counters.shape_cache_bytes + incoming > options.shape_cache_bytes) {
-            const auto oldest = std::min_element(shapes.begin(), shapes.end(),
-                [](const auto& a, const auto& b) { return a.second.touched < b.second.touched; });
-            counters.shape_cache_bytes -= oldest->second.bytes; shapes.erase(oldest);
-        }
-    }
-    const ShapedRow& shaped(const RenderPane& pane, const FrameRow& row, UINT cw, UINT ch, ShapedRow& temporary) {
-        const RowKey key{pane.id,row.id.words[0],row.id.words[1],row.generation,font_generation,pane.frame->columns,cw,ch};
-        if (auto found = shapes.find(key); found != shapes.end()) {
-            ++counters.shape_cache_hits; found->second.touched = tick; return found->second;
-        }
-        temporary = build_shape(row, pane.frame->columns, cw, ch);
-        if (!options.shape_cache_bytes || temporary.bytes > options.shape_cache_bytes) return temporary;
-        trim_shapes(temporary.bytes); temporary.touched = tick;
-        const auto bytes = temporary.bytes;
-        auto [entry, inserted] = shapes.emplace(key, std::move(temporary));
-        if (inserted) counters.shape_cache_bytes += bytes;
-        return entry->second;
-    }
     bool material_enabled() const noexcept {
         // Offscreen composition surfaces preserve alpha so WARP can verify its
         // math. composition=false explicitly tests the opaque fallback there.
@@ -894,15 +508,9 @@ struct Renderer::Impl {
         run.glyphAdvances = cluster.advances.data(); run.glyphOffsets = cluster.offsets.data();
         run.isSideways = cluster.sideways; run.bidiLevel = cluster.bidi;
         brush->SetColor(color(fg));
-        if (write4 && dc4) {
-            constexpr auto formats = static_cast<DWRITE_GLYPH_IMAGE_FORMATS>(
-                DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE | DWRITE_GLYPH_IMAGE_FORMATS_CFF |
-                DWRITE_GLYPH_IMAGE_FORMATS_COLR | DWRITE_GLYPH_IMAGE_FORMATS_SVG |
-                DWRITE_GLYPH_IMAGE_FORMATS_PNG | DWRITE_GLYPH_IMAGE_FORMATS_JPEG |
-                DWRITE_GLYPH_IMAGE_FORMATS_TIFF | DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8);
+        if (text->supports_color_glyphs() && dc4) {
             Com<IDWriteColorGlyphRunEnumerator1> layers;
-            const auto hr = write4->TranslateColorGlyphRun(origin, &run, nullptr, formats,
-                DWRITE_MEASURING_MODE_NATURAL, nullptr, 0, layers.put());
+            const auto hr = text->color_glyph_layers(run, origin.x, origin.y, layers);
             if (SUCCEEDED(hr)) {
                 BOOL available{};
                 while (SUCCEEDED(layers->MoveNext(&available)) && available) {
@@ -938,7 +546,7 @@ struct Renderer::Impl {
     void draw_text(const RenderPane& pane, const FrameRow& row, UINT row_index, UINT cw, UINT ch,
                    std::optional<Color> override_color = std::nullopt) {
         ShapedRow temporary;
-        const auto& shape = shaped(pane, row, cw, ch, temporary);
+        const auto& shape = text->shape({pane.id, pane.frame->columns, cw, ch}, row, tick, temporary);
         const auto y = pane.content.y + float(row_index * ch);
         Clip row_clip(dc.get(), intersect(pane.content, {pane.content.x,y,pane.content.width,float(ch)}));
         for (const auto& cluster : shape.clusters) {
@@ -1059,7 +667,7 @@ struct Renderer::Impl {
         }
     }
     void draw_cursor(const RenderPane& pane, UINT cw, UINT ch) {
-        auto bounds = render_geometry::cursor_bounds(pane, cell);
+        auto bounds = render_geometry::cursor_bounds(pane, text->metrics());
         if (!nonempty(bounds)) return;
         const auto& cursor = pane.frame->cursor;
         const auto thickness = std::max(1.0f,std::round(dpi / 96));
@@ -1090,6 +698,7 @@ struct Renderer::Impl {
     void draw_pane(const RenderPane& pane, PixelRect damage) {
         if (!pane.frame || !nonempty(pane.content) || !overlaps(pane.content,damage)) return;
         const auto& frame = *pane.frame;
+        const auto cell = text->metrics();
         const UINT cw = frame.cell_width ? frame.cell_width : cell.width;
         const UINT ch = frame.cell_height ? frame.cell_height : cell.height;
         Clip clip(dc.get(),pane.content);
@@ -1154,23 +763,7 @@ struct Renderer::Impl {
                 if (!nonempty(label.rect) || !overlaps(chrome_bounds(label),damage) || label.text.empty() || !label.color.a) continue;
                 if (label.text.size()>32768 || label.family.empty() || label.family.size()>256 ||
                     !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256) continue;
-                const auto text = utf16(label.text), family = utf16(label.family);
-                Com<IDWriteTextFormat> format;
-                check(write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
-                    DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*dpi/96,L"en-US",format.put()),"Create chrome font");
-                check(format->SetTextAlignment(label.alignment==ChromeTextAlignment::center?DWRITE_TEXT_ALIGNMENT_CENTER:
-                    label.alignment==ChromeTextAlignment::trailing?DWRITE_TEXT_ALIGNMENT_TRAILING:DWRITE_TEXT_ALIGNMENT_LEADING),"Set chrome alignment");
-                check(format->SetWordWrapping(label.wrap?DWRITE_WORD_WRAPPING_WRAP:DWRITE_WORD_WRAPPING_NO_WRAP),"Set chrome wrapping");
-                check(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER),"Center chrome baseline");
-                // DirectWrite owns grapheme/cluster-safe end truncation and the real
-                // omission glyph; never shorten UTF-8 strings or clip a partial glyph.
-                Com<IDWriteInlineObject> ellipsis;
-                check(write_factory->CreateEllipsisTrimmingSign(format.get(),ellipsis.put()),"Create chrome ellipsis");
-                const DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER,0,0};
-                check(format->SetTrimming(&trimming,ellipsis.get()),"Set chrome end ellipsis");
-                Com<IDWriteTextLayout> layout;
-                check(write_factory->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format.get(),
-                                                      label.rect.width,label.rect.height,layout.put()),"Create chrome layout");
+                const auto layout = text->chrome_paint_layout(label);
                 auto foreground=label.color;foreground.a=255;
                 brush->SetColor(color(foreground));
                 Clip clip(dc.get(),chrome_bounds(label));
@@ -1185,7 +778,7 @@ struct Renderer::Impl {
         if (!width || !height || !canvas) return RenderResult::suspended;
         update_glass();glass_paint=bool(glass_brush);
         ++tick;
-        const auto dirty = scene_damage.damage(scene, cell, {0, 0, float(width), float(height)});
+        const auto dirty = scene_damage.damage(scene, text->metrics(), {0, 0, float(width), float(height)});
         if (dirty.empty() && !pending_present) {
             scene_damage.commit(scene);
             return RenderResult::unchanged;
@@ -1254,7 +847,10 @@ void Renderer::resize(std::uint32_t width,std::uint32_t height,float dpi) {
     if(width>16384 || height>16384 || std::uint64_t(width)*height>64u*1024u*1024u)
         throw std::length_error("Surface exceeds bounded renderer dimensions");
     auto& p=*impl_;
-    if(p.dpi!=dpi) { p.dpi=dpi;p.measure_font(); }
+    if (p.dpi != dpi) {
+        p.dpi = dpi;
+        if (p.text->set_dpi(dpi)) p.scene_damage.invalidate();
+    }
     if(width==p.width && height==p.height && p.canvas) return;
     p.stop_glass("Stopped for resize. Start again explicitly in Settings.");
     p.width=width;p.height=height;
@@ -1267,9 +863,7 @@ void Renderer::resize(std::uint32_t width,std::uint32_t height,float dpi) {
     } catch(const GraphicsError& error) { if(!device_lost(error.result)) throw;recreate_device(); }
 }
 void Renderer::set_font(FontOptions font) {
-    Impl::validate_font(font);
-    if(impl_->options.font==font) return;
-    impl_->options.font=std::move(font);impl_->measure_font();
+    if (impl_->text->set_font(font)) impl_->scene_damage.invalidate();
 }
 void Renderer::set_background_opacity(float opacity) {
     if(!std::isfinite(opacity) || opacity<0 || opacity>1) throw std::invalid_argument("Invalid background opacity");
@@ -1306,7 +900,7 @@ void Renderer::stop_liquid_glass(const char* reason) noexcept {impl_->stop_glass
 bool Renderer::liquid_glass_active()const noexcept{return impl_->liquid_glass.active();}
 std::string Renderer::liquid_glass_status()const{return impl_->liquid_glass.status();}
 bool Renderer::poll_liquid_glass(){return impl_->update_glass();}
-CellMetrics Renderer::metrics() const noexcept {return impl_->cell;}
+CellMetrics Renderer::metrics() const noexcept {return impl_->text->metrics();}
 RenderResult Renderer::render(const WindowScene& scene) {
     try {return impl_->render(scene);}
     catch(const GraphicsError& error) {
@@ -1316,7 +910,15 @@ RenderResult Renderer::render(const WindowScene& scene) {
     }
 }
 void* Renderer::frame_latency_wait_handle() const noexcept {return impl_->latency.value;}
-RendererStats Renderer::stats() const noexcept {return impl_->counters;}
+RendererStats Renderer::stats() const noexcept {
+    auto result = impl_->counters;
+    const auto text = impl_->text->stats();
+    result.shaped_rows = text.shaped_rows;
+    result.shape_cache_hits = text.cache_hits;
+    result.shape_cache_bytes = text.retained_bytes;
+    result.bundled_font = text.bundled_font;
+    return result;
+}
 void Renderer::recreate_device() {
     auto& p=*impl_;
     p.release_gpu();
@@ -1355,47 +957,10 @@ std::optional<RendererAlphaProbe> Renderer::poll_alpha_probe() {
     p.immediate->Unmap(p.alpha_staging.get(),0);p.alpha_staging.reset();return result;
 }
 PixelRect Renderer::measure_chrome_text(const ChromeText& label) const {
-    if (label.text.empty() || label.text.size()>32768 || label.family.empty() || label.family.size()>256 ||
-        !std::isfinite(label.size_dip) || label.size_dip<1 || label.size_dip>256 ||
-        !std::isfinite(label.rect.width) || !std::isfinite(label.rect.height) ||
-        label.rect.width<=0 || label.rect.height<=0) return {};
-    const auto text=utf16(label.text),family=utf16(label.family);
-    Com<IDWriteTextFormat> format;
-    check(impl_->write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*impl_->dpi/96,L"en-US",format.put()),"Measure chrome font");
-    check(format->SetWordWrapping(label.wrap?DWRITE_WORD_WRAPPING_WRAP:DWRITE_WORD_WRAPPING_NO_WRAP),"Measure chrome wrapping");
-    Com<IDWriteTextLayout> layout;
-    check(impl_->write_factory->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format.get(),
-        label.rect.width,label.rect.height,layout.put()),"Measure chrome layout");
-    DWRITE_TEXT_METRICS metrics{};
-    check(layout->GetMetrics(&metrics),"Read chrome metrics");
-    return {0,0,metrics.widthIncludingTrailingWhitespace,metrics.height};
+    return impl_->text->measure_chrome_text(label);
 }
 std::vector<std::string> Renderer::wrap_chrome_text(const ChromeText& label) const {
-    if(label.text.empty()||label.text.size()>4u*1024u*1024u||label.family.empty()||label.family.size()>256||
-       !std::isfinite(label.size_dip)||label.size_dip<1||label.size_dip>256||!std::isfinite(label.rect.width)||label.rect.width<=0)return {};
-    const auto text=utf16(label.text),family=utf16(label.family);Com<IDWriteTextFormat> format;
-    check(impl_->write_factory->CreateTextFormat(family.c_str(),nullptr,label.semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,label.size_dip*impl_->dpi/96,L"en-US",format.put()),"Wrap chrome font");
-    check(format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP),"Wrap chrome words");
-    Com<IDWriteTextLayout> layout;
-    check(impl_->write_factory->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format.get(),label.rect.width,1.0e8f,layout.put()),"Wrap chrome layout");
-    UINT32 count{};const auto hr=layout->GetLineMetrics(nullptr,0,&count);
-    if(hr!=E_NOT_SUFFICIENT_BUFFER)check(hr,"Count chrome lines");
-    if(count>text.size()+1)throw std::runtime_error("Invalid chrome line count");
-    std::vector<DWRITE_LINE_METRICS> metrics(count);check(layout->GetLineMetrics(metrics.data(),count,&count),"Read chrome lines");
-    std::vector<std::string> lines;lines.reserve(count);std::size_t offset=0;
-    for(const auto& metric:metrics) {
-        if(metric.newlineLength>metric.length||metric.length>text.size()-offset)throw std::runtime_error("Invalid chrome line boundary");
-        const auto length=metric.length-metric.newlineLength;
-        if(length&&text[offset+length-1]>=0xd800&&text[offset+length-1]<=0xdbff)throw std::runtime_error("Chrome line split a Unicode scalar");
-        const auto required=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,text.data()+offset,static_cast<int>(length),nullptr,0,nullptr,nullptr);
-        if(length&&!required)throw std::runtime_error("Invalid Unicode chrome line");
-        std::string line(static_cast<std::size_t>(required),'\0');
-        if(required&&!WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,text.data()+offset,static_cast<int>(length),line.data(),required,nullptr,nullptr))throw std::runtime_error("Could not encode chrome line");
-        lines.push_back(std::move(line));offset+=metric.length;
-    }
-    return lines;
+    return impl_->text->wrap_chrome_text(label);
 }
 std::vector<std::uint8_t> Renderer::read_pixels() {
     if(impl_->liquid_glass.active()||impl_->glass_canvas_tainted)throw std::runtime_error("Desktop glass is GPU-only; readback stays blocked until a clean non-glass repaint.");
