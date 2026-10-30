@@ -586,6 +586,124 @@ void shell_context_stream() {
     CHECK(owned && owned->head=="main");
     TerminalCore other; CHECK(!other.shell_context());
 }
+
+// These public-Core cases were executed before materialization ownership moved.
+void frame_metadata_and_row_reuse() {
+    TerminalCore terminal(small());
+    terminal.feed("alpha\r\nbeta\r\ngamma");
+    const auto before = terminal.snapshot();
+    CHECK(terminal.snapshot() == before);
+
+    terminal.feed("\x1b[1;2H");
+    const auto moved = terminal.snapshot();
+    CHECK(moved != before && moved->generation > before->generation);
+    CHECK(moved->cursor.column == 1 && moved->cursor.row == 0);
+    for (std::size_t i = 0; i < before->lines.size(); ++i) {
+        CHECK(moved->lines[i] == before->lines[i]);
+        CHECK(moved->lines[i]->generation == before->lines[i]->generation);
+    }
+
+    terminal.feed("\x1b[6 q\x1b[?25l\x1b]12;#123456\a\x1b[?1000h\x1b[?2004h");
+    const auto metadata = terminal.snapshot();
+    CHECK(metadata != moved);
+    CHECK(metadata->cursor.shape == CursorShape::bar && !metadata->cursor.visible);
+    CHECK((metadata->cursor.color == Color{0x12, 0x34, 0x56, 255}));
+    CHECK(metadata->mouse_reporting && metadata->bracketed_paste);
+    CHECK(!before->mouse_reporting && !before->bracketed_paste);
+    CHECK(terminal.snapshot() == metadata);
+    for (std::size_t i = 0; i < before->lines.size(); ++i)
+        CHECK(metadata->lines[i] == before->lines[i]);
+
+    terminal.resize({20, 4, 9, 17});
+    const auto resized = terminal.snapshot();
+    CHECK(resized != metadata && resized->cell_width == 9 && resized->cell_height == 17);
+    CHECK(resized->columns == metadata->columns && resized->rows == metadata->rows);
+    CHECK(line(resized, 0) == "alpha");
+
+    std::atomic<bool> rejected{};
+    std::thread foreign([&] {
+        try { (void)terminal.snapshot(); }
+        catch (const std::logic_error&) { rejected = true; }
+    });
+    foreign.join();
+    CHECK(rejected && terminal.snapshot() == resized);
+}
+
+void image_placement_sharing_and_order() {
+    TerminalCore terminal(small());
+    // Upload once, then place the same payload in each paint layer and twice at
+    // equal z. Every placement must share the same host-owned byte allocation.
+    terminal.feed("\x1b_Ga=t,f=32,i=61,s=2,v=1,q=2;/wAA/wAA//8=\x1b\\"
+                  "\x1b_Ga=p,i=61,p=1,c=2,r=1,C=1,z=3,q=2\x1b\\"
+                  "\x1b_Ga=p,i=61,p=2,c=2,r=1,C=1,z=-1,q=2\x1b\\"
+                  "\x1b_Ga=p,i=61,p=3,c=2,r=1,C=1,z=-2147483648,q=2\x1b\\"
+                  "\x1b_Ga=p,i=61,p=4,c=1,r=1,C=1,z=3,x=1,y=0,w=1,h=1,X=2,Y=3,q=2\x1b\\");
+    const auto placed = terminal.snapshot();
+    CHECK(placed->images.size() == 4);
+    CHECK(placed->images[0].layer == ImageLayer::below_background);
+    CHECK(placed->images[1].layer == ImageLayer::below_text);
+    CHECK(placed->images[2].layer == ImageLayer::above_text);
+    CHECK(placed->images[3].layer == ImageLayer::above_text);
+    const auto pixels = placed->images.front().pixels;
+    CHECK(pixels->width == 2 && pixels->height == 1);
+    CHECK(pixels->bytes == (std::vector<std::uint8_t>{255,0,0,255,0,0,255,255}));
+    for (const auto& image : placed->images) CHECK(image.pixels == pixels);
+    const auto crop = std::find_if(placed->images.begin(), placed->images.end(),
+        [](const auto& image) { return image.placement_id == 4; });
+    CHECK(crop != placed->images.end());
+    CHECK(crop->source_x == 1 && crop->source_y == 0);
+    CHECK(crop->source_width == 1 && crop->source_height == 1);
+    CHECK(crop->offset_x == 2 && crop->offset_y == 3);
+    CHECK(crop->columns == 1 && crop->rows == 1);
+
+    terminal.feed("\x1b_Ga=d,d=i,i=61,p=2,q=2\x1b\\");
+    const auto removed = terminal.snapshot();
+    CHECK(removed->images.size() == 3 && placed->images.size() == 4);
+    CHECK(removed->image_placements_generation != placed->image_placements_generation);
+    for (const auto& image : removed->images) CHECK(image.pixels == pixels);
+    // Equal-z relative order survives a placement-only rebuild.
+    CHECK(removed->images[1].placement_id == placed->images[2].placement_id);
+    CHECK(removed->images[2].placement_id == placed->images[3].placement_id);
+
+    terminal.feed("text");
+    const auto text = terminal.snapshot();
+    CHECK(text->image_placements_generation == removed->image_placements_generation);
+    CHECK(text->images.size() == removed->images.size());
+    for (std::size_t i = 0; i < text->images.size(); ++i) {
+        CHECK(text->images[i].pixels == pixels);
+        CHECK(text->images[i].placement_id == removed->images[i].placement_id);
+    }
+}
+
+void held_image_capture_and_lifetime() {
+    FramePtr frozen;
+    FramePtr released;
+    {
+        TerminalCore terminal(small());
+        terminal.feed("before\x1b_Ga=T,f=32,i=62,s=1,v=1,C=1,q=2;/wAA/w==\x1b\\"
+                      "\x1b[?2026h\rafter \x1b_Ga=T,f=32,i=62,s=1,v=1,C=1,q=2;AAD//w==\x1b\\");
+        frozen = terminal.snapshot();
+        CHECK(terminal.render_held());
+        CHECK(line(frozen, 0) == "before");
+        CHECK(frozen->images.size() == 1);
+        CHECK(frozen->images[0].pixels->bytes == (std::vector<std::uint8_t>{255,0,0,255}));
+        CHECK(terminal.snapshot() == frozen);
+
+        terminal.feed("\x1b[?2026l");
+        released = terminal.snapshot();
+        CHECK(!terminal.render_held() && released != frozen);
+        CHECK(line(released, 0) == "after");
+        CHECK(released->images.size() == 1);
+        CHECK(released->images[0].pixels != frozen->images[0].pixels);
+        CHECK(released->images[0].pixels->bytes == (std::vector<std::uint8_t>{0,0,255,255}));
+        terminal.feed("\x1b_Ga=d,d=A,q=2\x1b\\\x1b[2J");
+        CHECK(terminal.snapshot()->images.empty());
+    }
+    CHECK(line(frozen, 0) == "before" && line(released, 0) == "after");
+    CHECK(frozen->images[0].pixels->bytes[0] == 255);
+    CHECK(released->images[0].pixels->bytes[2] == 255);
+}
+
 } // namespace
 int main() {
     install_png_decoder(rejecting_png_decoder);
@@ -605,7 +723,10 @@ int main() {
         {"finished output retains a frozen readable document", finished_output_document},
         {"owned bounded OSC 133 command lifecycle", command_lifecycle},
         {"graphics security defaults", graphics_security}, {"explicit effect budget failure", queue_budget_failure_is_explicit},
-        {"actor thread confinement", thread_confinement}
+        {"actor thread confinement", thread_confinement},
+        {"frame metadata and unchanged row identity", frame_metadata_and_row_reuse},
+        {"image placement rebuild/sharing/layer order", image_placement_sharing_and_order},
+        {"held image boundary and retained frame lifetime", held_image_capture_and_lifetime}
     };
     unsigned failed{};
     for (const auto& [name, test] : tests) {
