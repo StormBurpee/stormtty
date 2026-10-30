@@ -9,6 +9,7 @@
 #include "menu_shortcuts.hpp"
 #include "pane_inspector.hpp"
 #import <AppKit/AppKit.h>
+#import <CoreText/CoreText.h>
 #import <QuartzCore/CATransaction.h>
 #include <algorithm>
 #include <atomic>
@@ -18,6 +19,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <limits>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -569,8 +571,15 @@ public:
         const auto ink=presentation.failed||!presentation.notice.empty()?ui.danger:ui.secondary;
         scene.primitives.push_back({{0,float(footer.bounds.y*scale),float(pixel_width),float(footer.bounds.height*scale)},ui.surface});
         scene.primitives.push_back({{0,float(footer.bounds.y*scale),float(pixel_width),float(scale)},ui.divider});
-        const auto label=presentation.label(footer.text.width,[&](const std::string& text){ChromeText item;item.text=text;item.size_dip=11;item.family=".AppleSystemUIFont";item.rect={0,0,100000,float(26*scale)};return renderer->measure_chrome_text(item).width/scale;});
-        scene.texts.push_back({{float(footer.text.x*scale),float(footer.text.y*scale),float(footer.text.width*scale),float(footer.text.height*scale)},label,ink,11,false,".AppleSystemUIFont"});
+        const auto label=presentation.label(footer.text.width,[&](const std::string& text){
+            // Match the Metal chrome path: native system font, CoreText shaping,
+            // physical pixel size, then convert the measured advance to points.
+            NSAttributedString* shaped=[[NSAttributedString alloc] initWithString:ns(text) attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:11*scale weight:NSFontWeightRegular]}];
+            CTLineRef line=CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)shaped);
+            if(!line)return std::numeric_limits<double>::infinity();
+            const auto width=CTLineGetTypographicBounds(line,nullptr,nullptr,nullptr);CFRelease(line);return width/scale;
+        });
+        scene.texts.push_back({{float(footer.text.x*scale),float(footer.text.y*scale),float(footer.text.width*scale),float(footer.text.height*scale)},label,ink,11,false,""});
         inspect_button.contentTintColor=[NSColor colorWithSRGBRed:ui.ink.r/255. green:ui.ink.g/255. blue:ui.ink.b/255. alpha:1];
         inspect_button.toolTip=ns(presentation.detail());[inspect_button setAccessibilityHelp:ns(presentation.detail())];
         inspect_button.enabled=active()!=nullptr && !view.hasMarkedText && !closing && !window.attachedSheet && !NSApp.modalWindow;

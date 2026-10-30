@@ -63,7 +63,7 @@ int main(){@autoreleasepool{return run_core_tests("native macOS context footer h
     const auto* original_pane=h->workspace.pane(before.front().pane);CHECK(original_pane!=nullptr);
     h->workspace.focus(original_pane->id);h->focus_changed();h->resize();CHECK(h->active()==actor);
     capture(h,"macos-footer-split-metal.png");
-    const auto mouse=[&](Point point,MouseAction action){
+    const auto mouse=[&](stormtty::Point point,MouseAction action){
         const auto location=[h->view convertPoint:NSMakePoint(point.x,point.y) toView:nil];
         NSEvent* event=[NSEvent mouseEventWithType:(action==MouseAction::press?NSEventTypeLeftMouseDown:NSEventTypeLeftMouseUp) location:location modifierFlags:0 timestamp:0 windowNumber:h->window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
         h->mouse(event,action);
