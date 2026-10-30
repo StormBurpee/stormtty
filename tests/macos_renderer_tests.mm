@@ -69,7 +69,26 @@ void renderer_contract_test(){
     scene.primitives[0].background_replace=false;++scene.chrome_generation;renderer.render(scene);
     require(pixel(renderer.read_pixels(),100,8).a>=248,"Ordinary chrome overlay did not source-over");
     scene.primitives.clear();++scene.chrome_generation;
-    const auto old=renderer.metrics();renderer.resize(256,160,192);require(renderer.metrics().width>old.width,"Retina font metrics");
+    // Force composition after a size-only change; all cached row textures remain valid.
+    const auto before_resize = renderer.stats().shaped_rows;
+    renderer.resize(256, 161, 96);
+    require(renderer.render(scene) == RenderResult::presented, "Size-only resize did not submit");
+    renderer.read_pixels();
+    require(renderer.stats().shaped_rows == before_resize, "Same-DPI resize invalidated rows");
+
+    const auto old = renderer.metrics();
+    renderer.resize(256, 160, 192);
+    require(renderer.metrics().width > old.width, "Retina font metrics");
+    require(renderer.render(scene) == RenderResult::presented, "DPI change did not submit");
+    renderer.read_pixels();
+    require(renderer.stats().shaped_rows == before_resize + 4, "Changed DPI did not invalidate rows");
+
+    // Even identical font settings must keep the existing remeasurement/reset contract.
+    const auto before_font_reset = renderer.stats().shaped_rows;
+    renderer.set_font(options.font);
+    require(renderer.render(scene) == RenderResult::presented, "Same-font reset did not submit");
+    renderer.read_pixels();
+    require(renderer.stats().shaped_rows == before_font_reset + 4, "Same-font reset did not invalidate rows");
     renderer.recreate_device();renderer.render(scene);renderer.read_pixels();require(renderer.stats().device_recoveries==1,"Metal resource recreation");
     require(!renderer.begin_alpha_probe({0,0,8,8}) && !renderer.poll_alpha_probe(),"Windows-only alpha diagnostic must report unavailable on Metal");renderer.cancel_alpha_probe();
     renderer.resize(0,0);require(renderer.render(scene)==RenderResult::suspended,"Minimized renderer did not suspend");
