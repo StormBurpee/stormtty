@@ -274,6 +274,18 @@ The independent emission oracle verifies resolved-value equivalence, not identic
 wall-clock hover sampling or physical frame pacing. See
 [header verification](../tests/window_header_renderer_verification.md).
 
+`WorkspaceRailRenderer` (`workspace_rail_renderer.hpp`,
+`src/core/workspace_rail_renderer.cpp`) owns workspace rail composition: project
+icon paths, selected/hover presentation, unread markers, labels and rail controls.
+Its view borrows only rail DIP geometry and resolved rows for one synchronous
+append; it has no whole navigation layout, model/service callbacks or resources.
+The host keeps catalog/watch lookup, focus transition insertion and sampling,
+material/contrast resolution, hit geometry, tooltips, interactions and scheduling.
+The original base-layer ordering, un-clipped geometry and Settings cog are retained.
+An independent frozen emission oracle and actual-host-fragment lookup trace cover
+resolved samples, not native frame pacing or physical DPI behavior. See
+[workspace rail verification](../tests/workspace_rail_renderer_verification.md).
+
 `SceneDamageTracker` (`scene_damage.hpp`, `src/core/scene_damage.cpp`) owns the scene
 represented by the persistent canvas, on the renderer thread. It retains immutable
 frames, not GPU resources or presentation state. Commit after successful `EndDraw`,

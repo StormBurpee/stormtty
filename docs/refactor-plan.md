@@ -66,8 +66,13 @@ distinct from portable policy.
 
 ### 3. Remaining scene composition
 
-`NativeWindow::scene` still assembles workspace rail, footer, pane-frame and overlay
-values. Separate these domain compositions from host interaction and native drawing,
+`NativeWindow::scene` still samples footer content and assembles pane-frame and
+overlay values. `WorkspaceRailRenderer` now owns rail visual composition from
+explicit geometry, resolved workspace rows and style; the host retains live
+catalog/watch sampling, transitions, input and layout. Its frozen oracle and
+actual-host-fragment trace provide portable equivalence, not native UI evidence.
+See [rail verification](../tests/workspace_rail_renderer_verification.md).
+Separate the remaining domain compositions from host interaction and native drawing,
 using explicit content/layout/style inputs. `RibbonRenderer` and
 `WindowHeaderRenderer` already demonstrate this boundary; do not rebuild them.
 Preserve chrome order, clipping, stable pane identity and fractional-DPI geometry.
