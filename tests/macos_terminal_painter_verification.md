@@ -29,3 +29,37 @@ painter, using real offscreen Metal frames and the existing texture owner.
 Native fixtures must run on macOS with an actual Metal device at 96/144/192 DPI.
 Linux source checks are not native compile, pixel, CoreText or GPU evidence.
 No native run was performed in the Linux extraction environment.
+
+## Native fixture inventory
+
+`macos_terminal_painter_tests` compares exact pixels, all six texture counters,
+remaining upload bytes and exception strings against the frozen original:
+
+- Each image layer, explicit crops and size precedence, partial/full culling,
+  malformed pixel data skipped by crop/cull, null image placements; translucent
+  pane reset (including overlapping panes) and explicit, inverse and selected cell
+  backgrounds.
+- Ordinary rows plus wide-tail block cursor; all cursor shapes and focus states,
+  fractional/clipped pane edges, persistent cursor clip, null rows, invalid cursor
+  bounds, cursor visibility/off, blinking and metric fallback.
+- Repeated-frame cache reuse, pane and font identity, cursor-column variants,
+  forced cursor blink versus ordinary blink keys at fixed font generation, and
+  row-generation/row-ID invalidation.
+- Null frame and culled-pane validation precedence, visible row/image count
+  rejection, charged oversized native row upload after successful work, next-frame
+  budget reset and retained cache progress.
+- Shared image → first row → second row → chrome allowance at 256/320/576/1600
+  bytes, with recovery after partial-budget failures.
+
+All groups run at 96, 144 and 192 DPI. Native command after a normal macOS build:
+`ctest --test-dir <build> -R '^macos_terminal_painter_tests$' --output-on-failure`.
+
+Extraction-environment checks: `git diff --check`; exact substring comparison of
+frozen helpers/pane loop with the base commit; reconstruction check confirming
+renderer code outside the extraction/include/unused-metrics removal is unchanged.
+These source checks passed. Native compilation and fixture execution are **not
+run** here; CI remains the gate for Apple framework and GPU behavior. No build,
+remote publication, physical UI or performance verification was performed.
+
+Cache eviction remains the unchanged `MetalTextureResources` dependency's test
+responsibility; these new painter fixtures exercise reuse/identity, not eviction.
