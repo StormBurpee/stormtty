@@ -1,0 +1,197 @@
+# Architecture and ownership
+
+StormTTY is a native terminal: portable C++20 workspace and terminal models,
+with Win32/DirectWrite/Direct2D on Windows and AppKit/CoreText/Metal on macOS.
+This guide describes the current ownership boundaries, not a completed refactor
+or a claim of platform parity. The detailed contracts remain in
+[AGENTS.md](../AGENTS.md) and the component documents linked below.
+
+## From input to a frame
+
+```text
+NativeWindow → Session commands → terminal actor → TerminalCore
+                                  ↕
+                              Process / PTY
+                                  ↓
+                         owned immutable RenderFrame
+                                  ↓
+NativeWindow builds WindowScene → Renderer → canvas → presentation
+```
+
+`Session` is the thread-safe host interface (`include/stormtty/session.hpp`,
+`src/session/session.cpp`). Its actor owns `TerminalCore`, including construction
+and destruction. The PTY reader copies bytes into the bounded actor queue; it
+never calls the VT engine or touches a window. UI actions enqueue commands rather
+than reading or mutating terminal internals.
+
+`Process` owns asynchronous transport and child lifetime. Its implementations are
+`src/platform/windows/conpty_process.cpp` and `src/platform/posix/pty_process.cpp`.
+Change native launch, transport, resize or reaping here; change terminal protocol
+behavior in `src/terminal/terminal.cpp`. Neither belongs in a painter or window
+input handler.
+
+`FramePtr` is `shared_ptr<const RenderFrame>` (`include/stormtty/frame.hpp`).
+Frames own their data: never retain borrowed Ghostty pointers across mutation or
+threads. A frame can outlive its actor. Process exit, retained read-only document
+lifetime, and final actor disposal are separate states; `process_finished()` is
+not `closed()`.
+
+Queues, parsing work, scrollback and image decoding must remain bounded. PTY
+backpressure waits rather than discarding output. Transport input enqueue is all-or-none;
+retain and retry bytes on `would_block`. Terminal titles, paths, links, clipboard
+requests and image payloads are untrusted data, not authority to execute anything.
+See [the terminal adapter](../src/terminal/README.md) and
+[retained documents](retained-terminal-documents.md).
+
+## Application lifetime versus a view
+
+The Windows `NativeApplication`, `NativeWindow`, `ActorLifetimeRegistry` and
+`ApplicationActors` currently live in `src/platform/windows/window.cpp`. These
+are real ownership boundaries, but the host is not yet separated into focused
+implementation files.
+
+**`NativeApplication` owns application lifetime:** native view ownership and the
+message pump, `ApplicationWorkspaces`, actor registration, and the serialized
+workspace writer. **`NativeWindow` owns one view:** HWND, renderer, input/focus and
+layout state, editor presentation, and a `WindowWorkspaceView` scoped to its
+`WindowId`. Change placement rules in `application_workspaces.hpp` and
+`src/core/application_workspaces.cpp`, not by giving a view another catalog.
+Reacquire model references after mutation; placement changes can invalidate them.
+
+Creating a view is a transaction. An unpublished model candidate and exact actor
+creation ledger permit rollback without removing a survivor's actors. Retiring
+unused actors checks the whole application catalog, including hidden and parked
+sessions. Closing a placement is not permission to close unrelated processes;
+close previews revalidate ownership and session associations before removal.
+
+Native resources use RAII; exceptions must not cross Win32, COM or C callbacks.
+Do not join actors or wait for process exit in a window callback. Renderer-ready
+waits are canceled and drained before resize, recovery or view destruction.
+Actor callbacks retain routes with weak endpoints, not raw view pointers: removing
+registry discoverability must not lose final completion delivery. See
+[application windows](application-windows.md).
+
+### Launch policy, identity and attention
+
+- **Shell/profile selection:** `WindowsSessionLauncher`
+  (`include/stormtty/windows_session_launcher.hpp`,
+  `src/platform/windows/session_launcher.cpp`) owns immutable launch capabilities
+  and prepares independent `ProcessOptions`/`TerminalOptions` values from current
+  configuration. It does not start/register actors, retain the caller, save config
+  or mutate the ambient environment. The host still performs the launch transaction.
+- **Actor lifetime:** `ActorLifetimeRegistry` owns registered `Session` handles,
+  identity policy and wake-route discovery. Its borrowed lookups are UI-thread-only
+  and cannot survive erasure or reentrant host work; use explicit retained ownership
+  for queued work. `SessionIdentities` (`session_identities.hpp`) is the portable
+  counter/incarnation policy, not another registry. Session IDs never recycle;
+  placement and process state do not change an actor incarnation.
+- **Watch/Activity behavior:** `SessionAttention` (`session_attention.hpp`) owns
+  watch and parked-attention policy, not actors. Validate actions against current
+  identities. `SessionObservationCache` (`session_observation_cache.hpp`) separately
+  owns the application-shared last-observed state/label values used for invalidation.
+  It does not become authoritative Session state or format labels.
+  `ApplicationActors::dispose` coordinates registry removal, cache cleanup and
+  `attention.forget`; do not create a second disposal path.
+
+See [actor lifetime](actor-lifetime-registry.md) and
+[session attention](session-attention.md) for ordering and stale-action contracts.
+[Observation caches](session-observations.md) records the inherited shared-history
+and first-observation rules.
+
+## Settings and persistence
+
+`SettingsPanel` (`settings_panel.hpp`, `src/core/settings_panel.cpp`) owns the
+editor draft and dirty baseline, and emits preview/cancel intents for the host to apply.
+`SettingsDocumentSession` (`settings_document_session.hpp`,
+`src/core/settings_document_session.cpp`) owns serialized document I/O, open intent,
+operation/generation checks and the exact same-read save token. It retains no live
+Config, renderer, window or actor. Workers receive values and a weak wake endpoint;
+completion returns outcomes for the UI owner to apply.
+
+Keep parsed config and exact file bytes/identity/timestamp from the same read.
+Never refresh a token silently to make stale edits save. Failed saves retain the
+draft; only a successful guarded save advances the baseline and allows full draft
+application. Preview/Cancel do not write. Closed views discard abandoned editor
+results; pending file work must not block surviving views. Normal worker reap
+requires a published completion; destruction/join happens outside native callbacks.
+The native adapter is `src/platform/windows/settings_document_services.cpp`; guarded
+file operations are in `settings_services.cpp`. See [settings services](settings-services.md).
+
+Workspace persistence is a different, application-owned writer, not one writer per
+view. `application_layout_codec.hpp` and `application_layout_services.hpp` provide
+bounded grouped-storage building blocks, but the native host still writes the v1
+workspace library. Grouped recovery, clean Quit versus individual close, and
+second-executable ownership remain integration gates. See
+[application-layout storage](application-layout-storage.md).
+
+## Rendering: scene policy is not a device
+
+`WindowScene` (`include/stormtty/renderer.hpp`) carries owned frame references and
+value-based chrome. The host owns geometry, interaction, animation deadlines and
+identity; stable pane IDs must not become array indexes.
+
+`RibbonRenderer` (`ribbon_renderer.hpp`, `src/core/ribbon_renderer.cpp`) is stateless
+Ribbon paint composition: it appends scene primitives/text from supplied layout,
+content and style. It does not measure native text, inspect actors or own graphics
+resources. Change Ribbon appearance here; change hit testing or actions in the host.
+
+`SceneDamageTracker` (`scene_damage.hpp`, `src/core/scene_damage.cpp`) owns the scene
+represented by the persistent canvas, on the renderer thread. It retains immutable
+frames, not GPU resources or presentation state. Commit after successful `EndDraw`,
+before `Present`; a busy/occluded presentation does not undo a completed canvas draw.
+Surface/font/material/device changes and draw-body exceptions require a repaint;
+the last committed scene remains owned until the next successful commit.
+
+`TextResources` (`src/platform/windows/text_resources.hpp` and `.cpp`) owns
+Windows device-independent DirectWrite resources: font configuration and metrics,
+bounded row shaping, chrome text layout/measurement and color-glyph enumeration.
+It is renderer-thread-confined and retains no window, GPU cache, painter or scene.
+Its COM apartment must outlive it and returned COM objects. Returned row shapes
+are borrowed only until the next shape/configuration call; uncached results use
+caller-owned scratch. Consume them synchronously, never retain them in frames or
+painters. A font/DPI remeasurement requires the caller to invalidate the scene.
+GPU device recreation preserves this CPU cache; font/DPI remeasurement clears it.
+
+## Remaining ownership work
+
+`src/platform/windows/renderer.cpp` still owns GPU image caching, terminal/chrome
+painting, device resources and presentation. These need focused ownership without
+conflating canvas validity, resource lifetime and presentation readiness. The
+GPU `ImageCache` extraction is under qualification; it is not integrated yet.
+Observation caches are encapsulated, but deliberately remain application-shared;
+changing that lifetime requires separate transfer/invalidation characterization.
+
+Host input, persistence integration and embedded qualification harnesses also need
+continued separation. Prefer explicit values and narrow capabilities; do not move
+the same coupling behind a shared “context” or an accessor-only facade.
+
+macOS has its own `Host` in `src/platform/macos/window.mm` and renderer in
+`src/platform/macos/renderer.mm`. Shared models do not imply shared native lifecycle
+or feature parity. AppKit ownership and close/Quit behavior need their own work and
+native evidence; consult the [macOS host notes](../src/platform/macos/README.md).
+
+## Verify the boundary you change
+
+Use the existing CMake build instructions in [README](../README.md); keep build
+and temporary storage workspace-backed. Run focused tests, then affected integration
+gates. Useful starting points:
+
+- Placement/lifetime: `application_workspaces_tests`, `session_identities_tests`,
+  `session_wake_router_tests`, `session_attention_tests`,
+  `session_observation_cache_tests`, then native ownership,
+  project, modal and retirement scenarios.
+- Settings/launch: `settings_panel_tests`, `settings_document_session_tests`, then
+  Windows `settings_services_tests`, `windows_session_launcher_tests` and
+  `native_settings_smoke`. Exercise conflicts, Cancel/reopen and close during I/O.
+- Rendering: `ribbon_renderer_tests`, `scene_damage_tests`, then Windows
+  `text_resources_tests`, `renderer_smoke`/`renderer_final_teardown`, `renderer_png`
+  and relevant native layout/material
+  scenarios. Include resize, font/DPI changes, occlusion and resource recovery.
+- Actor/VT changes: `session_tests`, `terminal_tests`, `terminal_search_tests`,
+  plus the affected real transport/provider tests and complete process exit.
+
+Report portable tests, Windows cross-compilation, native runtime and physical UI
+verification separately. None substitutes for another. Existing smoke fixtures are
+not proof that normal persistent multi-window use, IME, accessibility or platform
+parity is ready. [Acceptance gates](acceptance-gates.md) and
+[CI coverage](ci-coverage.md) describe the wider evidence requirements.

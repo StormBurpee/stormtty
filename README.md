@@ -545,6 +545,8 @@ settings retain their defaults.
 
 ## Architecture
 
+For change locations and lifetime contracts, see [Architecture and ownership](docs/architecture.md).
+
 StormTTY owns the application and platform integration. It reuses
 [Ghostty's `libghostty-vt`](https://github.com/ghostty-org/ghostty) for terminal
 parsing and state through its public C API. It is not a port of Ghostty's GUI,
