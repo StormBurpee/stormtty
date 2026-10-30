@@ -21,6 +21,9 @@ using namespace stormtty;
 using namespace std::chrono_literals;
 namespace {
 unsigned phase{}, checks{};
+// Last entered fixed phase-4 operation, not a proven failure cause.
+// Never emit terminal contents or errors.
+const char* cancellation_operation = "not_started";
 struct ConsoleCodePages {
     UINT input{GetConsoleCP()}, output{GetConsoleOutputCP()};
     ~ConsoleCodePages() { if (input) SetConsoleCP(input); if (output) SetConsoleOutputCP(output); }
@@ -418,8 +421,22 @@ int main() {
         shell.text(" ]] && print -r -- QFILE$((30+4))"); shell.key(Key::enter); shell.expect("QFILE34"); shell.zle_idle();
         phase = 4;
         // Cancel must return to the original editable buffer without executing it.
-        shell.text("print -r -- QCANCEL$((30+5))"); shell.key(Key::t, control);
-        shell.expect("QFZF_SELECT:"); shell.key(Key::escape); shell.absent("QFZF_SELECT:"); shell.key(Key::enter); shell.expect("QCANCEL35"); shell.zle_idle();
+        cancellation_operation = "buffer_send";
+        shell.text("print -r -- QCANCEL$((30+5))");
+        cancellation_operation = "widget_key_send";
+        shell.key(Key::t, control);
+        cancellation_operation = "widget_visible";
+        shell.expect("QFZF_SELECT:");
+        cancellation_operation = "escape_send";
+        shell.key(Key::escape);
+        cancellation_operation = "widget_absent";
+        shell.absent("QFZF_SELECT:");
+        cancellation_operation = "enter_send";
+        shell.key(Key::enter);
+        cancellation_operation = "command_output";
+        shell.expect("QCANCEL35");
+        cancellation_operation = "zle_idle";
+        shell.zle_idle();
         phase = 5;
         command("typeset -gi _qhistory=0; print -r -- QHISTSET$((60+1))", "QHISTSET61");
         command("(( ++_qhistory )); print -r -- QHISTORY$((600+17))", "QHISTORY617");
@@ -513,6 +530,9 @@ int main() {
         std::cout << "SHELL_NAVIGATION_RESULT code=0 phase=13 checks=" << checks << " cold_samples=1 cold_ms=" << cold_ms << " warm_samples=0 warm_ms=" << warm_ms << '\n';
         return 0;
     } catch (...) {
+        if (phase == 4) {
+            std::cout << "SHELL_NAVIGATION_CANCEL_FAILURE operation=" << cancellation_operation << '\n';
+        }
         std::cout << "SHELL_NAVIGATION_RESULT code=1 phase=" << phase << " checks=" << checks << " cold_ms=" << cold_ms << '\n';
         return 1;
     }
