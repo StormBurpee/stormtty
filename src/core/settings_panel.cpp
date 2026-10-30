@@ -181,7 +181,7 @@ void SettingsPanel::rebuild_layout() {
     document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?740.0+theme_gallery_extra(content_w):
         section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
-    scroll_target_=scroll_start_=scroll_;
+    scroll_motion_.reset(scroll_);
     const double top=content_y-scroll_, right=content_x+content_w;
     if (section_==SettingsSection::appearance) {
         const auto columns=theme_columns(content_w);
@@ -545,45 +545,22 @@ bool SettingsPanel::set_scroll_offset(double value) {
     ++generation_;return true;
 }
 void SettingsPanel::cancel_scroll_at_display() noexcept {
-    scroll_animating_=false;scroll_target_=scroll_start_=scroll_;scroll_started_ms_=scroll_sampled_ms_=0;
+    scroll_motion_.reset(scroll_);
 }
 void SettingsPanel::finish_scroll() {
-    if (scroll_animating_) set_scroll_offset(scroll_target_);
-    cancel_scroll_at_display();
+    scroll_motion_.finish();
+    set_scroll_offset(scroll_motion_.display);
 }
 bool SettingsPanel::tick_scroll(std::uint64_t now_ms) {
-    if (!scroll_animating_ || now_ms<=scroll_sampled_ms_) return false;
-    scroll_sampled_ms_=now_ms;
-    // Short, finite ease-out, never an exponential tail or spring. The final
-    // frame lands exactly even after a delayed wake, and then has no deadline.
-    constexpr double duration_ms=90;
-    const auto elapsed=now_ms>=scroll_started_ms_?now_ms-scroll_started_ms_:0;
-    const double t=std::min(1.0,double(elapsed)/duration_ms),remaining=1-t;
-    const bool changed=set_scroll_offset(t>=1?scroll_target_:
-        scroll_start_+(scroll_target_-scroll_start_)*(1-remaining*remaining*remaining));
-    if (t>=1) cancel_scroll_at_display();
-    return changed;
+    scroll_motion_.tick(now_ms);
+    return set_scroll_offset(scroll_motion_.display);
 }
 bool SettingsPanel::wheel_pixels(Point point,double delta,std::uint64_t now_ms,bool animate_discrete) {
     if (!open_) return false;
     if (saving_ || dragging_opacity_ || !finite(point) || !std::isfinite(delta) || delta==0 || !layout_.content.contains(point)) return true;
-    const auto maximum=std::max(0.0,document_height_-layout_.content.height);
-    // Preserve same-direction distance. Reversals discard the old residual so
-    // the display responds in the new direction immediately, with no tug-back.
-    const bool same_direction=animate_discrete && scroll_animating_ && ((delta>0)==(scroll_target_>scroll_));
-    if (scroll_animating_) now_ms=std::max(now_ms,scroll_sampled_ms_);
-    if (same_direction) tick_scroll(now_ms);
-    const double target=std::clamp((same_direction?scroll_target_:scroll_)+std::clamp(delta,-32768.0,32768.0),0.0,maximum);
     if (!pressed_.empty() || !hover_.empty()) {pressed_.clear();hover_.clear();++generation_;}
-    cancel_scroll_at_display();
-    if (!animate_discrete) {set_scroll_offset(target);cancel_scroll_at_display();return true;}
-    const double distance=target-scroll_;
-    if (distance==0) return true;
-    // A small immediate response removes one-frame latency without returning
-    // to a full-notch jump; the remainder settles within 90 ms of this packet.
-    set_scroll_offset(scroll_+std::copysign(std::min(8.0,std::abs(distance)*.15),distance));
-    scroll_start_=scroll_;scroll_target_=target;scroll_started_ms_=scroll_sampled_ms_=now_ms;
-    scroll_animating_=scroll_!=scroll_target_;
+    scroll_motion_.wheel(delta,std::max(0.0,document_height_-layout_.content.height),now_ms,animate_discrete);
+    set_scroll_offset(scroll_motion_.display);
     return true;
 }
 bool SettingsPanel::wheel(Point point,double lines) {

@@ -37,12 +37,16 @@ struct ChromeLayout {
 // The detail shelf is deliberately separate from result rows: descriptions do
 // not make every action a two-line card, while the selected operation is clear.
 struct CommandPaletteLayout {
-    Rect panel, search, detail, hints;
+    Rect panel, search, detail, hints, viewport;
+    double maximum_scroll{};
     std::size_t first{}, rows{};
     std::vector<Rect> row_bounds;
 };
+// Pixel mode keeps the viewport stationary and retains full partially visible
+// row geometry. Hosts clip paint and gate hit tests with viewport; selection is
+// revealed explicitly, never by wheel scrolling. Null offset preserves paging.
 inline CommandPaletteLayout layout_command_palette(double width, double height,
-        std::span<const double> row_heights, std::size_t selected, bool rename=false) {
+        std::span<const double> row_heights, std::size_t selected, bool rename=false, std::optional<double> scroll_offset=std::nullopt) {
     width=std::max(0.0,width); height=std::max(0.0,height);
     const double margin=std::min(16.0,width/2), w=std::min(640.0,width-2*margin);
     const double y_margin=std::min(8.0,height/2);
@@ -53,6 +57,7 @@ inline CommandPaletteLayout layout_command_palette(double width, double height,
     const double budget=std::max(0.0,available-header-footer);
     selected=row_heights.empty()?0:std::min(selected,row_heights.size()-1);
     auto row_height=[&](std::size_t i){return std::clamp(row_heights[i],36.0,48.0);};
+    if(scroll_offset)selected=0; // Fixed viewport size while wheel scrolling.
     std::size_t first=selected;
     double body=row_heights.empty()?0:std::min(budget,row_height(selected));
     while (!rename && first && selected-first<7 && body+row_height(first-1)<=budget) body+=row_height(--first);
@@ -76,6 +81,23 @@ inline CommandPaletteLayout layout_command_palette(double width, double height,
     out.detail={out.panel.x+inset,out.hints.y-detail_h,std::max(0.0,w-2*inset),detail_h};
     double top=y+header;
     for (const auto rh:heights) { out.row_bounds.push_back({out.panel.x+std::min(8.0,w/2),top,std::max(0.0,w-16),rh}); top+=rh; }
+    out.viewport={out.panel.x+std::min(8.0,w/2),y+std::min(header,h),std::max(0.0,w-16),std::max(0.0,out.detail.y-y-header)};
+    double total=0; for(std::size_t i=0;i<row_heights.size();++i)total+=row_height(i);
+    out.maximum_scroll=std::max(0.0,total-out.viewport.height);
+    if(scroll_offset && !rename) {
+        const double offset=std::isfinite(*scroll_offset)?std::clamp(*scroll_offset,0.0,out.maximum_scroll):0;
+        out.row_bounds.clear();out.first=0;
+        double top=out.viewport.y-offset;
+        for(std::size_t i=0;i<row_heights.size();++i) {
+            const double rh=row_height(i);
+            if(out.viewport.height>0 && top+rh>out.viewport.y && top<out.viewport.y+out.viewport.height) {
+                if(out.row_bounds.empty())out.first=i;
+                out.row_bounds.push_back({out.viewport.x,top,out.viewport.width,rh});
+            }
+            top+=rh;
+        }
+        out.rows=out.row_bounds.size();
+    }
     return out;
 }
 

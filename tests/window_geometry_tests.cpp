@@ -29,6 +29,29 @@ int main() {
     require(settings_wheel_distance(-120,0,true,20)==48,"Tiny viewport page distance remains useful and bounded");
     require(!settings_wheel_packet_is_discrete(0) && !settings_wheel_packet_is_discrete(15) && !settings_wheel_packet_is_discrete(-119),"Zero and fractional wheel packets do not animate");
     require(settings_wheel_packet_is_discrete(120) && settings_wheel_packet_is_discrete(-240),"Only complete notch packets request finite easing");
+    // Shared finite wheel behavior: bursts accumulate, reversals start at the
+    // displayed position, stale timestamps cannot rewind, precise input is direct.
+    FiniteScroll scroll;
+    scroll.wheel(108,1000,100,true);
+    require(scroll.display==8 && scroll.target==108 && scroll.active,"finite wheel immediate response");
+    scroll.tick(130);const auto before=scroll.display;
+    scroll.tick(120);require(scroll.display==before,"stale tick cannot rewind");
+    scroll.wheel(108,1000,125,true);require(scroll.target==216,"burst accumulates target with stale packet clock");
+    const auto reversal=scroll.display;scroll.wheel(-36,1000,140,true);
+    require(scroll.display<reversal && scroll.target==reversal-36,"reversal discards old residual without advancing it");
+    scroll.tick(230);require(!scroll.active && scroll.display==scroll.target,"finite deadline lands exactly");
+    scroll.wheel(13.5,1000,240,false);require(!scroll.active,"fractional input has no animation tail");
+    scroll.wheel(108,1000,250,true);const auto stopped=scroll.display;scroll.cancel();scroll.tick(1000);
+    require(scroll.display==stopped && !scroll.active,"pointer interruption preserves display");
+    scroll.wheel(108,1000,1001,true);scroll.reset();scroll.tick(2000);
+    require(scroll.display==0 && !scroll.active,"result replacement cancels old generation");
+    std::vector<double> pixel_rows(44,36);pixel_rows[2]=48;
+    const auto pixel_first=layout_command_palette(1044,720,pixel_rows,0,false,0);
+    const auto pixel_mid=layout_command_palette(1044,720,pixel_rows,0,false,13.5);
+    require(pixel_first.panel==pixel_mid.panel && pixel_mid.row_bounds.front().y==pixel_mid.viewport.y-13.5,"wheel viewport stays stationary with partial first row");
+    require(pixel_mid.row_bounds.back().y+pixel_mid.row_bounds.back().height>pixel_mid.viewport.y+pixel_mid.viewport.height,"partial final row retains full geometry for real clipping");
+    const auto pixel_last=layout_command_palette(1044,720,pixel_rows,0,false,1e9);
+    require(pixel_last.first+pixel_last.rows==pixel_rows.size(),"pixel scroll clamps to final result");
     // One owned cog shape replaces font/emoji fallback. The panel's existing
     // path is byte-for-byte identical; the sidebar only scales that same path.
     constexpr double tau=6.283185307179586;
