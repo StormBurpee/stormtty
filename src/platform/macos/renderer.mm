@@ -1,7 +1,7 @@
 #include "stormtty/renderer.hpp"
 #include "cf_owner.hpp"
 #include "core_text_font_resources.hpp"
-#include "core_text_row_rasterizer.hpp"
+#include "metal_texture_resources.hpp"
 #import <AppKit/AppKit.h>
 #import <CoreText/CoreText.h>
 #import <Metal/Metal.h>
@@ -24,7 +24,6 @@ namespace stormtty {
 namespace {
 using macos::CfOwner;
 constexpr std::size_t max_surface_bytes=128u*1024u*1024u;
-constexpr std::size_t max_transient_bytes=64u*1024u*1024u;
 NSString* string(std::string_view text) {
     return [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSUTF8StringEncoding] ?: @"\uFFFD";
 }
@@ -72,17 +71,6 @@ fragment float4 quad_replace_fragment(Vertex v [[stage_in]],texture2d<float> t [
     return pixel*tint;
 }
 )metal";
-struct RowKey {
-    std::uint64_t pane{},id0{},id1{},generation{},font{};
-    std::uint32_t width{},height{},variant{};bool blink{};
-    auto operator<=>(const RowKey&) const = default;
-};
-struct CachedRow { id<MTLTexture> texture;std::size_t bytes{};std::uint64_t used{}; };
-struct ImageKey {
-    std::uint64_t pane{},generation{};std::uint32_t id{},width{},height{};
-    auto operator<=>(const ImageKey&) const = default;
-};
-struct CachedImage { id<MTLTexture> texture;std::size_t bytes{};std::uint64_t used{}; };
 struct Presentation {
     std::mutex mutex;std::condition_variable changed;
     std::uint64_t serial{},submitted{},scheduled{},completed{},callbacks{},zero_time_callbacks{};
@@ -108,21 +96,21 @@ struct Renderer::Impl {
     std::uint64_t font_generation{1},serial{},chrome_generation{};
     std::vector<PaneStamp> previous;
     Color previous_background{};bool have_previous{};
-    std::map<RowKey,CachedRow> rows;
-    std::map<ImageKey,CachedImage> images;
+    macos::MetalTextureResources textures;
     std::shared_ptr<std::atomic<unsigned>> in_flight=std::make_shared<std::atomic<unsigned>>(0);
     std::shared_ptr<std::atomic<bool>> gpu_failed=std::make_shared<std::atomic<bool>>(false);
-    std::size_t transient{};std::shared_ptr<Presentation> presented=std::make_shared<Presentation>();
-    explicit Impl(void* handle,RendererOptions settings):view((__bridge NSView*)handle),options(std::move(settings)) {
+    std::shared_ptr<Presentation> presented=std::make_shared<Presentation>();
+    explicit Impl(void* handle, RendererOptions settings)
+        : view((__bridge NSView*)handle),
+          options(std::move(settings)),
+          textures({options.shape_cache_bytes, options.image_cache_bytes,
+                    options.maximum_image_dimension}) {
         if(options.force_warp) throw std::invalid_argument("WARP is Windows-only; macOS native tests require a Metal device");
-        options.maximum_image_dimension=std::min(options.maximum_image_dimension,8192u);
         if(!std::isfinite(options.background_opacity)||options.background_opacity<0.f||options.background_opacity>1.f)throw std::invalid_argument("Invalid default background opacity");
-        options.shape_cache_bytes=std::min(options.shape_cache_bytes,std::size_t(64u*1024u*1024u));
-        options.image_cache_bytes=std::min(options.image_cache_bytes,std::size_t(128u*1024u*1024u));
         create_device();measure();
     }
     void create_device() {
-        transient=0;in_flight=std::make_shared<std::atomic<unsigned>>(0);gpu_failed=std::make_shared<std::atomic<bool>>(false);presented=std::make_shared<Presentation>();device=MTLCreateSystemDefaultDevice();check(device!=nil,"A supported Metal device is required");
+        textures.begin_upload_batch();in_flight=std::make_shared<std::atomic<unsigned>>(0);gpu_failed=std::make_shared<std::atomic<bool>>(false);presented=std::make_shared<Presentation>();device=MTLCreateSystemDefaultDevice();check(device!=nil,"A supported Metal device is required");
         queue=[device newCommandQueue];check(queue!=nil,"Cannot create Metal command queue");
         NSError* error=nil;
         id<MTLLibrary> library=[device newLibraryWithSource:string(shader_source) options:nil error:&error];
@@ -140,7 +128,7 @@ struct Renderer::Impl {
         descriptor.fragmentFunction=[library newFunctionWithName:@"quad_replace_fragment"];
         replace_pipeline=[device newRenderPipelineStateWithDescriptor:descriptor error:&error];
         check(replace_pipeline!=nil,"Cannot create Metal replacement pipeline");
-        const std::uint8_t pixel[4]={255,255,255,255};white=texture(1,1,pixel);
+        const std::uint8_t pixel[4]={255,255,255,255};white=textures.upload_bgra(device, 1, 1, pixel);
         if(view) {
             layer=[CAMetalLayer layer];layer.device=device;layer.pixelFormat=MTLPixelFormatBGRA8Unorm;
             layer.framebufferOnly=NO;layer.opaque=NO;layer.maximumDrawableCount=3;
@@ -153,24 +141,13 @@ struct Renderer::Impl {
             view.layer=layer;view.wantsLayer=YES;
         }
         statistics.composition=true;statistics.color_fonts=true;
-        rows.clear();images.clear();statistics.shape_cache_bytes=statistics.image_cache_bytes=0;
+        textures.clear_device_textures();
         target=nil;have_previous=false;gpu_failed->store(false);
-    }
-    id<MTLTexture> texture(std::uint32_t w,std::uint32_t h,const void* bytes) {
-        const auto allocation=std::uint64_t(w)*h*4;
-        if(allocation>max_transient_bytes-transient)throw std::runtime_error("Metal per-frame upload budget exceeded");
-        transient+=static_cast<std::size_t>(allocation);
-        check(w&&h&&w<=16384&&h<=16384,"Metal texture dimensions exceed supported limits");
-        MTLTextureDescriptor* desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
-        desc.storageMode=[device supportsFamily:MTLGPUFamilyApple1]?MTLStorageModeShared:MTLStorageModeManaged;desc.usage=MTLTextureUsageShaderRead;
-        id<MTLTexture> result=[device newTextureWithDescriptor:desc];check(result!=nil,"Cannot allocate Metal texture");
-        [result replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0 withBytes:bytes bytesPerRow:std::size_t(w)*4];return result;
     }
     void measure() {
         font_resources.reset(options.font, dpi);
         ++font_generation;
-        rows.clear();
-        statistics.shape_cache_bytes = 0;
+        textures.clear_rows();
         have_previous = false;
     }
     void resize(std::uint32_t w,std::uint32_t h,float new_dpi) {
@@ -205,75 +182,20 @@ struct Renderer::Impl {
         if(right<=x||bottom<=y)return false;
         [encoder setScissorRect:MTLScissorRect{std::size_t(x),std::size_t(y),std::size_t(right-x),std::size_t(bottom-y)}];return true;
     }
-    void trim_rows(std::size_t incoming) {
-        while(!rows.empty()&&(statistics.shape_cache_bytes+incoming>options.shape_cache_bytes||rows.size()>=16384)) {
-            auto oldest=std::min_element(rows.begin(),rows.end(),[](const auto& a,const auto& b){return a.second.used<b.second.used;});
-            statistics.shape_cache_bytes-=oldest->second.bytes;rows.erase(oldest);
-        }
-    }
     id<MTLTexture> raster_row(const RenderPane& pane, const FrameRow& row,
                              std::uint32_t width, std::uint32_t height,
                              std::uint32_t variant = 0) {
-        const bool blink = std::any_of(row.cells.begin(), row.cells.end(),
-                                      [](const Cell& cell) { return cell.style.blink; });
-        const RowKey key{pane.id, row.id.words[0], row.id.words[1], row.generation,
-                         font_generation, width, height, variant, !blink || pane.text_blink_on};
-        if (auto found = rows.find(key); found != rows.end()) {
-            found->second.used = serial;
-            ++statistics.shape_cache_hits;
-            return found->second.texture;
-        }
-
-        const auto bytes = std::size_t(width) * height * 4;
-        if (bytes > max_transient_bytes - transient) {
-            throw std::runtime_error("Visible CoreText rows exceed transient texture budget");
-        }
-
         const auto cell = font_resources.metrics();
         const macos::RowRasterOptions raster_options{
             width, height, pane.frame->cell_width ? pane.frame->cell_width : float(cell.width),
             cell, dpi, pane.text_blink_on, options.font.ligatures, options.font.locale,
-            max_transient_bytes - transient
+            textures.remaining_upload_bytes()
         };
-        const auto pixels = macos::CoreTextRowRasterizer{}.rasterize(
-            row.cells, font_resources.borrow_font(), raster_options);
-
-        // CPU rasterization does not consume the shared row/image/chrome upload
-        // allowance. Only texture() reserves bytes, with its existing ordering.
-        id<MTLTexture> result = texture(width, height, pixels.bgra.data());
-        ++statistics.shaped_rows;
-        ++statistics.dirty_rectangles;
-        trim_rows(bytes);
-        if (bytes <= options.shape_cache_bytes) {
-            rows.emplace(key, CachedRow{result, bytes, serial});
-            statistics.shape_cache_bytes += bytes;
-        }
-        return result;
+        const macos::RowTextureIdentity identity{pane.id, font_generation, variant};
+        return textures.row_texture(device, identity, row, font_resources.borrow_font(),
+                                    raster_options, serial);
     }
 
-    id<MTLTexture> image_texture(std::uint64_t pane,const ImagePixels& image) {
-        const auto bytes=std::size_t(image.width)*image.height*4;
-        if(!image.width||!image.height||image.width>options.maximum_image_dimension||image.height>options.maximum_image_dimension||
-            bytes>options.image_cache_bytes||bytes>max_transient_bytes)return nil;
-        ImageKey key{pane,image.generation,image.image_id,image.width,image.height};
-        if(auto found=images.find(key);found!=images.end()){found->second.used=serial;return found->second.texture;}
-        const unsigned channels=image.format==PixelFormat::rgba?4:image.format==PixelFormat::rgb?3:image.format==PixelFormat::gray_alpha?2:1;
-        if(std::uint64_t(image.width)*image.height*channels!=image.bytes.size())return nil;
-        if(bytes>max_transient_bytes-transient)throw std::runtime_error("Image upload exceeds the remaining frame budget");
-        std::vector<std::uint8_t> bgra(bytes);
-        for(std::size_t p=0;p<std::size_t(image.width)*image.height;++p) {
-            const auto* source=image.bytes.data()+p*channels;const unsigned a=channels==4?source[3]:channels==2?source[1]:255;
-            const unsigned r=source[0],g=channels>=3?source[1]:r,b=channels>=3?source[2]:r;
-            bgra[p*4]=static_cast<std::uint8_t>((b*a+127)/255);bgra[p*4+1]=static_cast<std::uint8_t>((g*a+127)/255);
-            bgra[p*4+2]=static_cast<std::uint8_t>((r*a+127)/255);bgra[p*4+3]=static_cast<std::uint8_t>(a);
-        }
-        while(!images.empty()&&(statistics.image_cache_bytes+bytes>options.image_cache_bytes||images.size()>=1024)){
-            auto oldest=std::min_element(images.begin(),images.end(),[](const auto&a,const auto&b){return a.second.used<b.second.used;});
-            statistics.image_cache_bytes-=oldest->second.bytes;images.erase(oldest);
-        }
-        auto result=texture(image.width,image.height,bgra.data());images.emplace(key,CachedImage{result,bytes,serial});
-        statistics.image_cache_bytes+=bytes;++statistics.image_uploads;return result;
-    }
     void draw_images(id<MTLRenderCommandEncoder> encoder,const RenderPane& pane,ImageLayer which) {
         const auto cell = font_resources.metrics();
         const auto& f=*pane.frame;const float cw=f.cell_width?f.cell_width:cell.width,ch=f.cell_height?f.cell_height:cell.height;
@@ -287,7 +209,7 @@ struct Renderer::Impl {
             const float h=placement.pixel_height?placement.pixel_height:placement.rows?placement.rows*ch:sh;
             const PixelRect destination{pane.content.x+placement.column*cw+placement.offset_x,pane.content.y+placement.row*ch+placement.offset_y,w,h};
             if(destination.x+destination.width<=pane.content.x||destination.y+destination.height<=pane.content.y||destination.x>=pane.content.x+pane.content.width||destination.y>=pane.content.y+pane.content.height)continue;
-            auto image_tex=image_texture(pane.id,image);if(!image_tex)continue;
+            id<MTLTexture> image_tex=textures.image_texture(device, pane.id, image, serial);if(!image_tex)continue;
             draw(encoder,image_tex,destination,
                 {255,255,255,255},false,{float(placement.source_x)/image.width,float(placement.source_y)/image.height,float(sw)/image.width,float(sh)/image.height});
         }
@@ -308,7 +230,7 @@ struct Renderer::Impl {
             // avoid saturating it. This is not a proven nonblocking present path.
             id<CAMetalDrawable> drawable=layer?[layer nextDrawable]:nil;
             if(layer&&!drawable)return RenderResult::busy;
-            ++serial;transient=0;
+            ++serial;textures.begin_upload_batch();
             if(layer){std::ostringstream details;const auto frame=layer.frame,bounds=layer.bounds;
                 details<<"attached="<<(layer.superlayer!=nil)<<" hidden="<<bool(layer.hidden)
                     <<" opacity="<<layer.opacity<<" frame="<<frame.origin.x<<','<<frame.origin.y<<','<<frame.size.width<<','<<frame.size.height
@@ -388,7 +310,7 @@ struct Renderer::Impl {
                     PixelRect bounds{std::min(primitive.rect.x,primitive.rect.x+primitive.rect.width)-pad,
                         std::min(primitive.rect.y,primitive.rect.y+primitive.rect.height)-pad,std::abs(primitive.rect.width)+2*pad,std::abs(primitive.rect.height)+2*pad};
                     const auto w=static_cast<std::uint32_t>(std::ceil(bounds.width)),h=static_cast<std::uint32_t>(std::ceil(bounds.height));
-                    if(!w||!h||std::uint64_t(w)*h*4>4u*1024u*1024u||std::uint64_t(w)*h*4>max_transient_bytes-transient)continue;
+                    if(!w||!h||std::uint64_t(w)*h*4>4u*1024u*1024u||std::uint64_t(w)*h*4>textures.remaining_upload_bytes())continue;
                     Bitmap bitmap(w,h);auto ctx=bitmap.context.get();CGContextTranslateCTM(ctx,0,h);CGContextScaleCTM(ctx,1,-1);
                     auto fill=primitive.fill,stroke=primitive.stroke;
                     CGContextSetRGBFillColor(ctx,fill.r/255.,fill.g/255.,fill.b/255.,fill.a/255.);
@@ -398,7 +320,7 @@ struct Renderer::Impl {
                         std::max(0.f,primitive.radius),std::max(0.f,primitive.radius),nullptr));CGContextAddPath(ctx,path.get());}
                     CGContextSetRGBStrokeColor(ctx,stroke.r/255.,stroke.g/255.,stroke.b/255.,stroke.a/255.);CGContextSetLineWidth(ctx,std::max(1.f,primitive.stroke_width));
                     CGContextDrawPath(ctx,line?kCGPathStroke:primitive.stroke_width>0?kCGPathFillStroke:kCGPathFill);
-                    draw(encoder,texture(w,h,bitmap.bytes.data()),{bounds.x,bounds.y,float(w),float(h)},
+                    draw(encoder,textures.upload_bgra(device, w, h, bitmap.bytes),{bounds.x,bounds.y,float(w),float(h)},
                         {255,255,255,255},primitive.background_replace);
                 } else {
                     // Chrome text is small and infrequent; row text is the bounded cache.
@@ -406,7 +328,7 @@ struct Renderer::Impl {
                     if(!clip(encoder,label.clip.value_or(PixelRect{0,0,float(width),float(height)})))continue;
                     if(!finite(label.rect)||label.text.empty()||!label.color.a||label.text.size()>65536||!std::isfinite(label.size_dip)||label.size_dip<1||label.size_dip>256)continue;
                     const auto w=static_cast<std::uint32_t>(std::max(0.f,std::ceil(label.rect.width))),h=static_cast<std::uint32_t>(std::max(0.f,std::ceil(label.rect.height)));
-                    if(!w||!h||std::uint64_t(w)*h*4>4u*1024u*1024u||std::uint64_t(w)*h*4>max_transient_bytes-transient)continue;
+                    if(!w||!h||std::uint64_t(w)*h*4>4u*1024u*1024u||std::uint64_t(w)*h*4>textures.remaining_upload_bytes())continue;
                     Bitmap bitmap(w,h);const CGFloat size=label.size_dip*dpi/96.;
                     NSFont* label_font=label.family.empty()?nil:[NSFont fontWithName:string(label.family) size:size];
                     if(!label_font)label_font=[NSFont systemFontOfSize:size weight:label.semibold?NSFontWeightSemibold:NSFontWeightRegular];
@@ -417,7 +339,7 @@ struct Renderer::Impl {
                     const CGFloat flush=label.alignment==ChromeTextAlignment::center?.5:label.alignment==ChromeTextAlignment::trailing?1:0;
                     const double pen=std::max(0.,CTLineGetPenOffsetForFlush(line.get(),flush,label.rect.width));
                     CGContextSetTextPosition(bitmap.context.get(),pen,std::max(0.,(h-label_font.ascender+label_font.descender)/2.));
-                    CTLineDraw(line.get(),bitmap.context.get());draw(encoder,texture(w,h,bitmap.bytes.data()),label.rect,{255,255,255,fg.a});
+                    CTLineDraw(line.get(),bitmap.context.get());draw(encoder,textures.upload_bgra(device, w, h, bitmap.bytes),label.rect,{255,255,255,fg.a});
                 }
             }
             [encoder endEncoding];
@@ -456,7 +378,17 @@ void Renderer::set_background_opacity(float opacity){
 CellMetrics Renderer::metrics()const noexcept{return impl_->font_resources.metrics();}
 RenderResult Renderer::render(const WindowScene& scene){return impl_->render(scene);}
 void* Renderer::frame_latency_wait_handle()const noexcept{return nullptr;}
-RendererStats Renderer::stats()const noexcept{return impl_->statistics;}
+RendererStats Renderer::stats() const noexcept {
+    auto result = impl_->statistics;
+    const auto textures = impl_->textures.stats();
+    result.shaped_rows = textures.shaped_rows;
+    result.shape_cache_hits = textures.row_cache_hits;
+    result.image_uploads = textures.image_uploads;
+    result.dirty_rectangles = textures.dirty_rectangles;
+    result.shape_cache_bytes = textures.row_bytes;
+    result.image_cache_bytes = textures.image_bytes;
+    return result;
+}
 // The alpha diagnostic currently targets the Windows DComp investigation.
 // Explicitly unavailable rather than blocking AppKit or pretending a sample.
 bool Renderer::begin_alpha_probe(PixelRect) { return false; }

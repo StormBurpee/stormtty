@@ -453,6 +453,7 @@ elseif(APPLE)
         src/platform/macos/renderer.mm
         src/platform/macos/core_text_font_resources.mm
         src/platform/macos/core_text_row_rasterizer.mm
+        src/platform/macos/metal_texture_resources.mm
         src/platform/macos/png_decoder.mm)
     target_include_directories(stormtty_renderer PUBLIC include)
     target_link_libraries(stormtty_renderer PUBLIC stormtty_terminal PRIVATE ${STORMTTY_MACOS_FRAMEWORKS})
@@ -480,10 +481,11 @@ elseif(APPLE)
         stormtty_test(macos_renderer_tests tests/macos_renderer_tests.mm stormtty_renderer stormtty_workspace)
         stormtty_test(macos_font_resources_tests tests/macos_font_resources_tests.mm stormtty_renderer)
         stormtty_test(macos_row_rasterizer_tests tests/macos_row_rasterizer_tests.mm stormtty_renderer)
-        foreach(test macos_png_tests macos_renderer_tests macos_font_resources_tests macos_row_rasterizer_tests)
+        stormtty_test(macos_metal_texture_resources_tests tests/macos_metal_texture_resources_tests.mm stormtty_renderer)
+        foreach(test macos_png_tests macos_renderer_tests macos_font_resources_tests macos_row_rasterizer_tests macos_metal_texture_resources_tests)
             target_compile_options(${test} PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
         endforeach()
-        set_tests_properties(macos_png_tests macos_renderer_tests macos_font_resources_tests macos_row_rasterizer_tests PROPERTIES LABELS "macos;native")
+        set_tests_properties(macos_png_tests macos_renderer_tests macos_font_resources_tests macos_row_rasterizer_tests macos_metal_texture_resources_tests PROPERTIES LABELS "macos;native")
     endif()
 endif()
 if(STORMTTY_BUILD_APP)
