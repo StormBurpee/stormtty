@@ -1,6 +1,6 @@
 #include "core_test.hpp"
 #include "stormtty/project_workspaces.hpp"
-#include "stormtty/parked_attention.hpp"
+#include "stormtty/session_attention.hpp"
 
 #include <algorithm>
 #include <map>
@@ -319,38 +319,69 @@ void parked_ownership_and_identity() {
 
 void parked_attention_placement_lifecycle() {
     ProjectWorkspaceCatalog catalog;
-    Workspace initial; CHECK(initial.create_tab({41}));
-    const auto project=create(catalog,"Attention",std::move(initial));
-    const auto pane=catalog.workspace(project)->active_pane();
-    const auto parked=catalog.park({project,pane}); CHECK(parked);
-    SessionInfo info; info.state=SessionState::running;
-    info.command={CommandPhase::completed,1,1,0};
-    std::map<SessionId,ParkedAttention> attention;
-    attention.emplace(*parked.value,ParkedAttention(info));
-    CHECK(!attention.at(*parked.value).unread_completion());
-    info.command={CommandPhase::completed,2,2,0};
-    CHECK(attention.at(*parked.value).observe(info)==ParkedNotice::command_finished);
-    const auto before=snapshot(catalog);
+    Workspace initial;
+    CHECK(initial.create_tab({41}));
+    const auto project = create(catalog, "Attention", std::move(initial));
+    const auto pane = catalog.workspace(project)->active_pane();
+    SessionAttention attention;
+    SessionInfo info;
+    info.state = SessionState::running;
+    info.command = {CommandPhase::running, 1, 0, {}};
+    const WatchIdentity identity{1, 41, 1};
+    CHECK(attention.arm_watch({41}, identity, info, true));
+
+    const auto failed_park = catalog.park({project, {99999}});
+    CHECK(!failed_park);
+    CHECK(!attention.parked({41}));
+    CHECK(attention.current_watch({41}, identity)->status() == WatchStatus::watching);
+
+    const auto parked = catalog.park({project, pane});
+    CHECK(parked);
+    // Baseline follows successful placement and precedes the first update.
+    info.command = {CommandPhase::completed, 1, 1, 0};
+    attention.baseline_after_park(*parked.value, info);
+    CHECK(attention.observe_parked(*parked.value, info) == ParkedNotice::none);
+    CHECK(!attention.parked(*parked.value)->unread_completion());
+    CHECK(attention.observe_watch(*parked.value, identity, info));
+    info.command = {CommandPhase::completed, 2, 2, 0};
+    CHECK(attention.observe_parked(*parked.value, info) == ParkedNotice::command_finished);
+    const auto before = snapshot(catalog);
     // A canceled confirmation performs no placement or attention mutation.
-    const bool confirmed=false;
-    if (confirmed) { CHECK(catalog.discard_parked({project,*parked.value})); attention.erase(*parked.value); }
-    CHECK(snapshot(catalog)==before && attention.at(*parked.value).unread_completion());
-    for(std::size_t i=0;i<Workspace::maximum_tabs;++i) CHECK(catalog.workspace(project)->create_tab());
-    auto restore=[&] {
-        const auto result=catalog.reattach_to_new_tab({project,*parked.value});
-        if(result)attention.erase(*parked.value);
+    const bool confirmed = false;
+    if (confirmed) {
+        CHECK(catalog.discard_parked({project, *parked.value}));
+        attention.forget(*parked.value);
+    }
+    CHECK(snapshot(catalog) == before && attention.parked(*parked.value)->unread_completion());
+    for (std::size_t i = 0; i < Workspace::maximum_tabs; ++i) CHECK(catalog.workspace(project)->create_tab());
+    auto restore = [&] {
+        const auto result = catalog.reattach_to_new_tab({project, *parked.value});
+        if (result) attention.restored(*parked.value);
         return bool(result);
     };
-    CHECK(!restore()); CHECK(attention.at(*parked.value).unread_completion());
+    CHECK(!restore());
+    CHECK(attention.parked(*parked.value)->unread_completion());
+    CHECK(attention.current_watch(*parked.value, identity)->unread());
+    CHECK(!catalog.activate({99999})); // Failed Open navigation must not acknowledge.
+    CHECK(attention.current_watch(*parked.value, identity)->unread());
     CHECK(catalog.workspace(project)->close_tab(catalog.workspace(project)->state().tabs.back().id));
-    CHECK(restore()); CHECK(attention.empty());
-    const auto again=catalog.park({project,catalog.workspace(project)->active_pane()}); CHECK(again);
-    attention.emplace(*again.value,ParkedAttention(info));
-    CHECK(!attention.at(*again.value).unread_completion());
-    CHECK(attention.at(*again.value).observe(info)==ParkedNotice::none);
-    CHECK(catalog.discard_parked({project,*again.value}));
-    std::erase_if(attention,[&](const auto& item){return !catalog.contains_session(item.first);});
-    CHECK(attention.empty()); CHECK(catalog.validate());
+    CHECK(restore());
+    CHECK(!attention.parked(*parked.value));
+    CHECK(attention.current_watch(*parked.value, identity)->unread());
+    // Ordinary restore is not Watch Open. Only successful exact-actor navigation
+    // followed by explicit Open/Dismiss acknowledges the captured result.
+    CHECK(attention.acknowledge_watch(*parked.value, identity, 1));
+
+    const auto again = catalog.park({project, catalog.workspace(project)->active_pane()});
+    CHECK(again);
+    attention.baseline_after_park(*again.value, info);
+    CHECK(!attention.parked(*again.value)->unread_completion());
+    CHECK(attention.observe_parked(*again.value, info) == ParkedNotice::none);
+    CHECK(catalog.discard_parked({project, *again.value}));
+    attention.forget(*again.value);
+    CHECK(!attention.parked(*again.value));
+    CHECK(!attention.stored_watch(*again.value));
+    CHECK(catalog.validate());
 }
 
 void parked_bounds_and_rollback() {

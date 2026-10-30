@@ -24,10 +24,10 @@ policy; it is not a second actor registry.
 - Unused-actor retirement checks the whole application catalog, including hidden
   projects and parked actors. It advances its read iterator before disposal;
   closing a placement does not introduce a snapshot allocation failure.
-- `ApplicationActors::dispose` is the single coordinator for registry disposal
-  and state, label, parked-attention, and watch cleanup. Those metadata maps remain
-  outside the registry intentionally; this slice does not encapsulate their
-  feature policy.
+- `ApplicationActors::dispose` is the single coordinator for registry disposal,
+  state/label cache cleanup, and `SessionAttention::forget`. The separate
+  [attention owner](session-attention.md) now encapsulates Watch/parked policy;
+  presentation caches remain outside both owners intentionally.
 - Closed-window retirement supplies application completion before close/removal
   and retains its explicit fallback wake afterward. Candidate rollback still
   destroys the candidate first and disposes only its exact creation ledger.
