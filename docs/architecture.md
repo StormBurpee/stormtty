@@ -152,12 +152,19 @@ caller-owned scratch. Consume them synchronously, never retain them in frames or
 painters. A font/DPI remeasurement requires the caller to invalidate the scene.
 GPU device recreation preserves this CPU cache; font/DPI remeasurement clears it.
 
+`ImageCache` (`src/platform/windows/image_cache.hpp` and `.cpp`) owns
+device-dependent bitmap residency and upload policy. It borrows the D2D context
+only for lookup/upload, and returns a bitmap for immediate synchronous painting.
+Placement, cropping and layer order stay with the painter. Ordinary resize, font
+and DPI changes preserve these images; device replacement clears them before D2D
+resources are released. Residency is decoded cache-byte accounting, not a claim
+about total driver memory. See [image-cache qualification](../tests/image_cache_verification.md).
+
 ## Remaining ownership work
 
-`src/platform/windows/renderer.cpp` still owns GPU image caching, terminal/chrome
-painting, device resources and presentation. These need focused ownership without
-conflating canvas validity, resource lifetime and presentation readiness. The
-GPU `ImageCache` extraction is under qualification; it is not integrated yet.
+`src/platform/windows/renderer.cpp` still owns terminal/chrome painting, device
+resources and presentation. These need focused ownership without conflating
+canvas validity, resource lifetime and presentation readiness.
 Observation caches are encapsulated, but deliberately remain application-shared;
 changing that lifetime requires separate transfer/invalidation characterization.
 
@@ -184,7 +191,7 @@ gates. Useful starting points:
   Windows `settings_services_tests`, `windows_session_launcher_tests` and
   `native_settings_smoke`. Exercise conflicts, Cancel/reopen and close during I/O.
 - Rendering: `ribbon_renderer_tests`, `scene_damage_tests`, then Windows
-  `text_resources_tests`, `renderer_smoke`/`renderer_final_teardown`, `renderer_png`
+  `text_resources_tests`, `image_cache_tests`, `renderer_smoke`/`renderer_final_teardown`, `renderer_png`
   and relevant native layout/material
   scenarios. Include resize, font/DPI changes, occlusion and resource recovery.
 - Actor/VT changes: `session_tests`, `terminal_tests`, `terminal_search_tests`,
