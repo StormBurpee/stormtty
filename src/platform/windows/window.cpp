@@ -1,5 +1,6 @@
 #include "stormtty/workspace_ribbon.hpp"
 #include "stormtty/ribbon_renderer.hpp"
+#include "stormtty/window_header_renderer.hpp"
 #include "stormtty/ui_colors.hpp"
 #include "stormtty/chrome_paint.hpp"
 #include "stormtty/pane_context.hpp"
@@ -3725,72 +3726,67 @@ WindowScene NativeWindow::scene() {
     }
     for (const auto& divider : layout_.dividers) rectangle(divider.bounds, drag_node_ == divider.node ? accent : blend(seam,accent,hover_amount((1ull<<63)|divider.node.value)));
     if (!fullscreen_) {
-        if (backdrop_) chrome.a = 230;
-        rectangle(chrome_.band, chrome, 0, {}, 0, true);
-        rectangle(chrome_.tabs_band,chrome,0,{},0,true);
-        rectangle({0,chrome_.band.height-1/scale_,width_,1/scale_},seam);
-        rectangle({chrome_.tabs_band.x,chrome_.tabs_band.y+chrome_.tabs_band.height-1/scale_,chrome_.tabs_band.width,1/scale_},seam);
-        const double title_right=zoom_return_.width>0?zoom_return_.x-8:chrome_.drag.x+chrome_.drag.width;
-        const Rect app_title=layout_window_title(chrome_,title_right);
-        label(app_title,"StormTTY",secondary,12,false,ChromeTextAlignment::center);
-        auto button = [&](Rect bounds, std::uint64_t id, bool close = false) {
-            const auto amount=hover_amount(id);
-            if (amount>0) rectangle(bounds, opacity(close ? Color{196,43,28,255} : raised,amount), close ? 0 : 5);
-        };
-        button(chrome_.menu,1); button(chrome_.new_tab,2); button(chrome_.palette,3);
+        // This local color is also used by later scene surfaces. Keep the
+        // material alpha decision here, at its original scene boundary.
+        if (backdrop_) {
+            chrome.a = 230;
+        }
+        HeaderButtonHovers button_hover;
+        button_hover.menu = hover_amount(1);
+        button_hover.new_tab = hover_amount(2);
+        button_hover.palette = hover_amount(3);
         if (zoom_return_.width) {
-            button(zoom_return_,7);
-            label({zoom_return_.x+8,zoom_return_.y+5,zoom_return_.width-16,20},"Return to split",accent,12,false,ChromeTextAlignment::center);
+            button_hover.zoom_return = hover_amount(7);
         }
-        const auto tab_colors=tab_selection_colors(ui,high_contrast_,background,accent);
+
+        const auto tab_colors = tab_selection_colors(ui, high_contrast_, background, accent);
+        std::vector<HeaderTabPresentation> header_tabs;
+        header_tabs.reserve(chrome_.tabs.size());
         for (const auto& tab : chrome_.tabs) {
-            const bool selected = tab.tab == workspace().active_tab();
-            const double settle=tab_transitions_[tab.tab].value(now), hovered=hover_amount(16+tab.tab.value*2);
-            if (settle>0 || hovered>0) rectangle(tab.bounds, opacity(blend(raised,tab_colors.surface,settle),std::max(settle,hovered*.65)),4,
-                high_contrast_?opacity(tab_colors.border,settle):Color{0,0,0,0},high_contrast_?1/scale_:0);
-            if (selected) rectangle({tab.bounds.x+3,tab.bounds.y+tab.bounds.height-2/scale_,std::max(0.0,tab.bounds.width-6),2/scale_},accent,1/scale_);
-            const auto watch=tab_watch_indicator(tab.tab);
-            const auto caption=layout_tab_label(tab.bounds,watch);
-            if(caption.indicator.width>0) {
-                // Hollow = watching, filled = unread. Shape carries state even
-                // in high contrast; neither implies command success or animates.
-                const auto ink=selected?text:secondary;
-                rectangle(caption.indicator,watch==TabWatchIndicator::unread?ink:Color{0,0,0,0},3,ink,1);
+            HeaderTabPresentation presentation;
+            presentation.geometry = tab;
+            presentation.selected = tab.tab == workspace().active_tab();
+            // State insertion and animation sampling remain host policy. The
+            // composer receives only values and cannot start or advance timers.
+            presentation.selection_amount = tab_transitions_[tab.tab].value(now);
+            presentation.hover_amount = hover_amount(16 + tab.tab.value * 2);
+            presentation.watch = tab_watch_indicator(tab.tab);
+            presentation.title = tab_title(tab.tab);
+            if (!chrome_.compact && (presentation.selected || presentation.hover_amount > 0)) {
+                presentation.close_hover_amount = hover_amount(17 + tab.tab.value * 2);
             }
-            label(caption.text,tab_title(tab.tab),selected?text:secondary,13,selected);
-            if (chrome_.compact) label({tab.bounds.x+std::max(0.0,tab.bounds.width-28),tab.bounds.y+6,std::min(24.0,tab.bounds.width),20},"▾",text,13,false,ChromeTextAlignment::center);
-            if (!chrome_.compact && (selected || hovered>0)) {
-                const double x = tab.close.x + tab.close.width / 2, y = tab.close.y + tab.close.height / 2;
-                if (const auto amount=hover_amount(17+tab.tab.value*2); amount>0) rectangle(tab.close,opacity(chrome,amount),4);
-                line(x - 3,y - 3,x + 3,y + 3,secondary); line(x + 3,y - 3,x - 3,y + 3,secondary);
-            }
+            header_tabs.push_back(std::move(presentation));
         }
-        for (int row = 0; row < 3; ++row) line(chrome_.menu.x + 8,chrome_.menu.y + 10 + row * 5,chrome_.menu.x + 20,chrome_.menu.y + 10 + row * 5,secondary,1.2);
-        const double nx = chrome_.new_tab.x + chrome_.new_tab.width/2, ny = chrome_.new_tab.y + chrome_.new_tab.height/2;
-        if (chrome_.new_tab.width>0) { line(nx-5,ny,nx+5,ny,secondary,1.3); line(nx,ny-5,nx,ny+5,secondary,1.3); }
-        const double px = chrome_.palette.x + 8, py = chrome_.palette.y + 10;
-        for (int y=0;y<2;++y) for (int x=0;x<2;++x) rectangle({px+x*7,py+y*7,4,4},secondary,1);
-        if(navigation_.focus.width>0 && navigation_.focus.height>0) {
-            button(navigation_.focus,10);
-            const auto ink=focus_mode_?accent:secondary;
-            const double x=navigation_.focus.x+navigation_.focus.width/2,y=navigation_.focus.y+navigation_.focus.height/2;
-            // Outward corners enter focus mode; inward corners restore navigation.
-            for(const int sx:{-1,1})for(const int sy:{-1,1}) {
-                const double corner=focus_mode_?3:6,end=focus_mode_?6:3;
-                line(x+sx*corner,y+sy*end,x+sx*corner,y+sy*corner,ink);
-                line(x+sx*corner,y+sy*corner,x+sx*end,y+sy*corner,ink);
-            }
+        if (navigation_.focus.width > 0 && navigation_.focus.height > 0) {
+            button_hover.focus = hover_amount(10);
         }
-        button(chrome_.minimize,4); button(chrome_.maximize,5); button(chrome_.close,6,true);
-        const double cy = chrome_.band.height / 2;
-        auto center = [](Rect r) { return r.x+r.width/2; };
-        const double minx = center(chrome_.minimize), maxx = center(chrome_.maximize), closex = center(chrome_.close);
-        line(minx-5,cy+3,minx+5,cy+3,text);
-        if (maximized_) {
-            rectangle({maxx-3,cy-5,8,8}, {0,0,0,0}, 0, text, 1);
-            rectangle({maxx-5,cy-3,8,8}, chrome, 0, text, 1);
-        } else rectangle({maxx-5,cy-5,10,10}, {0,0,0,0}, 0, text,1);
-        line(closex-4,cy-4,closex+4,cy+4,text); line(closex+4,cy-4,closex-4,cy+4,text);
+        button_hover.minimize = hover_amount(4);
+        button_hover.maximize = hover_amount(5);
+        button_hover.close = hover_amount(6);
+
+        const WindowHeaderView header{
+            .layout = chrome_,
+            .tabs = header_tabs,
+            .zoom_return = zoom_return_,
+            .focus = navigation_.focus,
+            .hover = button_hover,
+            .width = width_,
+            .maximized = maximized_,
+            .focus_mode = focus_mode_,
+        };
+        const WindowHeaderStyle header_style{
+            .surface = chrome,
+            .raised = raised,
+            .seam = seam,
+            .ink = text,
+            .secondary = secondary,
+            .accent = accent,
+            .selected_tab_surface = tab_colors.surface,
+            .selected_tab_border = tab_colors.border,
+            .scale = scale_,
+            .high_contrast = high_contrast_,
+        };
+        WindowHeaderRenderer{}.append_scene(result, header, header_style);
     }
     if (navigation_.footer.height>0) {
         const auto placement = footer_layout();

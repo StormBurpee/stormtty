@@ -79,7 +79,9 @@ if(STORMTTY_EXPERIMENTAL_DESKTOP_GLASS_PROBE)
 endif()
 
 add_library(stormtty_workspace src/core/theme_exchange.cpp src/core/agent_provider_settings.cpp src/core/agent_panel.cpp src/core/settings_panel.cpp src/core/context_menu.cpp src/core/project_workspaces.cpp src/core/application_workspaces.cpp src/core/application_layout_codec.cpp src/core/workspace_presets.cpp src/core/workspace.cpp src/core/workspace_serialization.cpp src/core/commands.cpp src/core/config.cpp)
-target_sources(stormtty_workspace PRIVATE src/core/ribbon_renderer.cpp)
+target_sources(stormtty_workspace PRIVATE
+    src/core/ribbon_renderer.cpp
+    src/core/window_header_renderer.cpp)
 target_include_directories(stormtty_workspace PUBLIC include)
 target_link_libraries(stormtty_workspace PUBLIC stormtty_build_features)
 stormtty_warnings(stormtty_workspace)
@@ -271,6 +273,7 @@ if(BUILD_TESTING)
     stormtty_test(application_workspace_persistence_tests tests/application_workspace_persistence_tests.cpp stormtty_workspace_persistence)
     stormtty_test(ui_colors_tests tests/ui_colors_tests.cpp stormtty_workspace)
     stormtty_test(ribbon_renderer_tests tests/ribbon_renderer_tests.cpp stormtty_workspace)
+    stormtty_test(window_header_renderer_tests tests/window_header_renderer_tests.cpp stormtty_workspace)
     stormtty_test(smoke_deadline_tests tests/smoke_deadline_tests.cpp)
     stormtty_test(cursor_motion_tests tests/cursor_motion_tests.cpp stormtty_workspace)
     stormtty_test(context_menu_tests tests/context_menu_tests.cpp stormtty_workspace)
