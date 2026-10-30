@@ -209,13 +209,36 @@ cache. Trait fonts, attributed text and the CoreText line stay scoped to CPU wor
 the line survives decoration drawing, and the bitmap context releases its backing
 store reference before owned pixels return to the renderer.
 
-The Metal renderer still owns row keys (including blink and cursor variants),
-texture residency, LRU policy, statistics, font/device invalidation and all GPU
-submission/completion state. Cache hits return before any CPU work. The shared
-remaining-upload guard precedes rasterization; only the later texture upload
-consumes the aggregate row/image/chrome allowance. The 4,096-cell guard remains
-after bitmap/context/attributed-string creation, preserving original failure order.
-No Windows CPU-shaped-row or painter ownership model is imposed on Metal rows.
+`MetalTextureResources` (`src/platform/macos/metal_texture_resources.hpp` and `.mm`)
+owns GPU row/image residency, identity keys, serial-based eviction, resident-byte
+accounting and cumulative upload/hit counters. It borrows device, font and pixels
+only during calls; CPU shaping/rasterization remains in `CoreTextRowRasterizer`.
+Row keys include blink/cursor variants; row hits avoid rasterization. Rows evict
+only after successful upload, including oversized uncached rows. Images evict
+before upload, so a failed upload does not restore evicted images. Equal-recency
+ties follow ordered key traversal. Do not substitute Windows cache policy here.
+
+Row, image, white and chrome textures share one 64 MiB upload allowance.
+Rasterization checks an allowance snapshot; upload reserves bytes before dimension
+and native-allocation checks, without rollback. A batch starts at device creation
+and after drawable acquisition, not on busy, unchanged or occluded returns.
+Clearing residency neither starts a batch nor resets cumulative counters. The
+CPU rasterizer's 4,096-cell guard retains its existing failure order after
+bitmap/context/attributed-string creation.
+
+The renderer requests row invalidation on font reset (even the same font) and DPI
+changes. Same-DPI resize and opacity changes preserve both caches. Successful
+device reconstruction clears both at its existing late boundary after white/layer
+creation; partial setup failure does not gain an early cache clear. The renderer
+still owns geometry, serial advancement, scene comparison, device/pipelines/layer,
+submission and asynchronous completion/presentation state—not texture cache policy.
+
+Cached textures and encoding locals are strong ARC references. Ordinary retained-
+resource command buffers retain encoded textures through GPU completion even if
+the cache is evicted, cleared or destroyed. Completion blocks must not borrow the
+texture owner; existing shared completion-generation state stays separate. These
+are resource-lifetime contracts, not proof of onscreen or physical presentation.
+See [Metal texture verification](../tests/macos_metal_texture_resources_verification.md).
 
 Native CPU characterization compares all decoration styles at 96/192 DPI against
 the pre-extraction row algorithm, separately from Metal renderer integration tests.
@@ -320,6 +343,7 @@ gates. Useful starting points:
   scenarios. Include immutable full-versus-incremental terminal pixel comparisons
   at multiple DPIs, resize, font/DPI changes, occlusion and resource recovery.
 - macOS typography/rendering: `macos_font_resources_tests`, `macos_row_rasterizer_tests`,
+  `macos_metal_texture_resources_tests`,
   `macos_renderer_tests` and `macos_png_tests`; Windows graphics checks do not qualify
   this backend.
 - Actor/VT changes: `session_tests`, `terminal_tests`, `terminal_search_tests`,
