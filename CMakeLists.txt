@@ -82,7 +82,8 @@ add_library(stormtty_workspace src/core/theme_exchange.cpp src/core/agent_provid
 target_sources(stormtty_workspace PRIVATE
     src/core/workspace_navigator.cpp
     src/core/ribbon_renderer.cpp
-    src/core/window_header_renderer.cpp)
+    src/core/window_header_renderer.cpp
+    src/core/workspace_rail_renderer.cpp)
 target_include_directories(stormtty_workspace PUBLIC include)
 target_link_libraries(stormtty_workspace PUBLIC stormtty_build_features)
 stormtty_warnings(stormtty_workspace)
@@ -279,6 +280,7 @@ if(BUILD_TESTING)
     stormtty_test(ui_colors_tests tests/ui_colors_tests.cpp stormtty_workspace)
     stormtty_test(ribbon_renderer_tests tests/ribbon_renderer_tests.cpp stormtty_workspace)
     stormtty_test(window_header_renderer_tests tests/window_header_renderer_tests.cpp stormtty_workspace)
+    stormtty_test(workspace_rail_renderer_tests tests/workspace_rail_renderer_tests.cpp stormtty_workspace)
     stormtty_test(smoke_deadline_tests tests/smoke_deadline_tests.cpp)
     stormtty_test(cursor_motion_tests tests/cursor_motion_tests.cpp stormtty_workspace)
     stormtty_test(context_menu_tests tests/context_menu_tests.cpp stormtty_workspace)
