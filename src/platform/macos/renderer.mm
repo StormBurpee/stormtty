@@ -1,5 +1,6 @@
 #include "stormtty/renderer.hpp"
 #include "cf_owner.hpp"
+#include "core_text_font_resources.hpp"
 #import <AppKit/AppKit.h>
 #import <CoreText/CoreText.h>
 #import <Metal/Metal.h>
@@ -109,8 +110,7 @@ struct Renderer::Impl {
     id<MTLTexture> target,white;
     RendererOptions options;
     RendererStats statistics;
-    CellMetrics cell;
-    CfOwner<CTFontRef> font;
+    macos::CoreTextFontResources font_resources;
     std::uint32_t width{},height{};float dpi{96};
     std::uint64_t font_generation{1},serial{},chrome_generation{};
     std::vector<PaneStamp> previous;
@@ -174,16 +174,11 @@ struct Renderer::Impl {
         [result replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0 withBytes:bytes bytesPerRow:std::size_t(w)*4];return result;
     }
     void measure() {
-        if(options.font.family.empty()||options.font.family.size()>256||options.font.locale.size()>128||!std::isfinite(options.font.size_dip)||options.font.size_dip<6||options.font.size_dip>72)throw std::invalid_argument("Invalid CoreText font options");
-        const float px=options.font.size_dip*dpi/96.f;
-        font=CfOwner<CTFontRef>(CTFontCreateWithName((__bridge CFStringRef)string(options.font.family),px,nullptr));
-        check(bool(font),"Cannot create terminal CoreText font");
-        UniChar letter='M';CGGlyph glyph{};CGSize advance{};
-        CTFontGetGlyphsForCharacters(font.get(),&letter,&glyph,1);CTFontGetAdvancesForGlyphs(font.get(),kCTFontOrientationHorizontal,&glyph,&advance,1);
-        cell.width=static_cast<std::uint16_t>(std::clamp(std::ceil(advance.width),1.,512.));
-        cell.height=static_cast<std::uint16_t>(std::clamp(std::ceil(CTFontGetAscent(font.get())+CTFontGetDescent(font.get())+CTFontGetLeading(font.get())+2*dpi/96.),1.,1024.));
-        cell.baseline=static_cast<float>(CTFontGetAscent(font.get())+dpi/96.);
-        ++font_generation;rows.clear();statistics.shape_cache_bytes=0;have_previous=false;
+        font_resources.reset(options.font, dpi);
+        ++font_generation;
+        rows.clear();
+        statistics.shape_cache_bytes = 0;
+        have_previous = false;
     }
     void resize(std::uint32_t w,std::uint32_t h,float new_dpi) {
         if(!std::isfinite(new_dpi)||new_dpi<48||new_dpi>768)throw std::invalid_argument("Invalid renderer DPI");
@@ -230,6 +225,10 @@ struct Renderer::Impl {
         const auto bytes=std::size_t(w)*h*4;
         if(bytes>max_transient_bytes-transient)throw std::runtime_error("Visible CoreText rows exceed transient texture budget");
         Bitmap bitmap(w,h);auto ctx=bitmap.context.get();
+        const auto cell = font_resources.metrics();
+        // Borrow only for this synchronous rasterization. Attributed strings and
+        // trait copies retain their own references; no borrow enters a GPU callback.
+        const auto font = font_resources.borrow_font();
         const float cw=pane.frame->cell_width?pane.frame->cell_width:cell.width;
         const float base=std::min(float(h)-1,cell.baseline);
         NSMutableAttributedString* text=[[NSMutableAttributedString alloc] init];
@@ -246,10 +245,10 @@ struct Renderer::Impl {
             text_bytes+=hidden?1:oversized?3:c.grapheme.size();
             const auto start=static_cast<CFIndex>(text.length);
             CTFontSymbolicTraits traits=0;if(c.style.bold)traits|=kCTFontBoldTrait;if(c.style.italic)traits|=kCTFontItalicTrait;
-            CfOwner<CTFontRef> variant(traits?CTFontCreateCopyWithSymbolicTraits(font.get(),0,nullptr,traits,traits):nullptr);
+            CfOwner<CTFontRef> variant(traits?CTFontCreateCopyWithSymbolicTraits(font,0,nullptr,traits,traits):nullptr);
             const auto fg=foreground(c);
             NSColor* color=[NSColor colorWithSRGBRed:fg.r/255. green:fg.g/255. blue:fg.b/255. alpha:1];
-            NSDictionary* attrs=@{(__bridge NSString*)kCTFontAttributeName:(__bridge id)(variant?variant.get():font.get()),
+            NSDictionary* attrs=@{(__bridge NSString*)kCTFontAttributeName:(__bridge id)(variant?variant.get():font),
                 (__bridge NSString*)kCTForegroundColorAttributeName:(__bridge id)color.CGColor,
                 (__bridge NSString*)kCTLigatureAttributeName:@(options.font.ligatures?1:0),
                 (__bridge NSString*)kCTLanguageAttributeName:string(options.font.locale)};
@@ -348,6 +347,7 @@ struct Renderer::Impl {
         statistics.image_cache_bytes+=bytes;++statistics.image_uploads;return result;
     }
     void draw_images(id<MTLRenderCommandEncoder> encoder,const RenderPane& pane,ImageLayer which) {
+        const auto cell = font_resources.metrics();
         const auto& f=*pane.frame;const float cw=f.cell_width?f.cell_width:cell.width,ch=f.cell_height?f.cell_height:cell.height;
         for(const auto& placement:f.images) {
             if(placement.layer!=which||!placement.pixels)continue;
@@ -365,6 +365,7 @@ struct Renderer::Impl {
         }
     }
     RenderResult render(const WindowScene& scene) {
+        const auto cell = font_resources.metrics();
         if(!width||!height||!target)return RenderResult::suspended;
         if(scene.panes.size()>4096||scene.primitives.size()>16384||scene.texts.size()>4096)throw std::runtime_error("Metal scene exceeds bounded primitive counts");
         if(gpu_failed->load())throw std::runtime_error("Metal command buffer failed; renderer reconstruction is required");
@@ -524,7 +525,7 @@ void Renderer::set_background_opacity(float opacity){
     if(!std::isfinite(opacity)||opacity<0.f||opacity>1.f)throw std::invalid_argument("Background opacity must be between 0 and 1");
     impl_->options.background_opacity=opacity;impl_->have_previous=false;
 }
-CellMetrics Renderer::metrics()const noexcept{return impl_->cell;}
+CellMetrics Renderer::metrics()const noexcept{return impl_->font_resources.metrics();}
 RenderResult Renderer::render(const WindowScene& scene){return impl_->render(scene);}
 void* Renderer::frame_latency_wait_handle()const noexcept{return nullptr;}
 RendererStats Renderer::stats()const noexcept{return impl_->statistics;}
