@@ -30,6 +30,16 @@ Change native launch, transport, resize or reaping here; change terminal protoco
 behavior in `src/terminal/terminal.cpp`. Neither belongs in a painter or window
 input handler.
 
+`TerminalSearch` (`src/terminal/terminal_search.hpp/.cpp`) privately owns the
+capped search allocator/engine handle, query validation, incremental work,
+owned-coordinate materialization, immutable result publication and navigation
+policy. `TerminalCore` passes its borrowed terminal and current revision only
+within an actor call. The core still owns thread/callback checks, content revision,
+selection mutation, viewport reveal and synchronized-output release. The search
+owner cannot mutate terminal selection or schedule actor work; it returns owned
+selection candidates. Its stable allocator outlives its handle, and the entire
+owner is destroyed before the terminal. See [search ownership verification](../tests/terminal_search_ownership_verification.md).
+
 `FramePtr` is `shared_ptr<const RenderFrame>` (`include/stormtty/frame.hpp`).
 Frames own their data: never retain borrowed Ghostty pointers across mutation or
 threads. A frame can outlive its actor. Process exit, retained read-only document
