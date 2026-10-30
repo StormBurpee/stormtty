@@ -40,7 +40,7 @@ jobs:
       - name: Configure isolated native UI build
         run: cmake -S . -B build-ui -G Ninja -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_BUNDLE_ZSH=OFF -DSTORMTTY_BUNDLE_CONPTY=OFF -DSTORMTTY_TEST_INK=OFF
       - name: Build native app and layout/renderer checks
-        run: cmake --build build-ui --parallel 2 --target stormtty terminal_tests terminal_search_tests pane_context_tests command_watch_tests previous_terminal_tests session_write_accounting_tests window_geometry_tests core_commands_tests renderer_smoke ui_colors_tests context_menu_tests settings_panel_tests
+        run: cmake --build build-ui --parallel 2 --target stormtty windows_shell_state_tests terminal_tests terminal_search_tests pane_context_tests command_watch_tests previous_terminal_tests session_write_accounting_tests window_geometry_tests core_commands_tests renderer_smoke ui_colors_tests context_menu_tests settings_panel_tests
       - name: Exercise native keyboard flow and capture craft states
         id: capture
         shell: python
@@ -115,7 +115,7 @@ jobs:
           if-no-files-found: error
       - name: Run layout and renderer checks
         if: always() && steps.capture.outcome != 'skipped'
-        run: ctest --test-dir build-ui -R "^(terminal_tests|terminal_search_tests|pane_context_tests|command_watch_tests|previous_terminal_tests|session_write_accounting_tests|window_geometry_tests|core_commands_tests|renderer_smoke|ui_colors_tests|context_menu_tests|settings_panel_tests)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
+        run: ctest --test-dir build-ui -R "^(windows_shell_state_tests|terminal_tests|terminal_search_tests|pane_context_tests|command_watch_tests|previous_terminal_tests|session_write_accounting_tests|window_geometry_tests|core_commands_tests|renderer_smoke|ui_colors_tests|context_menu_tests|settings_panel_tests)$" --no-tests=error --output-on-failure --output-junit focused-tests.xml
       - name: Require normal and narrow Settings clipping rasters
         if: always() && steps.capture.outcome != 'skipped'
         shell: python
