@@ -1,6 +1,7 @@
 #include "../src/platform/windows/application_actors.hpp"
 #include "../src/platform/windows/native_wake.hpp"
 #include "view_creation_legacy.hpp"
+#include "../src/platform/windows/view_creation.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -404,6 +405,17 @@ void view_creation_test(const std::string& executable) {
     bool nested_rejected = false;
     try { (void)creation.begin(); } catch (const std::runtime_error&) { nested_rejected = true; }
     require(nested_rejected, "Reentrant creation accepted");
+    // A survivor may launch another actor during native construction reentry.
+    // It is deliberately allocated after begin, but never enters the candidate
+    // ledger. A global registry-ID difference would incorrectly dispose it.
+    const auto reentrant_id = actors.registry.allocate();
+    auto reentrant = Session::start(process, {}, actors.registry.callback(reentrant_id, survivor_endpoint),
+                                   SessionRetentionPolicy::retain_document);
+    ActorCleanup reentrant_cleanup{reentrant, release.value};
+    actors.registry.register_actor(reentrant_id, reentrant);
+    require(bool(projects.workspace(*survivor_project.value)->create_tab(reentrant_id, "default")),
+            "Could not bind reentrant survivor actor");
+    const auto reentrant_identity = actors.registry.identity(reentrant_id);
     const auto candidate_project = projects.create_workspace(candidate, {"Candidate", "", ""});
     require(bool(candidate_project), "Could not stage candidate workspace");
     auto candidate_window = std::make_unique<MessageWindow>();
@@ -418,15 +430,25 @@ void view_creation_test(const std::string& executable) {
     require(bool(projects.workspace(*candidate_project.value)->create_tab(candidate_id, "default")),
             "Could not bind candidate actor");
     const auto deadline = std::chrono::steady_clock::now() + 5s;
-    while ((!authored_actor_ready(*survivor) || !authored_actor_ready(*candidate_actor)) &&
-           !survivor->process_finished() && !candidate_actor->process_finished()) {
+    while ((!authored_actor_ready(*survivor) || !authored_actor_ready(*reentrant) ||
+            !authored_actor_ready(*candidate_actor)) &&
+           !survivor->process_finished() && !reentrant->process_finished() &&
+           !candidate_actor->process_finished()) {
         require(std::chrono::steady_clock::now() < deadline, "Creation fixture actors did not start");
         std::this_thread::sleep_for(5ms);
     }
-    require(authored_actor_ready(*survivor) && authored_actor_ready(*candidate_actor) &&
-                !survivor->process_finished() && !candidate_actor->process_finished(),
+    require(authored_actor_ready(*survivor) && authored_actor_ready(*reentrant) &&
+                authored_actor_ready(*candidate_actor) && !survivor->process_finished() &&
+                !reentrant->process_finished() && !candidate_actor->process_finished(),
             "Creation fixture actors did not reach authored event wait");
     const auto unregistered = actors.registry.allocate();
+    bool wrong_candidate_rejected = false;
+    try {
+        creation.record_actor(*original.value, unregistered);
+    } catch (const std::logic_error&) {
+        wrong_candidate_rejected = true;
+    }
+    require(wrong_candidate_rejected && creation.active(), "Wrong candidate entered creation ledger");
     creation.record_actor(candidate, unregistered);
     auto retained_callback = actors.registry.callback(unregistered, candidate_endpoint);
     actors.observations.observe_state(unregistered, SessionState::starting);
@@ -444,8 +466,10 @@ void view_creation_test(const std::string& executable) {
             "Rollback damaged catalog ownership");
     require(projects.catalog().find(*survivor_project.value)->metadata.name ==
                 "Survivor edit during construction", "Rollback overwrote survivor edit");
-    require(actors.registry.size() == 1 && actors.registry.retain(survivor_id) == survivor &&
-                actors.registry.identity(survivor_id) == identity && !survivor->closed(),
+    require(actors.registry.size() == 2 && actors.registry.retain(survivor_id) == survivor &&
+                actors.registry.identity(survivor_id) == identity && !survivor->closed() &&
+                actors.registry.retain(reentrant_id) == reentrant &&
+                actors.registry.identity(reentrant_id) == reentrant_identity && !reentrant->closed(),
             "Rollback disposed or replaced survivor actor");
     require(candidate_actor->wait_closed(5s), "Rollback did not dispose candidate actor");
     require(!actors.observations.state(unregistered) && actors.observations.state(survivor_id),
@@ -459,7 +483,25 @@ void view_creation_test(const std::string& executable) {
 
     const auto published = creation.begin();
     require(published.value > candidate.value, "Candidate window identity was reused");
-    require(bool(projects.create_workspace(published, {"Published", "", ""})), "Publish staging failed");
+    const auto published_project = projects.create_workspace(published, {"Published", "", ""});
+    require(bool(published_project), "Publish staging failed");
+    const auto published_id = actors.registry.allocate();
+    creation.record_actor(published, published_id);
+    auto published_actor = Session::start(process, {}, actors.registry.callback(published_id, survivor_endpoint),
+                                         SessionRetentionPolicy::retain_document);
+    ActorCleanup published_cleanup{published_actor, release.value};
+    actors.registry.register_actor(published_id, published_actor);
+    const auto published_identity = actors.registry.identity(published_id);
+    require(bool(projects.workspace(*published_project.value)->create_tab(published_id, "default")),
+            "Could not bind published actor");
+    const auto published_deadline = std::chrono::steady_clock::now() + 5s;
+    while (!authored_actor_ready(*published_actor) && !published_actor->process_finished()) {
+        require(std::chrono::steady_clock::now() < published_deadline,
+                "Published fixture actor did not start");
+        std::this_thread::sleep_for(5ms);
+    }
+    require(authored_actor_ready(*published_actor) && !published_actor->process_finished(),
+            "Published fixture actor did not reach authored event wait");
     require(creation.defer_model_change(), "Staged dirty change lost");
     creation.commit_catalog();
     require(creation.active() && creation.defer_model_change(),
@@ -471,6 +513,11 @@ void view_creation_test(const std::string& executable) {
     require(projects.window(published) && actors.registry.retain(survivor_id) == survivor,
             "Postcommit notification entered rollback");
     require(!creation.defer_model_change(), "Finished publication retained dirty suppression");
+    (void)creation.begin();
+    require(!creation.rollback_after_candidate_destruction(), "Clean abort inherited previous dirty state");
+    require(actors.registry.retain(published_id) == published_actor &&
+                actors.registry.identity(published_id) == published_identity && !published_actor->closed(),
+            "Publication or next rollback disposed a committed candidate actor");
     drain_wakes();
 }
 
@@ -497,6 +544,9 @@ int main(int argc, char** argv) {
         partial_registration_routes_test();
         registered_actor_test(std::filesystem::absolute(argv[0]).string());
         view_creation_test<stormtty::test::LegacyViewCreation>(std::filesystem::absolute(argv[0]).string());
+        std::cout << "PASS legacy candidate creation transaction\n";
+        view_creation_test<ViewCreation>(std::filesystem::absolute(argv[0]).string());
+        std::cout << "PASS owned candidate creation transaction\n";
         std::cout << "Windows host lifetime tests passed\n";
         return 0;
     } catch (const std::exception& error) {

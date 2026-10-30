@@ -318,6 +318,7 @@ if(WIN32)
     stormtty_warnings(stormtty_session_launcher)
     add_library(stormtty_windows_host_lifetime
         src/platform/windows/application_actors.cpp
+        src/platform/windows/view_creation.cpp
         src/platform/windows/native_wake.cpp)
     target_link_libraries(stormtty_windows_host_lifetime PUBLIC stormtty_session stormtty_workspace PRIVATE user32)
     target_compile_definitions(stormtty_windows_host_lifetime PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

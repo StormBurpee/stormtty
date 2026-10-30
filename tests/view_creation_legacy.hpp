@@ -17,9 +17,13 @@ public:
     }
 
     WindowId begin() {
-        if (active_) throw std::runtime_error("A window is already being prepared.");
+        if (active_) {
+            throw std::runtime_error("A window is already being prepared.");
+        }
         const auto staged = projects_.begin_window_creation();
-        if (!staged) throw std::runtime_error(staged.error);
+        if (!staged) {
+            throw std::runtime_error(staged.error);
+        }
         id_ = *staged.value;
         active_ = true;
         dirty_ = false;
@@ -27,13 +31,17 @@ public:
     }
 
     void record_actor(WindowId candidate, SessionId actor) {
-        if (candidate != id_) throw std::logic_error("Wrong candidate ledger");
+        if (candidate != id_) {
+            throw std::logic_error("Wrong candidate ledger");
+        }
         created_.push_back(actor);
     }
 
     void commit_catalog() {
         const auto committed = projects_.commit_window_creation(id_);
-        if (!committed) throw std::runtime_error(committed.error);
+        if (!committed) {
+            throw std::runtime_error(committed.error);
+        }
         created_.clear();
     }
 
@@ -44,19 +52,25 @@ public:
 
     bool rollback_after_candidate_destruction() {
         projects_.abort_window_creation(id_);
-        for (const auto id : created_) actors_.dispose(id);
+        for (const auto id : created_) {
+            actors_.dispose(id);
+        }
         created_.clear();
         active_ = false;
         return std::exchange(dirty_, false);
     }
 
     bool defer_model_change() {
-        if (!active_) return false;
+        if (!active_) {
+            return false;
+        }
         dirty_ = true;
         return true;
     }
 
-    bool active() const { return active_; }
+    bool active() const {
+        return active_;
+    }
 
 private:
     ApplicationWorkspaces& projects_;

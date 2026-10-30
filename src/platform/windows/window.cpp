@@ -24,6 +24,7 @@
 #endif
 #include <windows.h>
 #include "application_actors.hpp"
+#include "view_creation.hpp"
 #include "native_wake.hpp"
 #include <windowsx.h>
 #include <dwmapi.h>
@@ -346,7 +347,6 @@ public:
     int exit_status{};
     std::vector<NativeWindow*> windows;
     std::vector<std::unique_ptr<NativeWindow>> owned_windows;
-    bool creating_view{}, creation_dirty{};
     void load_workspaces(NativeWindow&);
     void workspace_model_changed();
     void save_workspaces();
@@ -357,6 +357,7 @@ public:
     // independent close is required before constructing a second NativeWindow.
     ApplicationWorkspaces projects;
     ApplicationActors actors;
+    windows::ViewCreation view_creation{projects, actors};
     std::shared_ptr<WorkspaceSaveWake> workspace_wake{std::make_shared<WorkspaceSaveWake>()};
     ApplicationWorkspacePersistence workspaces;
     UINT_PTR workspace_timer{};
@@ -726,7 +727,6 @@ private:
     std::map<SessionId,std::shared_ptr<Session>> smoke_project_actors_;
     std::shared_ptr<Session> smoke_disposable_;
     WindowWorkspaceView projects_;
-    std::vector<SessionId> creation_sessions_; // Candidate-local rollback ledger, never a global ID diff.
     bool committed_view_{};
     bool restored_workspaces_{};
     std::function<Status(std::string)> edit_text_action_;
@@ -983,54 +983,69 @@ NativeApplication::~NativeApplication() {
     actor_completion->thread = 0;
     owned_windows.clear();
 }
-NativeWindow& NativeApplication::create_view(Config config, NativeRunOptions options, bool restore, unsigned injected_failure) {
-    if(injected_failure && !options.smoke_windows)throw std::runtime_error("Creation injection is fixture-only.");
-    if(creating_view)throw std::runtime_error("A window is already being prepared.");
-    if(!restore && workspaces.enabled())throw std::runtime_error("Grouped native persistence is not enabled yet.");
-    // Allocation and the catalog checkpoint precede native/process side effects.
-    owned_windows.reserve(owned_windows.size()+1);
-    auto staged=projects.begin_window_creation();if(!staged)throw std::runtime_error(staged.error);
-    const auto window_id=*staged.value;
-    creating_view=true;creation_dirty=false;
+NativeWindow& NativeApplication::create_view(Config config, NativeRunOptions options,
+                                             bool restore, unsigned injected_failure) {
+    if (injected_failure && !options.smoke_windows) {
+        throw std::runtime_error("Creation injection is fixture-only.");
+    }
+    if (view_creation.active()) {
+        throw std::runtime_error("A window is already being prepared.");
+    }
+    if (!restore && workspaces.enabled()) {
+        throw std::runtime_error("Grouped native persistence is not enabled yet.");
+    }
+    // Allocation and catalog staging precede native/process side effects.
+    owned_windows.reserve(owned_windows.size() + 1);
+    const auto window_id = view_creation.begin();
     std::unique_ptr<NativeWindow> candidate;
     NativeWindow* committed_view{};
     try {
-        candidate=std::make_unique<NativeWindow>(*this,window_id,std::move(config),std::move(options));
-        if(restore)load_workspaces(*candidate);
-        if(injected_failure==1)throw std::runtime_error("Injected pre-HWND candidate failure.");
+        candidate = std::make_unique<NativeWindow>(
+            *this, window_id, std::move(config), std::move(options));
+        if (restore) {
+            load_workspaces(*candidate);
+        }
+        if (injected_failure == 1) {
+            throw std::runtime_error("Injected pre-HWND candidate failure.");
+        }
         candidate->create();
-        if(injected_failure==2) {
-            if(!candidate->hwnd_ || !candidate->renderer_ || !candidate->active_session())throw std::runtime_error("Candidate did not reach renderer/actor injection boundary.");
+        if (injected_failure == 2) {
+            if (!candidate->hwnd_ || !candidate->renderer_ || !candidate->active_session()) {
+                throw std::runtime_error("Candidate did not reach renderer/actor injection boundary.");
+            }
             throw std::runtime_error("Injected post-renderer/actor candidate failure.");
         }
-        candidate->workspace_smoke_ready_=true;
-        auto& view=*candidate;
-        if(!view.options_.smoke_workspaces.empty())view.changed(true);
-        if(auto committed=projects.commit_window_creation(window_id);!committed)throw std::runtime_error(committed.error);
-        view.creation_sessions_.clear();view.committed_view_=true;
-        committed_view=&view;
-        owned_windows.push_back(std::move(candidate)); // Reserved, nonthrowing ownership commit.
-    } catch(...) {
-        // Destruction clears the weak wake target and drains GPU callbacks before
-        // rollback. Existing views and their actors are never stopped or rebound.
-        auto created=candidate?std::move(candidate->creation_sessions_):std::vector<SessionId>{};
-        if(candidate)retired_smoke_sessions.merge(candidate->smoke_sessions_);
-        candidate.reset();
-        projects.abort_window_creation(window_id);
-        for (const auto id : created) {
-            actors.dispose(id);
+        candidate->workspace_smoke_ready_ = true;
+        auto& view = *candidate;
+        if (!view.options_.smoke_workspaces.empty()) {
+            view.changed(true);
         }
-        creating_view=false;
+        view_creation.commit_catalog();
+        view.committed_view_ = true;
+        committed_view = &view;
+        owned_windows.push_back(std::move(candidate)); // Reserved, nonthrowing publication.
+    } catch (...) {
+        // Native destruction clears the weak wake target and drains GPU callbacks
+        // before rollback. The journal survives destruction of the native view.
+        if (candidate) {
+            retired_smoke_sessions.merge(candidate->smoke_sessions_);
+        }
+        candidate.reset();
+        const bool changed = view_creation.rollback_after_candidate_destruction();
         // Reentrant survivor edits remain dirty; capture only the rolled-back state.
-        if(std::exchange(creation_dirty,false))workspace_model_changed();
+        if (changed) {
+            workspace_model_changed();
+        }
         throw;
     }
     // Post-commit notification must never enter candidate rollback.
-    creating_view=false;
-    const bool changed=std::exchange(creation_dirty,false);
-    if(changed || restore)workspace_model_changed(); // Restored runs also need a running checkpoint.
+    const bool changed = view_creation.finish_publication();
+    if (changed || restore) {
+        workspace_model_changed(); // Restored runs need a running checkpoint too.
+    }
     return *committed_view;
 }
+
 int NativeApplication::run(Config config, NativeRunOptions options) {
     const bool diagnostics=options.smoke_test;
     WindowClass klass; klass.smoke=diagnostics;
@@ -1491,7 +1506,7 @@ SessionId NativeWindow::new_session(std::string profile_id) {
 
     const SessionId id = application_.actors.registry.allocate();
     if (!committed_view_) {
-        creation_sessions_.push_back(id); // Allocate ledger before launching.
+        application_.view_creation.record_actor(projects_.id(), id);
     }
 
     const bool bundled = process.provider == ProcessProvider::windows_packaged_experimental;
@@ -2124,8 +2139,7 @@ void NativeWindow::workspace_model_changed() {
 }
 
 void NativeApplication::workspace_model_changed() {
-    if (creating_view) {
-        creation_dirty = true;
+    if (view_creation.defer_model_change()) {
         return;
     }
     if (workspaces.mark_changed() && !workspace_timer) {
@@ -2134,7 +2148,7 @@ void NativeApplication::workspace_model_changed() {
 }
 
 void NativeApplication::save_workspaces() {
-    if (creating_view || !workspaces.prepare_save()) {
+    if (view_creation.active() || !workspaces.prepare_save()) {
         return;
     }
     // Busy deferral precedes this guard and capture, as in the original writer.
