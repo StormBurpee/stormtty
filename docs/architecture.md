@@ -40,6 +40,17 @@ owner cannot mutate terminal selection or schedule actor work; it returns owned
 selection candidates. Its stable allocator outlives its handle, and the entire
 owner is destroyed before the terminal. See [search ownership verification](../tests/terminal_search_ownership_verification.md).
 
+`TerminalFrameMaterializer` (`src/terminal/terminal_frame_materializer.hpp/.cpp`)
+privately owns render-state/iterator resources, frame and row generations, and
+immutable row/image snapshot materialization. Core supplies only a synchronously
+borrowed terminal, geometry and image budget. The materializer copies pixels
+before returning, reuses unchanged owned rows/payloads, and cleans engine render
+state only after complete materialization. Core retains callback failure handling,
+exact pre-hold capture timing, animation ticking and all terminal mutation. Explicit
+initialization preserves terminal/render/encoder allocation order; initial palette
+values are returned to Core without exposing a render handle. See
+[frame ownership verification](../tests/terminal_frame_materializer_verification.md).
+
 `FramePtr` is `shared_ptr<const RenderFrame>` (`include/stormtty/frame.hpp`).
 Frames own their data: never retain borrowed Ghostty pointers across mutation or
 threads. A frame can outlive its actor. Process exit, retained read-only document
