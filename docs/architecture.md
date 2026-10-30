@@ -45,12 +45,19 @@ See [the terminal adapter](../src/terminal/README.md) and
 
 ## Application lifetime versus a view
 
-The Windows `NativeApplication`, `NativeWindow` and view transactions remain in
-`src/platform/windows/window.cpp`. `ActorLifetimeRegistry` and `ApplicationActors`
-now live in private `src/platform/windows/application_actors.hpp/.cpp`;
-`WakeState` and `RendererReadyWake` live in `native_wake.hpp/.cpp` beside them.
-This establishes the actor/notification module boundary, not a completed
-application/view separation.
+The Windows `NativeApplication` and `NativeWindow` remain in
+`src/platform/windows/window.cpp`. Private collaborators now own distinct parts
+of their lifecycle:
+
+- `application_actors.hpp/.cpp`: `ActorLifetimeRegistry` and `ApplicationActors`
+  own actor discovery and disposal coordination.
+- `native_wake.hpp/.cpp`: `WakeState` and `RendererReadyWake` own notification
+  mailboxes and renderer readiness waits.
+- `view_creation.hpp/.cpp`: `ViewCreation` owns the unpublished model transaction,
+  exact actor-creation ledger and deferred model-change state.
+
+These are implemented boundaries, not a completed application/view separation.
+Native construction, publication and retirement orchestration remain in the host.
 
 **`NativeApplication` owns application lifetime:** native view ownership and the
 message pump, `ApplicationWorkspaces`, actor registration, and the
@@ -60,11 +67,43 @@ layout state, editor presentation, and a `WindowWorkspaceView` scoped to its
 `src/core/application_workspaces.cpp`, not by giving a view another catalog.
 Reacquire model references after mutation; placement changes can invalidate them.
 
-Creating a view is a transaction. An unpublished model candidate and exact actor
-creation ledger permit rollback without removing a survivor's actors. Retiring
-unused actors checks the whole application catalog, including hidden and parked
-sessions. Closing a placement is not permission to close unrelated processes;
-close previews revalidate ownership and session associations before removal.
+### Unpublished view creation
+
+`ViewCreation` is a UI-thread transaction owner borrowing only
+`ApplicationWorkspaces` and `ApplicationActors`. It owns the candidate WindowId,
+exact actor-ID ledger, dirty bit and idle/staging/publishing phase. It neither
+launches actors nor owns a native view, callback, persistence service or general
+host context. Rollback is explicit, not destructor-driven.
+
+The host reserves publication capacity before staging and constructs/restores the
+native candidate. Candidate actor IDs enter the ledger before launch or route
+creation; reentrant survivor launches do not. On failure, the host destroys the
+native candidate first. The transaction then aborts the candidate catalog and
+disposes only its recorded IDs, including route-only/unregistered IDs. Survivor
+edits and actors remain intact; a global registry difference is not an equivalent
+rollback policy.
+
+Catalog commit clears the ledger but retains the publication guard. The host
+marks the view committed and transfers it into the reserved owning vector before
+`finish_publication` releases suppression and returns deferred dirty state.
+Persistence notification stays outside the creation catch, after publication or
+completed rollback. The owner does not schedule I/O or swallow cleanup/notification
+errors. See [creation verification](../tests/view_creation_verification.md) for
+the phase contracts and legacy/owned characterization.
+
+### Retirement and close authority
+
+Retirement remains host-owned and unchanged by creation extraction. It runs
+outside WndProc after persistence completion draining, with the existing
+persistence and last-window gates. Pending Settings work defers retirement;
+completion reporting precedes catalog detachment. Revalidated close previews,
+actor completion-route rebinding and wake delivery precede view destruction.
+Last-window shutdown retains its snapshot for final persistence flush.
+
+Retiring unused actors checks the whole application catalog, including hidden and
+parked sessions. Closing a placement is not permission to close unrelated
+processes; close previews revalidate ownership and session associations before
+removal.
 
 Native resources use RAII; exceptions must not cross Win32, COM or C callbacks.
 Do not join actors or wait for process exit in a window callback. Renderer-ready

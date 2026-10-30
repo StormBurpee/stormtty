@@ -10,16 +10,47 @@ and the evidence needed to close them.
 
 ### 1. Windows application and view transactions
 
-The first private module boundary is implemented: `application_actors.hpp/.cpp`
-owns registry/disposal coordination and `native_wake.hpp/.cpp` contains notification
-mailboxes and renderer readiness waits. `NativeApplication`, `NativeWindow` and
-view-creation/retirement transactions still reside in
-`src/platform/windows/window.cpp`; this group is not complete. Continue separating
-that machinery with explicit dependencies. Preserve unpublished-candidate
-rollback, exact actor ledgers, close authorization, final wake delivery and
-readiness-wait draining. A view must not acquire application-wide authority through
-a shared context or a map-access facade. This work does not enable New Window or
+Three private boundaries are implemented: `application_actors.hpp/.cpp` owns
+registry/disposal coordination; `native_wake.hpp/.cpp` owns notification mailboxes
+and renderer readiness waits; `view_creation.hpp/.cpp` owns the unpublished
+candidate's model transaction, exact actor ledger and deferred dirty state.
+Creation rollback follows native candidate destruction; catalog commit retains
+the publication guard until the host transfers native ownership. Persistence
+notification remains outside the creation catch.
+
+Group 1 is still open. `NativeApplication` and `NativeWindow` in
+`src/platform/windows/window.cpp` retain these responsibilities:
+
+- Native creation/admission, raw view registration, reserved publication and
+  resource destruction. The creation owner does not own or expose the view map.
+- Retirement outside WndProc, after persistence completion draining. Preserve
+  pending Settings-work deferral and completion reporting before detachment,
+  plus the existing persistence and last-window gates.
+- Close authorization and catalog revalidation, exact actor disposal with final
+  completion-route rebinding/wake delivery, view destruction, and final persistence
+  flush ordering. Preserve readiness-wait cancellation/draining before native
+  resource replacement or teardown.
+
+Continue separating coherent responsibilities through narrow dependencies, not
+shared contexts or map-access facades. Keep the transaction's explicit failure
+order and survivor edits/actors intact. This work does not enable New Window or
 grouped persistence.
+
+For the creation slice at `7542710`, portable model coverage passed 1,811 checks;
+strict Windows syntax checks cover the owner, lifetime tests and host. The native
+Windows gate passed 70/70, including execution of both captured legacy and owned
+creation fixtures. The legacy implementation was captured before extraction but
+was **not executed natively before extraction**.
+
+The [full Windows run](https://github.com/StormBurpee/stormtty/actions/runs/41098888113)
+failed: packaged `smoke-layout` reached its stage 0 deadline, bundled
+`smoke-settings` reached its stage 8 deadline, and the repeat summary reported
+1/10 with return code 2. All 13 repeat receipts reported `reaped=true` and
+`timed_out=false`; successful process reaping is not scenario success. Failure
+classification remains under review, so these results do not establish a cause
+or a fully green shell run. They also do not qualify physical UI or macOS parity.
+See [creation verification](../tests/view_creation_verification.md) for coverage
+and source-characterization limits.
 
 ### 2. Windows input and interaction
 
