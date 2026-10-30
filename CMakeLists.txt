@@ -312,7 +312,14 @@ if(WIN32)
     add_executable(stormtty-console-setup src/platform/windows/console_setup.cpp)
     stormtty_warnings(stormtty-console-setup)
     install(TARGETS stormtty-console-setup RUNTIME DESTINATION .)
-    add_library(stormtty_settings_services src/platform/windows/settings_document_services.cpp src/platform/windows/workspace_persistence_services.cpp src/platform/windows/settings_services.cpp src/platform/windows/agent_setup_service.cpp src/platform/windows/shell_state.cpp)
+    add_library(stormtty_settings_services
+        src/platform/windows/windows_local_path.cpp
+        src/platform/windows/windows_shell_discovery.cpp
+        src/platform/windows/settings_document_services.cpp
+        src/platform/windows/workspace_persistence_services.cpp
+        src/platform/windows/settings_services.cpp
+        src/platform/windows/agent_setup_service.cpp
+        src/platform/windows/shell_state.cpp)
     target_link_libraries(stormtty_settings_services PUBLIC stormtty_workspace PRIVATE advapi32 shell32 ole32)
     stormtty_warnings(stormtty_settings_services)
     add_library(stormtty_session_launcher src/platform/windows/session_launcher.cpp)

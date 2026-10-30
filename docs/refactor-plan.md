@@ -159,6 +159,14 @@ Settings and workspace worker owners remain separate from the synchronous file
 service. The current single-window envelope integration is not a missing v1-to-envelope
 migration; see [application-layout storage](application-layout-storage.md).
 
+The first boundary is extracted: `windows_shell_discovery.cpp` owns the bounded
+probe domain, with portable candidate-policy characterization.
+`windows_local_path.cpp` retains one shared lexical/local-drive path policy;
+stronger ancestor/link/security checks and the single commit mutex remain in
+`settings_services.cpp`. Group 6 remains open for guarded transaction versus
+codec-adapter separation; legacy backup lifetimes must stay inside the transaction
+authority. Portable tests and cross-compilation are not native runtime proof.
+
 ### 7. Trusted managed-shell modules
 
 `tools/shell-preset.zsh` combines private state/completion initialization with

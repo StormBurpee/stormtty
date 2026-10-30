@@ -5,6 +5,21 @@ All operations are **synchronous background-thread work**, never work for a
 WndProc/render/input callback. The host owns workers, cancellation/generation
 checks, window lifetime and publishing owned results onto its UI thread.
 
+## Module ownership
+
+`windows_shell_discovery.cpp` owns bounded native shell probes and candidate
+construction. Its private `shell_discovery_policy.hpp` characterizes first-valid
+selection, encoded-path bounds, launch arguments and configured Cmd equivalence
+without querying or changing the test host. The resolver seam is only the native
+candidate-to-UTF-8 probe, not a general discovery framework.
+
+`windows_local_path.cpp` is the single shared lexical/local-drive path policy.
+Discovery checks ordinary executable attributes; it does not acquire the stronger
+ancestor/target guards used for persistence. `settings_services.cpp` still owns
+all guarded snapshots, the single commit mutex, DACL handling, legacy backup
+verification and atomic replacement. Document-specific codec adapters remain there
+for a later boundary; existing Settings and workspace workers remain unchanged.
+
 ## Discovery and launch policy
 
 `discover_windows_shells()` returns at most four candidate `Profile` values. It
@@ -99,6 +114,11 @@ include partial rename states. Filesystems that refuse the atomic rename fail
 without applying a draft.
 
 ## Tests
+
+`shell_discovery_policy_tests` is portable characterization of selection order and
+stopping, empty/oversized/UTF-8 executable values, arguments/environment/cwd, and
+exact Cmd alias equivalence without mutating configured profiles. It does not
+qualify Windows registry reads, UTF-16 conversion, filesystem attributes or launch.
 
 `settings_services_tests` is a **Windows-native** test. It covers missing/default
 load, Unicode filenames, successful repeated saves and token stability, invalid
