@@ -55,6 +55,7 @@
 #include "app_icons.hpp"
 #include "smoke_teardown_trace.hpp"
 #include "theme_picker.hpp"
+#include "liquid_glass/consent.hpp"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -93,6 +94,7 @@ constexpr UINT_PTR material_probe_timer = 4;
 constexpr UINT_PTR typing_motion_timer = 5;
 constexpr UINT_PTR typing_smoke_timer = 6;
 constexpr UINT_PTR local_clock_timer = 7;
+constexpr UINT_PTR liquid_glass_timer = 8;
 constexpr std::string_view smoke_marker="__STORMTTY_NATIVE_SMOKE_OK__";
 constexpr std::size_t clipboard_limit = 1024 * 1024;
 
@@ -449,6 +451,9 @@ private:
     bool key_message(MSG&);
     void create();
     void settings_changed();
+    void update_liquid_glass_ui();
+    void stop_liquid_glass(const char* reason);
+    void start_liquid_glass();
     void refresh_clock();
     std::string local_clock_;
     void observe_material_renderer();
@@ -678,6 +683,8 @@ private:
     NativeRunOptions options_;
     std::optional<Profile> managed_shell_profile_; // Resolved launch profile; only a stable marker is ever saved.
     SettingsPanel settings_panel_{Platform::windows};
+    bool liquid_glass_policy_{},liquid_glass_timer_active_{},liquid_glass_stop_pending_{};
+    std::uint64_t liquid_glass_display_generation_{};
     SettingsReload settings_reload_;
     AgentPanel agent_panel_;
     std::unique_ptr<AgentPanelController> agent_controller_;
@@ -1196,6 +1203,9 @@ void NativeWindow::settings_changed() {
     auto render_capability = renderer_ ? renderer_->stats() : RendererStats{};
     material_tracker_.observe({render_capability.composition,render_capability.warp,render_capability.device_recoveries,render_capability.host_backdrop});
     const auto policy=window_material_policy(config_.appearance,render_capability.composition,render_capability.warp,!contrast_known || high_contrast_,transparency_result==ERROR_SUCCESS && transparency!=0);
+    liquid_glass_policy_=policy.fallback==MaterialFallback::none && !options_.smoke_test;
+    if(!liquid_glass_policy_ && renderer_ && renderer_->liquid_glass_active())
+        stop_liquid_glass("Stopped: transparency/accessibility or graphics policy does not allow experimental glass.");
     const bool extra_requested=config_.appearance.additional_blur>0;
     const bool extra_eligible=policy.fallback==MaterialFallback::none &&
         config_.appearance.backdrop!=BackdropPreference::mica && contrast_known && transparency_result==ERROR_SUCCESS;
@@ -1221,6 +1231,10 @@ void NativeWindow::settings_changed() {
     const HRESULT frame_result=DwmExtendFrameIntoClientArea(hwnd_,&margins);
     const bool clear_active=clear_material && SUCCEEDED(frame_result);
     backdrop_=extra_active || clear_active || (material_requested && SUCCEEDED(frame_result));
+    // Until the app has a separate tint policy, never capture behind an opaque OS fallback.
+    liquid_glass_policy_=liquid_glass_policy_ && backdrop_;
+    if(!liquid_glass_policy_ && renderer_ && renderer_->liquid_glass_active())
+        stop_liquid_glass("Stopped: a supported translucent background is required for experimental glass.");
     if (renderer_) renderer_->set_background_opacity(backdrop_?policy.opacity:1.0f);
     std::string status;
     switch(policy.fallback) {
@@ -1254,6 +1268,7 @@ void NativeWindow::settings_changed() {
     }
     queue_material_probe(policy_changed);
     caret_schedule(); changed();
+    update_liquid_glass_ui();
 }
 void NativeWindow::publish_material_status() {
     // Put measured evidence first: this help row is deliberately single-line.
@@ -2676,9 +2691,57 @@ void NativeWindow::preview_settings(const Config& candidate) {
     config_.font=candidate.font; config_.appearance=candidate.appearance; config_.ribbon=candidate.ribbon;
     settings_changed(); caret_schedule(); refresh_tooltips(); changed(font_changed);
 }
+void NativeWindow::update_liquid_glass_ui() {
+    if(!renderer_||renderer_call_)return;
+    if(liquid_glass_stop_pending_) {
+        liquid_glass_stop_pending_=false;
+        RendererCallGuard guard(renderer_call_);renderer_->stop_liquid_glass("Stopped after a window/display policy change.");
+    }
+    bool active=renderer_->liquid_glass_active();
+    if(active&&!liquid_glass_timer_active_) {
+        liquid_glass_timer_active_=SetTimer(hwnd_,liquid_glass_timer,33,nullptr)!=0;
+        if(!liquid_glass_timer_active_) {
+            RendererCallGuard guard(renderer_call_);renderer_->stop_liquid_glass("Capture stopped: refresh scheduling unavailable.");active=false;
+        }
+    } else if(!active&&liquid_glass_timer_active_) {
+        KillTimer(hwnd_,liquid_glass_timer);liquid_glass_timer_active_=false;
+    }
+    std::string status=renderer_->liquid_glass_status();
+    if(active&&config_.appearance.background_opacity>=1)status+=" Lower Background opacity to see the lens.";
+    const auto generation=settings_panel_.generation();
+    settings_panel_.set_liquid_glass_status(active,liquid_glass_policy_&&renderer_->liquid_glass_available(),std::move(status));
+    if(settings_panel_.is_open()&&generation!=settings_panel_.generation())changed();
+}
+void NativeWindow::stop_liquid_glass(const char* reason) {
+    if(renderer_call_) {liquid_glass_stop_pending_=true;return;}
+    if(renderer_&&renderer_->liquid_glass_active()) {
+        RendererCallGuard guard(renderer_call_);renderer_->stop_liquid_glass(reason);
+    }
+    update_liquid_glass_ui();
+}
+void NativeWindow::start_liquid_glass() {
+    if(!renderer_||renderer_call_||!liquid_glass_policy_||!renderer_->liquid_glass_available()) {update_liquid_glass_ui();return;}
+    const auto settings_generation=settings_panel_.generation();
+    const auto display_generation=liquid_glass_display_generation_;
+    const auto selected=windows::liquid_glass::confirm_display(hwnd_);
+    // Native warning pumps messages; never apply consent to a different window,
+    // Settings lifetime, policy, or display selection after returning.
+    if(!selected||!hwnd_||closing_window_||!renderer_||!settings_panel_.is_open()||
+       settings_panel_.generation()!=settings_generation||liquid_glass_display_generation_!=display_generation||
+       !liquid_glass_policy_||!windows::liquid_glass::selection_current(hwnd_,*selected))return;
+    {
+        RendererCallGuard guard(renderer_call_);
+        renderer_->cancel_alpha_probe();
+        renderer_->start_liquid_glass(selected->monitor);
+    }
+    KillTimer(hwnd_,material_probe_timer);material_probe_running_=false;material_probe_requested_=false;
+    update_liquid_glass_ui();changed();
+}
 void NativeWindow::settings_actions() {
     while (auto action=settings_panel_.take_action()) {
-        if (action->kind==SettingsActionKind::import_theme || action->kind==SettingsActionKind::export_theme) {
+        if(action->kind==SettingsActionKind::liquid_glass_start) {start_liquid_glass();}
+        else if(action->kind==SettingsActionKind::liquid_glass_stop) {stop_liquid_glass("Off — session capture stopped.");changed();}
+        else if (action->kind==SettingsActionKind::import_theme || action->kind==SettingsActionKind::export_theme) {
             const auto generation=settings_panel_.generation();
             const auto picked=pick_theme(hwnd_,action->kind==SettingsActionKind::import_theme,action->config.theme);
             // Native dialogs pump messages. Never apply to a closed/reopened or
@@ -3684,8 +3747,9 @@ void NativeWindow::render() {
     if (result==RenderResult::presented) force_redraw_=false;
     render_busy_ = result == RenderResult::busy;
     if (!render_busy_) dirty_ = false;
+    update_liquid_glass_ui();
     observe_material_renderer();
-    if (result==RenderResult::presented || result==RenderResult::unchanged) begin_material_probe(rendered);
+    if (!renderer_->liquid_glass_active() && (result==RenderResult::presented || result==RenderResult::unchanged)) begin_material_probe(rendered);
     if (!first_exposed_frame_ && result==RenderResult::presented && IsWindowVisible(hwnd_)) {
         first_exposed_frame_=true;
         if (options_.smoke_test) {
@@ -7023,6 +7087,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     }
     case WM_DPICHANGED: {
+        ++liquid_glass_display_generation_;stop_liquid_glass("Stopped for DPI/display change. Start again in Settings.");
         dpi_=HIWORD(wparam); scale_=dpi_/96.0;
         windows::set_app_icons(hwnd_);
         const auto* rect=reinterpret_cast<RECT*>(lparam);
@@ -7032,11 +7097,13 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_SIZE:
         typing_motion_.reset();
         minimized_=wparam==SIZE_MINIMIZED; maximized_=wparam==SIZE_MAXIMIZED;
+        if(minimized_)stop_liquid_glass("Stopped on minimize. Start again explicitly in Settings.");
         if (renderer_ && !minimized_) changed(true);
         refresh_clock(); caret_schedule(); motion_schedule(); return 0;
     case WM_ENTERSIZEMOVE: in_size_move_=true; return 0;
     case WM_EXITSIZEMOVE: in_size_move_=false; queue_material_probe(); changed(true); return 0;
-    case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_DWMCOMPOSITIONCHANGED:
+    case WM_DISPLAYCHANGE: case WM_SETTINGCHANGE: case WM_THEMECHANGED: case WM_DWMCOMPOSITIONCHANGED:
+        ++liquid_glass_display_generation_;stop_liquid_glass("Stopped for display/system setting change. Start again in Settings.");
         settings_changed(); changed(true); return 0;
     case WM_ACTIVATE:
         active_=LOWORD(wparam)!=WA_INACTIVE;
@@ -7080,6 +7147,15 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         wake_->posted.store(false,std::memory_order_release); update_sessions(); InvalidateRect(hwnd_,nullptr,FALSE); return 0;
     case WM_TIMECHANGE: refresh_clock(); return 0;
     case WM_TIMER:
+        if(wparam==liquid_glass_timer) {
+            if(renderer_&&!renderer_call_&&!minimized_) {
+                bool changed_source=false;
+                {RendererCallGuard guard(renderer_call_);changed_source=renderer_->poll_liquid_glass();}
+                update_liquid_glass_ui();
+                if(changed_source)changed();
+            }
+            return 0;
+        }
         if (wparam==local_clock_timer) { refresh_clock(); return 0; }
         if (wparam==typing_smoke_timer) { dirty_=true; InvalidateRect(hwnd_,nullptr,FALSE); return 0; }
         if (wparam==typing_motion_timer) {
@@ -7278,6 +7354,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
     }
     case WM_DESTROY:
         wake_->window.store(nullptr,std::memory_order_release);
+        KillTimer(hwnd_,liquid_glass_timer);
         KillTimer(hwnd_,local_clock_timer);
         KillTimer(hwnd_,typing_smoke_timer); KillTimer(hwnd_,typing_motion_timer); KillTimer(hwnd_,cursor_timer); KillTimer(hwnd_,smoke_timeout_timer); KillTimer(hwnd_,chrome_motion_timer); KillTimer(hwnd_,material_probe_timer);
         if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);

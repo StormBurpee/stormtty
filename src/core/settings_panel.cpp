@@ -33,6 +33,9 @@ double theme_gallery_extra(double width) {
     const auto rows=(builtin_themes().size()+1+columns-1)/columns;
     return rows*(theme_card_height+theme_card_gap)-108;
 }
+double glass_status_height(double width) {
+    return std::clamp(std::ceil(320.0*6.0/std::max(1.0,width))*16.0,48.0,192.0);
+}
 constexpr Color transparent{0,0,0,0};
 bool finite(Point p) { return std::isfinite(p.x) && std::isfinite(p.y); }
 bool contains(Rect outer, Rect inner) {
@@ -73,7 +76,7 @@ void SettingsPanel::open(const Config& config, std::span<const Profile> discover
 void SettingsPanel::open(const Config& running, const Config& config, std::span<const Profile> discovered) {
     // Repeated open requests must not erase an unsaved or in-flight draft.
     if (open_) return;
-    original_=running; initial_draft_=config; draft_=config; profiles_.clear(); families_.clear(); pending_.reset();
+    original_=running; initial_draft_=config; draft_=config; profiles_.clear(); families_.clear(); pending_.reset(); liquid_glass_action_.reset();
     error_.clear(); theme_notice_.clear(); capture_command_.clear(); terminal_override_.reset(); hover_.clear(); pressed_.clear();
     custom_theme_=has_custom_theme(config)?std::optional<Theme>(config.theme):std::nullopt;
     editing_color_=false; color_index_=0; color_input_.clear();
@@ -121,12 +124,27 @@ void SettingsPanel::set_high_contrast(bool enabled, Color background, Color fore
         high_highlight_==highlight && high_highlight_text_==highlight_text && high_disabled_text_==disabled_text) return;
     high_contrast_=enabled;high_background_=background;high_foreground_=foreground;
     high_highlight_=highlight;high_highlight_text_=highlight_text;high_disabled_text_=disabled_text;
+    for(auto& control:layout_.controls) if(control.id=="appearance.liquid_glass")
+        control.enabled=!saving_ && (liquid_glass_active_ || (liquid_glass_available_ && !high_contrast_));
     ++generation_;
 }
 void SettingsPanel::set_material_status(std::string status) {
     status=bounded_message(std::move(status));
     if(material_status_==status) return;
     material_status_=std::move(status);++generation_;
+}
+void SettingsPanel::set_liquid_glass_status(bool active, bool available, std::string status) {
+    status=bounded_message(std::move(status));
+    if(liquid_glass_active_==active && liquid_glass_available_==available && liquid_glass_status_==status) return;
+    const bool state_changed=liquid_glass_active_!=active || liquid_glass_available_!=available;
+    liquid_glass_active_=active; liquid_glass_available_=available; liquid_glass_status_=std::move(status);
+    // A host transition cannot revive an old request or turn a release into the opposite action.
+    if(state_changed) {
+        liquid_glass_action_.reset();
+        if(pressed_=="appearance.liquid_glass") pressed_.clear();
+    }
+    ++generation_; if(state_changed) rebuild_layout();
+    if(!active && !available && focus_=="appearance.liquid_glass") focus_control("appearance.motion");
 }
 void SettingsPanel::set_console_backend_status(bool available, std::string status) {
     status=bounded_message(std::move(status));
@@ -178,7 +196,7 @@ void SettingsPanel::rebuild_layout() {
         add("nav.ribbon",{x+16,y+242,180,40});
     }
     layout_.content={content_x,content_y,content_w,std::max(0.0,layout_.footer.y-content_y-16)};
-    document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?740.0+theme_gallery_extra(content_w):
+    document_height_=section_==SettingsSection::ribbon?438.0:section_==SettingsSection::appearance?(platform_==Platform::windows?882.0+glass_status_height(content_w):740.0)+theme_gallery_extra(content_w):
         section_==SettingsSection::shell?profiles_.size()*72.0+(platform_==Platform::windows?142.0:0.0):72.0+command_registry().size()*60.0;
     scroll_=std::clamp(scroll_,0.0,std::max(0.0,document_height_-layout_.content.height));
     scroll_motion_.reset(scroll_);
@@ -215,7 +233,11 @@ void SettingsPanel::rebuild_layout() {
         }
         add("appearance.blur",{right-cw,detail_top+586,cw,34},true,platform_==Platform::windows);
         add("appearance.motion",{right-cw,detail_top+642,cw,34},true);
-        if (platform_==Platform::windows) add("appearance.clock",{right-42,detail_top+698,42,24},true);
+        if (platform_==Platform::windows) {
+            add("appearance.clock",{right-42,detail_top+698,42,24},true);
+            add("appearance.liquid_glass",{content_x,detail_top+824,std::min(content_w,180.0),34},true,
+                liquid_glass_active_ || (liquid_glass_available_ && !high_contrast_));
+        }
     } else if (section_==SettingsSection::ribbon) {
         std::size_t visible_row=0;
         for(std::size_t i=0;i<draft_.ribbon.order.size();++i) {
@@ -287,6 +309,11 @@ void SettingsPanel::activate(std::string_view id,int direction) {
     }
     if (platform_==Platform::windows && (id=="appearance.import" || id=="appearance.export")) {
         pending_=SettingsAction{id=="appearance.import"?SettingsActionKind::import_theme:SettingsActionKind::export_theme,draft_};
+        return;
+    }
+    if(id=="appearance.liquid_glass") {
+        if(platform_!=Platform::windows || (!liquid_glass_active_ && (!liquid_glass_available_ || high_contrast_))) return;
+        liquid_glass_action_=liquid_glass_active_?SettingsActionKind::liquid_glass_stop:SettingsActionKind::liquid_glass_start;
         return;
     }
     const auto before=draft_;
@@ -569,6 +596,7 @@ bool SettingsPanel::wheel(Point point,double lines) {
 }
 void SettingsPanel::request_save() {
     if (!open_ || saving_) return;
+    liquid_glass_action_.reset();
     finish_scroll();
     const auto valid=validate_config(draft_,platform_);
     if (!valid) {error_=bounded_message(valid.error);++generation_;return;}
@@ -578,6 +606,7 @@ void SettingsPanel::request_save() {
 void SettingsPanel::cancel() {
     if (!open_ || saving_) return;
     cancel_scroll_at_display();
+    liquid_glass_action_.reset();
     pending_=SettingsAction{SettingsActionKind::cancel,original_};
     draft_=original_;initial_draft_=original_;loaded_changes_=false;open_=false;capture_command_.clear();terminal_override_.reset();dragging_opacity_=false;dragging_blur_=false;pressed_.clear();++generation_;
 }
@@ -596,7 +625,16 @@ void SettingsPanel::theme_exchange_notice(std::string message) {
     if (!open_ || saving_) return;
     error_.clear();theme_notice_=bounded_message(std::move(message));++generation_;
 }
-std::optional<SettingsAction> SettingsPanel::take_action() {return std::exchange(pending_,std::nullopt);}
+std::optional<SettingsAction> SettingsPanel::take_action() {
+    // A session request must not discard an already queued ordinary preview.
+    if(pending_) return std::exchange(pending_,std::nullopt);
+    const auto action=std::exchange(liquid_glass_action_,std::nullopt);
+    if(!action || !open_ || saving_ || platform_!=Platform::windows) return std::nullopt;
+    if(*action==SettingsActionKind::liquid_glass_start &&
+       (liquid_glass_active_ || !liquid_glass_available_ || high_contrast_)) return std::nullopt;
+    if(*action==SettingsActionKind::liquid_glass_stop && !liquid_glass_active_) return std::nullopt;
+    return SettingsAction{*action,draft_};
+}
 void SettingsPanel::persistence_result(bool success,std::string error) {
     if (!open_ || !saving_) return;
     saving_=false;
@@ -802,6 +840,18 @@ void SettingsPanel::append_scene(WindowScene& scene,float scale) const {
                 box(c->bounds,(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?accent:border,focus_==c->id?ink:transparent,12,focus_==c->id?1:0);
                 box({c->bounds.x+((draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?21:3),c->bounds.y+3,18,18},(draft_.appearance.show_clock && !draft_.ribbon.hidden[ribbon_index(RibbonBinding::clock)])?primary_ink:ink,transparent,9);
             }
+            const double glass_top=top+appearance_offset;
+            label({content.x,glass_top+750,content.width,24},"Experimental Liquid Glass",ink,13,true,true);
+            const auto wrapped=[&](Rect rect,std::string value) {
+                const auto count=scene.texts.size();
+                label(rect,std::move(value),subdued,11,false,true);
+                if(scene.texts.size()!=count) scene.texts.back().wrap=true;
+            };
+            wrapped({content.x,glass_top+778,content.width,38},
+                "Local GPU-only display capture. May hide StormTTY from screenshots and screen shares.");
+            button("appearance.liquid_glass",liquid_glass_active_?"Stop Liquid Glass":"Start Liquid Glass",liquid_glass_active_);
+            wrapped({content.x,glass_top+866,content.width,glass_status_height(content.width)},liquid_glass_status_.empty()?
+                "Off · session only. Start asks for display capture confirmation.":liquid_glass_status_);
         }
     } else if (section_==SettingsSection::ribbon) {
         std::size_t visible_row=0;

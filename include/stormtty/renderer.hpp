@@ -160,6 +160,14 @@ public:
     void prepare_window_destruction() noexcept;
     // Background-only extra Gaussian sigma; 0 removes the host effect; the window selects clear/system policy.
     void set_additional_blur(float sigma);
+    // Experimental session-only desktop material. Host obtains explicit consent.
+    bool liquid_glass_available() const noexcept;
+    bool start_liquid_glass(void* selected_monitor);
+    void stop_liquid_glass(const char* reason="Off — session capture stopped.") noexcept;
+    bool liquid_glass_active() const noexcept;
+    std::string liquid_glass_status() const;
+    bool poll_liquid_glass(); // True only on a new optical source/state/geometry.
+
     // Actual DirectWrite chrome-font bounds in pixels, using the label's wrapping.
     PixelRect measure_chrome_text(const ChromeText& label) const;
     // Actual DirectWrite word wrapping; UTF-8 lines retain all text except newlines.
