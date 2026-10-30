@@ -123,6 +123,30 @@ acquire explicit-close scheduling effects. See
 for lifecycle and no-terminal-input-leakage gates; this is not macOS integration
 or physical IME/UI qualification.
 
+### Workspace Navigator interaction
+
+`WorkspaceNavigator` (`include/stormtty/workspace_navigator.hpp`,
+`src/core/workspace_navigator.cpp`) owns its value catalog and visible interaction
+lifetime: background filtering, frozen Activity project scope, bounded query editor,
+control focus and switch-button gesture identity. Catalog initialization is not
+overlay visibility. `begin` resets the interaction; close preserves catalog/query/
+focus/filter while dropping visibility, pressed eligibility and Activity scope.
+
+The host still samples and sorts catalog values, admits overlays, performs live
+identity/placement validation and activates/restores the selected target. Ordinary
+catalog replacement follows the existing selection-based open policy; Activity
+refresh preserves stale selection instead of silently retargeting it. Both reapply
+the editor query. Preview never activates a project, launches a dormant shell or
+acknowledges a watch.
+
+Switch release consumes one-shot eligibility by comparing the captured optional
+target with the current one. Two null targets intentionally remain eligible for
+the host's stale-selection notice; this is not permission to activate a stale
+actor. Host capture/IME/input routing, timers, rendering and project/actor authority
+remain outside the owner. See [navigator interaction verification](../tests/navigator_interaction_verification.md)
+for refresh, cancellation and native progression gates; this does not establish
+physical input or macOS interaction parity.
+
 ## Settings and persistence
 
 `SettingsPanel` (`settings_panel.hpp`, `src/core/settings_panel.cpp`) owns the
@@ -332,6 +356,9 @@ ordering and native failure-injection coverage.
 
 ## Remaining ownership work
 
+The [finite refactor plan](refactor-plan.md) defines the remaining responsibility
+groups and their completion criteria; it is separate from new feature work.
+
 `src/platform/windows/renderer.cpp` remains the frame-transaction coordinator,
 not the native resource owner. Further changes must preserve the distinction
 between canvas validity, resource lifetime and presentation readiness rather than
@@ -356,7 +383,7 @@ gates. Useful starting points:
 
 - Placement/lifetime: `application_workspaces_tests`, `session_identities_tests`,
   `session_wake_router_tests`, `session_attention_tests`,
-  `session_observation_cache_tests`, then native ownership,
+  `session_observation_cache_tests`, `navigator_interaction_tests`, then native ownership,
   project, modal and retirement scenarios.
 - Settings/launch: `settings_panel_tests`, `settings_document_session_tests`, then
   Windows `settings_services_tests`, `windows_session_launcher_tests` and
