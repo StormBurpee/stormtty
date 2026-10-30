@@ -1,4 +1,5 @@
 #include "stormtty/workspace_ribbon.hpp"
+#include "stormtty/ribbon_renderer.hpp"
 #include "stormtty/ui_colors.hpp"
 #include "stormtty/chrome_paint.hpp"
 #include "stormtty/pane_context.hpp"
@@ -3522,41 +3523,64 @@ WindowScene NativeWindow::scene() {
         line(closex-4,cy-4,closex+4,cy+4,text); line(closex+4,cy-4,closex-4,cy+4,text);
     }
     if (navigation_.footer.height>0) {
-        Color footer=chrome; if (backdrop_) footer.a=230;
-        rectangle(navigation_.footer,footer,0,{},0,true);
-        rectangle({navigation_.footer.x,navigation_.footer.y,navigation_.footer.width,1/scale_},seam);
-        const auto placement=footer_layout();
-        const auto context=footer_presentation();
-        if(placement.agent.width>0) {rectangle(placement.agent,raised,4);label(placement.agent,agent_status_label(),agent_controller_&&agent_controller_->attention()?accent:secondary,11);}
-        if (placement.clock.width>0) label(placement.clock,local_clock_,secondary,11,false,ChromeTextAlignment::trailing);
-        if(placement.directory.contains(hover_))rectangle(placement.directory,raised,3);
-        label(placement.directory,context.directory,context.subdued?secondary:text,12);
-        if(placement.git.width>0 && !context.head.empty()) {
-            const auto r=placement.git;
-            // Owned vector branch mark, independent of shell font/icon plugins.
-            const double x=r.x+3,y=r.y+r.height/2;
-            line(x,y-5,x,y+5,secondary,1);
-            line(x,y,x+6,y-4,secondary,1);
-            rectangle({x-1.5,y-6.5,3,3},secondary,1.5);
-            rectangle({x-1.5,y+3.5,3,3},secondary,1.5);
-            rectangle({x+4.5,y-5.5,3,3},secondary,1.5);
-            label({r.x+16,r.y,std::max(0.0,r.width-16),r.height},context.detached?"@"+context.head:context.head,
-                context.subdued?secondary:accent,12);
+        const auto placement = footer_layout();
+        auto context = footer_presentation();
+        const auto activity = activity_summary();
+        const bool attention = activity.unread() != 0 || activity.failed != 0;
+        const auto activity_bounds = placement.background.overflow;
+        std::string activity_label;
+        if (activity.terminals && activity_bounds.width > 0) {
+            const auto label_bounds = RibbonRenderer::activity_label_bounds(
+                activity_bounds, attention, activity.running != 0);
+            activity_label = activity.label(label_bounds.width, [this](const std::string& value) {
+                ChromeText item;
+                item.text = value;
+                item.size_dip = 12;
+                item.rect = {0, 0, 100000, 26 * static_cast<float>(scale_)};
+                return renderer_->measure_chrome_text(item).width / scale_;
+            });
         }
-        label(placement.status,context.status,context.failed?accent:secondary,12,false,ChromeTextAlignment::trailing);
-        if(placement.divider.height>0) rectangle(placement.divider,seam);
-        const auto activity=activity_summary();
-        const auto bounds=placement.background.overflow;
-        if(activity.terminals && bounds.width>0) {
-            rectangle(bounds,high_contrast_?raised:blend(raised,ui.hover,hover_amount(12)),4);
-            const bool attention=activity.unread()!=0 || activity.failed!=0;
-            const double mark=std::min(4.0,std::max(0.0,bounds.width-8));
-            if(mark>0 && (attention || activity.running))rectangle({bounds.x+4,bounds.y+bounds.height/2-2,mark,4},attention?accent:Color{0,0,0,0},2,accent,attention?0:1);
-            const double inset=attention||activity.running?14:8;
-            const double width=std::max(0.0,bounds.width-inset-6);
-            const auto title=activity.label(width,[this](const std::string& text){ChromeText item;item.text=text;item.size_dip=12;item.rect={0,0,100000,26*static_cast<float>(scale_)};return renderer_->measure_chrome_text(item).width/scale_;});
-            label({bounds.x+inset,bounds.y,width,bounds.height},title,attention?accent:text,12);
+
+        Color footer = chrome;
+        if (backdrop_) {
+            footer.a = 230;
         }
+        const RibbonContent content{
+            .directory = std::move(context.directory),
+            .head = std::move(context.head),
+            .status = std::move(context.status),
+            .detached = context.detached,
+            .subdued = context.subdued,
+            .failed = context.failed,
+            .directory_hovered = placement.directory.contains(hover_),
+            .clock = local_clock_,
+            .agent = placement.agent.width > 0 ? agent_status_label() : std::string{},
+            .agent_attention = agent_controller_ && agent_controller_->attention(),
+        };
+        const RibbonActivity activity_presentation{
+            .label = std::move(activity_label),
+            .visible = activity.terminals != 0,
+            .attention = attention,
+            .running = activity.running != 0,
+        };
+        const RibbonStyle style{
+            .surface = footer,
+            .raised = raised,
+            .seam = seam,
+            .activity_surface = high_contrast_ ? raised : blend(raised, ui.hover, hover_amount(12)),
+            .ink = text,
+            .secondary = secondary,
+            .accent = accent,
+            .scale = scale_,
+        };
+
+        RibbonRenderer{}.append_scene(
+            result,
+            navigation_.footer,
+            placement,
+            content,
+            activity_presentation,
+            style);
     }
     if (workspace().state().tabs.empty()) {
         const auto bounds=empty_terminal_button(); rectangle(bounds,raised,5);
