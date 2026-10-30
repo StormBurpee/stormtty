@@ -184,6 +184,7 @@ struct SettingsCompletion {
 };
 struct WakeState {
     std::atomic<HWND> window{};
+    std::atomic<DWORD> thread{}; // Application-only completion sink; never an HWND owner.
     std::atomic<bool> posted{};
     std::mutex mutex;
     std::optional<std::string> clipboard;
@@ -192,6 +193,8 @@ struct WakeState {
     void wake() noexcept {
         if (auto hwnd = window.load(std::memory_order_acquire)) {
             if (!posted.exchange(true, std::memory_order_acq_rel) && !PostMessageW(hwnd, wake_message, 0, 0)) posted.store(false, std::memory_order_release);
+        } else if(const auto owner=thread.load(std::memory_order_acquire)) {
+            if(!posted.exchange(true,std::memory_order_acq_rel) && !PostThreadMessageW(owner,wake_message,0,0))posted.store(false,std::memory_order_release);
         }
     }
 };
@@ -253,6 +256,42 @@ void enforce_custom_frame_style(HWND window, bool diagnostics) {
 }
 
 using ActorWakeRouter=SessionWakeRouter<WakeState>;
+// One-shot waits scale beyond MsgWaitForMultipleObjects' 63-renderer limit.
+// Callbacks touch only this stable wait object and its cleared-on-destroy wake endpoint.
+// The UI thread cancels/drains before destroying or replacing the latency handle.
+class RendererReadyWake final {
+public:
+    explicit RendererReadyWake(std::shared_ptr<WakeState> endpoint):endpoint_(std::move(endpoint)) {
+        wait_=CreateThreadpoolWait(callback,this,nullptr);
+        if(!wait_)throw std::runtime_error("Could not create renderer readiness wait.");
+    }
+    ~RendererReadyWake(){cancel();if(wait_)CloseThreadpoolWait(wait_);}
+    RendererReadyWake(const RendererReadyWake&)=delete;
+    RendererReadyWake& operator=(const RendererReadyWake&)=delete;
+    void arm(HANDLE handle) noexcept {
+        if(fired_.exchange(false,std::memory_order_acq_rel))armed_=nullptr;
+        if(handle==armed_)return;
+        SetThreadpoolWait(wait_,nullptr,nullptr);
+        armed_=handle;
+        if(handle)SetThreadpoolWait(wait_,handle,nullptr);
+    }
+    void cancel() noexcept {
+        if(!wait_)return;
+        SetThreadpoolWait(wait_,nullptr,nullptr);
+        WaitForThreadpoolWaitCallbacks(wait_,TRUE);
+        armed_=nullptr;fired_.store(false,std::memory_order_release);
+    }
+private:
+    static void CALLBACK callback(PTP_CALLBACK_INSTANCE,void* context,PTP_WAIT,TP_WAIT_RESULT) noexcept {
+        auto* self=static_cast<RendererReadyWake*>(context);
+        self->fired_.store(true,std::memory_order_release);
+        self->endpoint_->wake();
+    }
+    std::shared_ptr<WakeState> endpoint_;
+    PTP_WAIT wait_{};
+    HANDLE armed_{}; // UI thread only.
+    std::atomic<bool> fired_{};
+};
 struct ApplicationActors {
     std::map<SessionId,std::shared_ptr<Session>> sessions;
     std::map<SessionId,SessionState> states;
@@ -301,27 +340,39 @@ struct ApplicationWorkspacePersistence {
 class NativeWindow;
 class NativeApplication final {
 public:
+    NativeApplication();
+    ~NativeApplication();
     int run(Config, NativeRunOptions);
+    NativeWindow& create_view(Config, NativeRunOptions, bool restore, unsigned injected_failure=0);
+    void windows_smoke_progress();
+    unsigned windows_smoke_stage{};
+    WindowId smoke_first_window{}, smoke_survivor_window{};
+    SessionId smoke_first_actor{}, smoke_survivor_actor{};
+    std::shared_ptr<Session> smoke_first_session, smoke_survivor_session;
+    void window_destroyed(const NativeWindow&,int) noexcept;
+    void retire_destroyed_views();
+    std::map<SessionId,std::shared_ptr<Session>> retired_smoke_sessions;
+    std::shared_ptr<WakeState> actor_completion{std::make_shared<WakeState>()};
+    int exit_status{};
+    std::vector<NativeWindow*> windows;
+    std::vector<std::unique_ptr<NativeWindow>> owned_windows;
+    bool creating_view{}, creation_dirty{};
     void load_workspaces(NativeWindow&);
     void workspace_model_changed();
     void save_workspaces();
     void workspace_save_completed();
     void flush_workspaces();
     void workspace_error(std::string);
-    NativeWindow* primary{}; // Temporary single-window notification sink, not worker-owned.
     // First adaptation remains strictly single-window. Scoping catalog views and
     // independent close is required before constructing a second NativeWindow.
     ApplicationWorkspaces projects;
-    WindowId create_window_model() {
-        auto created=projects.create_window();if(!created)throw std::runtime_error(created.error);return *created.value;
-    }
     ApplicationActors actors;
     ApplicationWorkspacePersistence workspaces;
 };
 
 class NativeWindow final {
 public:
-    explicit NativeWindow(NativeApplication& application, Config config, NativeRunOptions options) : application_(application), config_(std::move(config)), options_(std::move(options)), wake_(std::make_shared<WakeState>()) {
+    explicit NativeWindow(NativeApplication& application, WindowId window_id, Config config, NativeRunOptions options) : application_(application), config_(std::move(config)), options_(std::move(options)), projects_(application.projects,window_id), wake_(std::make_shared<WakeState>()) {
         if (!options_.shell_runtime_directory.empty() && options_.shell_runtime_error.empty()) {
             const auto& root=options_.shell_runtime_directory;
             Profile managed;
@@ -351,6 +402,7 @@ public:
         auto name=project_name(path);
         auto project=projects_.create({name,directory,"Local"});
         if (!project) throw std::runtime_error(project.error);
+        application_.windows.push_back(this);
     }
     ~NativeWindow() {
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor body begin");
@@ -379,6 +431,7 @@ public:
             if (closed) std::filesystem::remove_all(smoke_shell_state_root_,error);
             std::fprintf(stderr,"Native smoke shell state cleanup: actors_closed=%d removed=%d\n",closed,closed&&!error);
         }
+        std::erase(application_.windows,this);
         windows::smoke_teardown_trace(options_.smoke_test,"window destructor body end; member destruction begin");
     }
 private:
@@ -669,7 +722,9 @@ private:
     ProjectWorkspaceId smoke_primary_project_{}, smoke_secondary_project_{};
     std::map<SessionId,std::shared_ptr<Session>> smoke_project_actors_;
     std::shared_ptr<Session> smoke_disposable_;
-    WindowWorkspaceView projects_{application_.projects,application_.create_window_model()};
+    WindowWorkspaceView projects_;
+    std::vector<SessionId> creation_sessions_; // Candidate-local rollback ledger, never a global ID diff.
+    bool committed_view_{};
     WorkspaceLibrary& workspace_library_{application_.workspaces.library};
     std::optional<ConfigFileSnapshot>& workspace_snapshot_{application_.workspaces.snapshot};
     bool restored_workspaces_{};
@@ -728,6 +783,7 @@ private:
     std::vector<ChromePrimitive> closing_palette_primitives_;
     std::vector<ChromeText> closing_palette_texts_;
     std::unique_ptr<Renderer> renderer_;
+    std::unique_ptr<RendererReadyWake> renderer_ready_;
     bool renderer_call_{}, layout_pending_{}, settings_pending_{}, closing_window_{}, destroy_pending_{};
     double scale_{1}, width_{1100}, height_{720};
     UINT dpi_{96};
@@ -819,6 +875,7 @@ void NativeWindow::create() {
     enforce_custom_frame_style(hwnd_,options_.smoke_test);
     windows::set_app_icons(hwnd_);
     wake_->window.store(hwnd_, std::memory_order_release);
+    renderer_ready_=std::make_unique<RendererReadyWake>(wake_);
     if(ai_enabled_&&!options_.smoke_test&&!options_.agent_settings_path.empty()) {
         agent_setup_=std::make_unique<AgentSetupService>(options_.agent_settings_path,[wake=wake_]{wake->wake();});agent_setup_->load();
     }
@@ -909,17 +966,68 @@ void NativeWindow::create() {
     }
     ShowWindow(hwnd_, SW_SHOWNORMAL);
     UpdateWindow(hwnd_);
-    if (options_.smoke_test && !options_.smoke_agent && !options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && options_.smoke_workspaces.empty() && !SetTimer(hwnd_,typing_smoke_timer,25,nullptr)) throw std::runtime_error("Could not start bounded typing smoke progress timer.");
+    if (options_.smoke_test && !options_.smoke_agent && !options_.smoke_layout && !options_.smoke_projects && !options_.smoke_settings && !options_.smoke_modal && !options_.smoke_windows && options_.smoke_workspaces.empty() && !SetTimer(hwnd_,typing_smoke_timer,25,nullptr)) throw std::runtime_error("Could not start bounded typing smoke progress timer.");
     if (options_.smoke_test && !SetTimer(hwnd_,smoke_timeout_timer,250,nullptr)) throw std::runtime_error("Could not start the native smoke deadline.");
 }
+NativeApplication::NativeApplication()=default;
+NativeApplication::~NativeApplication(){actor_completion->thread=0;owned_windows.clear();}
+NativeWindow& NativeApplication::create_view(Config config, NativeRunOptions options, bool restore, unsigned injected_failure) {
+    if(injected_failure && !options.smoke_windows)throw std::runtime_error("Creation injection is fixture-only.");
+    if(creating_view)throw std::runtime_error("A window is already being prepared.");
+    if(!restore && workspaces.enabled)throw std::runtime_error("Grouped native persistence is not enabled yet.");
+    // Allocation and the catalog checkpoint precede native/process side effects.
+    owned_windows.reserve(owned_windows.size()+1);
+    auto staged=projects.begin_window_creation();if(!staged)throw std::runtime_error(staged.error);
+    const auto window_id=*staged.value;
+    creating_view=true;creation_dirty=false;
+    std::unique_ptr<NativeWindow> candidate;
+    NativeWindow* committed_view{};
+    try {
+        candidate=std::make_unique<NativeWindow>(*this,window_id,std::move(config),std::move(options));
+        if(restore)load_workspaces(*candidate);
+        if(injected_failure==1)throw std::runtime_error("Injected pre-HWND candidate failure.");
+        candidate->create();
+        if(injected_failure==2) {
+            if(!candidate->hwnd_ || !candidate->renderer_ || !candidate->active_session())throw std::runtime_error("Candidate did not reach renderer/actor injection boundary.");
+            throw std::runtime_error("Injected post-renderer/actor candidate failure.");
+        }
+        candidate->workspace_smoke_ready_=true;
+        auto& view=*candidate;
+        if(!view.options_.smoke_workspaces.empty())view.changed(true);
+        if(auto committed=projects.commit_window_creation(window_id);!committed)throw std::runtime_error(committed.error);
+        view.creation_sessions_.clear();view.committed_view_=true;
+        committed_view=&view;
+        owned_windows.push_back(std::move(candidate)); // Reserved, nonthrowing ownership commit.
+    } catch(...) {
+        // Destruction clears the weak wake target and drains GPU callbacks before
+        // rollback. Existing views and their actors are never stopped or rebound.
+        auto created=candidate?std::move(candidate->creation_sessions_):std::vector<SessionId>{};
+        if(candidate)retired_smoke_sessions.merge(candidate->smoke_sessions_);
+        candidate.reset();
+        projects.abort_window_creation(window_id);
+        for(const auto id:created) {
+            if(const auto actor=actors.sessions.find(id);actor!=actors.sessions.end()){actor->second->request_close();actors.sessions.erase(actor);}
+            actors.states.erase(id);actors.background_labels.erase(id);
+            actors.parked_attention.erase(id);actors.watches.erase(id);actors.watch_actors.erase(id);actors.wakes->erase(id);
+        }
+        creating_view=false;
+        // Reentrant survivor edits remain dirty; capture only the rolled-back state.
+        if(std::exchange(creation_dirty,false))workspace_model_changed();
+        throw;
+    }
+    // Post-commit notification must never enter candidate rollback.
+    creating_view=false;
+    if(std::exchange(creation_dirty,false))workspace_model_changed();
+    return *committed_view;
+}
 int NativeApplication::run(Config config, NativeRunOptions options) {
-    WindowClass klass; klass.smoke=options.smoke_test;
-    NativeWindow window(*this,std::move(config),std::move(options));
-    struct PrimaryScope { NativeWindow*& sink; ~PrimaryScope(){sink=nullptr;} } primary_scope{primary};
-    primary=&window;
+    const bool diagnostics=options.smoke_test;
+    WindowClass klass; klass.smoke=diagnostics;
+    struct ViewScope {NativeApplication& app;~ViewScope(){app.owned_windows.clear();}} views{*this};
     // Workers post to the application queue, never to a destructible HWND.
     MSG queued{};PeekMessageW(&queued,nullptr,0,0,PM_NOREMOVE);
     workspaces.mailbox->thread=GetCurrentThreadId();
+    actor_completion->thread=GetCurrentThreadId();
     WNDCLASSEXW definition{}; definition.cbSize=sizeof(definition);
     definition.style = CS_DBLCLKS;
     definition.lpfnWndProc = NativeWindow::procedure;
@@ -931,13 +1039,33 @@ int NativeApplication::run(Config config, NativeRunOptions options) {
     klass.atom = RegisterClassExW(&definition);
     if (!klass.atom) throw std::runtime_error("Could not register the native window class.");
     install_windows_png_decoder();
-    load_workspaces(window);
-    window.create();
-    window.workspace_smoke_ready_=true;
-    if(!window.options_.smoke_workspaces.empty()) window.changed(true);
+    const bool windows_fixture=options.smoke_windows;
+    auto fixture_config=config;auto fixture_options=options;
+    auto& first=create_view(std::move(config),std::move(options),true);
+    if(windows_fixture) {
+        const auto actor_id=[](const NativeWindow& view){const auto* pane=view.workspace().pane(view.workspace().active_pane());if(!pane||!pane->session)throw std::runtime_error("Window fixture has no bound actor.");return pane->session;};
+        smoke_first_window=first.projects_.id();smoke_first_actor=actor_id(first);
+        smoke_first_session=actors.sessions.at(smoke_first_actor);
+        for(unsigned failure:{1u,2u}) {
+            bool rejected=false;
+            try {create_view(fixture_config,fixture_options,false,failure);}catch(const std::runtime_error& error){
+                const std::string_view expected=failure==1?"Injected pre-HWND candidate failure.":"Injected post-renderer/actor candidate failure.";
+                if(error.what()!=expected)throw;
+                rejected=true;
+            }
+            if(!rejected || projects.windows().size()!=1 || windows.size()!=1 || actors.sessions.size()!=1 ||
+               actors.sessions.at(smoke_first_actor)!=smoke_first_session || smoke_first_session->closed() || !projects.validate())
+                throw std::runtime_error("Candidate failure damaged the original window/actor.");
+        }
+        auto& second=create_view(std::move(fixture_config),std::move(fixture_options),false);
+        smoke_survivor_window=second.projects_.id();smoke_survivor_actor=actor_id(second);
+        smoke_survivor_session=actors.sessions.at(smoke_survivor_actor);
+        std::fputs("Native windows rollback: pre-HWND and post-renderer/actor failures preserved original ownership.\n",stderr);
+    }
     for (;;) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            if(!message.hwnd && message.message==wake_message){actor_completion->posted=false;continue;}
             if(!message.hwnd && message.message==workspace_saved_message) { workspace_save_completed(); continue; }
             if(!message.hwnd && message.message==WM_TIMER && workspaces.timer && message.wParam==workspaces.timer) {
                 KillTimer(nullptr,workspaces.timer);workspaces.timer=0;
@@ -948,27 +1076,45 @@ int NativeApplication::run(Config config, NativeRunOptions options) {
                 int code=static_cast<int>(message.wParam);
                 // Explicit test-mode post-loop cleanup only. No WndProc or
                 // normal UI close ever waits for process/actor shutdown.
-                if (window.options_.smoke_test) for (const auto& [id,session]:window.smoke_sessions_) {
-                    std::fprintf(stderr,"Native CI cleanup begin: session=%llu elapsed_ms=%llu\n",static_cast<unsigned long long>(id.value),GetTickCount64()-window.smoke_started_at_);
-                    if (!session->wait_closed(std::chrono::seconds(5))) code=3;
-                    std::fprintf(stderr,"Native CI cleanup end: session=%llu code=%d\n",static_cast<unsigned long long>(id.value),code);
+                if(diagnostics) {
+                    for(auto& view:owned_windows)retired_smoke_sessions.merge(view->smoke_sessions_);
+                    for(const auto& [id,session]:retired_smoke_sessions) {
+                        std::fprintf(stderr,"Native CI cleanup begin: session=%llu\n",static_cast<unsigned long long>(id.value));
+                        if(!session->wait_closed(std::chrono::seconds(5)))code=3;
+                        std::fprintf(stderr,"Native CI cleanup end: session=%llu code=%d\n",static_cast<unsigned long long>(id.value),code);
+                    }
+                    const bool settings_worker=std::any_of(windows.begin(),windows.end(),[](const auto* view){return view->settings_worker_.joinable();});
+                    std::fprintf(stderr,"Native CI loop exit: code=%d settings_worker_joinable=%d\n",code,settings_worker);
                 }
-                if (window.options_.smoke_test) std::fprintf(stderr,"Native CI loop exit: code=%d settings_worker_joinable=%d\n",code,window.settings_worker_.joinable());
                 flush_workspaces();
                 return code;
             }
-            if (message.hwnd == window.hwnd_ && window.key_message(message)) continue;
+            const auto target=std::find_if(windows.begin(),windows.end(),[&](const auto* view){return view->hwnd_==message.hwnd;});
+            if(target!=windows.end() && (*target)->key_message(message))continue;
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
         // A native modal loop may consume a thread wake. The owned mailbox is
         // authoritative; drain again after dispatch before returning to wait.
         workspace_save_completed();
-        if (window.dirty_ && !window.minimized_) window.render();
-        // No ambient loop. GPU readiness is included only while a dirty frame is
-        // blocked; otherwise only actual Windows/session work wakes this thread.
-        HANDLE ready = !window.minimized_ && window.dirty_ && window.render_busy_ && window.renderer_ ? static_cast<HANDLE>(window.renderer_->frame_latency_wait_handle()) : nullptr;
-        const DWORD result = MsgWaitForMultipleObjectsEx(ready ? 1 : 0, ready ? &ready : nullptr, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        // Native modal loops may consume thread messages. Clear coalescing before
+        // inspecting actor state so a later completion always queues a new wake.
+        actor_completion->posted=false;
+        retire_destroyed_views();
+        for(auto* view:windows) {
+            if(!view->hwnd_ || view->closing_window_)continue;
+            // Cancel callbacks before render can recover/replace a swapchain.
+            // Callback work is bounded to an atomic flag and PostMessage only.
+            if(view->renderer_ready_)view->renderer_ready_->cancel();
+            if(view->dirty_ && !view->minimized_)view->render();
+            HANDLE ready=!view->minimized_ && view->dirty_ && view->render_busy_ && view->renderer_?
+                static_cast<HANDLE>(view->renderer_->frame_latency_wait_handle()):nullptr;
+            if(view->renderer_ready_)view->renderer_ready_->arm(ready);
+        }
+        if(windows_fixture)windows_smoke_progress();
+        // No ambient polling and no per-window handle-array ceiling. Only native
+        // messages, actor work or one-shot renderer readiness can wake this loop.
+        const DWORD result = MsgWaitForMultipleObjectsEx(0,nullptr,INFINITE,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
         if (result == WAIT_FAILED) throw std::runtime_error("The native window wait failed.");
     }
 }
@@ -1006,6 +1152,7 @@ void NativeWindow::destroy_window() noexcept {
         return; // Preserve the already-approved close, not a new WM_CLOSE prompt.
     }
     closing_window_=true;
+    if(renderer_ready_)renderer_ready_->cancel();
     // A WARP presentation queue can stop progressing once its HWND disappears.
     // Drain and release GPU/presentation ownership while it is still valid.
     // The host dispatcher itself remains owned until after HWND/userdata teardown.
@@ -1045,6 +1192,7 @@ void NativeWindow::settings_changed() {
     const bool extra_eligible=policy.fallback==MaterialFallback::none &&
         config_.appearance.backdrop!=BackdropPreference::mica && contrast_known && transparency_result==ERROR_SUCCESS;
     if(renderer_) {
+        if(renderer_ready_)renderer_ready_->cancel(); // Material changes replace the swapchain too.
         RendererCallGuard guard(renderer_call_);
         // Never stack system acrylic under the host-effect recipe. Zero disables
         // backdrop effects entirely; opacity remains a separate canvas value.
@@ -1246,6 +1394,7 @@ void NativeWindow::refresh_layout() {
     if(find_session_)for(const auto& place:layout_.panes)
         if(place.session==find_session_ && !terminal_find_fits(place.bounds,layout_.panes.size()>1)){close_find(false);break;}
     if (renderer_) {
+        if(renderer_ready_)renderer_ready_->cancel();
         {
             RendererCallGuard guard(renderer_call_);
             renderer_->resize(static_cast<std::uint32_t>(std::max(0L, bounds.right)), static_cast<std::uint32_t>(std::max(0L, bounds.bottom)), static_cast<float>(dpi_));
@@ -1357,7 +1506,7 @@ SessionId NativeWindow::new_session(std::string profile_id) {
         const UINT length = GetSystemDirectoryW(directory.data(), static_cast<UINT>(directory.size()));
         if (!length || length >= directory.size()) throw std::runtime_error("Could not discover the Windows system shell.");
         process.executable = narrow(std::wstring(directory.data(), length) + L"\\cmd.exe");
-        if (options_.smoke_test) { process.arguments={"/d","/q"}; process.environment.clear(); if (!options_.smoke_projects) process.working_directory.clear(); }
+        if (options_.smoke_test) { process.arguments={"/d","/q"}; process.environment.clear(); if (!options_.smoke_projects && !options_.smoke_windows) process.working_directory.clear(); }
         else if (std::find(process.arguments.begin(),process.arguments.end(),"/d")==process.arguments.end()) process.arguments.insert(process.arguments.begin(),"/d"); // Do not unexpectedly run cmd AutoRun registry code.
     }
     TerminalOptions terminal;
@@ -1369,6 +1518,7 @@ SessionId NativeWindow::new_session(std::string profile_id) {
     for (std::size_t i=0;i<16;++i) (*terminal.ansi)[i]=color_hex(config_.theme.ansi[i],{0,0,0,255});
     terminal.default_background=color_hex(config_.theme.background,{23,25,29,255});
     const SessionId id=application_.actors.allocate();
+    if(!committed_view_)creation_sessions_.push_back(id); // Allocate ledger before launching.
     const bool bundled=process.provider==ProcessProvider::windows_packaged_experimental;
     auto session = Session::start(std::move(process), terminal, application_.actors.callback(id,wake_), SessionRetentionPolicy::retain_document);
     if (options_.smoke_test) { smoke_sessions_.emplace(id,session); if (bundled) smoke_bundled_sessions_.insert(id); if (managed) smoke_managed_sessions_.insert(id); }
@@ -1801,7 +1951,35 @@ std::string NativeWindow::directory_context() const {
     return path.empty()?name:name+"  /  "+path;
 }
 void NativeApplication::workspace_error(std::string error) {
-    if(primary) {primary->notice_=std::move(error);if(primary->hwnd_)primary->changed();}
+    for(auto* view:windows){view->notice_=error;if(view->hwnd_)view->changed();}
+}
+void NativeApplication::window_destroyed(const NativeWindow& closed,int code) noexcept {
+    exit_status=std::max(exit_status,code);
+    const bool another=std::any_of(windows.begin(),windows.end(),[&](const auto* view){return view!=&closed && view->hwnd_ && !view->closing_window_;});
+    if(!another)PostQuitMessage(exit_status);
+}
+void NativeApplication::retire_destroyed_views() {
+    // Last-window shutdown retains its declarative snapshot for the existing
+    // final flush. Independent native close is currently enabled only for the
+    // isolated nonpersistent fixture, until grouped storage is wired.
+    if(workspaces.enabled || !std::any_of(windows.begin(),windows.end(),[](const auto* view){return view->hwnd_&&!view->closing_window_;}))return;
+    for(auto it=owned_windows.begin();it!=owned_windows.end();) {
+        auto& view=**it;
+        if(view.hwnd_ || !view.committed_view_){++it;continue;}
+        auto preview=projects.preview_close_window(view.projects_.id());
+        if(!preview){workspace_error(preview.error);++it;continue;}
+        auto detached=projects.close_window(*preview.value);
+        if(!detached){workspace_error(detached.error);++it;continue;}
+        for(const auto id:preview.value->sessions) {
+            actors.wakes->bind(id,actor_completion); // Final disposal outlives the destroyed HWND.
+            if(const auto actor=actors.sessions.find(id);actor!=actors.sessions.end()){actor->second->request_close();actors.sessions.erase(actor);}
+            actors.states.erase(id);actors.background_labels.erase(id);actors.parked_attention.erase(id);
+            actors.watches.erase(id);actors.watch_actors.erase(id);actors.wakes->erase(id);
+        }
+        actor_completion->wake(); // Covers a callback that already captured the old endpoint.
+        retired_smoke_sessions.merge(view.smoke_sessions_);
+        it=owned_windows.erase(it); // Outside WndProc; removes registry pointer and GPU ownership.
+    }
 }
 void NativeApplication::load_workspaces(NativeWindow& window) {
     const auto& options=window.options_;
@@ -1826,11 +2004,13 @@ void NativeWindow::workspace_model_changed() {
     application_.workspace_model_changed();
 }
 void NativeApplication::workspace_model_changed() {
+    if(creating_view){creation_dirty=true;return;}
     if(!workspaces.autosave || !workspaces.snapshot)return;
     workspaces.signal.mark_changed();
     if(!workspaces.timer)workspaces.timer=SetTimer(nullptr,0,1500,nullptr);
 }
 void NativeApplication::save_workspaces() {
+    if(creating_view)return;
     if(!workspaces.enabled || !workspaces.snapshot)return;
     if(workspaces.busy){workspaces.pending=true;return;}
     // No multiple-window persistence claim: native creation is gated to one
@@ -3438,6 +3618,9 @@ WindowScene NativeWindow::scene() {
 void NativeWindow::render() {
     if (!hwnd_ || closing_window_ || !renderer_ || minimized_) return;
     if (renderer_call_) { defer_layout(); return; }
+    // Native size/move modal loops can render without returning to our pump.
+    // Drain readiness callbacks before rendering can replace the swapchain.
+    if(renderer_ready_)renderer_ready_->cancel();
     RenderResult result;const auto rendered=scene();
     { RendererCallGuard guard(renderer_call_); result=renderer_->render(rendered); }
     if (result==RenderResult::presented) force_redraw_=false;
@@ -4405,6 +4588,7 @@ void NativeWindow::smoke_motion_capture(std::wstring_view suffix, std::uint64_t 
     }
     RenderResult result=RenderResult::busy;
     const auto deadline=GetTickCount64()+2000;
+    if(renderer_ready_)renderer_ready_->cancel();
     do {
         { RendererCallGuard guard(renderer_call_); result=renderer_->render(actual); }
         if (result!=RenderResult::busy) break;
@@ -5675,7 +5859,64 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
         throw std::runtime_error("Menu theme capture changed config, actor or input ownership.");
     std::fprintf(stderr,"Native menu theme capture=%s normal=1 narrow=1 palette=1 frontend_input_unchanged=1 physical_display_verified=0\n",narrow(std::wstring(suffix)).c_str());
 }
+void NativeApplication::windows_smoke_progress() {
+    if(windows_smoke_stage>=4)return;
+    const auto view_for=[&](WindowId id)->NativeWindow*{for(auto* view:windows)if(view->projects_.id()==id)return view;return nullptr;};
+    auto* survivor=view_for(smoke_survivor_window);
+    if(!survivor || !survivor->hwnd_)throw std::runtime_error("Two-window survivor unexpectedly disappeared.");
+    const auto marker=[](const std::shared_ptr<Session>& actor,std::string_view expected){
+        const auto frame=actor->frame();if(!frame)return false;
+        for(const auto& row:frame->lines)if(row){std::string text;for(const auto& cell:row->cells)text+=cell.grapheme;while(!text.empty()&&text.back()==' ')text.pop_back();if(text==expected)return true;}
+        return false;
+    };
+    const auto send=[](NativeWindow& view,const std::shared_ptr<Session>& actor,std::string command){
+        view.submit([actor,command]{return actor->paste(command);},command.size());
+        KeyInput enter;enter.key=Key::enter;view.submit([actor,enter]{return actor->key(enter);});
+    };
+    if(windows_smoke_stage==0) {
+        auto* first=view_for(smoke_first_window);
+        if(!first || first->hwnd_==survivor->hwnd_ || smoke_first_actor==smoke_survivor_actor || actors.sessions.size()!=2)throw std::runtime_error("Two native windows did not have distinct ownership.");
+        if(!first->first_exposed_frame_ || !survivor->first_exposed_frame_ || !smoke_first_session->info().bytes_received || !smoke_survivor_session->info().bytes_received)return;
+        send(*first,smoke_first_session,"echo __STORMTTY_WINDOW_A__");send(*survivor,smoke_survivor_session,"echo __STORMTTY_WINDOW_B__");
+        first->smoke_phase(SmokeDeadline::Phase::interaction);survivor->smoke_phase(SmokeDeadline::Phase::interaction);
+        windows_smoke_stage=1;return;
+    }
+    if(windows_smoke_stage==1) {
+        if(!marker(smoke_first_session,"__STORMTTY_WINDOW_A__") || !marker(smoke_survivor_session,"__STORMTTY_WINDOW_B__"))return;
+        auto* first=view_for(smoke_first_window);if(!first)throw std::runtime_error("Source window vanished before close authorization.");
+        for(const auto& actor:{smoke_first_session,smoke_survivor_session}) {
+            const auto evidence=actor->diagnostics();const bool expected_bundled=!survivor->options_.console_runtime_directory.empty();
+            if(evidence.provider.empty() || evidence.bundled_provider!=expected_bundled)throw std::runtime_error("Window fixture used an unexpected console provider.");
+            std::fprintf(stderr,"Native windows controlled actor provider: %s bundled=%d\n",evidence.provider.c_str(),evidence.bundled_provider);
+        }
+        first->capture_named_frame(L"two-window-first");survivor->capture_named_frame(L"two-window-survivor");
+        SendMessageW(first->hwnd_,WM_CLOSE,0,0);
+        if(!first->modal_)throw std::runtime_error("Closing a live window bypassed confirmation.");
+        first->answer_modal(ModalDecision::cancel);
+        if(!first->hwnd_ || smoke_first_session->closed() || smoke_survivor_session->closed())throw std::runtime_error("Cancel closed live work.");
+        SendMessageW(first->hwnd_,WM_CLOSE,0,0);
+        if(!first->modal_)throw std::runtime_error("Second close lost confirmation.");
+        first->answer_modal(ModalDecision::confirm);
+        if(first->hwnd_)throw std::runtime_error("Authorized first-window close left its HWND alive.");
+        windows_smoke_stage=2;actor_completion->wake();return;
+    }
+    if(windows_smoke_stage==2) {
+        if(view_for(smoke_first_window) || !smoke_first_session->closed())return;
+        if(projects.windows().size()!=1 || actors.sessions.size()!=1 || actors.sessions.at(smoke_survivor_actor)!=smoke_survivor_session ||
+           survivor->active_session()!=smoke_survivor_session.get() || smoke_survivor_session->process_finished() || !projects.validate())
+            throw std::runtime_error("Independent close replaced or retired the survivor actor.");
+        send(*survivor,smoke_survivor_session,"echo __STORMTTY_SURVIVOR_AFTER_CLOSE__ & exit /b 0");
+        survivor->smoke_phase(SmokeDeadline::Phase::exit);windows_smoke_stage=3;return;
+    }
+    if(!smoke_survivor_session->process_finished())return;
+    if(!marker(smoke_survivor_session,"__STORMTTY_SURVIVOR_AFTER_CLOSE__") || smoke_survivor_session->info().exit_code!=0)
+        throw std::runtime_error("Surviving actor did not produce output and exit cleanly after peer close.");
+    windows_smoke_stage=4;
+    std::fputs("Native windows ownership passed: two distinct HWNDs/actors, failed creation rollback, Cancel preserved both, first-window close disposed only its actor, same survivor produced new output and exit 0.\n",stderr);
+    survivor->smoke_finish();
+}
 void NativeWindow::smoke_progress(bool presented, bool frame_observed) {
+    if(options_.smoke_windows)return; // Dedicated application-level controlled fixture.
     if (!options_.smoke_test || smoke_finished_ || smoke_menu_theme_running_ || smoke_focus_running_ || smoke_settings_scroll_running_ || smoke_workspace_frame_running_ || smoke_activity_running_) return;
     if(!options_.smoke_agent&&projects_.active()) {
         if(ai_enabled_||agent_controller_||agent_setup_||agent_panel_.is_open()||footer_layout().agent.width>0||command_context().supports_agent_panel) {smoke_finish("Disabled AI feature exposed UI or provider ownership.");return;}
@@ -6952,7 +7193,7 @@ LRESULT NativeWindow::message(UINT message, WPARAM wparam, LPARAM lparam) {
         if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);
         tooltip_=nullptr; tooltip_texts_.clear();
         for (auto& [id,session]:sessions_) if(projects_.contains_session(id))session->request_close();
-        PostQuitMessage(exit_code_); return 0;
+        application_.window_destroyed(*this,exit_code_); return 0;
     case WM_NCDESTROY: {
         const auto result=DefWindowProcW(hwnd_,message,wparam,lparam);
         SetWindowLongPtrW(hwnd_,GWLP_USERDATA,0); hwnd_=nullptr; return result;

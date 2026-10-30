@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <limits>
 #include <set>
+#include <type_traits>
 
 namespace stormtty {
 namespace {
@@ -34,7 +35,27 @@ WindowId ApplicationWorkspaces::owner(ProjectWorkspaceId id) const noexcept {
     for(const auto& w:windows_)if(std::find(w.projects.begin(),w.projects.end(),id)!=w.projects.end())return w.id;
     return {};
 }
+Result<WindowId> ApplicationWorkspaces::begin_window_creation() {
+    auto result=create_window();if(result)creating_=*result.value;return result;
+}
+Status ApplicationWorkspaces::commit_window_creation(WindowId id) {
+    if(!id || creating_!=id)return Status::failure("Window is not being created");
+    if(auto valid=validate();!valid)return valid;
+    creating_={};return {};
+}
+void ApplicationWorkspaces::abort_window_creation(WindowId id) noexcept {
+    if(!id || creating_!=id)return;
+    const auto* candidate=window(id);
+    if(candidate) {
+        static_assert(std::is_nothrow_move_assignable_v<ProjectWorkspace>);
+        std::erase_if(catalog_.entries_,[&](const auto& project){return std::find(candidate->projects.begin(),candidate->projects.end(),project.id)!=candidate->projects.end();});
+        if(!catalog_.find(catalog_.active_))catalog_.active_=catalog_.entries_.empty()?ProjectWorkspaceId{}:catalog_.entries_.front().id;
+        std::erase_if(windows_,[&](const auto& entry){return entry.id==id;});
+    }
+    creating_={}; // Counters remain monotonic; abandoned identities are not reused.
+}
 Result<WindowId> ApplicationWorkspaces::create_window() {
+    if(creating_)return {{},"Window construction is already pending"};
     if(windows_.size()>=maximum_windows || !next_window_)return {{},"Window limit reached"};
     WindowId id{next_window_};
     windows_.push_back({id,{},{}});
@@ -42,6 +63,7 @@ Result<WindowId> ApplicationWorkspaces::create_window() {
     return {id,{}};
 }
 Result<ProjectWorkspaceId> ApplicationWorkspaces::create_workspace(WindowId target, ProjectWorkspaceMetadata metadata, Workspace workspace) {
+    if(creating_ && creating_!=target)return {{},"Another window is being constructed"};
     if(!window(target))return {{},"Destination window no longer exists"};
     if(revision_==std::numeric_limits<std::uint64_t>::max())return {{},"Placement revision exhausted"};
     // Allocate placement capacity before catalog mutation; no partial ownership.
@@ -58,6 +80,7 @@ Status ApplicationWorkspaces::activate(WindowId target, ProjectWorkspaceId proje
     return {};
 }
 Status ApplicationWorkspaces::move(ProjectWorkspaceId project, WindowId source, WindowId destination) {
+    if(creating_)return Status::failure("Cannot move workspaces during window construction");
     if(auto valid=validate();!valid)return valid;
     if(!source || owner(project)!=source || !window(destination))return Status::failure("Workspace move target changed");
     if(source==destination)return {};
@@ -73,6 +96,7 @@ Result<WorkspaceClosePreview> ApplicationWorkspaces::preview_close(ProjectWorksp
     return {WorkspaceClosePreview{w,project,revision_,catalog_.session_ids(project)}, {}};
 }
 Result<RemovedProjectWorkspace> ApplicationWorkspaces::close_workspace(const WorkspaceClosePreview& preview) {
+    if(creating_)return {{},"Cannot close workspaces during window construction"};
     if(auto valid=validate();!valid)return {{},valid.error};
     if(!preview.window || owner(preview.project)!=preview.window || preview.placement_revision!=revision_ ||
        preview.sessions!=catalog_.session_ids(preview.project))return {{},"Close target changed; request authorization again"};
@@ -81,7 +105,25 @@ Result<RemovedProjectWorkspace> ApplicationWorkspaces::close_workspace(const Wor
     for(auto& w:windows_)if(w.id==preview.window)erase_project(w,preview.project);
     ++revision_;return removed;
 }
+Result<WindowClosePreview> ApplicationWorkspaces::preview_close_window(WindowId id) const {
+    const auto* w=window(id);if(!w)return {{},"Window no longer exists"};
+    WindowClosePreview result{id,revision_,w->projects,{}};
+    for(auto project:w->projects){const auto ids=catalog_.session_ids(project);result.sessions.insert(result.sessions.end(),ids.begin(),ids.end());}
+    std::sort(result.sessions.begin(),result.sessions.end());return {std::move(result),{}};
+}
+Result<ClosedWorkspaceWindow> ApplicationWorkspaces::close_window(const WindowClosePreview& preview) {
+    if(creating_)return {{},"Cannot close windows during window construction"};
+    if(auto valid=validate();!valid)return {{},valid.error};
+    auto current=preview_close_window(preview.window);
+    if(!current||*current.value!=preview)return {{},"Window close target changed; request authorization again"};
+    if(revision_==std::numeric_limits<std::uint64_t>::max())return {{},"Placement revision exhausted"};
+    auto removed=catalog_.remove_many(preview.projects);if(!removed)return {{},removed.error};
+    static_assert(std::is_nothrow_move_assignable_v<WorkspaceWindow>);
+    std::erase_if(windows_,[&](const auto& w){return w.id==preview.window;});++revision_;
+    return {ClosedWorkspaceWindow{preview.window,std::move(*removed.value)}, {}};
+}
 Status ApplicationWorkspaces::close_empty_window(WindowId id) {
+    if(creating_)return Status::failure("Cannot close windows during window construction");
     const auto* w=window(id);if(!w)return Status::failure("Window no longer exists");
     if(!w->projects.empty())return Status::failure("Window still owns workspaces");
     std::erase_if(windows_,[id](const auto& entry){return entry.id==id;});return {};
@@ -126,6 +168,22 @@ Result<ApplicationLayout> capture_application_layout(const ApplicationWorkspaces
         if(window.id==active)result.active_window=result.windows.size();
         result.windows.push_back(std::move(snapshot));
     }
+    return {std::move(result),{}};
+}
+Status validate_application_layout(const ApplicationLayout& layout) {return valid_layout(layout);}
+Result<WindowRestoreHistory> WindowRestoreHistory::from_records(std::optional<SequencedLayout> closed,
+        std::optional<SequencedLayout> quit, std::optional<SequencedLayout> checkpoint) {
+    std::set<std::uint64_t> sequences;
+    std::uint64_t maximum=0;
+    for(const auto* record:{&closed,&quit,&checkpoint})if(*record) {
+        if(!(*record)->sequence || !sequences.insert((*record)->sequence).second)return {{},"Invalid restore sequence"};
+        if(auto valid=valid_layout((*record)->layout);!valid)return {{},valid.error};
+        maximum=std::max(maximum,(*record)->sequence);
+    }
+    if(closed && closed->layout.windows.size()!=1)return {{},"Individual-close record must contain exactly one window"};
+    WindowRestoreHistory result;
+    result.closed_=std::move(closed);result.quit_=std::move(quit);result.checkpoint_=std::move(checkpoint);
+    result.next_=maximum==std::numeric_limits<std::uint64_t>::max()?0:maximum+1;
     return {std::move(result),{}};
 }
 Status WindowRestoreHistory::record(std::optional<SequencedLayout>& target, ApplicationLayout layout) {

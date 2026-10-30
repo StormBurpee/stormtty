@@ -67,7 +67,7 @@ if(STORMTTY_EXPERIMENTAL_HOST_BACKDROP_PROBE)
     target_link_libraries(stormtty_host_backdrop_probe PRIVATE windowsapp CoreMessaging d3d11 dxgi d2d1 dxguid dwrite dwmapi user32 gdi32 advapi32 ole32)
 endif()
 
-add_library(stormtty_workspace src/core/theme_exchange.cpp src/core/agent_provider_settings.cpp src/core/agent_panel.cpp src/core/settings_panel.cpp src/core/context_menu.cpp src/core/project_workspaces.cpp src/core/application_workspaces.cpp src/core/workspace_presets.cpp src/core/workspace.cpp src/core/workspace_serialization.cpp src/core/commands.cpp src/core/config.cpp)
+add_library(stormtty_workspace src/core/theme_exchange.cpp src/core/agent_provider_settings.cpp src/core/agent_panel.cpp src/core/settings_panel.cpp src/core/context_menu.cpp src/core/project_workspaces.cpp src/core/application_workspaces.cpp src/core/application_layout_codec.cpp src/core/workspace_presets.cpp src/core/workspace.cpp src/core/workspace_serialization.cpp src/core/commands.cpp src/core/config.cpp)
 target_include_directories(stormtty_workspace PUBLIC include)
 stormtty_warnings(stormtty_workspace)
 
@@ -213,6 +213,7 @@ if(BUILD_TESTING)
     stormtty_test(workspace_presets_tests tests/workspace_presets_tests.cpp stormtty_workspace)
     stormtty_test(project_workspaces_tests tests/project_workspaces_tests.cpp stormtty_workspace)
     stormtty_test(application_workspaces_tests tests/application_workspaces_tests.cpp stormtty_workspace)
+    stormtty_test(application_layout_codec_tests tests/application_layout_codec_tests.cpp stormtty_workspace)
     stormtty_test(session_wake_router_tests tests/session_wake_router_tests.cpp stormtty_workspace Threads::Threads)
     stormtty_test(command_watch_tests tests/command_watch_tests.cpp stormtty_workspace)
     stormtty_test(previous_terminal_tests tests/previous_terminal_tests.cpp stormtty_workspace)
@@ -263,6 +264,7 @@ if(WIN32)
     stormtty_warnings(stormtty_settings_services)
     if(BUILD_TESTING)
         stormtty_test(settings_services_tests tests/settings_services_tests.cpp stormtty_settings_services)
+        stormtty_test(application_layout_services_tests tests/application_layout_services_tests.cpp stormtty_settings_services)
         stormtty_test(windows_shell_state_tests tests/windows_shell_state_tests.cpp stormtty_settings_services)
         # Runtime argument is supplied by native managed-shell qualification CI.
         add_executable(managed_shell_state_probe tests/managed_shell_state_probe.cpp)
@@ -419,6 +421,10 @@ if(STORMTTY_BUILD_APP)
             add_test(NAME native_agent_panel_smoke COMMAND stormtty --smoke-agent --capture "${CMAKE_BINARY_DIR}/artifacts/native-agent.png")
             set_tests_properties(native_agent_panel_smoke PROPERTIES TIMEOUT 60 LABELS "windows;native;agent-fixture")
             if(Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING)
+                add_test(NAME native_windows_ownership_smoke COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tools/windows-native-smoke.py" --app "$<TARGET_FILE:stormtty>"
+                    --artifacts "${CMAKE_BINARY_DIR}/artifacts")
+                set_tests_properties(native_windows_ownership_smoke PROPERTIES TIMEOUT 100 LABELS "windows;native;window-ownership")
                 add_test(NAME native_workspace_persistence_smoke COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/tools/workspace-native-smoke.py" --app "$<TARGET_FILE:stormtty>"
                     --artifacts "${CMAKE_BINARY_DIR}/artifacts")

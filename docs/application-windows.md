@@ -159,6 +159,17 @@ controller still constructs only one. Settings-editor coordination and multi-win
 shutdown/renderer scheduling remain separate upcoming boundaries. A Windows-target
 object compile is not evidence that native modal/persistence smoke has passed.
 
+## Aggregate close authorization
+
+`preview_close_window` captures the window's complete project order, placement
+revision and sorted session associations. `close_window` rejects a stale preview,
+then uses `ProjectWorkspaceCatalog::remove_many` to prepare every detached report
+before a nonthrowing catalog/placement commit. No process closes here. This is the
+aggregate operation for a host's already-authorized independent-window close;
+move still never enters this path. Batch failure leaves all catalog ownership
+unchanged, including when a valid ID precedes an invalid/duplicate ID. An empty
+window can be closed explicitly. Closing one window leaves every surviving
+window/project/session association intact.
 ### Retired actor completion routing
 
 The first native extraction incorrectly erased the only route before a retired
@@ -179,3 +190,70 @@ move-then-retire, expired endpoints, registry destruction and concurrent rebinds
 Native modal smoke now emits a distinct stage-3 retirement/survivor assertion after
 disposal, before sending its final marker. Only a new native run can qualify that
 path; portable router tests and cross-compilation do not replace it.
+
+## Registry-driven pump boundary (local, still single-window)
+
+The application dispatches keys and render work through registered native views;
+`WM_DESTROY` requests application exit only when no other live view remains. This
+boundary still constructs exactly one view and exposes no New Window command.
+Dirty renderers arm one-shot threadpool waits which post the existing wake message,
+so 64 modeled windows do not exceed the native message-wait handle limit. There is
+no periodic idle polling. A view cancels and drains its wait before render/device
+recovery, resize, material/swapchain changes and HWND destruction. Size/move modal
+rendering performs the same drain even without returning to the application pump.
+This requires native renderer/material/modal regression qualification; compilation
+alone is insufficient.
+
+Before constructing a second view, application-owned view retirement must leave
+survivors alive, creation must roll back model/actors/renderer/HWND failures without
+saving an uncommitted candidate, and actor/resource budgets must remain global.
+Grouped storage must distinguish authorized individual close, explicit application
+Quit, and crash checkpoints. A second executable must route to the existing owner
+or refuse shared-storage writes; concurrent silent writers are not shippable.
+Controlled two-window smoke must prove independent close and unchanged survivor
+actor identity/output. Moving the last workspace also needs explicit empty-window
+and zero-workspace command guards before transfer UI can be exposed.
+
+## Unpublished native creation transaction
+
+The application owns view objects and drains them before unregistering the native
+window class. Creation uses an explicitly unpublished model token, not a copied
+catalog. Only that pending window can receive newly created workspace records;
+transfer/close cannot interleave with construction. Abort is allocation-free,
+removes only its candidate records, and never reuses window identities. Normal
+close authorization cannot be bypassed by passing an already-committed window ID.
+
+The candidate records its own allocated actor IDs before process launch. Failure
+clears the candidate HWND/wake target, aborts model placement, and retires only that
+ledger. Actors created by a surviving view are not part of the rollback. Renderer,
+process or allocation failure never evicts an existing actor. Pending candidate
+changes are not saved; a successful commit forwards its deferred autosave signal.
+The factory still refuses a second persistent native view until grouped storage is
+wired. The 256-project catalog bound and existing project-local pane/tab/parked
+bounds are unchanged and shared across windows. There is no additional global
+live-session cap; introducing one is separate resource-hardening policy.
+
+## Controlled two-window qualification (not yet native-qualified)
+
+`native_windows_ownership_smoke` uses an authored, temporary, marker-checked local
+fixture and controlled Cmd actors, independently of the optional Zsh bundle. It
+rejects user config, missing fixtures and ambiguous smoke modes. It does not load
+or save application storage. The owned-process wrapper retains bounded logs and
+requires both dedicated proof markers and clean app termination; the native app
+separately waits for every fixture actor, including the failed candidate.
+
+The fixture constructs two real HWNDs/renderers with distinct actor IDs, injects
+pre-HWND and post-renderer/actor candidate failures, checks surviving ownership,
+cancels a live close, then closes the original window and retains the second. The
+surviving actor must produce new output and exit zero without replacement. Native
+provider evidence is checked for both actors that produce output; the aborted
+candidate may close before its process starts and is claimed only as disposed.
+
+Retired views are destroyed outside WndProc. Their actor callbacks are rebound to
+an application thread-only wake endpoint before registry removal; that endpoint
+never retains an HWND. An explicit wake covers callbacks already holding the old
+endpoint, and the pump clears notification coalescing after native modal dispatch.
+This adapter is gated to nonpersistent fixtures: grouped storage, clean Quit versus
+individual close, crash recovery and second-executable ownership remain mandatory
+before exposing normal New Window commands. No native/physical pass is implied by
+portable tests or Windows-target compilation.

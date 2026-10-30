@@ -7,6 +7,7 @@
 #include <set>
 #include <random>
 #include <utility>
+#include <type_traits>
 
 namespace stormtty {
 namespace {
@@ -288,6 +289,24 @@ Status ProjectWorkspaceCatalog::validate() const {
     return {};
 }
 
+Result<std::vector<RemovedProjectWorkspace>> ProjectWorkspaceCatalog::remove_many(std::span<const ProjectWorkspaceId> ids) {
+    std::set<ProjectWorkspaceId> selected;
+    for(auto id:ids)if(!find(id)||!selected.insert(id).second)return {{},"Invalid or duplicate batch-close workspace"};
+    std::vector<RemovedProjectWorkspace> removed;removed.reserve(ids.size());
+    for(auto id:ids){const auto* project=find(id);removed.push_back({*project,sessions_in(*project)});}
+    auto active=active_;
+    if(selected.contains(active)) {
+        active={};bool passed=false;
+        for(const auto& project:entries_) {
+            if(project.id==active_){passed=true;continue;}
+            if(!selected.contains(project.id)){active=project.id;if(passed)break;}
+        }
+    }
+    // All allocations and copies precede the nonthrowing erase/selection commit.
+    static_assert(std::is_nothrow_move_assignable_v<ProjectWorkspace>);
+    std::erase_if(entries_,[&](const auto& project){return selected.contains(project.id);});
+    active_=active;return {std::move(removed),{}};
+}
 Status ProjectWorkspaceCatalog::replace_unbound(ProjectWorkspaceCatalog& prepared) {
     if (this == &prepared) return {};
     if (!all_session_ids().empty() || !prepared.all_session_ids().empty())
