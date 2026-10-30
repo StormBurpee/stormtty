@@ -373,6 +373,29 @@ CoreGraphics runtime; exact-pixel parity records that existing limitation rather
 than repairing it in an ownership extraction. This is not physical UI or onscreen
 presentation qualification; see the [macOS limits](../src/platform/macos/README.md).
 
+On macOS, `ChromePainter` (`src/platform/macos/chrome_painter.hpp/.mm`) owns
+per-item chrome primitive drawing and CoreText label rasterization. It borrows an
+admitted `MetalFrame` synchronously, retaining only that reference and viewport/DPI
+values—not scenes, fonts, caches, native resources or callbacks. Bitmap bytes,
+bitmap contexts and CTLine remain alive through synchronous upload.
+
+The renderer retains the full-target clip, `chrome_paint_order` traversal, a fresh
+remaining-upload allowance for each item, submission, statistics and scene-history
+commit. Each painter call resets its clip before validation. Direct fills need no
+upload allowance; raster paths preserve the 4 MiB item bound and shared 64 MiB
+budget's existing charge/failure order. Ignored text wrapping and raster-padding
+replacement semantics remain unchanged. Terminal pane backgrounds, image layers,
+row dispatch and cursor policy still reside in `renderer.mm`.
+
+Native macOS qualification passed 59/59, including legacy-versus-extracted Metal
+pixel and upload-budget comparisons; this is not physical UI or onscreen
+presentation qualification. See [chrome painter verification](../tests/macos_chrome_painter_verification.md)
+for detailed coverage and [the native run](https://github.com/StormBurpee/stormtty/actions/runs/41102242173)
+for execution evidence. Linux, Windows baseline 70/70 and all 15 application cases
+passed; the Windows full run failed three repeated Settings cases with verified
+malformed bracketed paste (10/13 repeats passed, all reaped, no outer timeout or
+cleanup error). These failures remain disclosed, not a full-green result.
+
 `ChromePainter` (`src/platform/windows/chrome_painter.hpp` and `.cpp`) executes
 the ordered native chrome drawing, separate from domain scene composition such
 as `RibbonRenderer`. `PaintSurface` is a synchronous drawing borrow with scoped
@@ -473,7 +496,8 @@ gates. Useful starting points:
   at multiple DPIs, resize, font/DPI changes, occlusion and resource recovery.
 - macOS typography/rendering: `macos_font_resources_tests`, `macos_row_rasterizer_tests`,
   `macos_metal_texture_resources_tests`, `macos_metal_compositor_tests`,
-  `macos_renderer_tests` and `macos_png_tests`; Windows graphics checks do not qualify
+  `macos_chrome_painter_tests`, `macos_renderer_tests` and `macos_png_tests`;
+  Windows graphics checks do not qualify
   this backend.
 - Actor/VT changes: `session_tests`, `terminal_tests`, `terminal_search_tests`,
   plus the affected real transport/provider tests and complete process exit.

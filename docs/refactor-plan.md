@@ -78,15 +78,34 @@ context or own native resources.
 
 `MetalCompositor` and scoped `MetalFrame` implement the device/submission boundary;
 the separate exceptional-encoder cleanup correction passed the native macOS gate.
-See [compositor verification](../tests/macos_metal_compositor_verification.md) for
-exact source/run evidence and limits; this does not qualify physical presentation.
-Separate remaining terminal/chrome paint policy in
-`src/platform/macos/renderer.mm` from device submission and presentation. Keep
-`CoreTextFontResources`, `CoreTextRowRasterizer` and `MetalTextureResources` as their
-existing owners. In `src/platform/macos/window.mm`, separate application/session,
-view and input responsibilities within `Host` without imposing Windows lifecycle
-symmetry. ARC resource retention, completion-generation state and AppKit close/Quit
-semantics require native characterization, not mechanical translation.
+`ChromePainter` now owns synchronous per-item chrome primitive/text painting,
+borrowing only the admitted frame and viewport/DPI/allowance values. The renderer
+retains ordered traversal, fresh per-item budget snapshots, submission and
+scene-history/statistics updates. Native macOS qualification passed 59/59;
+see [chrome painter verification](../tests/macos_chrome_painter_verification.md)
+and [the native run](https://github.com/StormBurpee/stormtty/actions/runs/41102242173).
+Linux, Windows baseline 70/70 and all 15 application cases also passed. The full
+Windows run failed repeated Settings cases `explicit5`, `explicit7` and
+`explicit8` with verified malformed bracketed paste: 10/13 repeats passed, all
+13 were reaped, with no outer timeout or cleanup error. This is not a green full
+run or physical-presentation qualification.
+
+Group 4 remains open:
+
+- Separate terminal paint policy still in `src/platform/macos/renderer.mm`:
+  pane backgrounds/selection, image layers, row dispatch and cursor rendering.
+  Keep `CoreTextFontResources`, `CoreTextRowRasterizer` and
+  `MetalTextureResources` as their existing owners; do not move frame admission,
+  submission or scene-history authority into a terminal painter.
+- In `src/platform/macos/window.mm`, separate application/session, view and input
+  responsibilities within `Host` without imposing Windows lifecycle symmetry.
+  ARC resource retention, completion-generation state and AppKit close/Quit
+  semantics require native characterization, not mechanical translation.
+
+Preserve shared upload-budget charging, clip resets, mixed terminal/chrome alpha
+and exception recovery. See [compositor verification](../tests/macos_metal_compositor_verification.md)
+for submission/lifetime evidence and limits. Neither painter extraction nor native
+offscreen success activates held presentation work or paused features.
 
 ### 5. Terminal search and frame materialization
 

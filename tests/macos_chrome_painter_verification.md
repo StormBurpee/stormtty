@@ -49,8 +49,24 @@ pixel equality alone does not prove allocation or exception equivalence.
 
 Retain `macos_renderer_tests` (chrome layers/viewports/Settings, alignment and mixed
 terminal/chrome alpha), compositor exceptional-recovery fixtures, font/CPU row,
-texture-residency and PNG tests. Native execution of this slice is pending; Linux
-source checks are not Apple SDK compilation or Metal evidence. Even successful
-native offscreen checks do not establish physical UI, onscreen presentation,
+texture-residency and PNG tests.
+
+[PR #42 native qualification](https://github.com/StormBurpee/stormtty/actions/runs/41102242173)
+passed macOS 59/59 for PR head `d7b4c150` (tree `7a5c62b3`), tested through checkout
+`d3440505`. Linux passed. Windows baseline passed 70/70 and all 15 application
+cases passed. The full run failed only repeated Settings cases `explicit5`,
+`explicit7` and `explicit8`, each with verified malformed bracketed paste: 10/13
+repeats passed, all 13 processes were reaped, and none had an outer timeout or
+cleanup error. These are disclosed failures, not a full-green Windows result.
+
+The native original/extracted comparison ran at 96/144/192 DPI and exercised
+allowances of 0, 1020, 1024, 2048, 2300 and 2304 bytes. The partial-failure case
+required the dimensions error and retained charges of `1024 + 80000` bytes; it
+then asserted a fresh next-frame budget and green readback before the final PASS.
+These checks establish the tested chrome extraction and recovery behavior, not
+full renderer parity.
+
+Linux source checks are not Apple SDK compilation or Metal evidence. Native
+offscreen checks do not establish physical UI, onscreen presentation,
 IME/accessibility, Intel/AMD parity or performance. Held presentation work and
 paused features remain untouched.
