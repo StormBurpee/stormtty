@@ -1,6 +1,8 @@
 #include "stormtty/smoke_commands.hpp"
 #include "stormtty/session.hpp"
 #include "stormtty/terminal_find.hpp"
+#include "terminal_find_legacy.hpp"
+#include "stormtty/terminal_find_controller.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -385,6 +387,123 @@ void drained_retained_find_fixture(const std::string& executable) {
     check(await([&]{return session->search_snapshot()->selected_index==1;},wake),"single retained navigation did not apply");
     check(session->info().sent.frontend()==0,"retained Find wrote frontend input");
 }
+// Run the captured host lifecycle against a finite real actor, not an actor
+// facade. The same cases qualify the extracted owner after movement.
+template<class Find>
+void find_controller_lifecycle(const std::string& executable) {
+    auto wake = std::make_shared<WakeCounter>();
+    ProcessOptions process;
+    process.executable = executable;
+    process.arguments = {"--native-find-child"};
+    auto actor = Session::start(process, make_search_terminal_options(80, 8),
+        [wake] { wake->signal(); }, SessionRetentionPolicy::retain_document);
+    struct Close {
+        std::shared_ptr<Session> actor;
+        ~Close() {
+            actor->request_close();
+            (void)actor->wait_closed(5s);
+        }
+    } close{actor};
+    check(await([&] { return actor->process_finished(); }, wake),
+        "controller finite document did not drain");
+    check(actor->info().exit_code == 0, "controller finite child failed");
+
+    using Update = typename Find::Update;
+    Find find;
+    find.activate(SessionId{71});
+    check(find.query().insert("STORMTTY_FIND_NEEDLE"), "controller query insertion failed");
+    find.submit(*actor);
+    check(find.request() != 0 && find.error().empty(), "retained query was rejected");
+    check(find.initial_selection().request() == find.request(), "initial intent missing");
+    check(await([&] {
+        const auto result = actor->search_snapshot();
+        return result && current_find_result(*result, find.request(), find.query().text()) &&
+            result->status == SearchStatus::complete;
+    }, wake), "controller retained search incomplete");
+    const auto result = actor->search_snapshot();
+    check(result->matches.size() == 2, "controller retained result lost matches");
+    check(find.adopt(result) == Update::changed, "matching snapshot not adopted");
+    check(find.adopt(result) == Update::unchanged, "same pointer invalidated twice");
+    auto wrong = std::make_shared<SearchSnapshot>(*result);
+    ++wrong->token.request_id;
+    check(find.adopt(wrong) == Update::rejected && find.result() == result, "obsolete request replaced result");
+    wrong = std::make_shared<SearchSnapshot>(*result);
+    wrong->query = "other";
+    check(find.adopt(wrong) == Update::rejected, "obsolete query replaced result");
+    check(find.adopt({}) == Update::rejected, "empty snapshot replaced result");
+    const auto token = find.take_initial_selection();
+    check(token == result->token, "initial exact token changed");
+    check(!find.take_initial_selection(), "initial token attempted twice");
+    // Owned synthetic snapshots characterize revision/generation policy without
+    // mutating the actor's published document or snapshot.
+    auto revised = std::make_shared<SearchSnapshot>(*result);
+    ++revised->token.revision;
+    check(find.adopt(revised) == Update::changed, "new revision not adopted");
+    check(find.take_initial_selection() == revised->token, "new revision not eligible");
+    auto generated = std::make_shared<SearchSnapshot>(*revised);
+    ++generated->token.generation;
+    check(find.adopt(generated) == Update::changed, "new generation not adopted");
+    check(find.take_initial_selection() == generated->token, "new generation not eligible");
+    find.begin_navigation(); // Host discovers the actor is absent after this point.
+    check(find.initial_selection().request() == 0, "missing actor retained auto intent");
+    check(find.adopt(result) == Update::changed, "real result not restored");
+    check(!find.take_initial_selection(), "explicit navigation resurrected initial intent");
+    check(actor->select_search_match(result->token, 0) == SessionSendResult::accepted,
+        "controller fixture selection rejected");
+    check(await([&] { return actor->search_snapshot()->selected_index == 0; }, wake),
+        "controller fixture selection not applied");
+    // Cached result deliberately has an unusable token. Navigation must read the
+    // fresh actor snapshot, rather than replaying this synthetic token.
+    check(find.adopt(generated) == Update::changed, "navigation stale fixture not adopted");
+    find.begin_navigation();
+    find.navigate(*actor, false);
+    check(await([&] { return actor->search_snapshot()->selected_index == 1; }, wake),
+        "navigation did not use fresh actor token");
+    find.query().select_all();
+    check(find.query().insert("STORMTTY_FIND_ABSENT"), "replacement edit failed");
+    find.submit(*actor);
+    check(!find.result(), "replacement retained stale result");
+    check(await([&] {
+        const auto current = actor->search_snapshot();
+        return current && current_find_result(*current, find.request(), find.query().text()) &&
+            current->status == SearchStatus::complete && current->matches.empty();
+    }, wake), "replacement no-match query incomplete");
+    check(await([&] {
+        const auto frame = actor->frame();
+        for (const auto& row : frame->lines) {
+            for (const auto& cell : row->cells) {
+                if (cell.selected) return false;
+            }
+        }
+        return true;
+    }, wake), "replacement left old selection highlighted");
+    find.query().select_all();
+    check(find.query().erase(true), "empty query edit failed");
+    find.submit(*actor);
+    check(find.request() != 0 && find.initial_selection().request() == 0,
+        "empty query did not store cancellation without initial intent");
+    check(find.query().insert("kept query"), "persistent query insertion failed");
+    actor->request_close();
+    check(actor->wait_closed(5s), "controller fixture did not close");
+    find.submit(*actor);
+    check(find.error() == "Search unavailable", "rejection not reported");
+    // Closed submission currently returns zero. Store it even if a previous
+    // accepted request existed; retaining the old request would accept stale data.
+    check(find.request() == 0 && find.initial_selection().request() == 0,
+        "rejected request left accepted request active");
+    find.reset(Find::ResetReason::focus_loss);
+    check(!find.session() && !find.result() && find.request() == 0,
+        "focus loss retained session search state");
+    check(find.error() == "Search unavailable", "focus loss cleared error");
+    check(find.query().text() == "kept query", "focus loss erased query");
+    find.activate(SessionId{72});
+    check(find.query().selected(), "reopen did not select persistent query");
+    find.reset(Find::ResetReason::explicit_close);
+    check(find.error().empty() && find.query().text() == "kept query",
+        "explicit dismissal did not clear only transient error");
+    check(actor->info().sent.frontend() == 0, "Find controller generated terminal input");
+}
+
 void session_coalescing_and_fairness(const std::string& executable) {
     auto wake=std::make_shared<WakeCounter>(); ProcessOptions process; process.executable=executable; process.arguments={"--search-child"};process.input_capacity_bytes=3; // Force mixed frontend writes through partial transport chunks.
     auto session=Session::start(process,make_search_terminal_options(80,8),[wake]{wake->signal();});
@@ -442,6 +561,12 @@ int main(int argc,char** argv) {
         {"explicit navigation invalidation ownership",explicit_navigation_invalidation_ownership},
         {"output during owned-coordinate materialization",mutation_during_materialization},
         {"drained retained native Find fixture",[&]{drained_retained_find_fixture(std::filesystem::absolute(argv[0]).string());}},
+        {"pre-extraction Find lifecycle", [&] {
+            find_controller_lifecycle<test::LegacyTerminalFind>(std::filesystem::absolute(argv[0]).string());
+        }},
+        {"extracted Find lifecycle", [&] {
+            find_controller_lifecycle<TerminalFindController>(std::filesystem::absolute(argv[0]).string());
+        }},
         {"session coalescing, cancellation and I/O fairness",[&]{session_coalescing_and_fairness(std::filesystem::absolute(argv[0]).string());}}
     };
     unsigned failures{};
