@@ -1,4 +1,5 @@
 #include "stormtty/settings_services.hpp"
+#include "shell_discovery_policy.hpp"
 #include "stormtty/application_layout_services.hpp"
 
 #ifdef _WIN32
@@ -235,18 +236,10 @@ bool installed_executable(const std::filesystem::path& candidate) {
 }
 void add_first(ShellDiscoveryResult& result, const char* id, const char* label,
                const std::vector<std::filesystem::path>& candidates, bool bash = false) {
-    for (const auto& candidate : candidates) {
-        if (!installed_executable(candidate)) continue;
-        Profile profile;
-        profile.id = id; profile.label = label; profile.executable = utf8(candidate.wstring());
-        if (profile.executable.empty() || profile.executable.size() > 4096) continue;
-        if (bash) { profile.arguments = {"--login", "-i"}; profile.environment.emplace("CHERE_INVOKING", "1"); }
-        else if (std::string_view(id) == "windows-cmd") profile.arguments = {"/d"}; // Match builtin alias: never run Cmd AutoRun hooks.
-        else profile.arguments = {"-NoLogo"};
-        // Blank cwd inherits the host-selected project/current directory.
-        result.profiles.push_back(std::move(profile));
-        return;
-    }
+    shell_discovery_policy::add_first(result, id, label, candidates, bash,
+        [](const std::filesystem::path& candidate) {
+            return installed_executable(candidate) ? utf8(candidate.wstring()) : std::string{};
+        });
 }
 }
 
@@ -261,18 +254,7 @@ ShellDiscoveryResult discover_windows_shells(std::span<const Profile> configured
             // This candidate was just created from GetSystemDirectoryW, not an
             // arbitrary caller's Profile ID or basename. Match the host's exact
             // builtin alias policy, including /d injection, before hiding it.
-            std::erase_if(result.profiles,[&](const Profile& candidate) {
-                if (candidate.id!="windows-cmd") return false;
-                return std::any_of(configured.begin(),configured.end(),[&](const Profile& existing) {
-                    auto alias=existing.executable;
-                    for (auto& c:alias) if(c>='A' && c<='Z') c=static_cast<char>(c-'A'+'a');
-                    if (alias!="cmd" && alias!="cmd.exe") return false;
-                    auto arguments=existing.arguments;
-                    if (std::find(arguments.begin(),arguments.end(),"/d")==arguments.end()) arguments.insert(arguments.begin(),"/d");
-                    return arguments==candidate.arguments && existing.environment==candidate.environment &&
-                        existing.working_directory==candidate.working_directory;
-                });
-            });
+            shell_discovery_policy::hide_represented_cmd(result, configured);
             add_first(result, "windows-powershell", "Windows PowerShell", {root / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe"});
         }
         std::vector<std::filesystem::path> powershell, git;
