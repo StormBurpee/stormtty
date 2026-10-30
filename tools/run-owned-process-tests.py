@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Portable regressions for the CI-only process-handle completion contract."""
 import importlib.util
+import os
+from unittest import mock
 from pathlib import Path
 import subprocess
 import sys
@@ -24,6 +26,56 @@ class OwnedProcessTests(unittest.TestCase):
         self.assertIsNone(result.alive_at_timeout)
         self.assertIn(b"out", result.output_tail)
         self.assertIn(b"err", result.output_tail)
+
+    def test_environment_forwarding_and_parent_preserved(self):
+        parent=dict(os.environ)
+        environment=dict(parent,STORMTTY_AUTHORED_RUNNER_ENV='fixture')
+        code="import os; raise SystemExit(0 if os.environ.get('STORMTTY_AUTHORED_RUNNER_ENV')=='fixture' else 1)"
+        with mock.patch.object(runner.subprocess,'Popen',wraps=subprocess.Popen) as launch:
+            result=runner.run_owned([sys.executable,'-c',code],env=environment)
+            self.assertTrue(launch.call_args.kwargs['env'] is environment,'child mapping was not forwarded')
+        self.assertEqual(result.exit_code,0)
+        self.assertTrue(result.reaped)
+        self.assertTrue(dict(os.environ)==parent,'parent environment changed')
+        self.assertTrue(environment==dict(parent,STORMTTY_AUTHORED_RUNNER_ENV='fixture'),'child mapping changed')
+        with mock.patch.object(runner.subprocess,'Popen',wraps=subprocess.Popen) as launch:
+            result=runner.run_owned([sys.executable,'-c','pass'])
+            self.assertTrue(launch.call_args.kwargs['env'] is None,'default inheritance changed')
+        self.assertEqual(result.exit_code,0)
+
+    @unittest.skipUnless(os.name=='nt','native Windows environment block regression')
+    def test_windows_explicit_empty_and_absent_home(self):
+        # Inspect the same Win32 block API as the app, not Python/CRT getenv.
+        # This detects the putenv empty-value deletion which caused the fixture
+        # to launch an absent-HOME case while claiming an explicit empty HOME.
+        code = r"""
+import ctypes,sys
+kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+kernel.GetEnvironmentStringsW.restype=ctypes.c_void_p
+kernel.FreeEnvironmentStringsW.argtypes=[ctypes.c_void_p]
+block=kernel.GetEnvironmentStringsW()
+if not block:raise SystemExit(3)
+values=[]
+try:
+    address=block
+    while True:
+        entry=ctypes.wstring_at(address)
+        if not entry:break
+        name,sep,value=entry.partition('=')
+        if sep and name.upper()=='HOME':values.append(value)
+        address+=len(entry.encode('utf-16-le',errors='surrogatepass'))+ctypes.sizeof(ctypes.c_wchar)
+finally:kernel.FreeEnvironmentStringsW(block)
+raise SystemExit(0 if values==([''] if sys.argv[1]=='empty' else []) else 4)
+"""
+        parent=dict(os.environ)
+        for state in ('empty','absent'):
+            environment={key:value for key,value in parent.items() if key.upper()!='HOME'}
+            if state=='empty':environment['HOME']=''
+            result=runner.run_owned([sys.executable,'-c',code,state],env=environment)
+            self.assertEqual(result.exit_code,0)
+            self.assertTrue(result.reaped)
+            self.assertFalse(result.timed_out)
+            self.assertTrue(dict(os.environ)==parent,'parent environment changed')
 
     def test_actual_live_child_timeout(self):
         result = runner.run_owned([sys.executable, "-c", "import time; print('started',flush=True); time.sleep(30)"], timeout=0.4, reap_timeout=3)

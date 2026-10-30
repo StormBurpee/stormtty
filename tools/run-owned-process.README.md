@@ -38,3 +38,9 @@ Portable tests cover actual timeout/reaping, true nonzero exit codes, merged
 output, bounded tails, bad arguments/launch failure, CLI reporting, and a parent
 that exits while a controlled short-lived descendant retains its output handle.
 Windows runtime qualification of the helper remains a separate CI result.
+
+Callers may pass an optional `env` mapping directly to the child. The default
+`None` keeps ordinary OS inheritance. Explicit mappings are forwarded unchanged
+to `Popen`; the runner never mutates the parent environment or logs its values.
+Use this for Windows fixtures that need an actual empty value: assigning `''`
+through Python's `os.environ` invokes the CRT, which removes that OS variable.

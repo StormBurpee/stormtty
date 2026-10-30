@@ -34,6 +34,8 @@ jobs:
         timeout-minutes: 3
         shell: pwsh
         run: |
+          python tools/run-owned-process-tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/probes/shell-startup-app-tests.py
           exit $LASTEXITCODE
       - name: Initialize native compiler

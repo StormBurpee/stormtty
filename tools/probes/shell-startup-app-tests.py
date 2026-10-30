@@ -2,11 +2,23 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import os
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
 spec=importlib.util.spec_from_file_location('startup_app_test_driver',HERE/'run-shell-startup-app.py')
 p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
 class StartupAppTests(unittest.TestCase):
+    def test_case_environment_preserves_empty_home_and_parent(self):
+        parent=dict(os.environ)
+        for mode in p.EXPECTED:
+            environment=p.fixture_environment(mode)
+            self.assertIn('HOME',environment)
+            self.assertEqual(environment['HOME'],'' if mode=='disabled' else 'STORMTTY_AUTHORED_HOME')
+            self.assertEqual(environment['STORMTTY_NATIVE_STARTUP_DIAGNOSTIC'],'unavailable')
+            self.assertEqual(environment['STORMTTY_NATIVE_STARTUP_STATE_MS'],'999')
+            self.assertTrue(dict(os.environ)==parent,'parent environment changed')
+        self.assertNotIn('os.environ.clear()', (HERE/'run-shell-startup-app.py').read_text())
+
     def row(self,v):
         return 'STARTUP_APP_CHECK mode=%d sample=%d diagnostic=%d native_status=%d persistent=%d cache_expected=%d input_roundtrip=1 notice=%d code=0'%v
     def test_only_fixed_numeric_expected_records_are_retained(self):
@@ -21,6 +33,16 @@ class StartupAppTests(unittest.TestCase):
             self.assertFalse(p.evidence(valid.replace('actors_closed=1','actors_closed=0').encode(),mode)[1])
             self.assertFalse(p.evidence(valid.replace('removed=1','removed=0').encode(),mode)[1])
             self.assertFalse(p.evidence('\n'.join(lines[:-1]).encode(),mode)[1])
+    def test_numeric_failures_retained_but_never_pass(self):
+        lines=[self.row(row) for row in p.EXPECTED['off']]+['STARTUP_APP_EXIT sample=1 code=0','STARTUP_APP_CLEANUP actors_closed=1 removed=1']
+        for reason in range(15):
+            failure=f'STARTUP_APP_FAILURE stage=4 reason={reason} sample=1 code=1'
+            kept,ok=p.evidence(('\n'.join(lines+[failure])).encode(),'off')
+            self.assertFalse(ok);self.assertIn(failure,kept)
+        for failure in ('STARTUP_APP_FAILURE private path','STARTUP_APP_FAILURE stage=4 reason=99 sample=1 code=1'):
+            kept,ok=p.evidence(('\n'.join(lines+[failure])).encode(),'off')
+            self.assertFalse(ok);self.assertNotIn(failure,kept)
+
     def test_partial_or_wrong_observations_fail(self):
         rows=p.EXPECTED['ready']
         self.assertFalse(p.evidence(self.row(rows[0]).encode(),'ready')[1])

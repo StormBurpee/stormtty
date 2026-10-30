@@ -10,6 +10,7 @@ HERE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('startup_app_owned_runner',HERE.parent/'run-owned-process.py')
 runner=importlib.util.module_from_spec(spec);sys.modules[spec.name]=runner;spec.loader.exec_module(runner)
 CHECK=re.compile(r'STARTUP_APP_CHECK mode=([0-3]) sample=([12]) diagnostic=([01]) native_status=([0-2]) persistent=([01]) cache_expected=([01]) input_roundtrip=1 notice=([01]) code=0')
+FAILURE=re.compile(r'STARTUP_APP_FAILURE stage=([0-4]) reason=([0-9]|1[0-4]) sample=([12]) code=1')
 EXIT=re.compile(r'STARTUP_APP_EXIT sample=([12]) code=0')
 CLEANUP=re.compile(r'STARTUP_APP_CLEANUP actors_closed=([01]) removed=([01])')
 EXPECTED={
@@ -19,16 +20,24 @@ EXPECTED={
     'unavailable':[(3,1,1,2,0,0,1)],
 }
 def evidence(data,mode):
-    lines=[]; rows=[]; exits=[]; cleanup=[]; malformed=False
+    lines=[]; rows=[]; exits=[]; cleanup=[]; malformed=False; failed=False
     for line in data.decode('ascii',errors='replace').splitlines():
         match=CHECK.fullmatch(line)
         ended=EXIT.fullmatch(line)
         cleaned=CLEANUP.fullmatch(line)
-        if match:lines.append(line);rows.append(tuple(map(int,match.groups())))
+        if FAILURE.fullmatch(line):lines.append(line);failed=True
+        elif match:lines.append(line);rows.append(tuple(map(int,match.groups())))
         elif ended:lines.append(line);exits.append(int(ended[1]))
         elif cleaned:lines.append(line);cleanup.append(tuple(map(int,cleaned.groups())))
-        elif line.startswith(('STARTUP_APP_CHECK','STARTUP_APP_EXIT','STARTUP_APP_CLEANUP')):malformed=True
-    return lines,not malformed and rows==EXPECTED[mode] and exits==[row[1] for row in EXPECTED[mode]] and cleanup==[(1,1)]
+        elif line.startswith(('STARTUP_APP_CHECK','STARTUP_APP_EXIT','STARTUP_APP_CLEANUP','STARTUP_APP_FAILURE')):malformed=True
+    return lines,not malformed and not failed and rows==EXPECTED[mode] and exits==[row[1] for row in EXPECTED[mode]] and cleanup==[(1,1)]
+
+def fixture_environment(mode):
+    environment=dict(os.environ)
+    environment['HOME']='' if mode=='disabled' else 'STORMTTY_AUTHORED_HOME'
+    environment['STORMTTY_NATIVE_STARTUP_DIAGNOSTIC']='unavailable'
+    environment['STORMTTY_NATIVE_STARTUP_STATE_MS']='999'
+    return environment
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -54,16 +63,11 @@ def main():
     for mode in EXPECTED:
         command=[str((a.build/'stormtty.exe').resolve()),'--smoke-shell-startup',mode]
         if mode!='off':command.append('--diagnose-shell-startup')
-        # Process-local authored environment only; no persistent/system changes.
-        # The app replaces nonempty fixture HOME with its own created root.
-        saved=dict(os.environ)
-        try:
-            os.environ['HOME']='' if mode=='disabled' else 'STORMTTY_AUTHORED_HOME'
-            os.environ['STORMTTY_NATIVE_STARTUP_DIAGNOSTIC']='unavailable'
-            os.environ['STORMTTY_NATIVE_STARTUP_STATE_MS']='999'
-            result=runner.run_owned(command,timeout=120,reap_timeout=10,tail_bytes=65536,output_dir=a.output)
-        finally:
-            os.environ.clear();os.environ.update(saved)
+        # Explicit child block: Windows CRT putenv(HOME="") removes HOME from
+        # inherited OS state, even while Python's os.environ retains the key.
+        # Never mutate the parent or inject a native persistence result.
+        environment=fixture_environment(mode)
+        result=runner.run_owned(command,timeout=120,reap_timeout=10,tail_bytes=65536,output_dir=a.output,env=environment)
         lines,matched=evidence(result.output_tail,mode)
         ok=matched and result.exit_code==0 and result.reaped and not result.timed_out and not result.output_truncated and not result.cleanup_error
         valid &= ok

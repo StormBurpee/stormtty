@@ -355,3 +355,34 @@ line-init hook, preserving hook calls, one-shot output and successful `exit 0`.
 Capture is bounded and in memory; only fixed status records are printed. This is
 not Windows/MSYS2 qualification: the changed source still requires its separate
 actual-app native gate. No native timeouts or diagnostic grammar were relaxed.
+
+### Explicit empty-HOME fixture environment
+
+Native run `41003012377` on `3d60d409` passed the formatter, OFF, ready fresh/warm,
+and unavailable cases with successful input, exit and cleanup. Only disabled
+failed before its success record; its exact assertion was not retained. Source
+inspection found that the driver did not actually supply an empty HOME:
+[CPython 3.12.10 uses `_wputenv`](https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L11259-L11265),
+and [the Windows CRT removes variables assigned an empty value](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/putenv-wputenv).
+A Python mapping can therefore contain `HOME=''` while OS inheritance omits it.
+
+The runner now accepts an optional explicit child `env` mapping, defaulting to
+unchanged inheritance. Each startup case passes its own copy, leaving the parent
+untouched. The empty entry travels through `CreateProcess` to the actual native
+resolver; no persistence status is injected. The dedicated workflow also runs
+an owned-runner regression which reads `GetEnvironmentStringsW` in real Windows
+children and distinguishes empty from absent HOME. Portable tests check mapping
+forwarding, default inheritance and parent preservation. Native verification of
+this corrected fixture remains necessary; the previous exit code alone does not
+prove its exact failure assertion. This support-tooling correction is separate
+from the already confirmed user-startup cache fix.
+
+Failure artifacts additionally allow only fixed numeric `STARTUP_APP_FAILURE`
+records with `stage=0..4`, `reason=0..14`, `sample=1..2` and `code=1`. Any such
+record fails the gate even if success records coexist. Stages identify awaiting
+input (0), input round-trip (1), process exit (2), actor close (3), or selection
+observation (4). Reasons: 0 general gate/deadline, 1 missing actor, 2 shell exit,
+3/4 initial input/Enter rejection, 5/6 selection/clear rejection, 7 record count,
+8 persistence/cache mismatch, 9/10 notice layout/scene, 11/12 exit input/Enter
+rejection, 13 malformed diagnostic, 14 native-state mismatch. No frame text,
+paths, environment values or new timing output are retained.

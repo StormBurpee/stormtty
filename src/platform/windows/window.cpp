@@ -582,7 +582,7 @@ private:
     std::filesystem::path smoke_shell_state_root_;
     struct StartupSelection { std::atomic<bool> ready{}; std::string text; };
     std::shared_ptr<StartupSelection> smoke_startup_selection_;
-    unsigned smoke_startup_sample_{1}, smoke_startup_stage_{};
+    unsigned smoke_startup_sample_{1}, smoke_startup_stage_{}, smoke_startup_failure_reason_{};
     std::shared_ptr<Session> smoke_startup_actor_;
     unsigned smoke_typing_stage_{};
     bool smoke_typing_handshake_sent_{}, smoke_typing_handshake_seen_{};
@@ -5622,15 +5622,18 @@ void NativeWindow::smoke_menu_theme_capture(std::wstring_view suffix) {
 }
 void NativeWindow::smoke_shell_startup_progress(bool presented) {
     if(!presented)return;
+    const auto fail=[&](unsigned reason,std::string_view error) {
+        smoke_startup_failure_reason_=reason;smoke_finish(error);
+    };
     if(!smoke_startup_actor_) {
         const auto pane=workspace().active_pane();
-        if(!pane || !workspace().pane(pane)) {smoke_finish("Startup smoke missing active actor.");return;}
+        if(!pane || !workspace().pane(pane)) {fail(1,"Startup smoke missing active actor.");return;}
         smoke_startup_actor_=sessions_.at(workspace().pane(pane)->session);
     }
     if(smoke_startup_stage_==2) {
         if(!smoke_startup_actor_->process_finished())return;
         const auto info=smoke_startup_actor_->info();
-        if(!info.exit_code || *info.exit_code!=0 || !info.error.empty()) {smoke_finish("Startup fixture shell did not exit cleanly.");return;}
+        if(!info.exit_code || *info.exit_code!=0 || !info.error.empty()) {fail(2,"Startup fixture shell did not exit cleanly.");return;}
         std::fprintf(stderr,"STARTUP_APP_EXIT sample=%u code=0\n",smoke_startup_sample_);
         smoke_startup_actor_->request_close();smoke_startup_stage_=3;return;
     }
@@ -5649,9 +5652,9 @@ void NativeWindow::smoke_shell_startup_progress(bool presented) {
         text+=cell.grapheme.empty()?" ":cell.grapheme;
     if(!smoke_startup_stage_) {
         // Actual input round-trip is a separate check, not a readiness timing.
-        if(smoke_startup_actor_->text("print -r -- STARTUP_INPUT$((40+2))")!=SessionSendResult::accepted) {smoke_finish("Startup smoke input rejected.");return;}
+        if(smoke_startup_actor_->text("print -r -- STARTUP_INPUT$((40+2))")!=SessionSendResult::accepted) {fail(3,"Startup smoke input rejected.");return;}
         KeyInput enter;enter.key=Key::enter;
-        if(smoke_startup_actor_->key(enter)!=SessionSendResult::accepted) {smoke_finish("Startup smoke Enter rejected.");return;}
+        if(smoke_startup_actor_->key(enter)!=SessionSendResult::accepted) {fail(4,"Startup smoke Enter rejected.");return;}
         smoke_startup_stage_=1;return;
     }
     if(smoke_startup_stage_==1) {
@@ -5664,38 +5667,40 @@ void NativeWindow::smoke_shell_startup_progress(bool presented) {
            smoke_startup_actor_->copy_selection([capture](std::string selected) {
                capture->text=selected.size()<=65536?std::move(selected):"STORMTTY_STARTUP oversized";
                capture->ready.store(true,std::memory_order_release);
-           })!=SessionSendResult::accepted) {smoke_finish("Startup fixture selection rejected.");return;}
+           })!=SessionSendResult::accepted) {fail(5,"Startup fixture selection rejected.");return;}
         smoke_startup_stage_=4;return;
     }
     if(!smoke_startup_selection_ || !smoke_startup_selection_->ready.load(std::memory_order_acquire))return;
     const auto observation=observe_startup_diagnostic(smoke_startup_selection_->text);
-    if(smoke_startup_actor_->clear_selection()!=SessionSendResult::accepted) {smoke_finish("Startup fixture selection cleanup rejected.");return;}
+    if(smoke_startup_actor_->clear_selection()!=SessionSendResult::accepted) {fail(6,"Startup fixture selection cleanup rejected.");return;}
     smoke_startup_selection_.reset();
     const auto count=static_cast<unsigned>(observation.records.size());
     const bool enabled=options_.diagnose_shell_startup;
-    if(!observation.valid || count!=(enabled?1u:0u)) {smoke_finish("Startup diagnostic observation count invalid.");return;}
+    if(!observation.valid) {fail(13,"Startup diagnostic observation grammar invalid.");return;}
+    if(count!=(enabled?1u:0u)) {fail(7,"Startup diagnostic observation count invalid.");return;}
     const bool persistent=options_.smoke_shell_startup=="ready" || options_.smoke_shell_startup=="off";
     if(enabled) {
         const auto& record=observation.records.front();
-        if(record.native_state!=options_.smoke_shell_startup || record.persistent!=persistent ||
+        if(record.native_state!=options_.smoke_shell_startup) {fail(14,"Startup diagnostic native state invalid.");return;}
+        if(record.persistent!=persistent ||
            record.dump_before!=(persistent&&smoke_startup_sample_==2) || record.dump_after!=persistent) {
-            smoke_finish("Startup diagnostic state/cache observation invalid.");return;
+            fail(8,"Startup diagnostic state/cache observation invalid.");return;
         }
     }
     const bool unavailable=options_.smoke_shell_startup=="unavailable";
     const bool notice=notice_=="Managed Zsh persistence unavailable; history and completion cache are disabled for this session. Startup may be slower.";
-    if(notice!=unavailable || (notice && (notice_layout().panel.width<=0 || notice_layout().panel.height<=0))) {smoke_finish("Startup persistence notice invalid.");return;}
+    if(notice!=unavailable || (notice && (notice_layout().panel.width<=0 || notice_layout().panel.height<=0))) {fail(9,"Startup persistence notice invalid.");return;}
     const auto observed_scene=scene();
     const bool notice_drawn=std::any_of(observed_scene.texts.begin(),observed_scene.texts.end(),[&](const auto& label){return !notice_.empty() && label.text==notice_;});
-    if(notice_drawn!=unavailable) {smoke_finish("Startup persistence notice missing from native scene.");return;}
+    if(notice_drawn!=unavailable) {fail(10,"Startup persistence notice missing from native scene.");return;}
     // Numeric status only. No measured times join the uninstrumented matrix.
     std::fprintf(stderr,"STARTUP_APP_CHECK mode=%u sample=%u diagnostic=%u native_status=%u persistent=%u cache_expected=%u input_roundtrip=1 notice=%u code=0\n",
         options_.smoke_shell_startup=="off"?0u:options_.smoke_shell_startup=="ready"?1u:options_.smoke_shell_startup=="disabled"?2u:3u,
         smoke_startup_sample_,count,persistent?0u:options_.smoke_shell_startup=="disabled"?1u:2u,
         unsigned(persistent),unsigned(persistent&&smoke_startup_sample_==2),unsigned(notice));
-    if(smoke_startup_actor_->text("exit 0")!=SessionSendResult::accepted) {smoke_finish("Startup fixture exit input rejected.");return;}
+    if(smoke_startup_actor_->text("exit 0")!=SessionSendResult::accepted) {fail(11,"Startup fixture exit input rejected.");return;}
     KeyInput enter;enter.key=Key::enter;
-    if(smoke_startup_actor_->key(enter)!=SessionSendResult::accepted) {smoke_finish("Startup fixture exit Enter rejected.");return;}
+    if(smoke_startup_actor_->key(enter)!=SessionSendResult::accepted) {fail(12,"Startup fixture exit Enter rejected.");return;}
     smoke_startup_stage_=2;
 }
 
@@ -6503,6 +6508,10 @@ void NativeWindow::smoke_finish(std::string_view error) {
         }
     }
     if (!error.empty()) {
+        if(!options_.smoke_shell_startup.empty())
+            std::fprintf(stderr,"STARTUP_APP_FAILURE stage=%u reason=%u sample=%u code=1\n",
+                smoke_startup_stage_,smoke_startup_failure_reason_,smoke_startup_sample_);
+
         smoke_typing_diagnostic("failure");
         std::fprintf(stderr,"Native smoke failure gates: frame_ready=%d marker_presented=%d motion_timer=%d material_requested=%d material_running=%d material_succeeded=%d presents=%llu pending_input=%zu\n",
             smoke_frame_ready(),smoke_marker_presented_,motion_timer_active_,

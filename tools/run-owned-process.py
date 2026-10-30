@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -37,9 +37,12 @@ class Result:
 
 
 def run_owned(command: Sequence[str], *, timeout: float = 90, tail_bytes: int = 65536,
-              reap_timeout: float = 10, cwd=None, output_dir=None) -> Result:
+              reap_timeout: float = 10, cwd=None, output_dir=None,
+              env: Optional[Mapping[str, str]] = None) -> Result:
     """Run one child without a shell; kill/wait only its retained Popen handle.
 
+    env=None preserves normal inheritance; an explicit mapping is passed to
+    Popen without mutating the parent (including Windows empty-value entries).
     Descendants are neither enumerated nor terminated. A descendant retaining
     stdout cannot delay this runner's wait or output read. TemporaryFile owns
     the regular-file capture (including delete-on-close semantics on Windows).
@@ -53,7 +56,7 @@ def run_owned(command: Sequence[str], *, timeout: float = 90, tail_bytes: int = 
         raise ValueError("tail_bytes must be between 1 and 1048576")
     started = time.monotonic()
     with tempfile.TemporaryFile(mode="w+b", dir=output_dir) as capture:
-        child = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL,
+        child = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                  stdout=capture, stderr=subprocess.STDOUT, close_fds=True)
         timed_out = False
         alive_at_timeout = None
