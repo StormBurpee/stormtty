@@ -61,6 +61,7 @@ jobs:
           python tools/stage-developer-shell-tests.py
           python tools/shell-zstd-bootstrap-tests.py
           python tools/run-owned-process-tests.py
+          python tools/native-application-receipt-tests.py
       - name: Configure native Windows application
         if: runner.os == 'Windows'
         run: cmake -S . -B build -G Ninja "-DPython3_EXECUTABLE=${{ env.pythonLocation }}/python.exe" -DCMAKE_CXX_COMPILER=cl -DSTORMTTY_TEST_SHELL_PROBE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSTORMTTY_GHOSTTY_ROOT=${{ github.workspace }}/.deps/ghostty-native -DSTORMTTY_BUILD_APP=ON -DSTORMTTY_TEST_INK=ON
@@ -95,6 +96,8 @@ jobs:
         shell: python
         run: |
           import pathlib,subprocess,sys,importlib.util,json
+          sys.path.insert(0,str(pathlib.Path('tools').resolve()))
+          from native_application_receipt import write_receipt
           subprocess.run(['cmake','-S','.','-B','build','-DSTORMTTY_CONPTY_OFFLINE=ON'],check=True,timeout=120)
           subprocess.run(['cmake','--build','build','--target','stormtty','--parallel','2'],check=True,timeout=180)
           runtime=pathlib.Path('build/runtimes/conpty/1.25.260930003/x64').resolve()
@@ -110,6 +113,7 @@ jobs:
           result=runner.run_owned([str(install/'stormtty.exe'),'--smoke-settings','--capture',str(capture)],timeout=90,output_dir=capture.parent)
           print('INSTALLED_CONSOLE_PROCESS_RESULT='+json.dumps(result.metadata(),sort_keys=True),flush=True)
           print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
+          write_receipt("installed-console-settings", result)
           raise SystemExit(result.exit_code)
       - name: Verify explicit packaged console dependency
         id: packaged_console
@@ -121,6 +125,8 @@ jobs:
         shell: python
         run: |
           import os,pathlib,subprocess,importlib.util,sys,json
+          sys.path.insert(0,str(pathlib.Path('tools').resolve()))
+          from native_application_receipt import write_receipt
           spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
           runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
@@ -134,6 +140,7 @@ jobs:
             print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
             code=result.exit_code
             print('PACKAGED_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
+            write_receipt("packaged-"+mode, result)
             if code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
       - name: Set up bundled shell staging Python
@@ -312,6 +319,8 @@ jobs:
         shell: python
         run: |
           import os,pathlib,subprocess,importlib.util,sys,json
+          sys.path.insert(0,str(pathlib.Path('tools').resolve()))
+          from native_application_receipt import write_receipt
           spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
           runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
@@ -327,6 +336,7 @@ jobs:
             code=result.exit_code
             (pathlib.Path('build/artifacts')/('bundled-'+mode+'.log')).write_bytes(result.output_tail)
             print('BUNDLED_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
+            write_receipt("bundled-"+mode, result)
             if code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
       - name: Preserve bundled app evidence immediately
@@ -351,6 +361,8 @@ jobs:
         shell: python
         run: |
           import os,pathlib,subprocess,importlib.util,sys,json
+          sys.path.insert(0,str(pathlib.Path('tools').resolve()))
+          from native_application_receipt import write_receipt
           spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
           runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
@@ -364,6 +376,7 @@ jobs:
             print(result.output_tail.decode("utf-8",errors="replace"),flush=True)
             code=result.exit_code
             print('DEVELOPER_ZSH_APPLICATION_RESULT='+mode+':'+str(code),flush=True)
+            write_receipt("developer-"+mode, result)
             if code: failures.append(mode)
           raise SystemExit(1 if failures else 0)
       - name: Repeat owned Windows settings teardown
@@ -371,6 +384,8 @@ jobs:
         shell: python
         run: |
           import os,pathlib,importlib.util,sys,json
+          sys.path.insert(0,str(pathlib.Path('tools').resolve()))
+          from native_application_receipt import write_receipt
           spec=importlib.util.spec_from_file_location("owned_runner",pathlib.Path("tools/run-owned-process.py"))
           runner=importlib.util.module_from_spec(spec); sys.modules[spec.name]=runner; spec.loader.exec_module(runner)
           provider=pathlib.Path(os.environ['RUNNER_TEMP'])/'stormtty-conpty-qualified'
@@ -386,9 +401,17 @@ jobs:
               result=runner.run_owned(args,timeout=30,output_dir=pathlib.Path('build/artifacts'))
               print(result.output_tail.decode('utf-8',errors='replace'),flush=True)
               print('TEARDOWN_RESULT='+json.dumps({'case':name,**result.metadata()},sort_keys=True),flush=True)
+              write_receipt(name, result)
               if result.exit_code: failures.append(name)
           print('TEARDOWN_FAILURES='+json.dumps(failures),flush=True)
           raise SystemExit(1 if failures else 0)
+      - name: Preserve compact Windows application receipts
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: application-receipts-windows
+          path: build/artifacts/application-receipts/*.json
+          if-no-files-found: warn
       - name: Collect targeted macOS GUI failure evidence
         if: always() && runner.os == 'macOS' && steps.build.outcome == 'success' && steps.native_tests.outcome == 'failure'
         run: python tools/macos-crash-evidence.py
