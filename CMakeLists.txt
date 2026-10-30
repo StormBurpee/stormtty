@@ -274,6 +274,7 @@ if(BUILD_TESTING)
     target_compile_definitions(agent_panel_controller_tests PRIVATE STORMTTY_FAKE_APP_SERVER="$<TARGET_FILE:fake_app_server>")
     stormtty_test(agent_panel_tests tests/agent_panel_tests.cpp stormtty_workspace)
     stormtty_test(theme_exchange_tests tests/theme_exchange_tests.cpp stormtty_workspace)
+    stormtty_test(shell_discovery_policy_tests tests/shell_discovery_policy_tests.cpp stormtty_workspace)
     stormtty_test(settings_panel_tests tests/settings_panel_tests.cpp stormtty_workspace)
     stormtty_test(settings_document_session_tests tests/settings_document_session_tests.cpp stormtty_settings_document)
     stormtty_test(application_workspace_persistence_tests tests/application_workspace_persistence_tests.cpp stormtty_workspace_persistence)
@@ -311,7 +312,14 @@ if(WIN32)
     add_executable(stormtty-console-setup src/platform/windows/console_setup.cpp)
     stormtty_warnings(stormtty-console-setup)
     install(TARGETS stormtty-console-setup RUNTIME DESTINATION .)
-    add_library(stormtty_settings_services src/platform/windows/settings_document_services.cpp src/platform/windows/workspace_persistence_services.cpp src/platform/windows/settings_services.cpp src/platform/windows/agent_setup_service.cpp src/platform/windows/shell_state.cpp)
+    add_library(stormtty_settings_services
+        src/platform/windows/windows_local_path.cpp
+        src/platform/windows/windows_shell_discovery.cpp
+        src/platform/windows/settings_document_services.cpp
+        src/platform/windows/workspace_persistence_services.cpp
+        src/platform/windows/settings_services.cpp
+        src/platform/windows/agent_setup_service.cpp
+        src/platform/windows/shell_state.cpp)
     target_link_libraries(stormtty_settings_services PUBLIC stormtty_workspace PRIVATE advapi32 shell32 ole32)
     stormtty_warnings(stormtty_settings_services)
     add_library(stormtty_session_launcher src/platform/windows/session_launcher.cpp)
