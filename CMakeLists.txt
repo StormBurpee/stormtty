@@ -134,7 +134,10 @@ target_include_directories(stormtty_process PUBLIC include)
 target_link_libraries(stormtty_process PUBLIC Threads::Threads)
 stormtty_warnings(stormtty_process)
 
-add_library(stormtty_session src/session/session.cpp)
+add_library(stormtty_session
+    src/session/session.cpp
+    src/session/terminal_find_controller.cpp
+)
 target_include_directories(stormtty_session PUBLIC include)
 target_link_libraries(stormtty_session PUBLIC stormtty_terminal stormtty_process Threads::Threads)
 stormtty_warnings(stormtty_session)

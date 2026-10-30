@@ -11,18 +11,19 @@ namespace stormtty::test {
 class LegacyTerminalFind {
 public:
     enum class Update { rejected, unchanged, changed };
+    enum class ResetReason { explicit_close, focus_loss };
 
     void activate(SessionId session) {
         session_ = session;
         query_.select_all();
     }
 
-    void reset(bool clear_error) {
+    void reset(ResetReason reason) {
         session_ = {};
         request_ = 0;
         initial_.cancel();
         result_.reset();
-        if (clear_error) {
+        if (reason == ResetReason::explicit_close) {
             error_.clear();
         }
     }
@@ -56,15 +57,15 @@ public:
         return result_ ? initial_.take(*result_) : std::nullopt;
     }
 
-    void navigate(Session* actor, bool previous) {
+    void begin_navigation() {
         initial_.cancel();
-        if (!session_ || !actor) {
-            return;
-        }
-        const auto result = actor->search_snapshot();
+    }
+
+    void navigate(Session& actor, bool previous) {
+        const auto result = actor.search_snapshot();
         if (result && current_find_result(*result, request_, query_.text()) &&
             result->status == SearchStatus::complete && !result->matches.empty()) {
-            (void)actor->navigate_search(result->token,
+            (void)actor.navigate_search(result->token,
                 previous ? SearchDirection::backward : SearchDirection::forward, true);
         }
     }

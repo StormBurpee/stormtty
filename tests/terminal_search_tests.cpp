@@ -2,6 +2,7 @@
 #include "stormtty/session.hpp"
 #include "stormtty/terminal_find.hpp"
 #include "terminal_find_legacy.hpp"
+#include "stormtty/terminal_find_controller.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -443,7 +444,7 @@ void find_controller_lifecycle(const std::string& executable) {
     ++generated->token.generation;
     check(find.adopt(generated) == Update::changed, "new generation not adopted");
     check(find.take_initial_selection() == generated->token, "new generation not eligible");
-    find.navigate(nullptr, false);
+    find.begin_navigation(); // Host discovers the actor is absent after this point.
     check(find.initial_selection().request() == 0, "missing actor retained auto intent");
     check(find.adopt(result) == Update::changed, "real result not restored");
     check(!find.take_initial_selection(), "explicit navigation resurrected initial intent");
@@ -454,7 +455,8 @@ void find_controller_lifecycle(const std::string& executable) {
     // Cached result deliberately has an unusable token. Navigation must read the
     // fresh actor snapshot, rather than replaying this synthetic token.
     check(find.adopt(generated) == Update::changed, "navigation stale fixture not adopted");
-    find.navigate(actor.get(), false);
+    find.begin_navigation();
+    find.navigate(*actor, false);
     check(await([&] { return actor->search_snapshot()->selected_index == 1; }, wake),
         "navigation did not use fresh actor token");
     find.query().select_all();
@@ -489,14 +491,14 @@ void find_controller_lifecycle(const std::string& executable) {
     // accepted request existed; retaining the old request would accept stale data.
     check(find.request() == 0 && find.initial_selection().request() == 0,
         "rejected request left accepted request active");
-    find.reset(false);
+    find.reset(Find::ResetReason::focus_loss);
     check(!find.session() && !find.result() && find.request() == 0,
         "focus loss retained session search state");
     check(find.error() == "Search unavailable", "focus loss cleared error");
     check(find.query().text() == "kept query", "focus loss erased query");
     find.activate(SessionId{72});
     check(find.query().selected(), "reopen did not select persistent query");
-    find.reset(true);
+    find.reset(Find::ResetReason::explicit_close);
     check(find.error().empty() && find.query().text() == "kept query",
         "explicit dismissal did not clear only transient error");
     check(actor->info().sent.frontend() == 0, "Find controller generated terminal input");
@@ -561,6 +563,9 @@ int main(int argc,char** argv) {
         {"drained retained native Find fixture",[&]{drained_retained_find_fixture(std::filesystem::absolute(argv[0]).string());}},
         {"pre-extraction Find lifecycle", [&] {
             find_controller_lifecycle<test::LegacyTerminalFind>(std::filesystem::absolute(argv[0]).string());
+        }},
+        {"extracted Find lifecycle", [&] {
+            find_controller_lifecycle<TerminalFindController>(std::filesystem::absolute(argv[0]).string());
         }},
         {"session coalescing, cancellation and I/O fairness",[&]{session_coalescing_and_fairness(std::filesystem::absolute(argv[0]).string());}}
     };
