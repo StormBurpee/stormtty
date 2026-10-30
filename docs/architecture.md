@@ -51,8 +51,8 @@ are real ownership boundaries, but the host is not yet separated into focused
 implementation files.
 
 **`NativeApplication` owns application lifetime:** native view ownership and the
-message pump, `ApplicationWorkspaces`, actor registration, and the serialized
-workspace writer. **`NativeWindow` owns one view:** HWND, renderer, input/focus and
+message pump, `ApplicationWorkspaces`, actor registration, and the
+`ApplicationWorkspacePersistence` owner. **`NativeWindow` owns one view:** HWND, renderer, input/focus and
 layout state, editor presentation, and a `WindowWorkspaceView` scoped to its
 `WindowId`. Change placement rules in `application_workspaces.hpp` and
 `src/core/application_workspaces.cpp`, not by giving a view another catalog.
@@ -118,8 +118,23 @@ The native adapter is `src/platform/windows/settings_document_services.cpp`; gua
 file operations are in `settings_services.cpp`. See [settings services](settings-services.md).
 
 Workspace persistence is a different, application-owned writer, not one writer per
-view. The Windows coordinator loads and saves the bounded application-layout envelope
-through `load_application_layout_snapshot` and `save_application_layout`
+view. `ApplicationWorkspacePersistence` (`application_workspace_persistence.hpp`,
+`src/core/application_workspace_persistence.cpp`) owns the document, exact save token,
+serialized worker and completion mailbox. The host retains native timers, snapshot
+capture, one-window admission and error presentation. No live model or window is
+retained by the writer; workers receive copied values and a weak wake endpoint.
+
+The host's 1500 ms save timer starts at the first edit, not after every edit. A busy
+save defers before snapshot capture and coalesces to one pending request; the next
+capture uses the current model. Successful completion advances only the file token,
+not the live document or final-close history. Failed writes invalidate the token
+before fallible UI error presentation. Final-close history is recorded before the
+shutdown drain; all joins remain outside WndProc. The inherited final-capture-failure edge
+remains: an older successful completion can reinstall its token.
+
+The native adapter in `src/platform/windows/workspace_persistence_services.cpp`
+loads and saves the bounded application-layout envelope through
+`load_application_layout_snapshot` and `save_application_layout`
 (`application_layout_services.hpp`, implemented in Windows `settings_services.cpp`).
 Legacy v1 libraries are imported without writing on read; migration on save requires
 an exact, permission-preserving `.v1-backup` before guarded atomic replacement.
@@ -127,7 +142,8 @@ The host supports one persistent window: running checkpoints and clean individua
 close are integrated, but grouped startup, explicit application-wide Quit history,
 normal New Window and second-executable ownership remain gated. Unsupported selected
 multi-window recovery records are refused, not flattened or overwritten. See
-[application-layout storage](application-layout-storage.md).
+[application-layout storage](application-layout-storage.md) and
+[workspace-persistence verification](../tests/application_workspace_persistence_verification.md).
 
 ## Rendering: scene policy is not a device
 
