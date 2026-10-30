@@ -396,7 +396,52 @@ void retained_bounds_failure_and_destructor(const std::string& executable) {
     check(session->search_snapshot()->matches.size()==1,"bounded retention lost final bytes");
     session->request_close();check(session->wait_closed(5s),"bounded document disposal hung");
     auto legacy=Session::start(p,t);
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+    const auto wait_start=std::chrono::steady_clock::now();
+    const bool wait_closed=legacy->wait_closed(10s);
+    const bool process_finished=legacy->process_finished();
+    if (!wait_closed || !process_finished) {
+        // Sample before failure unwinds and requests close. No VT payload, PID,
+        // executable path or environment is logged. Samples are not atomic.
+        const auto d=legacy->test_diagnostics();
+        const auto info=legacy->info();
+        const auto transport=legacy->diagnostics();
+        const auto frame=legacy->frame();
+        const auto text=frame_text(frame);
+        std::cerr << "SESSION-DISPOSAL-DIAGNOSTIC v1"
+                  << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-wait_start).count()
+                  << " wait_closed=" << wait_closed << " closed_now=" << legacy->closed()
+                  << " process_finished=" << process_finished
+                  << " session_state=" << static_cast<int>(info.state)
+                  << " actor_phase=" << d.actor_phase
+                  << " process_state=" << (d.process_state ? static_cast<int>(*d.process_state) : -1)
+                  << " exit_callback=" << d.exit_callback << " close_requested=" << d.close_requested
+                  << " exit_code=" << (info.exit_code ? static_cast<std::int64_t>(*info.exit_code) : -1)
+                  << " has_error=" << !info.error.empty()
+                  << " received_bytes=" << info.bytes_received << " fed_bytes=" << d.fed_bytes
+                  << " queued_output_bytes=" << d.queued_output_bytes << " backpressure_waits=" << d.backpressure_waits
+                  << " queued_commands=" << d.queued_commands << " sent_bytes=" << info.bytes_sent
+                  << " queued_input_bytes=" << transport.queued_input_bytes
+                  << " bundled_provider=" << transport.bundled_provider
+                  << " has_frame=" << static_cast<bool>(frame)
+                  << " frame_generation=" << (frame ? frame->generation : 0)
+                  << " frame_columns=" << (frame ? frame->columns : 0)
+                  << " frame_rows=" << (frame ? frame->rows : 0)
+                  << " has_ready_marker=" << (text.find("READY:")!=std::string::npos)
+                  << " has_final_marker=" << (text.find("FINAL:")!=std::string::npos);
+        if (transport.windows_control) {
+            const auto& c=*transport.windows_control;
+            std::cerr << " controller_waits=" << c.wait_calls << " control_wakes=" << c.control_wakes
+                      << " child_exit_wakes=" << c.child_exit_wakes
+                      << " initialization_wakes=" << c.initialization_wakes
+                      << " resize_calls=" << c.resize_calls << " resize_failures=" << c.resize_failures;
+        }
+        std::cerr << '\n' << std::flush;
+    }
+    check(wait_closed&&process_finished,"default final-frame-only child failed to dispose");
+#else
     check(legacy->wait_closed(10s)&&legacy->process_finished(),"default final-frame-only child failed to dispose");
+#endif
     check(frame_text(legacy->frame()).find("FINAL:")!=std::string::npos,"default final frame froze at a pre-hold viewport");
     check(legacy->scroll(-1)==SessionSendResult::closed,"default policy unexpectedly retained readable terminal");
     p.executable=executable+".missing";

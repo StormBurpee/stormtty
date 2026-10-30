@@ -28,6 +28,17 @@ struct SessionInfo {
     CommandSnapshot command; // Independent observed shell command, not process status.
     SessionWriteAccounting sent; // Actual accepted transport bytes; total() == bytes_sent.
 };
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+// Synthetic session_tests only. No terminal text, process arguments or paths.
+// Observations are independently sampled, not a synchronization barrier.
+struct SessionTestDiagnostics {
+    const char* actor_phase{};
+    std::size_t queued_output_bytes{}, queued_commands{};
+    std::uint64_t fed_bytes{}, backpressure_waits{};
+    bool exit_callback{}, close_requested{};
+    std::optional<ProcessState> process_state;
+};
+#endif
 // Thread-safe host facade. TerminalCore is owned by a dedicated actor; no VT
 // method runs on the UI or PTY reader thread. Destruction/close never joins UI.
 class Session final {
@@ -42,6 +53,9 @@ public:
     [[nodiscard]] FramePtr frame() const noexcept;
     [[nodiscard]] SessionInfo info() const;
     [[nodiscard]] ProcessDiagnostics diagnostics() const;
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+    [[nodiscard]] SessionTestDiagnostics test_diagnostics() const;
+#endif
     // PTY-generating operations return closed once transport exit is observed,
     // even while an opted-in read-only terminal document remains available.
     SessionSendResult key(KeyInput);

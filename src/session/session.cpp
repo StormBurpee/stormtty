@@ -67,6 +67,11 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
     SessionInfo information;
     std::shared_ptr<Process> process;
     ProcessDiagnostics final_diagnostics;
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+    std::atomic<const char*> actor_phase{"starting"};
+    std::atomic<std::uint64_t> fed_bytes{};
+    std::uint64_t backpressure_waits{}; // Protected by mutex.
+#endif
 
     Impl(ProcessOptions p, TerminalOptions t, Wake w, SessionRetentionPolicy policy)
         : process_options(std::move(p)), terminal_options(t), wake(std::move(w)), retention(policy) {}
@@ -145,6 +150,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
         for (std::size_t offset = 0; offset < bytes.size();) {
             const auto count = std::min(chunk_limit, bytes.size() - offset);
             std::unique_lock lock(mutex);
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+            if (count > output_budget - output_bytes) ++backpressure_waits;
+#endif
             if (!changed.wait(lock, stop, [&] {
                     return done.load() || close_requested || count <= output_budget - output_bytes;
                 }) || done.load() || close_requested) return;
@@ -174,6 +182,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             retired.swap(commands); command_bytes = 0;
         }
         retired.clear();
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        actor_phase.store("publish-actor-completion", std::memory_order_relaxed);
+#endif
         // Publish under the same mutex as wait predicates, avoiding a lost wake
         // between a predicate check and condition-variable sleep.
         { std::lock_guard lock(mutex); done.store(true, std::memory_order_release); }
@@ -181,6 +192,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
         notify();
     }
     void fail(std::string reason) noexcept {
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        actor_phase.store("failure-reap", std::memory_order_relaxed);
+#endif
         std::shared_ptr<Process> child;
         std::deque<Command> retired;
         {
@@ -303,6 +317,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             const auto now = TerminalCore::Clock::now();
             step_search(core, now, next_search_step);
             if (dirty && now - last_frame >= std::chrono::milliseconds(8)) {
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+                actor_phase.store("retained-snapshot", std::memory_order_relaxed);
+#endif
                 publish(core.snapshot(now)); last_frame = now; dirty = false;
                 // Display-only operations must never turn retained protocol
                 // effects into writes or start another process.
@@ -314,16 +331,25 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             if (core.search_needs_work()) until = std::min(until, next_search_step);
             std::unique_lock lock(mutex);
             const auto ready = [&] { return !commands.empty() || close_requested; };
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+            actor_phase.store("wait-work", std::memory_order_relaxed);
+#endif
             if (until == TerminalCore::Clock::time_point::max()) changed.wait(lock, ready);
             else changed.wait_until(lock, until, ready);
         }
     }
     void actor() {
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        actor_phase.store("construct-terminal", std::memory_order_relaxed);
+#endif
         TerminalCore core(terminal_options); // Construct and destroy on this actor.
         publish(core.snapshot());
         publish_search(core.search_snapshot());
         notify();
         const auto weak = weak_from_this();
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+        actor_phase.store("launch-transport", std::memory_order_relaxed);
+#endif
         auto child = Process::start(process_options, {
             [weak](std::string_view bytes, std::stop_token stop) {
                 if (auto state = weak.lock()) state->accept_output(bytes, stop);
@@ -372,6 +398,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             if (metadata_changed) notify();
         };
         for (;;) {
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+            actor_phase.store("live-batch", std::memory_order_relaxed);
+#endif
             // Cancel superseded work before consuming any more search units,
             // even if the newest typing command is behind bounded PTY output.
             const auto requested = requested_search.load(std::memory_order_acquire);
@@ -423,7 +452,16 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                     } catch (const std::invalid_argument& e) { set_error(e.what()); }
                 }
             }
-            if (!bytes.empty() && !closing) { core.feed(bytes); dirty = true; }
+            if (!bytes.empty() && !closing) {
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+                actor_phase.store("feed-terminal", std::memory_order_relaxed);
+#endif
+                core.feed(bytes); dirty = true;
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+                fed_bytes.fetch_add(bytes.size(), std::memory_order_relaxed);
+                actor_phase.store("live-batch", std::memory_order_relaxed);
+#endif
+            }
             effects();
             bool progress = false;
             while (!closing && !writes.empty()) {
@@ -441,10 +479,16 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             }
             const auto now = TerminalCore::Clock::now();
             if (!closing && !child_exit) step_search(core, now, next_search_step);
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+            if (child_exit) actor_phase.store("finish-output", std::memory_order_relaxed);
+#endif
             if (child_exit) core.finish_output(); // Reveal final held bytes and freeze animations.
             const auto deadline = core.next_deadline();
             if ((dirty && now - last_frame >= std::chrono::milliseconds(8)) ||
                 (deadline && now >= *deadline) || child_exit) {
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+                actor_phase.store(child_exit ? "final-snapshot" : "snapshot", std::memory_order_relaxed);
+#endif
                 publish(core.snapshot(now));
                 last_frame = now; dirty = false; effects(); notify();
             }
@@ -459,7 +503,13 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
                 // indefinitely retained document; otherwise its closures keep
                 // Session alive and prevent destructor-triggered disposal.
                 batch.clear();
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+                actor_phase.store("publish-process-result", std::memory_order_relaxed);
+#endif
                 publish_process_result(*child_exit);
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+                actor_phase.store(retain ? "retain-document" : "destroy-terminal", std::memory_order_relaxed);
+#endif
                 if (retain) retain_document(core); // Rechecks close_requested before any operation.
                 return;
             }
@@ -482,6 +532,9 @@ struct Session::Impl : std::enable_shared_from_this<Impl> {
             if (!closing && core.search_needs_work()) until = std::min(until, next_search_step);
             std::unique_lock lock(mutex);
             const auto ready = [&] { return !commands.empty() || !output.empty() || exit.has_value() || (close_requested && !closing); };
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+            actor_phase.store("wait-work", std::memory_order_relaxed);
+#endif
             if (until == TerminalCore::Clock::time_point::max()) changed.wait(lock, ready);
             else changed.wait_until(lock, until, ready);
         }
@@ -526,6 +579,25 @@ ProcessDiagnostics Session::diagnostics() const {
     { std::lock_guard lock(impl_->mutex); process = impl_->process; if (!process) return impl_->final_diagnostics; }
     return process->diagnostics();
 }
+#ifdef STORMTTY_SESSION_TEST_DIAGNOSTICS
+SessionTestDiagnostics Session::test_diagnostics() const {
+    SessionTestDiagnostics result;
+    std::shared_ptr<Process> process;
+    {
+        std::lock_guard lock(impl_->mutex);
+        result.queued_output_bytes = impl_->output_bytes;
+        result.queued_commands = impl_->commands.size();
+        result.backpressure_waits = impl_->backpressure_waits;
+        result.exit_callback = impl_->exit.has_value();
+        result.close_requested = impl_->close_requested;
+        process = impl_->process;
+    }
+    result.actor_phase = impl_->actor_phase.load(std::memory_order_relaxed);
+    result.fed_bytes = impl_->fed_bytes.load(std::memory_order_relaxed);
+    if (process) result.process_state = process->state();
+    return result;
+}
+#endif
 SessionSendResult Session::key(KeyInput value) { Command c; c.op = Op::key; c.key = std::move(value); return impl_->enqueue(std::move(c)); }
 SessionSendResult Session::text(std::string value) { Command c; c.op = Op::text; c.text = std::move(value); return impl_->enqueue(std::move(c)); }
 SessionSendResult Session::paste(std::string value, bool allow) { Command c; c.op = Op::paste; c.text = std::move(value); c.flag = allow; return impl_->enqueue(std::move(c)); }
