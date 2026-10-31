@@ -11,6 +11,9 @@
 #include <iterator>
 #include <barrier>
 #include <thread>
+#include <array>
+#include <exception>
+#include <functional>
 using namespace stormtty;
 namespace {
 struct Directory {
@@ -50,6 +53,182 @@ struct OwnedHandle {
     HANDLE value{INVALID_HANDLE_VALUE};
     ~OwnedHandle(){if(value!=INVALID_HANDLE_VALUE&&value)CloseHandle(value);}
 };
+// These synthetic same-path fixtures exercise the shared commit authority.
+// Production adapters still use their separate host-selected document paths.
+struct ReadObservation {
+    std::optional<ConfigFileSnapshot> snapshot;
+    std::string error;
+};
+
+struct DocumentAdapter {
+    const wchar_t* name;
+    std::string encoded;
+    std::function<ConfigSaveResult(const std::filesystem::path&, const ConfigFileSnapshot&)> save;
+    std::function<ReadObservation(const std::filesystem::path&)> load;
+};
+
+std::array<DocumentAdapter, 4> document_adapters() {
+    auto config = default_config(Platform::windows);
+    config.font.size_dip = 19;
+    WorkspaceLibrary library;
+    AgentProviderSettings agent;
+    ApplicationLayoutDocument layout;
+    layout.clean_shutdown = false;
+    const auto workspace_bytes = serialize_workspace_library(library);
+    const auto layout_bytes = serialize_application_layout(layout);
+    CHECK(workspace_bytes);
+    CHECK(layout_bytes);
+    return {{
+        {L"settings", serialize_config(config, Platform::windows),
+            [config](const auto& path, const auto& baseline) {
+                return save_settings_config(path, config, baseline);
+            },
+            [](const auto& path) {
+                auto loaded = load_settings_snapshot(path);
+                return ReadObservation{std::move(loaded.snapshot), std::move(loaded.error)};
+            }},
+        {L"workspace", *workspace_bytes.value,
+            [library](const auto& path, const auto& baseline) {
+                return save_workspace_library(path, library, baseline);
+            },
+            [](const auto& path) {
+                auto loaded = load_workspace_library_snapshot(path);
+                return ReadObservation{std::move(loaded.snapshot), std::move(loaded.error)};
+            }},
+        {L"agent", serialize_agent_provider_settings(agent),
+            [agent](const auto& path, const auto& baseline) {
+                return save_agent_provider_settings(path, agent, baseline);
+            },
+            [](const auto& path) {
+                auto loaded = load_agent_provider_settings(path);
+                return ReadObservation{std::move(loaded.snapshot), std::move(loaded.error)};
+            }},
+        {L"layout", *layout_bytes.value,
+            [layout](const auto& path, const auto& baseline) {
+                return save_application_layout(path, layout, baseline);
+            },
+            [](const auto& path) {
+                auto loaded = load_application_layout_snapshot(path);
+                return ReadObservation{std::move(loaded.snapshot), std::move(loaded.error)};
+            }}
+    }};
+}
+
+void cross_adapter_saves(const Directory& directory) {
+    const auto adapters = document_adapters();
+    constexpr std::array<std::array<std::size_t, 2>, 3> pairs{{{0, 1}, {0, 2}, {1, 3}}};
+    const auto existing_bytes = serialize_application_layout(ApplicationLayoutDocument{});
+    CHECK(existing_bytes);
+    for (const auto& pair : pairs) {
+        const auto& first = adapters[pair[0]];
+        const auto& second = adapters[pair[1]];
+        CHECK(first.encoded != second.encoded);
+        for (const bool existed : {false, true}) {
+            for (unsigned repetition = 0; repetition < 3; ++repetition) {
+                const auto name = std::wstring(first.name) + L"-" + second.name +
+                    (existed ? L"-existing-" : L"-missing-") + std::to_wstring(repetition);
+                const auto path = directory.path / (name + L".stormtty");
+                if (existed) write(path, *existing_bytes.value);
+                // A valid envelope lets the layout adapter validate the same
+                // baseline without involving legacy migration in this lock test.
+                const auto loaded = load_application_layout_snapshot(path);
+                CHECK(loaded);
+                CHECK(loaded.snapshot->existed == existed);
+                const auto baseline = *loaded.snapshot;
+                std::array<ConfigSaveResult, 2> results;
+                std::array<std::exception_ptr, 2> exceptions;
+                std::barrier start(3);
+                const auto save = [&](std::size_t index, const DocumentAdapter& adapter) {
+                    start.arrive_and_wait();
+                    try {
+                        results[index] = adapter.save(path, baseline);
+                    } catch (...) {
+                        exceptions[index] = std::current_exception();
+                    }
+                };
+                std::thread a([&] { save(0, first); });
+                std::thread b([&] { save(1, second); });
+                start.arrive_and_wait();
+                a.join();
+                b.join();
+                for (const auto& exception : exceptions) {
+                    if (exception) std::rethrow_exception(exception);
+                }
+                CHECK(static_cast<bool>(results[0]) != static_cast<bool>(results[1]));
+                const std::size_t winner = results[0] ? 0 : 1;
+                const auto& winning_adapter = winner == 0 ? first : second;
+                const auto& losing_adapter = winner == 0 ? second : first;
+                const auto& failed = results[1 - winner];
+                CHECK(!results[winner].conflict);
+                CHECK(failed.conflict);
+                CHECK(!failed.snapshot);
+                CHECK(failed.error == "Settings changed on disk. Nothing was saved; close and reopen Settings to review the new file.");
+                CHECK(read(path) == winning_adapter.encoded);
+                const auto reread = winning_adapter.load(path);
+                CHECK(reread.error.empty());
+                CHECK(reread.snapshot == results[winner].snapshot);
+                CHECK(reread.snapshot->bytes == winning_adapter.encoded);
+                CHECK(!std::filesystem::exists(backup(path)));
+                const auto retry = losing_adapter.save(path, baseline);
+                CHECK(!retry);
+                CHECK(retry.conflict);
+                CHECK(!retry.snapshot);
+                CHECK(winning_adapter.load(path).snapshot == reread.snapshot);
+            }
+        }
+    }
+    for (const auto& item : std::filesystem::recursive_directory_iterator(directory.path)) {
+        CHECK(!item.path().filename().wstring().starts_with(L".stormtty-save-"));
+    }
+}
+
+void public_read_lifetimes(const Directory& directory) {
+    // Public loads are synchronous: without production hooks this observes
+    // admission and release, not the exact internal parse-time guard interval.
+    for (const auto& adapter : document_adapters()) {
+        const auto parent = directory.path / (std::wstring(L"read-") + adapter.name);
+        CHECK(std::filesystem::create_directory(parent));
+        const auto path = parent / L"document.stormtty";
+        write(path, adapter.encoded);
+        {
+            OwnedHandle writer;
+            writer.value = CreateFileW(path.c_str(), GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            CHECK(writer.value != INVALID_HANDLE_VALUE);
+            const auto blocked = adapter.load(path);
+            CHECK(!blocked.snapshot);
+            CHECK(!blocked.error.empty());
+        }
+        const auto loaded = adapter.load(path);
+        CHECK(loaded.snapshot);
+        CHECK(loaded.error.empty());
+        CHECK(loaded.snapshot->bytes == adapter.encoded);
+        const auto original = *loaded.snapshot;
+        const auto moved_parent = directory.path / (std::wstring(L"moved-") + adapter.name);
+        // Moving the ancestor proves no directory guard leaked past return.
+        CHECK(MoveFileExW(parent.c_str(), moved_parent.c_str(), 0));
+        const auto moved_path = moved_parent / path.filename();
+        {
+            OwnedHandle writer;
+            // No sharing: a leaked file read handle would also refuse this open.
+            writer.value = CreateFileW(moved_path.c_str(), GENERIC_WRITE, 0,
+                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            CHECK(writer.value != INVALID_HANDLE_VALUE);
+        }
+        write(moved_path, "invalid document\n");
+        CHECK(*loaded.snapshot == original);
+        CHECK(loaded.snapshot->bytes == adapter.encoded);
+        const auto malformed = adapter.load(moved_path);
+        CHECK(!malformed.snapshot);
+        CHECK(!malformed.error.empty());
+        // Parse-failure returns must release both file and ancestor guards too.
+        CHECK(MoveFileExW(moved_parent.c_str(), parent.c_str(), 0));
+        CHECK(DeleteFileW(path.c_str()));
+        CHECK(RemoveDirectoryW(parent.c_str()));
+    }
+}
+
 void protect_for_current_user(const std::filesystem::path& path) {
     OwnedHandle token;CHECK(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token.value));
     DWORD size{};GetTokenInformation(token.value,TokenUser,nullptr,0,&size);CHECK(size>0);
@@ -146,7 +325,17 @@ void malformed_and_bounds(const Directory& directory) {
     for(const auto& item:std::filesystem::recursive_directory_iterator(directory.path))CHECK(!item.path().filename().wstring().starts_with(L".stormtty-save-"));
 }
 }
-int main(){return run_core_tests("application_layout_services (Windows native)",[]{Directory directory;migration_and_conflicts(directory);malformed_and_bounds(directory);permission_guards(directory);serialized_settings_windows(directory);});}
+int main() {
+    return run_core_tests("application_layout_services (Windows native)", [] {
+        Directory directory;
+        migration_and_conflicts(directory);
+        malformed_and_bounds(directory);
+        permission_guards(directory);
+        serialized_settings_windows(directory);
+        cross_adapter_saves(directory);
+        public_read_lifetimes(directory);
+    });
+}
 #else
 int main(){std::cout<<"SKIP application_layout_services: Windows runtime required\n";return 0;}
 #endif

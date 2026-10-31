@@ -150,9 +150,9 @@ lifetimes. Do not introduce another terminal model, actor, lock or unbounded cop
 
 ### 6. Windows document-service modules
 
-`src/platform/windows/settings_services.cpp` still combines guarded atomic file
-transactions and document-specific adapters. Separate these
-responsibilities while retaining one security/commit-lock authority. Exact same-read
+`src/platform/windows/guarded_document_store.cpp` now owns guarded atomic file
+transactions; `settings_services.cpp` owns document-specific adapters. This
+boundary retains one security/commit-lock authority. Exact same-read
 save tokens, path/link checks, DACL preservation, legacy backup verification and
 atomic replacement ordering must not diverge between document types. Existing
 Settings and workspace worker owners remain separate from the synchronous file
@@ -162,10 +162,15 @@ migration; see [application-layout storage](application-layout-storage.md).
 The first boundary is extracted: `windows_shell_discovery.cpp` owns the bounded
 probe domain, with portable candidate-policy characterization.
 `windows_local_path.cpp` retains one shared lexical/local-drive path policy;
-stronger ancestor/link/security checks and the single commit mutex remain in
-`settings_services.cpp`. Group 6 remains open for guarded transaction versus
-codec-adapter separation; legacy backup lifetimes must stay inside the transaction
-authority. PR #47 passed Windows 72/72 (including native Settings/layout services),
+stronger ancestor/link/security checks and the single commit mutex now belong to
+`guarded_document_store.cpp`. Its concrete read lease retains guards through typed
+parsing without an extra heap owner; legacy backup orchestration stays intact in
+that module. Existing workers retain scheduling/publication. Group 6's source
+boundary is implemented but exact-source native qualification remains pending.
+Portable tests and cross-compilation are not native runtime proof.
+
+The earlier shell-discovery slice, PR #47, passed Windows 72/72 (including native
+Settings/layout services),
 macOS 62/62 and Linux CI. The full Windows run still failed bundled Projects and
 explicit Settings repeat 4 with malformed paste; 14/15 application cases and
 12/13 repeats passed, all processes reaped. See

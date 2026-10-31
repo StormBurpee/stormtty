@@ -3,7 +3,9 @@
 The Windows application coordinator uses the `STORMTTY-APPLICATION-LAYOUT 1`
 envelope through `load_application_layout_snapshot` and `save_application_layout`.
 `application_layout_codec` defines the portable format; the guarded Windows file
-service is implemented in `src/platform/windows/settings_services.cpp`.
+service is implemented in `src/platform/windows/guarded_document_store.cpp`.
+Typed codec/preflight adapters remain in `settings_services.cpp`; the file service
+retains the entire verified-backup handle lifetime and shared atomic writer.
 
 This is a **single-persistent-window integration**, not enabled grouped startup or
 normal New Window. Reads accept legacy v1 workspace libraries without modifying
