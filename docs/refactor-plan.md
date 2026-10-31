@@ -233,3 +233,14 @@ Closing these groups completes this responsibility pass. It does not mean every
 bug is fixed or every desired feature exists. New Window, broader platform parity,
 new graphics features and unrelated cleanup require their own scope rather than
 keeping this refactor permanently open.
+
+
+## Guarded-store native evidence
+
+The group-6 transaction extraction passed the same 684 application-layout and
+290 Settings checks both before and after movement. Its full Windows baseline
+remains 70/72 because of a console restart assertion and malformed-paste layout
+smoke; all 29 later application/repeat receipts passed. macOS 62/62 and Linux
+passed. See [qualification and limits](settings-services.md#guarded-store-extraction-qualification).
+These results do not resolve the separately held frame-materializer PR or the
+intermittent shell/console failures.

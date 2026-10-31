@@ -208,3 +208,37 @@ All 29 compact receipts reported reaped processes, no outer timeout, no cleanup
 error and no truncation: 27 successes and two failures. Failure classification
 comes from the full log, not the compact receipts' null signature fields.
 No shell fix, common root cause or fully green Windows result is claimed.
+
+
+## Guarded-store extraction qualification
+
+The tests-only reference ran before production movement:
+[run 41146462631](https://github.com/StormBurpee/stormtty/actions/runs/41146462631),
+checkout fb6545515ef29609eb1eb893e3abb90463bba60c, tree
+f74a9f7093d93449925944665e3fb2bd61b5fa3c. Windows passed 72/72,
+including the expanded 684 application-layout checks and 290 Settings checks.
+
+The extracted source ran in
+[run 41148139919](https://github.com/StormBurpee/stormtty/actions/runs/41148139919),
+checkout b2735d7c9bcd10a556803c5865c310d2d9b5b062, tree
+e1ccb9ae96a8800da2245fcf6f8de65c5124b3e4, matching source
+fc3ca005ffe24145365c278e1ab631f7a531e337. The unchanged 684 application-layout
+and 290 Settings checks passed again, as did Session. macOS passed 62/62;
+Linux CI passed.
+
+Windows baseline was 70/72, not green: console_backend_tests failed its restart
+exit==0 assertion without variant/code evidence; native_layout_smoke failed with
+malformed bracketed paste in actor 1 at 52x29, stage-0 phase deadline. These are
+observations, not a proven common cause or proof of regression absence.
+The full application tail passed all 15 packaged/bundled/developer scenarios,
+all 13 Settings repeats, and installed-console Settings: all 29 compact receipts
+succeeded and reaped without outer timeout, cleanup error or truncation.
+No runtime reliability fix is claimed.
+
+The subsequently integrated restart receipt changes only its separate test and
+verification note; guarded-store production and characterization sources retain
+their tested bytes. The combined main revision requires its own CI follow-up.
+The held frame-materializer extraction is not included. Public synchronous tests
+do not prove guards remain held during parsing; that interval was independently
+source-reviewed. Physical UI, every filesystem and every injected allocation or
+native API failure are not exhaustively qualified.
