@@ -173,17 +173,100 @@ void save_backend(const std::filesystem::path& path,WindowsConsoleBackend backen
     CHECK(loaded.snapshot->bytes.find("runtimes/conpty")==std::string::npos);
     CHECK(loaded.snapshot->bytes.find("runtimes\\conpty")==std::string::npos);
 }
-void restart(const std::filesystem::path& binary,const std::filesystem::path& config,bool failure=false) {
-    std::wstring command=L"\""+binary.wstring()+L"\" "+(failure?L"--restart-failure ":L"--restart-child ")+L"\""+config.wstring()+L"\"";
-    STARTUPINFOW startup{}; startup.cb=sizeof(startup);
-    PROCESS_INFORMATION info{};
-    CHECK(CreateProcessW(binary.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,binary.parent_path().c_str(),&startup,&info));
-    Handle process,thread; process.value=info.hProcess; thread.value=info.hThread;
-    const auto wait=WaitForSingleObject(process.value,30000);
-    if (wait!=WAIT_OBJECT_0) { TerminateProcess(process.value,99); WaitForSingleObject(process.value,5000); }
-    CHECK(wait==WAIT_OBJECT_0); DWORD exit{};
-    CHECK(GetExitCodeProcess(process.value,&exit)); CHECK(exit==0);
+enum class RestartVariant {
+    bundled_reload,
+    relocated_missing_host,
+    relocated_corrupt_dll,
+};
+
+const char* restart_variant_label(RestartVariant variant) noexcept {
+    switch (variant) {
+    case RestartVariant::bundled_reload:
+        return "bundled_reload";
+    case RestartVariant::relocated_missing_host:
+        return "relocated_missing_host";
+    case RestartVariant::relocated_corrupt_dll:
+        return "relocated_corrupt_dll";
+    }
+    return "unknown";
 }
+
+// Parent-only, failure-only scalars: never expose paths, command lines or child output.
+void report_restart_failure(
+    RestartVariant variant,
+    DWORD wait,
+    long long elapsed_ms,
+    bool exit_query_attempted,
+    bool exit_query_ok,
+    DWORD exit,
+    DWORD native_error) noexcept {
+    std::fprintf(
+        stderr,
+        "console_restart_failure variant=%s wait_dec=%lu wait_hex=0x%08lx "
+        "wait_elapsed_ms=%lld exit_query_attempted=%u exit_query_ok=%u",
+        restart_variant_label(variant),
+        static_cast<unsigned long>(wait),
+        static_cast<unsigned long>(wait),
+        elapsed_ms,
+        static_cast<unsigned>(exit_query_attempted),
+        static_cast<unsigned>(exit_query_ok));
+
+    if (exit_query_ok) {
+        std::fprintf(
+            stderr,
+            " exit_dec=%lu exit_hex=0x%08lx",
+            static_cast<unsigned long>(exit),
+            static_cast<unsigned long>(exit));
+    }
+    if (wait == WAIT_FAILED || (exit_query_attempted && !exit_query_ok)) {
+        std::fprintf(stderr, " win32_error=%lu", static_cast<unsigned long>(native_error));
+    }
+    std::fputc('\n', stderr);
+}
+
+void restart(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& config,
+    RestartVariant variant = RestartVariant::bundled_reload) {
+    const bool failure = variant != RestartVariant::bundled_reload;
+    std::wstring command = L"\"" + binary.wstring() + L"\" " +
+        (failure ? L"--restart-failure " : L"--restart-child ") +
+        L"\"" + config.wstring() + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION info{};
+    CHECK(CreateProcessW(
+        binary.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+        nullptr, binary.parent_path().c_str(), &startup, &info));
+    Handle process, thread;
+    process.value = info.hProcess;
+    thread.value = info.hThread;
+
+    const auto wait_started = std::chrono::steady_clock::now();
+    const auto wait = WaitForSingleObject(process.value, 30000);
+    const DWORD wait_error = wait == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - wait_started).count();
+    if (wait != WAIT_OBJECT_0) {
+        TerminateProcess(process.value, 99);
+        WaitForSingleObject(process.value, 5000);
+        report_restart_failure(
+            variant, wait, static_cast<long long>(elapsed_ms), false, false, 0, wait_error);
+    }
+    CHECK(wait == WAIT_OBJECT_0);
+
+    DWORD exit{};
+    const auto exit_query_ok = GetExitCodeProcess(process.value, &exit);
+    const DWORD exit_error = exit_query_ok ? ERROR_SUCCESS : GetLastError();
+    if (!exit_query_ok || exit != 0) {
+        report_restart_failure(
+            variant, wait, static_cast<long long>(elapsed_ms), true,
+            exit_query_ok != FALSE, exit, exit_error);
+    }
+    CHECK(exit_query_ok);
+    CHECK(exit == 0);
+}
+
 void restart_child(const std::filesystem::path& path,bool failure) {
     auto loaded=load_settings_snapshot(path); CHECK(loaded);
     CHECK(loaded.config->windows_console_backend==WindowsConsoleBackend::bundled_preview);
@@ -211,7 +294,9 @@ void relocated_failure(const std::filesystem::path& root,bool corrupt) {
         dll.seekp(0); dll.put('\0'); dll.close(); CHECK(dll.good());
     }
     const auto path=root/L"config.stormtty"; save_backend(path,WindowsConsoleBackend::bundled_preview);
-    restart(binary,path,true);
+    restart(
+        binary, path,
+        corrupt ? RestartVariant::relocated_corrupt_dll : RestartVariant::relocated_missing_host);
     const auto recovered=load_settings_snapshot(path); CHECK(recovered);
     CHECK(recovered.config->windows_console_backend==WindowsConsoleBackend::system);
 }
