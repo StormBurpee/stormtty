@@ -313,6 +313,7 @@ if(WIN32)
     stormtty_warnings(stormtty-console-setup)
     install(TARGETS stormtty-console-setup RUNTIME DESTINATION .)
     add_library(stormtty_settings_services
+        src/platform/windows/guarded_document_store.cpp
         src/platform/windows/windows_local_path.cpp
         src/platform/windows/windows_shell_discovery.cpp
         src/platform/windows/settings_document_services.cpp

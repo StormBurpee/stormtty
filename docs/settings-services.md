@@ -15,10 +15,24 @@ candidate-to-UTF-8 probe, not a general discovery framework.
 
 `windows_local_path.cpp` is the single shared lexical/local-drive path policy.
 Discovery checks ordinary executable attributes; it does not acquire the stronger
-ancestor/target guards used for persistence. `settings_services.cpp` still owns
-all guarded snapshots, the single commit mutex, DACL handling, legacy backup
-verification and atomic replacement. Document-specific codec adapters remain there
-for a later boundary; existing Settings and workspace workers remain unchanged.
+ancestor/target guards used for persistence.
+
+`guarded_document_store.cpp` owns guarded reads, the single commit mutex, DACL
+handling, verified legacy backups and atomic replacement. Its concrete private
+`GuardedDocumentRead` owns the original path, ancestor guards and opened snapshot
+in that order. Adapters parse the same owned bytes while the lease is alive, then
+move the token directly into their public result. The lease adds no heap owner,
+extra snapshot copy or new allocation point; it releases the file before ancestors
+on success and parse failure. Native handles never leave this private service API.
+
+`settings_services.cpp` owns only typed validation/codecs, missing-file defaults
+and existing error translation. Application-layout encoding, path/token checks
+and legacy classification remain there, before any backup work. The file service
+owns the complete backup handle lifetime, including releasing the extra original
+handle immediately before the shared writer. Backup creation and original-file
+replacement retain their separate acquisitions of the same commit mutex; this is
+not a new transaction scope or a compare-and-swap guarantee. Existing Settings
+and workspace workers remain unchanged.
 
 ## Discovery and launch policy
 
@@ -129,6 +143,15 @@ It also exercises actual external file edits through the shared editor: open and
 Cancel, explicit adoption on Save, changed-during-edit conflict with draft
 retention, Cancel/reopen/retry, and invalid-file repair. Portable panel tests cover
 the two independent baselines and fresh file reads; they are not native I/O proof.
+`application_layout_services_tests` additionally covers bounded cross-adapter
+same-baseline save races against absent/existing targets: one winner, exact conflict
+error, winner bytes/token, stale retry and cleanup. These synthetic same-path
+fixtures do not change the separate production document destinations. Public-read
+fixtures cover writer-held rejection, returned snapshot ownership and release of
+file/ancestor handles after successful and parse-failed loads. Because those APIs
+are synchronous, these fixtures do not directly observe the internal parse-time
+interval; the concrete lease's ownership/order is also checked by source review.
+
 Git Bash launch/ConPTY/cwd behavior still requires a Windows runtime with Git for
 Windows installed; this test intentionally never executes discovered shells.
 
